@@ -16,6 +16,7 @@
 import { AGENT_MODELS, MODEL_RPM_LIMITS, NIM_CONTEXT_LIMITS } from "@nexsidi/llm-client";
 import { waitForToken } from "@nexsidi/llm-client";
 import { sealPrompt, isAuditEnabled } from "@nexsidi/prompt-audit";
+import { hashContext } from "@nexsidi/context-chain";
 import type { ConversationState, StreamChunk } from "./types.ts";
 
 const MODEL    = AGENT_MODELS.tilotma; // deepseek-v4-pro — most capable
@@ -131,8 +132,17 @@ export async function* streamReply(
         confirmed:    true,
       };
       state.phase = "building";
-      yield { type: "phase_change", phase: "building" };
-      // TODO Phase 1: publish to Tilotma via agent-bus to start pipeline
+
+      // Generate a stable projectId from the session + intent hash
+      const projectId = hashContext({ sessionId: state.sessionId, name: intent.name }).slice(0, 12);
+      state.projectId = projectId;
+
+      // Trigger the build pipeline — the chat route will call POST /api/pipeline/start
+      yield {
+        type:      "project_started",
+        projectId,
+        phase:     "building",
+      };
     } catch { /* malformed JSON in ready signal */ }
   }
 }

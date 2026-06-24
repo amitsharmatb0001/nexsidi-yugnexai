@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { loadSession, saveSession, newSession } from "../../../../agents/maya/src/session.ts";
 import { streamReply } from "../../../../agents/maya/src/index.ts";
+import { startProjectBuild } from "../utils/temporal.ts";
 import type { ChatMessage } from "../../../../agents/maya/src/types.ts";
 
 export const chatRouter = new Hono();
@@ -33,6 +34,7 @@ chatRouter.post("/", async (c) => {
 
   return streamSSE(c, async (stream) => {
     let assistantContent = "";
+    let triggeredProjectId: string | null = null;
 
     try {
       for await (const chunk of streamReply(state, apiKey)) {
@@ -41,12 +43,33 @@ chatRouter.post("/", async (c) => {
         if (chunk.type === "token" && chunk.content) {
           assistantContent += chunk.content;
         }
+
+        // When Maya signals the project is ready, capture the projectId
+        if (chunk.type === "project_started" && chunk.projectId) {
+          triggeredProjectId = chunk.projectId;
+        }
       }
     } catch (err) {
       await stream.writeSSE({
         data: JSON.stringify({ type: "error", content: "Something went wrong. Please try again." }),
       });
       console.error("[chat] stream error", err);
+    }
+
+    // Start the Temporal build pipeline if Maya confirmed intent
+    if (triggeredProjectId && state.intent?.confirmed && state.intent.description) {
+      const userRequest = [
+        state.intent.projectName ?? "",
+        state.intent.description,
+        ...(state.intent.features ?? []),
+      ].join("\n");
+
+      try {
+        await startProjectBuild(triggeredProjectId, userRequest);
+        console.log(`[chat] pipeline started for project ${triggeredProjectId}`);
+      } catch (err) {
+        console.error("[chat] failed to start pipeline:", err);
+      }
     }
 
     // Strip the __READY_TO_BUILD__ signal from what we save as assistant message

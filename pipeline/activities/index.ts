@@ -10,6 +10,7 @@ import { run as runPranavAgent }  from "../../agents/generators/pranav/src/index
 import { run as runRiyaAgent }    from "../../agents/riya/src/index.ts";
 import { agentChat }               from "@nexsidi/llm-client";
 import { db, qaResults, stuckStateLog } from "@nexsidi/db";
+import { Context }                 from "@temporalio/activity";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import type { ProjectSpec } from "../../agents/saanvi/src/index.ts";
@@ -21,38 +22,70 @@ const planCache = new Map<string, BuildPlan>();
 
 // ── Stage 1: Requirements → locked ProjectSpec ─────────────────────────────────
 export async function runSaanvi(projectId: string, userRequest?: string): Promise<void> {
-  const req  = userRequest ?? readUserRequest(projectId);
-  const spec = await runSaanviAgent(projectId, req);
-  specCache.set(projectId, spec);
-  writeCacheFile(projectId, "spec.json", JSON.stringify(spec, null, 2));
-  console.log(`[activity:saanvi] spec locked for ${projectId} — ${spec.features.length} features`);
+  const ctx = Context.current();
+  const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
+  try {
+    // Persist the user request to disk so re-run picks it up after worker restart
+    if (userRequest) writeCacheFile(projectId, "user-request.txt", userRequest);
+    const req  = userRequest ?? readUserRequest(projectId);
+    const spec = await runSaanviAgent(projectId, req);
+    specCache.set(projectId, spec);
+    writeCacheFile(projectId, "spec.json", JSON.stringify(spec, null, 2));
+    console.log(`[activity:saanvi] spec locked for ${projectId} — ${spec.features.length} features`);
+  } finally {
+    clearInterval(hb);
+  }
 }
 
 // ── Stage 2: Spec → BuildPlan (API contract + DB schema + task decomp) ─────────
 export async function runArjun(projectId: string): Promise<void> {
-  const spec = specCache.get(projectId) ?? readCacheFile<ProjectSpec>(projectId, "spec.json");
-  const plan = await runArjunAgent(spec);
-  planCache.set(projectId, plan);
-  console.log(`[activity:arjun] plan ready — ${plan.apiContract.endpoints.length} endpoints, ${plan.dbSchema.tables.length} tables`);
+  const ctx = Context.current();
+  const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
+  try {
+    const spec = specCache.get(projectId) ?? readCacheFile<ProjectSpec>(projectId, "spec.json");
+    const plan = await runArjunAgent(spec);
+    planCache.set(projectId, plan);
+    console.log(`[activity:arjun] plan ready — ${plan.apiContract.endpoints.length} endpoints, ${plan.dbSchema.tables.length} tables`);
+  } finally {
+    clearInterval(hb);
+  }
 }
 
 // ── Stage 3a–c: code generators (run in parallel from workflow) ───────────────
 export async function runShubham(projectId: string): Promise<void> {
-  const result = await runShubhamAgent(getPlan(projectId));
-  if (!result.success) throw new Error(`[shubham] ${result.errors.join("; ")}`);
-  console.log(`[activity:shubham] ${result.filesWritten.length} files → ${result.outputDir}`);
+  const ctx = Context.current();
+  const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
+  try {
+    const result = await runShubhamAgent(getPlan(projectId));
+    if (!result.success) throw new Error(`[shubham] ${result.errors.join("; ")}`);
+    console.log(`[activity:shubham] ${result.filesWritten.length} files → ${result.outputDir}`);
+  } finally {
+    clearInterval(hb);
+  }
 }
 
 export async function runAanya(projectId: string): Promise<void> {
-  const result = await runAanyaAgent(getPlan(projectId));
-  if (!result.success) throw new Error(`[aanya] ${result.errors.join("; ")}`);
-  console.log(`[activity:aanya] ${result.filesWritten.length} files → ${result.outputDir}`);
+  const ctx = Context.current();
+  const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
+  try {
+    const result = await runAanyaAgent(getPlan(projectId));
+    if (!result.success) throw new Error(`[aanya] ${result.errors.join("; ")}`);
+    console.log(`[activity:aanya] ${result.filesWritten.length} files → ${result.outputDir}`);
+  } finally {
+    clearInterval(hb);
+  }
 }
 
 export async function runPranav(projectId: string): Promise<void> {
-  const result = await runPranavAgent(getPlan(projectId));
-  if (!result.success) throw new Error(`[pranav] ${result.errors.join("; ")}`);
-  console.log(`[activity:pranav] ${result.filesWritten.length} DB files written`);
+  const ctx = Context.current();
+  const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
+  try {
+    const result = await runPranavAgent(getPlan(projectId));
+    if (!result.success) throw new Error(`[pranav] ${result.errors.join("; ")}`);
+    console.log(`[activity:pranav] ${result.filesWritten.length} DB files written`);
+  } finally {
+    clearInterval(hb);
+  }
 }
 
 // ── Stage 0 gate: spec-compliance check (D21 — runs before QA, cheap) ─────────
@@ -105,38 +138,43 @@ async function runQaAgent(
   projectId: string,
   iteration: number,
 ): Promise<number> {
+  const ctx = Context.current();
+  const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   const buildDir = getBuildDir(projectId);
   const fileSample = collectFiles(buildDir).slice(0, 12).join("\n");
 
-  const { content } = await agentChat(
-    agent,
-    [
-      { role: "system", content: qaPrompt(focus) },
-      {
-        role: "user",
-        content: `Project: ${projectId} | Iteration: ${iteration}\nFiles:\n${fileSample}\n\n` +
-          'Output JSON: {"score":number,"findings":[{"severity":"CRITICAL|HIGH|MEDIUM|LOW","description":"..."}]}',
-      },
-    ],
-    process.env.NIM_API_KEY ?? "",
-  );
+  try {
+    const { content } = await agentChat(
+      agent,
+      [
+        { role: "system", content: qaPrompt(focus) },
+        {
+          role: "user",
+          content: `Project: ${projectId} | Iteration: ${iteration}\nFiles:\n${fileSample}\n\n` +
+            'Output JSON: {"score":number,"findings":[{"severity":"CRITICAL|HIGH|MEDIUM|LOW","description":"..."}]}',
+        },
+      ],
+      process.env.NIM_API_KEY ?? "",
+    );
 
-  const parsed = parseJson<{ score: number; findings: Array<{ severity: string; description: string }> }>(content);
-  const score  = typeof parsed?.score === "number" ? clamp(parsed.score, 0, 100) : 50;
+    const parsed = parseJson<{ score: number; findings: Array<{ severity: string; description: string }> }>(content);
+    const score  = typeof parsed?.score === "number" ? clamp(parsed.score, 0, 100) : 50;
 
-  // Persist to DB for stuck-state tracking and dashboard
-  await db.insert(qaResults).values({
-    projectId,
-    agentName: agent,
-    iteration,
-    score,
-    findings: parsed?.findings ?? [],
-    passed: score >= 85,
-    createdAt: new Date(),
-  }).onConflictDoNothing();
+    await db.insert(qaResults).values({
+      projectId,
+      agentName: agent,
+      iteration,
+      score,
+      findings: parsed?.findings ?? [],
+      passed: score >= 85,
+      createdAt: new Date(),
+    }).onConflictDoNothing();
 
-  console.log(`[activity:qa:${agent}] iter=${iteration} score=${score}`);
-  return score;
+    console.log(`[activity:qa:${agent}] iter=${iteration} score=${score}`);
+    return score;
+  } finally {
+    clearInterval(hb);
+  }
 }
 
 function qaPrompt(focus: string): string {
@@ -149,34 +187,40 @@ Output ONLY JSON: {"score":number,"findings":[{"severity":"CRITICAL|HIGH|MEDIUM|
 
 // ── Code fix: re-run generators with QA findings attached ────────────────────
 export async function runCodeFix(projectId: string, iteration: number, reason: string): Promise<void> {
+  const ctx = Context.current();
+  const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   console.log(`[activity:code-fix] iter=${iteration} reason=${reason}`);
 
-  const findings = await db
-    .select({ agent: qaResults.agent, score: qaResults.score, findings: qaResults.findings })
-    .from(qaResults)
-    .where((t) => `${String(t.projectId)} = '${projectId}' AND ${String(t.iteration)} = ${iteration}`);
+  try {
+    const findings = await db
+      .select({ agent: qaResults.agentName, score: qaResults.score, findings: qaResults.findings })
+      .from(qaResults)
+      .where((t) => `${String(t.projectId)} = '${projectId}' AND ${String(t.iteration)} = ${iteration}`);
 
-  const summary = findings
-    .flatMap((r) =>
-      (r.findings as Array<{ severity: string; description: string }>).map(
-        (f) => `[${r.agent.toUpperCase()}] ${f.severity}: ${f.description}`,
-      ),
-    )
-    .join("\n");
+    const summary = findings
+      .flatMap((r) =>
+        (r.findings as Array<{ severity: string; description: string }>).map(
+          (f) => `[${r.agent.toUpperCase()}] ${f.severity}: ${f.description}`,
+        ),
+      )
+      .join("\n");
 
-  const plan = getPlan(projectId);
-  const fixContext = `\nFIX THESE QA FINDINGS (iteration ${iteration}):\n${summary}`;
-  const patchedPlan: BuildPlan = {
-    ...plan,
-    shubhamTasks: plan.shubhamTasks.map((t) => ({ ...t, description: t.description + fixContext })),
-    aanyaTasks:   plan.aanyaTasks.map(  (t) => ({ ...t, description: t.description + fixContext })),
-  };
+    const plan = getPlan(projectId);
+    const fixContext = `\nFIX THESE QA FINDINGS (iteration ${iteration}):\n${summary}`;
+    const patchedPlan: BuildPlan = {
+      ...plan,
+      shubhamTasks: plan.shubhamTasks.map((t) => ({ ...t, description: t.description + fixContext })),
+      aanyaTasks:   plan.aanyaTasks.map(  (t) => ({ ...t, description: t.description + fixContext })),
+    };
 
-  await Promise.all([
-    runShubhamAgent(patchedPlan),
-    runAanyaAgent(patchedPlan),
-    runPranavAgent(patchedPlan),
-  ]);
+    await Promise.all([
+      runShubhamAgent(patchedPlan),
+      runAanyaAgent(patchedPlan),
+      runPranavAgent(patchedPlan),
+    ]);
+  } finally {
+    clearInterval(hb);
+  }
 }
 
 // ── Live test (Playwright) — D20 ──────────────────────────────────────────────

@@ -31,7 +31,9 @@ export interface PipelineState {
 export const getPipelineState = defineQuery<PipelineState>("getPipelineState");
 
 // ─── Workflow ──────────────────────────────────────────────────────────────
-export async function projectBuildWorkflow(projectId: string): Promise<void> {
+// userRequest is passed from Maya → Temporal, then forwarded to the Saanvi activity.
+// The activity writes it to BUILD_DIR/{projectId}/user-request.txt for all downstream agents.
+export async function projectBuildWorkflow(projectId: string, userRequest?: string): Promise<void> {
   const state: PipelineState = {
     projectId,
     stage: "spec",
@@ -44,7 +46,7 @@ export async function projectBuildWorkflow(projectId: string): Promise<void> {
 
   // ── Stage 1: Spec ───────────────────────────────────────────────────────
   state.stage = "spec";
-  await act.runSaanvi(projectId);
+  await act.runSaanvi(projectId, userRequest);
 
   // ── Stage 2: Task decomposition ─────────────────────────────────────────
   state.stage = "decompose";

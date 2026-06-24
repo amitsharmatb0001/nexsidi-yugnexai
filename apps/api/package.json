@@ -12,6 +12,9 @@
     "@nexsidi/db": "workspace:*",
     "@nexsidi/agent-bus": "workspace:*",
     "@nexsidi/llm-client": "workspace:*",
+    "@nexsidi/context-chain": "workspace:*",
+    "@nexsidi/prompt-audit": "workspace:*",
+    "@temporalio/client": "^1.11.0",
     "hono": "^4.7.0",
     "svix": "^1.45.0",
     "ioredis": "^5.4.1"
