@@ -49,9 +49,18 @@ All 13 deliverables built. All 10 issues fixed. 3 nice-to-haves added.
   - `GET /api/pipeline/:id` — fetch project result
 - Skills audit: read all 42 skills, verified alignment with CLAUDE.md
 
+**Critical runtime bugs fixed (2026-06-24):**
+- `packages/db/schema.ts`: userId UUID FK → clerkId text, added appUrl column
+- `packages/db/migrations/0000_initial.sql`: initial platform migration (all 8 tables)
+- `packages/db/migrate.ts`: migration runner (`bun packages/db/src/migrate.ts`)
+- `apps/api/middleware/auth.ts`: real Clerk JWT verification (was a stub)
+- `apps/api/routes/pipeline.ts`: uses clerkId (text) in DB insert
+- `agents/riya/src/index.ts`: persists appUrl + status to DB after deploy
+- `apps/web/build/[id]/page.tsx`: user-facing SSE status (Layer 7 deny-by-default)
+- `nexsidi-skills-complete.zip`: 3 outdated skills updated (Next.js 16.2 + Docker)
+
 **Skills conflict resolved:**
-- `nexsidi-generated-stack`, `nexsidi-requirements`, `nexsidi-database` skills
-  reference Next.js 14 + Supabase + Vercel/Railway — these skills are OUTDATED.
+- `nexsidi-generated-stack`, `nexsidi-requirements`, `nexsidi-database` updated
 - CLAUDE.md is authoritative: Next.js 16.2 + local PostgreSQL + Docker Compose.
 - All agent implementations (Aanya/Shubham/Pranav/Riya) follow CLAUDE.md.
 
@@ -59,6 +68,8 @@ All 13 deliverables built. All 10 issues fixed. 3 nice-to-haves added.
 - Sprint 1 test: trigger full pipeline with "Build me a task manager — sign up, add tasks with due dates, check them off"
 - Fix any runtime errors discovered during end-to-end run
 - Phase 2: Playwright live testing (Eval Mode B — weighted 1-10 scoring)
+- Phase 2: Redis Stream agent worker processes (each agent as independent process)
+- Phase 2: OTP/PIN approval gate (Patent Claim 8)
 
 ## Blocked
 Nothing.
