@@ -1,0 +1,29 @@
+name: Karan — Automated PR Security Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  security-review:
+    name: Adversarial Security Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Karan's mandate: OWASP, exploit payloads, injection, auth bypass
+          # D42: real severity 🔴/🟡/🟢/💡 (never CRITICAL/HIGH/MEDIUM/LOW labels)
+          # D44: reuse check included
+          # D45: formatters handle style — do NOT flag formatting
+          prompt: |
+            You are performing an adversarial security review of this PR.
+            Focus: OWASP Top 10, SQL injection, XSS, auth bypass, secrets exposure, SSRF.
+            Use severity: 🔴 (blocking) / 🟡 (should fix) / 🟢 (optional) / 💡 (suggestion).
+            Do NOT flag: formatting, style, variable naming, or code organisation.
+            Do NOT suggest fixes — only identify and describe vulnerabilities.
+            Post findings as inline PR comments on the affected lines.

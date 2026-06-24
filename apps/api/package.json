@@ -1,0 +1,22 @@
+{
+  "name": "@nexsidi/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nexsidi/db": "workspace:*",
+    "@nexsidi/agent-bus": "workspace:*",
+    "@nexsidi/llm-client": "workspace:*",
+    "hono": "^4.7.0",
+    "svix": "^1.45.0",
+    "ioredis": "^5.4.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0"
+  }
+}

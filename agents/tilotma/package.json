@@ -1,0 +1,13 @@
+{
+  "name": "@nexsidi/agent-tilotma",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "@nexsidi/db": "workspace:*",
+    "@nexsidi/llm-client": "workspace:*",
+    "@nexsidi/agent-bus": "workspace:*",
+    "@nexsidi/context-chain": "workspace:*"
+  }
+}

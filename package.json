@@ -1,0 +1,23 @@
+{
+  "name": "nexsidi",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "agents/*",
+    "agents/generators/*",
+    "agents/qa/*",
+    "pipeline"
+  ],
+  "scripts": {
+    "typecheck": "bun run --filter '*' typecheck 2>&1",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "db:generate": "bun --cwd packages/db run generate",
+    "db:migrate": "bun --cwd packages/db run migrate"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "typescript": "^5.7.0"
+  }
+}
