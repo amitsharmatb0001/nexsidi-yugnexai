@@ -18,10 +18,10 @@ export default function Home() {
       </SignedOut>
       <SignedIn>
         <Link
-          href="/dashboard"
+          href="/chat"
           className="px-8 py-3 bg-indigo-600 hover:bg-indigo-500 rounded-lg font-semibold transition"
         >
-          Go to Dashboard
+          Start Building
         </Link>
       </SignedIn>
     </main>

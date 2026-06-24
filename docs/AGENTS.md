@@ -6,18 +6,37 @@ External description: "a coordinated multi-agent system".
 
 ## Phase 1 (Active)
 
-| Agent   | Role                        | Model                        | Transport          |
-|---------|-----------------------------|------------------------------|--------------------|
-| Tilotma | Chief AI Officer            | deepseek-ai/deepseek-v4-pro  | Direct (top-level) |
-| Saanvi  | Requirements → ProjectSpec  | minimax/minimax-m3           | Redis Stream       |
-| Arjun   | Planner + task decomp       | mistralai/mistral-nemotron   | Redis Stream       |
-| Shubham | Express backend generator   | deepseek-ai/deepseek-v4-pro  | Redis Stream       |
-| Aanya   | Next.js frontend generator  | deepseek-ai/deepseek-v4-pro  | Redis Stream       |
-| Pranav  | Drizzle migrations          | qwen2.5-coder:7b (Ollama)    | Redis Stream       |
-| Navya   | QA: logic/race conditions   | moonshotai/kimi-k2.6         | Redis Stream       |
-| Karan   | QA: security/OWASP          | moonshotai/kimi-k2.6         | Redis Stream       |
-| Deepika | QA: performance/N+1         | minimax/minimax-m3           | Redis Stream       |
-| Riya    | DevOps + delivery           | qwen2.5-coder:7b (Ollama)    | Redis Stream       |
+| Agent   | Role                              | Model                        | Transport          |
+|---------|-----------------------------------|------------------------------|--------------------|
+| Maya    | User-facing chat (front door)     | deepseek-ai/deepseek-v4-pro  | HTTP SSE           |
+| Tilotma | Chief AI Officer                  | deepseek-ai/deepseek-v4-pro  | Direct (top-level) |
+| Saanvi  | Requirements → ProjectSpec        | minimax/minimax-m3           | Redis Stream       |
+| Arjun   | Planner + task decomp             | mistralai/mistral-nemotron   | Redis Stream       |
+| Shubham | Express backend generator         | deepseek-ai/deepseek-v4-pro  | Redis Stream       |
+| Aanya   | Next.js frontend generator        | deepseek-ai/deepseek-v4-pro  | Redis Stream       |
+| Pranav  | Drizzle migrations                | qwen2.5-coder:7b (Ollama)    | Redis Stream       |
+| Navya   | QA: logic/race conditions         | moonshotai/kimi-k2.6         | Redis Stream       |
+| Karan   | QA: security/OWASP                | moonshotai/kimi-k2.6         | Redis Stream       |
+| Deepika | QA: performance/N+1               | minimax/minimax-m3           | Redis Stream       |
+| Riya    | DevOps + delivery                 | qwen2.5-coder:7b (Ollama)    | Redis Stream       |
+
+## User-facing flow (Maya is the only agent the user sees)
+
+```
+User types in /chat
+    ↓
+Maya streams back (SSE) — gathers intent, asks ≤3 questions
+    ↓
+User confirms → __READY_TO_BUILD__ signal
+    ↓
+Maya hands off to Tilotma → full pipeline runs
+    ↓
+Maya sends plain-English stage updates to chat UI
+    ↓
+User sees "Your app is ready" + link to localhost:3000
+```
+
+Maya never says "Navya found a bug". She says "QA found an issue, fixing it now."
 
 ## RPM note (Fix #2)
 
