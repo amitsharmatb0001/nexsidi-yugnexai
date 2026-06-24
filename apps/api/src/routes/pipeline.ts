@@ -48,14 +48,14 @@ pipelineRouter.post("/start", async (c) => {
   const running = await isWorkflowRunning(projectId);
   if (running) return c.json({ projectId, status: "already_running" });
 
-  // Persist project to DB
+  // Persist project to DB (clerkId = Clerk user ID, stored as text for Phase 1)
   await db.insert(projects).values({
-    id:          projectId,
-    userId,
-    name:        `Project ${projectId.slice(0, 8)}`,
-    status:      "building",
-    createdAt:   new Date(),
-    updatedAt:   new Date(),
+    id:        projectId,
+    clerkId:   userId,
+    name:      `Project ${projectId.slice(0, 8)}`,
+    status:    "building",
+    createdAt: new Date(),
+    updatedAt: new Date(),
   }).onConflictDoNothing();
 
   const workflowId = await startProjectBuild(projectId, userRequest);
@@ -129,10 +129,10 @@ pipelineRouter.get("/:projectId", async (c) => {
   if (!project) return c.json({ error: "not found" }, 404);
 
   return c.json({
-    projectId: project.id,
-    name:      project.name,
-    status:    project.status,
-    appUrl:    project.appUrl ?? null,
+    projectId:  project.id,
+    name:       project.name,
+    status:     project.status,
+    appUrl:     project.appUrl    ?? null,
     githubRepo: project.githubRepo ?? null,
   });
 });

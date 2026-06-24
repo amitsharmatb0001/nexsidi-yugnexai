@@ -41,6 +41,16 @@ export async function run(projectId: string): Promise<DeployResult> {
   // Step 3: GitHub archival (Fix #9)
   const githubRepo = await archiveToGitHub(projectId, buildDir);
 
+  // Persist appUrl + final status to DB
+  await db
+    .update(projects)
+    .set({
+      appUrl:    appUrl,
+      status:    errors.length === 0 ? "done" : "error",
+      updatedAt: new Date(),
+    })
+    .where(eq(projects.id, projectId));
+
   return { success: errors.length === 0, appUrl, githubRepo, errors };
 }
 

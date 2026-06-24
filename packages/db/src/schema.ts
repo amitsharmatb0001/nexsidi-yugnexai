@@ -25,14 +25,16 @@ export const users = pgTable("users", {
 });
 
 // ─── Projects ────────────────────────────────────────────────────────────────
-// id = SHA-256 first 12 chars of git remote URL (D30)
+// id = first 12 chars of SHA-256 of (sessionId + projectName)
+// clerkId = Clerk user ID (text) — stored directly, no UUID FK for Phase 1
 export const projects = pgTable("projects", {
   id:         varchar("id", { length: 12 }).primaryKey(),
-  userId:     uuid("user_id").notNull().references(() => users.id),
+  clerkId:    text("clerk_id").notNull(),             // Clerk user ID (user_xxx)
   name:       text("name").notNull(),
   spec:       jsonb("spec"),
   status:     text("status").notNull().default("pending"),
-  githubRepo: text("github_repo"), // Fix #9: Riya sets this after archival
+  appUrl:     text("app_url"),                         // set by Riya after docker-compose up
+  githubRepo: text("github_repo"),                     // Fix #9: Riya sets this after archival
   iteration:  integer("iteration").notNull().default(0),
   createdAt:  timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt:  timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
