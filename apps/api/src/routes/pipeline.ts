@@ -14,7 +14,8 @@ import { eq } from "drizzle-orm";
 import Redis from "ioredis";
 import { randomUUID } from "crypto";
 
-export const pipelineRouter = new Hono();
+type Env = { Variables: { userId: string } };
+export const pipelineRouter = new Hono<Env>();
 
 // ── Layer 7: deny-by-default stage translator ─────────────────────────────────
 const USER_STAGE_MESSAGES: Record<string, string> = {

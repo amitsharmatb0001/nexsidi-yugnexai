@@ -1,8 +1,9 @@
-// Tilotma orchestrator — claude-opus-4-8 with streaming tool runner.
+// Tilotma orchestrator — claude-opus-4-8 with streaming agentic loop.
 // Claude decides which pipeline tools to call and in what order.
-// The tool runner handles the agentic loop; we handle streaming + status relay.
+// We stream each round, execute tool calls, and continue until stop_reason !== "tool_use".
 
 import Anthropic from "@anthropic-ai/sdk";
+import type { BetaMessageParam, BetaToolUseBlock } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import type Redis from "ioredis";
 import { buildTilotmaTools, type StatusEmitter } from "./tools.ts";
 
@@ -11,7 +12,6 @@ export interface OrchestrateInput {
   userRequest: string;
 }
 
-// Published to nexsidi:status:{projectId} so Maya can relay to the browser SSE stream
 async function makeStatusEmitter(redis: Redis, projectId: string): Promise<StatusEmitter> {
   return async (message: string, phase: string) => {
     await redis.publish(
@@ -23,48 +23,76 @@ async function makeStatusEmitter(redis: Redis, projectId: string): Promise<Statu
 }
 
 export async function orchestrate(input: OrchestrateInput, redis: Redis): Promise<void> {
-  const client = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-  });
+  const client = new Anthropic({ apiKey: process.env["ANTHROPIC_API_KEY"] });
 
   const emitStatus = await makeStatusEmitter(redis, input.projectId);
-  const tools = buildTilotmaTools(redis, input.projectId, emitStatus);
+  const { definitions, handlers } = buildTilotmaTools(redis, input.projectId, emitStatus);
 
-  const runner = client.beta.messages.toolRunner({
-    model: "claude-opus-4-8",
-    max_tokens: 64_000,
-    thinking: { type: "adaptive" },
-    system: [
-      {
-        type: "text",
-        text: TILOTMA_SYSTEM_PROMPT,
-        // Long, static prompt — cache it to reduce latency + cost on multi-turn
-        // @ts-expect-error cache_control is valid but not yet in all SDK type definitions
-        cache_control: { type: "ephemeral" },
-      },
-    ],
-    tools,
-    messages: [{ role: "user", content: input.userRequest }],
-    stream: true,
-  });
+  const messages: BetaMessageParam[] = [
+    { role: "user", content: input.userRequest },
+  ];
 
-  // Outer loop: one iteration per tool-call round-trip
-  for await (const messageStream of runner) {
-    // Inner loop: stream events for this iteration
-    for await (const event of messageStream) {
-      if (event.type === "content_block_delta") {
-        if (event.delta.type === "text_delta") {
-          // Tilotma's text output is internal reasoning — log for debugging only
-          process.stdout.write(event.delta.text);
-        }
-        // thinking_delta stays fully internal — never forwarded to user (Layer 6)
+  // Agentic loop — one iteration per tool-call round-trip until Claude stops calling tools
+  for (let round = 0; round < 50; round++) {
+    const stream = client.beta.messages.stream({
+      model: "claude-opus-4-8",
+      max_tokens: 64_000,
+      // @ts-expect-error "adaptive" is valid in Opus 4.8+ but not yet typed in SDK 0.55
+      thinking: { type: "adaptive" },
+      system: [
+        {
+          type: "text",
+          text: TILOTMA_SYSTEM_PROMPT,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      tools: definitions,
+      messages,
+      betas: ["interleaved-thinking-2025-05-14"],
+    });
+
+    // Stream events — log text reasoning internally, never expose to user
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        process.stdout.write(event.delta.text);
       }
     }
+
+    const message = await stream.finalMessage();
+    messages.push({ role: "assistant", content: message.content });
+
+    // Done — no more tool calls
+    if (message.stop_reason !== "tool_use") break;
+
+    // Execute every tool Claude called, collect results
+    const toolUseBlocks = message.content.filter(
+      (b): b is BetaToolUseBlock => b.type === "tool_use",
+    );
+
+    const toolResults = await Promise.all(
+      toolUseBlocks.map(async (block) => {
+        const handler = handlers.get(block.name);
+        let content: string;
+        try {
+          content = handler
+            ? await handler(block.input as Record<string, unknown>)
+            : `Unknown tool: ${block.name}`;
+        } catch (err) {
+          content = `Tool error: ${String(err)}`;
+        }
+        return {
+          type: "tool_result" as const,
+          tool_use_id: block.id,
+          content,
+        };
+      }),
+    );
+
+    messages.push({ role: "user", content: toolResults });
   }
 }
 
 // ── Tilotma's ROM memory — identity, red lines, pipeline rules ─────────────
-// This prompt is never overwritten by user input (see security Layer 1 in index.ts).
 const TILOTMA_SYSTEM_PROMPT = `\
 You are the Chief AI Officer of NexSidi — a fully autonomous software development system.
 Your decisions are final. You coordinate every part of the pipeline.

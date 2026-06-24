@@ -1,5 +1,4 @@
 {
-  "extends": "../tsconfig.base.json",
-  "compilerOptions": { "rootDir": "." },
-  "include": ["workflows", "activities"]
+  "extends": "../tsconfig.bun.json",
+  "include": ["workflows", "activities", "worker.ts", "../agents/**/*.ts"]
 }

@@ -10,6 +10,7 @@ import { run as runPranavAgent }  from "../../agents/generators/pranav/src/index
 import { run as runRiyaAgent }    from "../../agents/riya/src/index.ts";
 import { agentChat }               from "@nexsidi/llm-client";
 import { db, qaResults, stuckStateLog } from "@nexsidi/db";
+import { eq, and } from "drizzle-orm";
 import { Context }                 from "@temporalio/activity";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from "fs";
 import { join } from "path";
@@ -195,7 +196,8 @@ export async function runCodeFix(projectId: string, iteration: number, reason: s
     const findings = await db
       .select({ agent: qaResults.agentName, score: qaResults.score, findings: qaResults.findings })
       .from(qaResults)
-      .where((t) => `${String(t.projectId)} = '${projectId}' AND ${String(t.iteration)} = ${iteration}`);
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      .where(and(eq(qaResults.projectId, projectId), eq(qaResults.iteration, iteration))!);
 
     const summary = findings
       .flatMap((r) =>

@@ -3,11 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": { "typecheck": "tsc --noEmit" },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
+    "@nexsidi/agent-bus": "workspace:*",
+    "@nexsidi/context-chain": "workspace:*",
     "@nexsidi/db": "workspace:*",
     "@nexsidi/llm-client": "workspace:*",
-    "@nexsidi/agent-bus": "workspace:*",
-    "@nexsidi/context-chain": "workspace:*"
+    "drizzle-orm": "^0.40.0"
   }
 }
