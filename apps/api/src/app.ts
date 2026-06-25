@@ -6,6 +6,8 @@ import { webhooksRouter } from "./routes/webhooks.ts";
 import { wsRouter } from "./routes/ws.ts";
 import { chatRouter } from "./routes/chat.ts";
 import { pipelineRouter } from "./routes/pipeline.ts";
+import { projectsRouter } from "./routes/projects.ts";
+import { artifactsRouter } from "./routes/artifacts.ts";
 import { authMiddleware } from "./middleware/auth.ts";
 
 export const app = new Hono();
@@ -20,8 +22,10 @@ app.route("/ws", wsRouter);              // Agent health WebSocket (internal —
 
 // Protected routes
 app.use("/api/*", authMiddleware);
-app.route("/api/chat", chatRouter);      // Maya: user-facing conversational agent
-app.route("/api/pipeline", pipelineRouter); // Pipeline trigger + status SSE
+app.route("/api/chat", chatRouter);           // Maya: user-facing conversational agent
+app.route("/api/pipeline", pipelineRouter);   // Pipeline trigger + status SSE
+app.route("/api/projects", projectsRouter);   // Project list + single project fetch
+app.route("/api/artifacts", artifactsRouter); // Browse + read generated build files
 
 app.onError((err, c) => {
   console.error("[api] unhandled error", err);

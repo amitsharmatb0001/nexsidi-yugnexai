@@ -25,15 +25,15 @@ export async function run(projectId: string): Promise<DeployResult> {
   writeFileSync(composePath, generateComposeYaml(projectId), "utf-8");
 
   // Step 2: docker-compose up (detached) + health-check
-  let appUrl = "http://localhost:3000";
+  let appUrl = "http://localhost:3100";
   try {
     execSync(`docker compose -f "${composePath}" up -d --build`, {
       cwd: buildDir,
       timeout: 300_000, // 5 min build timeout
       stdio: "inherit",
     });
-    await waitForHealth("http://localhost:3000", 60_000);
-    appUrl = "http://localhost:3000";
+    await waitForHealth("http://localhost:3100", 60_000);
+    appUrl = "http://localhost:3100";
   } catch (err) {
     errors.push(`docker-compose: ${String(err)}`);
   }
@@ -121,7 +121,7 @@ services:
       NEXT_PUBLIC_CLERK_SIGN_UP_URL: /sign-up
       NEXT_PUBLIC_API_URL: http://localhost:3001
     ports:
-      - "3000:3000"
+      - "3100:3000"
     depends_on:
       - backend
     restart: unless-stopped
