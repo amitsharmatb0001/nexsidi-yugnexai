@@ -14,7 +14,7 @@ services:
       POSTGRES_USER: nexsidi
       POSTGRES_PASSWORD: nexsidi_dev
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -44,7 +44,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DB: postgresql
+      DB: postgres12
       DB_PORT: 5432
       POSTGRES_USER: nexsidi
       POSTGRES_PWD: nexsidi_dev

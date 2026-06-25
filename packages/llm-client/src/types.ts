@@ -9,7 +9,7 @@ export type ModelId =
   | "minimax/minimax-m3"
   | "mistralai/mistral-nemotron"
   | "moonshotai/kimi-k2.6"
-  | "qwen2.5-coder:7b";
+  | "qwen2.5-coder:7b-instruct-q4_K_M";
 
 // Per-agent model assignment (D4)
 export const AGENT_MODELS: Record<AgentName, ModelId> = {
@@ -21,10 +21,10 @@ export const AGENT_MODELS: Record<AgentName, ModelId> = {
   arjun:   "mistralai/mistral-nemotron",
   navya:   "moonshotai/kimi-k2.6",
   karan:   "moonshotai/kimi-k2.6",
-  vanya:   "qwen2.5-coder:7b",
-  pranav:  "qwen2.5-coder:7b",
-  aarav:   "qwen2.5-coder:7b",
-  riya:    "qwen2.5-coder:7b",
+  vanya:   "qwen2.5-coder:7b-instruct-q4_K_M",
+  pranav:  "qwen2.5-coder:7b-instruct-q4_K_M",
+  aarav:   "qwen2.5-coder:7b-instruct-q4_K_M",
+  riya:    "qwen2.5-coder:7b-instruct-q4_K_M",
   neha:    "minimax/minimax-m3",
 };
 
@@ -48,19 +48,19 @@ export const NIM_CONTEXT_LIMITS: Record<string, number> = {
 
 // 4-tier fallback chain per agent (D14)
 export const FALLBACK_CHAIN: Record<AgentName, ModelId[]> = {
-  tilotma: ["deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3", "mistralai/mistral-nemotron", "qwen2.5-coder:7b"],
-  aanya:   ["deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3", "mistralai/mistral-nemotron", "qwen2.5-coder:7b"],
-  shubham: ["deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3", "mistralai/mistral-nemotron", "qwen2.5-coder:7b"],
-  saanvi:  ["minimax/minimax-m3",          "deepseek-ai/deepseek-v4-pro", "mistralai/mistral-nemotron", "qwen2.5-coder:7b"],
-  deepika: ["minimax/minimax-m3",          "deepseek-ai/deepseek-v4-pro", "moonshotai/kimi-k2.6",       "qwen2.5-coder:7b"],
-  arjun:   ["mistralai/mistral-nemotron",  "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "qwen2.5-coder:7b"],
-  navya:   ["moonshotai/kimi-k2.6",        "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "qwen2.5-coder:7b"],
-  karan:   ["moonshotai/kimi-k2.6",        "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "qwen2.5-coder:7b"],
-  vanya:   ["qwen2.5-coder:7b",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
-  pranav:  ["qwen2.5-coder:7b",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
-  aarav:   ["qwen2.5-coder:7b",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
-  riya:    ["qwen2.5-coder:7b",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
-  neha:    ["minimax/minimax-m3",          "deepseek-ai/deepseek-v4-pro", "mistralai/mistral-nemotron",  "qwen2.5-coder:7b"],
+  tilotma: ["deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3", "mistralai/mistral-nemotron", "qwen2.5-coder:7b-instruct-q4_K_M"],
+  aanya:   ["deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3", "mistralai/mistral-nemotron", "qwen2.5-coder:7b-instruct-q4_K_M"],
+  shubham: ["deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3", "mistralai/mistral-nemotron", "qwen2.5-coder:7b-instruct-q4_K_M"],
+  saanvi:  ["minimax/minimax-m3",          "deepseek-ai/deepseek-v4-pro", "mistralai/mistral-nemotron", "qwen2.5-coder:7b-instruct-q4_K_M"],
+  deepika: ["minimax/minimax-m3",          "deepseek-ai/deepseek-v4-pro", "moonshotai/kimi-k2.6",       "qwen2.5-coder:7b-instruct-q4_K_M"],
+  arjun:   ["mistralai/mistral-nemotron",  "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "qwen2.5-coder:7b-instruct-q4_K_M"],
+  navya:   ["moonshotai/kimi-k2.6",        "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "qwen2.5-coder:7b-instruct-q4_K_M"],
+  karan:   ["moonshotai/kimi-k2.6",        "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "qwen2.5-coder:7b-instruct-q4_K_M"],
+  vanya:   ["qwen2.5-coder:7b-instruct-q4_K_M",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
+  pranav:  ["qwen2.5-coder:7b-instruct-q4_K_M",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
+  aarav:   ["qwen2.5-coder:7b-instruct-q4_K_M",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
+  riya:    ["qwen2.5-coder:7b-instruct-q4_K_M",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
+  neha:    ["minimax/minimax-m3",          "deepseek-ai/deepseek-v4-pro", "mistralai/mistral-nemotron",  "qwen2.5-coder:7b-instruct-q4_K_M"],
 };
 
 export interface ChatMessage {

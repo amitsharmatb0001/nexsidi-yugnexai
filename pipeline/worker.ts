@@ -7,6 +7,7 @@
 
 import { Worker, NativeConnection } from "@temporalio/worker";
 import { Connection } from "@temporalio/client";
+import { fileURLToPath } from "url";
 import * as activities from "./activities/index.ts";
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
@@ -21,7 +22,7 @@ async function run(): Promise<void> {
     connection,
     namespace:     "default",
     taskQueue:     TASK_QUEUE,
-    workflowsPath: new URL("./workflows/project-build.ts", import.meta.url).pathname,
+    workflowsPath: fileURLToPath(new URL("./workflows/project-build.ts", import.meta.url)),
     activities,
     // Tune for long-running LLM calls:
     //   maxConcurrentActivityTaskExecutions: how many activities run in parallel

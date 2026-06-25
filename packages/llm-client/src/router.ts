@@ -3,10 +3,15 @@ import { ollamaChat } from "./ollama.ts";
 import { AGENT_MODELS, FALLBACK_CHAIN, type AgentName, type ChatMessage, type ModelId } from "./types.ts";
 import { getState } from "./circuit-breaker.ts";
 
-const OLLAMA_MODELS = new Set<ModelId>(["qwen2.5-coder:7b"]);
+const OLLAMA_MODELS = new Set<ModelId>(["qwen2.5-coder:7b-instruct-q4_K_M"]);
+
+// OLLAMA_ENABLED defaults to true locally; set to false on servers without a GPU.
+// When false, Ollama entries in the fallback chain are silently skipped and NIM handles them.
+const OLLAMA_ENABLED = process.env.OLLAMA_ENABLED !== "false";
 
 async function callModel(model: ModelId, messages: ChatMessage[], apiKey: string): Promise<string> {
   if (OLLAMA_MODELS.has(model)) {
+    if (!OLLAMA_ENABLED) throw new Error("Ollama disabled (OLLAMA_ENABLED=false) — falling back to NIM");
     const res = await ollamaChat(model, messages);
     return res.message.content;
   }
