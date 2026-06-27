@@ -10,8 +10,8 @@
   },
   "dependencies": {
     "@clerk/nextjs": "^6.0.0",
-    "@yugnex/nexui": "workspace:*",
-    "@yugnex/nexui-react": "workspace:*",
+    "@yugnex/nexui": "*",
+    "@yugnex/nexui-react": "*",
     "nanoid": "^5.0.0",
     "next": "16.2.0",
     "react": "^19.0.0",
