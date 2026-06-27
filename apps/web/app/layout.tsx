@@ -11,7 +11,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <ClerkProvider>
       <html lang="en">
-        <body className="bg-gray-950 text-gray-100 antialiased">{children}</body>
+        <body>{children}</body>
       </html>
     </ClerkProvider>
   );

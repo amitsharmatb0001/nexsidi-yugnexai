@@ -1,0 +1,86 @@
+/* @yugnex/nexui — Icon Font
+   NexuiIcons: 30 custom geometric icons, zero third-party dependency.
+   All icons live in Unicode Private Use Area (U+E001–U+E01E).
+
+   Usage:
+     @import "@yugnex/nexui/css/nexui-icons.css";
+     <i class="nxi nxi-folder"></i>
+
+   Size: set font-size on .nxi or parent.
+   Color: inherits currentColor.
+*/
+
+@font-face {
+  font-family: 'NexuiIcons';
+  font-style:  normal;
+  font-weight: normal;
+  font-display: block;
+  src: url('../fonts/NexuiIcons.woff2') format('woff2');
+}
+
+/* Base class */
+.nxi {
+  font-family: 'NexuiIcons' !important;
+  font-style:  normal;
+  font-weight: normal;
+  font-variant: normal;
+  text-transform: none;
+  line-height: 1;
+  display: inline-block;
+  vertical-align: middle;
+  speak: never;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Icon codepoint map */
+.nxi-folder::before       { content: "\E001"; }
+.nxi-folder-open::before  { content: "\E002"; }
+.nxi-file::before         { content: "\E003"; }
+.nxi-check::before        { content: "\E004"; }
+.nxi-x::before            { content: "\E005"; }
+.nxi-chevron-r::before    { content: "\E006"; }
+.nxi-chevron-d::before    { content: "\E007"; }
+.nxi-chevron-l::before    { content: "\E008"; }
+.nxi-plus::before         { content: "\E009"; }
+.nxi-minus::before        { content: "\E00A"; }
+.nxi-trash::before        { content: "\E00B"; }
+.nxi-code::before         { content: "\E00C"; }
+.nxi-terminal::before     { content: "\E00D"; }
+.nxi-git-branch::before   { content: "\E00E"; }
+.nxi-git-commit::before   { content: "\E00F"; }
+.nxi-search::before       { content: "\E010"; }
+.nxi-eye::before          { content: "\E011"; }
+.nxi-copy::before         { content: "\E012"; }
+.nxi-clock::before        { content: "\E013"; }
+.nxi-warning::before      { content: "\E014"; }
+.nxi-info::before         { content: "\E015"; }
+.nxi-download::before     { content: "\E016"; }
+.nxi-link::before         { content: "\E017"; }
+.nxi-user::before         { content: "\E018"; }
+.nxi-dots::before         { content: "\E019"; }
+.nxi-refresh::before      { content: "\E01A"; }
+.nxi-arrow-r::before      { content: "\E01B"; }
+.nxi-arrow-u::before      { content: "\E01C"; }
+.nxi-settings::before     { content: "\E01D"; }
+.nxi-star::before         { content: "\E01E"; }
+
+/* Convenience size modifiers */
+.nxi-sm  { font-size: 14px; }
+.nxi-md  { font-size: 16px; }
+.nxi-lg  { font-size: 20px; }
+.nxi-xl  { font-size: 24px; }
+.nxi-2xl { font-size: 32px; }
+
+/* Color aliases */
+.nxi-green  { color: var(--nx-green); }
+.nxi-blue   { color: var(--nx-blue); }
+.nxi-red    { color: var(--nx-red); }
+.nxi-yellow { color: var(--nx-yellow); }
+.nxi-accent { color: var(--nx-accent); }
+.nxi-muted  { color: var(--nx-text3); }
+.nxi-cyan   { color: var(--nx-cyan); }
+.nxi-purple { color: var(--nx-purple); }
+
+/* Spin animation for loading states */
+.nxi-spin { animation: nx-spin 1s linear infinite; }

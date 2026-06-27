@@ -9,9 +9,13 @@
   "module": "./dist/index.js",
   "types":  "./dist/index.d.ts",
   "exports": {
-    ".":                  { "import": "./dist/index.js",                     "types": "./dist/index.d.ts"                     },
-    "./nexui-utils.css":  "./nexui-utils.css",
-    "./fonts/*":          "./fonts/*",
+    ".":                    { "import": "./dist/index.js",   "types": "./dist/index.d.ts" },
+    "./css/nexui.css":      "./css/nexui.css",
+    "./css/nexui-tokens.css":"./css/nexui-tokens.css",
+    "./css/nexui-base.css": "./css/nexui-base.css",
+    "./css/nexui-icons.css":"./css/nexui-icons.css",
+    "./nexui-utils.css":    "./nexui-utils.css",
+    "./fonts/*":            "./fonts/*",
     "./tokens/colors":    { "import": "./dist/tokens/colors.js",             "types": "./dist/tokens/colors.d.ts"             },
     "./tokens/spacing":   { "import": "./dist/tokens/spacing.js",            "types": "./dist/tokens/spacing.d.ts"            },
     "./tokens/motion":    { "import": "./dist/tokens/motion.js",             "types": "./dist/tokens/motion.d.ts"             },
@@ -36,17 +40,19 @@
     "./primitives/separator":    { "import": "./dist/primitives/separator.js",    "types": "./dist/primitives/separator.d.ts"    },
     "./primitives/spinner":      { "import": "./dist/primitives/spinner.js",      "types": "./dist/primitives/spinner.d.ts"      }
   },
-  "files": ["dist", "src", "native", "fonts", "nexui-utils.css", "LICENSE"],
+  "files": ["dist", "src", "native", "fonts", "css", "nexui-utils.css", "LICENSE"],
   "scripts": {
     "build":         "tsc --project tsconfig.json",
     "build:watch":   "tsc --project tsconfig.json --watch",
     "build:wasm":    "cd native && wasm-pack build --target web --out-dir ../dist/native",
     "build:fonts":   "python3 scripts/build-fonts.py",
+    "build:icons":   "python3 scripts/build-icons.py",
+    "build:all":     "python3 scripts/build-fonts.py && python3 scripts/build-icons.py && tsc --project tsconfig.json",
     "typecheck":     "tsc --noEmit",
     "clean":         "rm -rf dist"
   },
   "devDependencies": { "typescript": "^5.5.0" },
   "dependencies": {},
   "peerDependencies": {},
-  "sideEffects": ["./nexui-utils.css"]
+  "sideEffects": ["./nexui-utils.css", "./css/*.css"]
 }

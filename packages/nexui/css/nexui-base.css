@@ -1,0 +1,157 @@
+/* @yugnex/nexui — Base Reset + Typography
+   Requires nexui-tokens.css to be loaded first.
+   Usage: @import "@yugnex/nexui/css/nexui-base.css";
+*/
+
+@font-face {
+  font-family: 'NexuiSans';
+  font-style:  normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/NexuiSans-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'NexuiSans';
+  font-style:  normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/NexuiSans-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'NexuiSans';
+  font-style:  normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/NexuiSans-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'NexuiMono';
+  font-style:  normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/NexuiMono-Regular.woff2') format('woff2');
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  tab-size: 2;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  font-family: var(--nx-ff-sans);
+  font-size: var(--nx-fs-base);
+  line-height: var(--nx-lh-relaxed);
+  color: var(--nx-text);
+  background-color: var(--nx-bg-base);
+}
+
+code, kbd, samp, pre {
+  font-family: var(--nx-ff-mono);
+  font-size: 0.9em;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  font-family: var(--nx-ff-display);
+  line-height: var(--nx-lh-tight);
+  color: var(--nx-text);
+}
+
+h1 { font-size: var(--nx-fs-4xl); font-weight: 700; }
+h2 { font-size: var(--nx-fs-3xl); font-weight: 700; }
+h3 { font-size: var(--nx-fs-2xl); font-weight: 600; }
+h4 { font-size: var(--nx-fs-xl);  font-weight: 600; }
+h5 { font-size: var(--nx-fs-lg);  font-weight: 600; }
+h6 { font-size: var(--nx-fs-md);  font-weight: 500; }
+
+p { margin: 0; line-height: var(--nx-lh-relaxed); }
+
+a {
+  color: var(--nx-accent-text);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+strong, b { font-weight: 600; }
+em, i     { font-style: italic; }
+small     { font-size: var(--nx-fs-xs); }
+
+pre {
+  margin: 0;
+  overflow-x: auto;
+  tab-size: 2;
+}
+
+img, svg { display: block; max-width: 100%; }
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  font: inherit;
+}
+
+input, textarea, select {
+  font: inherit;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar       { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.20); }
+
+/* Focus */
+:focus-visible {
+  outline: 2px solid var(--nx-accent);
+  outline-offset: 2px;
+}
+:focus:not(:focus-visible) { outline: none; }
+
+/* Selection */
+::selection {
+  background: rgba(232,144,16,0.25);
+  color: var(--nx-text);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Keyframes */
+@keyframes nx-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes nx-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+@keyframes nx-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes nx-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+@keyframes nx-slide-in-r {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
