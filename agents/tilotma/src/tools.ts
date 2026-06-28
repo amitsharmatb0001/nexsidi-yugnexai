@@ -1,7 +1,7 @@
 // Tilotma's tool surface — each tool dispatches to one pipeline stage via Redis Streams.
-// Uses standard BetaTool JSON schema format (SDK 0.55) + a handlers map for execution.
+// Uses OpenAI-compatible tool format (NIM / deepseek-v4-pro via NVIDIA NIM).
 
-import type { BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
+import type { NimToolDef } from "@nexsidi/llm-client";
 import { publish, type AgentMessage } from "@nexsidi/agent-bus";
 import { hashContext } from "@nexsidi/context-chain";
 import { existsSync, readFileSync, renameSync } from "fs";
@@ -78,158 +78,182 @@ async function dispatch(
   await publish(redis, msg);
 }
 
-// Returns the tool JSON schema definitions (for Claude) and a handlers map (for execution).
+// Returns the tool definitions (NIM/OpenAI format) and a handlers map (for execution).
 export function buildTilotmaTools(
   redis: Redis,
   projectId: string,
   emitStatus: StatusEmitter,
-): { definitions: BetaTool[]; handlers: Map<string, ToolHandler> } {
+): { definitions: NimToolDef[]; handlers: Map<string, ToolHandler> } {
   const handlers = new Map<string, ToolHandler>();
 
-  const definitions: BetaTool[] = [
-    // ── Tool 1: Emit a plain-English status update to the user via Maya ──────
+  const definitions: NimToolDef[] = [
+    // ── Tool 1: Emit a plain-English status update to the user ───────────────
     {
-      name: "emit_status_update",
-      description:
-        "Send a plain-English status update to the user. " +
-        "Call this BEFORE starting each major pipeline stage and AFTER completing it. " +
-        "Never mention agent names, internal scores, or iteration counts. " +
-        "Be specific — 'Analyzing your requirements' beats 'Working on it'.",
-      input_schema: {
-        type: "object",
-        properties: {
-          message: { type: "string", description: "User-visible message. No agent names or internal details." },
-          phase: {
-            type: "string",
-            enum: ["gathering", "planning", "generating", "qa", "deploying", "complete", "error"],
+      type: "function",
+      function: {
+        name: "emit_status_update",
+        description:
+          "Send a plain-English status update to the user. " +
+          "Call this BEFORE starting each major pipeline stage and AFTER completing it. " +
+          "Never mention agent names, internal scores, or iteration counts. " +
+          "Be specific — 'Analyzing your requirements' beats 'Working on it'.",
+        parameters: {
+          type: "object",
+          properties: {
+            message: { type: "string", description: "User-visible message. No agent names or internal details." },
+            phase: {
+              type: "string",
+              enum: ["gathering", "planning", "generating", "qa", "deploying", "complete", "error"],
+            },
           },
+          required: ["message", "phase"],
         },
-        required: ["message", "phase"],
       },
     },
 
     // ── Tool 2: Check for a mid-flight STEER.md redirect ─────────────────────
     {
-      name: "check_steer_directive",
-      description:
-        "Check whether a STEER.md redirect instruction has been written. " +
-        "Call this at the start of each pipeline stage. " +
-        "If a directive is present, you MUST follow it and re-plan accordingly.",
-      input_schema: { type: "object", properties: {}, required: [] },
+      type: "function",
+      function: {
+        name: "check_steer_directive",
+        description:
+          "Check whether a STEER.md redirect instruction has been written. " +
+          "Call this at the start of each pipeline stage. " +
+          "If a directive is present, you MUST follow it and re-plan accordingly.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
     },
 
-    // ── Tool 3: Dispatch to requirements agent (Saanvi) ──────────────────────
+    // ── Tool 3: Dispatch to requirements agent ───────────────────────────────
     {
-      name: "gather_requirements",
-      description:
-        "Send the user's request to the requirements agent. " +
-        "It will produce a locked ProjectSpec JSON covering: " +
-        "app type, feature list, data model, auth requirements, and success criteria. " +
-        "Returns the ProjectSpec JSON or a list of clarifying questions.",
-      input_schema: {
-        type: "object",
-        properties: {
-          userRequest: { type: "string", description: "The sanitized user request text." },
-          clarifications: {
-            type: "array",
-            items: { type: "string" },
-            description: "Any answers to previous clarifying questions.",
+      type: "function",
+      function: {
+        name: "gather_requirements",
+        description:
+          "Send the user's request to the requirements agent. " +
+          "It will produce a locked ProjectSpec JSON covering: " +
+          "app type, feature list, data model, auth requirements, and success criteria. " +
+          "Returns the ProjectSpec JSON or a list of clarifying questions.",
+        parameters: {
+          type: "object",
+          properties: {
+            userRequest: { type: "string", description: "The sanitized user request text." },
+            clarifications: {
+              type: "array",
+              items: { type: "string" },
+              description: "Any answers to previous clarifying questions.",
+            },
           },
+          required: ["userRequest"],
         },
-        required: ["userRequest"],
       },
     },
 
-    // ── Tool 4: Dispatch to planner (Arjun) ─────────────────────────────────
+    // ── Tool 4: Dispatch to planner ──────────────────────────────────────────
     {
-      name: "plan_project",
-      description:
-        "Send the locked ProjectSpec to the planner agent. " +
-        "It produces: full REST API contract (every endpoint + request/response shape), " +
-        "database schema (every table + relation), " +
-        "and an independence-checked parallel task list for the code generators. " +
-        "The planner is AMBITIOUS — it designs real systems, not toy demos.",
-      input_schema: {
-        type: "object",
-        properties: {
-          projectSpec: { type: "string", description: "The locked ProjectSpec JSON from gather_requirements." },
+      type: "function",
+      function: {
+        name: "plan_project",
+        description:
+          "Send the locked ProjectSpec to the planner agent. " +
+          "It produces: full REST API contract (every endpoint + request/response shape), " +
+          "database schema (every table + relation), " +
+          "and an independence-checked parallel task list for the code generators. " +
+          "The planner is AMBITIOUS — it designs real systems, not toy demos.",
+        parameters: {
+          type: "object",
+          properties: {
+            projectSpec: { type: "string", description: "The locked ProjectSpec JSON from gather_requirements." },
+          },
+          required: ["projectSpec"],
         },
-        required: ["projectSpec"],
       },
     },
 
-    // ── Tool 5: Dispatch code generators in parallel (Shubham + Aanya + Pranav)
+    // ── Tool 5: Dispatch code generators in parallel ──────────────────────────
     {
-      name: "generate_app",
-      description:
-        "Dispatch to all three code generators simultaneously. " +
-        "They run in separate git worktrees and must not depend on each other's in-progress work. " +
-        "Shubham builds the Express backend, Aanya the Next.js 16.2 frontend, " +
-        "Pranav the Drizzle migrations. " +
-        "Returns the merge status and any conflicts that need resolution.",
-      input_schema: {
-        type: "object",
-        properties: {
-          apiContract: { type: "string", description: "Full REST API contract JSON from plan_project." },
-          dbSchema:    { type: "string", description: "Database schema JSON from plan_project." },
-          taskList:    { type: "string", description: "Parallel task list JSON from plan_project." },
-          iteration:   { type: "number", description: "Current generation iteration (1 = first attempt)." },
+      type: "function",
+      function: {
+        name: "generate_app",
+        description:
+          "Dispatch to all three code generators simultaneously. " +
+          "They run in separate git worktrees and must not depend on each other's in-progress work. " +
+          "One builds the Express backend, one the Next.js 16.2 frontend, " +
+          "one the Drizzle migrations. " +
+          "Returns the merge status and any conflicts that need resolution.",
+        parameters: {
+          type: "object",
+          properties: {
+            apiContract: { type: "string", description: "Full REST API contract JSON from plan_project." },
+            dbSchema:    { type: "string", description: "Database schema JSON from plan_project." },
+            taskList:    { type: "string", description: "Parallel task list JSON from plan_project." },
+            iteration:   { type: "number", description: "Current generation iteration (1 = first attempt)." },
+          },
+          required: ["apiContract", "dbSchema", "taskList", "iteration"],
         },
-        required: ["apiContract", "dbSchema", "taskList", "iteration"],
       },
     },
 
-    // ── Tool 6: Run adversarial QA gate (Navya + Karan + Deepika) ────────────
+    // ── Tool 6: Run adversarial QA gate ─────────────────────────────────────
     {
-      name: "run_qa_review",
-      description:
-        "Run the adversarial QA gate. Three independent QA agents attack the generated code " +
-        "from different angles simultaneously. ALL THREE must score ≥85/100 to pass. " +
-        "Score = 100 − (CRITICAL×20) − (HIGH×10) − (MEDIUM×5) − (LOW×1). " +
-        "A critical finding from any reviewer is a blocking failure. " +
-        "Returns each reviewer's score, findings list, and overall pass/fail.",
-      input_schema: {
-        type: "object",
-        properties: {
-          worktreePath: { type: "string", description: "Absolute path to the merged code worktree." },
-          iteration:    { type: "number", description: "Current QA iteration number." },
+      type: "function",
+      function: {
+        name: "run_qa_review",
+        description:
+          "Run the adversarial QA gate. Three independent QA agents attack the generated code " +
+          "from different angles simultaneously. ALL THREE must score ≥85/100 to pass. " +
+          "Score = 100 − (CRITICAL×20) − (HIGH×10) − (MEDIUM×5) − (LOW×1). " +
+          "A critical finding from any reviewer is a blocking failure. " +
+          "Returns each reviewer's score, findings list, and overall pass/fail.",
+        parameters: {
+          type: "object",
+          properties: {
+            worktreePath: { type: "string", description: "Absolute path to the merged code worktree." },
+            iteration:    { type: "number", description: "Current QA iteration number." },
+          },
+          required: ["worktreePath", "iteration"],
         },
-        required: ["worktreePath", "iteration"],
       },
     },
 
-    // ── Tool 7: Deploy with Riya (Docker Compose → localhost:3000) ───────────
+    // ── Tool 7: Deploy via Docker Compose ────────────────────────────────────
     {
-      name: "deploy_app",
-      description:
-        "Hand the merged, QA-passed code to the DevOps agent. " +
-        "It generates docker-compose.yml, runs docker-compose up, " +
-        "and returns the URL when the app is reachable. " +
-        "Also archives the source to a new GitHub repo.",
-      input_schema: {
-        type: "object",
-        properties: {
-          worktreePath: { type: "string", description: "Absolute path to the merged, QA-passed code." },
+      type: "function",
+      function: {
+        name: "deploy_app",
+        description:
+          "Hand the merged, QA-passed code to the DevOps agent. " +
+          "It generates docker-compose.yml, runs docker-compose up, " +
+          "and returns the URL when the app is reachable. " +
+          "Also archives the source to a new GitHub repo.",
+        parameters: {
+          type: "object",
+          properties: {
+            worktreePath: { type: "string", description: "Absolute path to the merged, QA-passed code." },
+          },
+          required: ["worktreePath"],
         },
-        required: ["worktreePath"],
       },
     },
 
-    // ── Tool 8: Request human approval (Patent Claim 8 — OTP gate) ──────────
+    // ── Tool 8: Request human approval (Patent Claim 8) ──────────────────────
     {
-      name: "request_human_approval",
-      description:
-        "Pause the pipeline and ask the user for explicit approval before a DESTRUCTIVE " +
-        "or PRIVILEGED action (D33/D34). Use for: production deployments, schema drops, " +
-        "secret rotation, or any action judged risky. " +
-        "In development mode this is auto-approved; in production an OTP is required.",
-      input_schema: {
-        type: "object",
-        properties: {
-          action:    { type: "string", description: "Plain-English description of the action requiring approval." },
-          riskClass: { type: "string", enum: ["DESTRUCTIVE", "PRIVILEGED"], description: "Permission harness risk class." },
+      type: "function",
+      function: {
+        name: "request_human_approval",
+        description:
+          "Pause the pipeline and ask the user for explicit approval before a DESTRUCTIVE " +
+          "or PRIVILEGED action (D33/D34). Use for: production deployments, schema drops, " +
+          "secret rotation, or any action judged risky. " +
+          "In development mode this is auto-approved; in production an OTP is required.",
+        parameters: {
+          type: "object",
+          properties: {
+            action:    { type: "string", description: "Plain-English description of the action requiring approval." },
+            riskClass: { type: "string", enum: ["DESTRUCTIVE", "PRIVILEGED"], description: "Permission harness risk class." },
+          },
+          required: ["action", "riskClass"],
         },
-        required: ["action", "riskClass"],
       },
     },
   ];

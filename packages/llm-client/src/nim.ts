@@ -51,3 +51,81 @@ export async function nimChat(
     throw err;
   }
 }
+
+// ── Tool-calling types (OpenAI-compatible — NIM supports this format) ─────────
+
+export interface NimToolDef {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export interface NimToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+export type NimMessage =
+  | { role: "system" | "user"; content: string }
+  | { role: "assistant"; content: string | null; tool_calls?: NimToolCall[] }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+export interface NimToolResponse {
+  choices: Array<{
+    message: { role: string; content: string | null; tool_calls?: NimToolCall[] };
+    finish_reason: "stop" | "tool_calls" | "length";
+  }>;
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+}
+
+export async function nimChatWithTools(
+  modelId: ModelId,
+  messages: NimMessage[],
+  tools: NimToolDef[],
+  apiKey: string,
+): Promise<NimToolResponse> {
+  const circuitKey = `nim:${modelId}`;
+  if (!canRequest(circuitKey)) {
+    throw new Error(`[llm-client] Circuit breaker OPEN for ${modelId} — all retries exhausted`);
+  }
+
+  const rpmLimit = MODEL_RPM_LIMITS[modelId] ?? 40;
+  await waitForToken(modelId, rpmLimit);
+
+  const contextLimit = NIM_CONTEXT_LIMITS[modelId] ?? 32768;
+  const maxTokens = Math.min(8192, Math.floor(contextLimit * 0.75));
+
+  try {
+    const res = await fetch(`${NIM_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages,
+        tools,
+        tool_choice: "auto",
+        max_tokens: maxTokens,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      recordFailure(circuitKey);
+      throw new Error(`[NIM ${res.status}] ${body}`);
+    }
+
+    const data = (await res.json()) as NimToolResponse;
+    recordSuccess(circuitKey);
+    return data;
+  } catch (err) {
+    recordFailure(circuitKey);
+    throw err;
+  }
+}

@@ -1,5 +1,6 @@
 export { agentChat } from "./router.ts";
-export { nimChat } from "./nim.ts";
+export { nimChat, nimChatWithTools } from "./nim.ts";
+export type { NimToolDef, NimToolCall, NimMessage, NimToolResponse } from "./nim.ts";
 export { ollamaChat } from "./ollama.ts";
 export { waitForToken, getBucketState } from "./token-bucket.ts";
 export { getState, getAllStates } from "./circuit-breaker.ts";
