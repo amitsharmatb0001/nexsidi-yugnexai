@@ -3,11 +3,60 @@
    Usage: @import "@yugnex/nexui/css/nexui-base.css";
 */
 
-/* ── Web fonts (Inter + JetBrains Mono via fonts.bunny.net) ── */
-@import url('https://fonts.bunny.net/css?family=inter:400,500,600,700,800&display=swap');
-@import url('https://fonts.bunny.net/css?family=jetbrains-mono:400,500&display=swap');
+/* ── Inter — primary sans-serif (bundled, no CDN required) ──── */
+@font-face {
+  font-family: 'Inter';
+  font-style:  normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/Inter-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style:  normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/Inter-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style:  normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../fonts/Inter-SemiBold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style:  normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/Inter-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style:  normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url('../fonts/Inter-ExtraBold.woff2') format('woff2');
+}
 
-/* ── Bundled fallback fonts ──────────────────────────────────── */
+/* ── JetBrains Mono — code / mono (bundled) ─────────────────── */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style:  normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style:  normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/JetBrainsMono-Medium.woff2') format('woff2');
+}
+
+/* ── NexuiSans / NexuiMono — bundled fallbacks ──────────────── */
 @font-face {
   font-family: 'NexuiSans';
   font-style:  normal;
