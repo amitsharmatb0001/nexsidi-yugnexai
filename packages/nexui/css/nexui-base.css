@@ -3,6 +3,11 @@
    Usage: @import "@yugnex/nexui/css/nexui-base.css";
 */
 
+/* ── Web fonts (Inter + JetBrains Mono via fonts.bunny.net) ── */
+@import url('https://fonts.bunny.net/css?family=inter:400,500,600,700,800&display=swap');
+@import url('https://fonts.bunny.net/css?family=jetbrains-mono:400,500&display=swap');
+
+/* ── Bundled fallback fonts ──────────────────────────────────── */
 @font-face {
   font-family: 'NexuiSans';
   font-style:  normal;
