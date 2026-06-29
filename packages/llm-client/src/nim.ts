@@ -14,6 +14,7 @@ export async function nimChat(
   modelId: ModelId,
   messages: ChatMessage[],
   apiKey: string,
+  maxTokensOverride?: number,
 ): Promise<NimResponse> {
   const circuitKey = `nim:${modelId}`;
   if (!canRequest(circuitKey)) {
@@ -23,9 +24,10 @@ export async function nimChat(
   const rpmLimit = MODEL_RPM_LIMITS[modelId] ?? 40;
   await waitForToken(modelId, rpmLimit);
 
-  // Fix #10: use NIM free-tier context limit, not the model's theoretical max
+  // Code generation tasks (TaskList, dashboard pages, etc.) can exceed 4096 tokens.
+  // Default cap is 16384 — callers can pass a lower override for spec/QA tasks.
   const contextLimit = NIM_CONTEXT_LIMITS[modelId] ?? 32768;
-  const maxTokens = Math.min(4096, Math.floor(contextLimit * 0.75));
+  const maxTokens = maxTokensOverride ?? Math.min(16384, Math.floor(contextLimit * 0.75));
 
   try {
     const res = await fetch(`${NIM_BASE_URL}/chat/completions`, {

@@ -67,6 +67,7 @@ async function generateTask(
       { role: "user", content: buildPrompt(plan, task) },
     ],
     apiKey,
+    { maxTokens: 16384 },
   );
 
   if (isRefusal(content)) {
@@ -91,6 +92,7 @@ async function generateTask(
         },
       ],
       apiKey,
+      { maxTokens: 16384 },
     );
     if (isRefusal(fixed)) throw new Error(`Model refused correction for task "${task.description}"`);
     return parseFileOutput(fixed);

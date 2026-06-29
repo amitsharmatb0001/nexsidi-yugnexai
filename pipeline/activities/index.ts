@@ -460,16 +460,17 @@ function sampleFileContent(buildDir: string, maxChars: number): string {
 
 // Read route file content for spec-compliance verification
 // Scans the actual backend/src/routes/ directory dynamically — no hardcoded names.
+// Routes files with full CRUD are 300-500 lines (10-15K chars) — use 15K per file.
 function sampleRouteContent(buildDir: string): string {
   const parts: string[] = [];
   // Always include entry files
   for (const rel of ["backend/src/app.ts", "backend/src/index.ts"]) {
     try {
-      const text = readFileSync(join(buildDir, rel), "utf-8").slice(0, 3000);
+      const text = readFileSync(join(buildDir, rel), "utf-8").slice(0, 5000);
       parts.push(`=== ${rel} ===\n${text}`);
     } catch { /* skip */ }
   }
-  // Scan every file in routes dir
+  // Scan every file in routes dir — no slice cap: full file needed for CRUD completeness check
   const routesDir = join(buildDir, "backend", "src", "routes");
   try {
     const entries = readdirSync(routesDir, { withFileTypes: true });
@@ -477,7 +478,7 @@ function sampleRouteContent(buildDir: string): string {
       if (!entry.isFile()) continue;
       const rel = `backend/src/routes/${entry.name}`;
       try {
-        const text = readFileSync(join(buildDir, rel), "utf-8").slice(0, 3000);
+        const text = readFileSync(join(buildDir, rel), "utf-8");
         parts.push(`=== ${rel} ===\n${text}`);
       } catch { /* skip */ }
     }

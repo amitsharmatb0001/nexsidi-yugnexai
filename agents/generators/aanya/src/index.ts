@@ -54,6 +54,7 @@ async function generateTask(
   task: GeneratorTask,
   apiKey: string,
 ): Promise<Array<{ path: string; content: string }>> {
+  // Code generation tasks need high token budget — components routinely exceed 4096 tokens.
   const { content } = await agentChat(
     "aanya",
     [
@@ -61,6 +62,7 @@ async function generateTask(
       { role: "user", content: buildPrompt(plan, task) },
     ],
     apiKey,
+    { maxTokens: 16384 },
   );
 
   // If model refused, throw so the Temporal retry picks up the updated fallback chain
@@ -91,6 +93,7 @@ async function generateTask(
         },
       ],
       apiKey,
+      { maxTokens: 16384 },
     );
     if (isRefusal(fixed)) {
       throw new Error(`Model refused correction for task "${task.description}"`);
