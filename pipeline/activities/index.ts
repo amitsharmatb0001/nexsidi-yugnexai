@@ -100,15 +100,26 @@ export async function runCompileCheck(projectId: string): Promise<{ pass: boolea
 
   for (const [label, dir] of [["backend", backendDir], ["frontend", frontendDir]] as const) {
     if (!existsSync(join(dir, "tsconfig.json"))) continue;
+    // Install deps first so tsc can resolve imports and catch type errors.
+    // --ignore-scripts prevents postinstall hooks that may fail in CI-like environments.
+    const install = spawnSync("npm", ["install", "--ignore-scripts", "--prefer-offline"], {
+      cwd: dir, encoding: "utf-8", timeout: 120_000,
+      env: { ...process.env, NPM_CONFIG_FUND: "false", NPM_CONFIG_AUDIT: "false" },
+    });
+    if (install.status !== 0) {
+      results.push(`${label}: npm install failed\n${(install.stderr ?? "").slice(0, 500)}`);
+      continue;
+    }
     try {
       const tsc = spawnSync("npx", ["tsc", "--noEmit", "--pretty", "false"], {
         cwd: dir, encoding: "utf-8", timeout: 60_000,
         env: { ...process.env, FORCE_COLOR: "0" },
       });
       const out = (tsc.stdout ?? "") + (tsc.stderr ?? "");
-      const errorLines = out.split("\n").filter((l) => l.includes("error TS")).slice(0, 20);
-      if (errorLines.length > 0) {
-        results.push(`${label}: ${errorLines.length} TypeScript error(s)\n${errorLines.join("\n")}`);
+      // Fail on any non-zero exit — catches syntax errors, missing files, import failures.
+      if (tsc.status !== 0) {
+        const errorLines = out.split("\n").filter((l) => l.trim()).slice(0, 25);
+        results.push(`${label}: tsc exit ${tsc.status}\n${errorLines.join("\n")}`);
       } else {
         console.log(`[compile-check] ${label}: clean ✓`);
       }
