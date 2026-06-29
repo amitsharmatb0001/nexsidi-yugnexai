@@ -148,6 +148,14 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       continue;
     }
 
+    // Stage 1.5: compile check after QA pass — catches syntax errors before Docker
+    // Runs npm install so tsc can resolve all imports properly.
+    const postQaCompile = await act.runCompileCheck(projectId);
+    if (!postQaCompile.pass) {
+      await genAct.runCodeFix(projectId, state.iteration, `compile_error:\n${postQaCompile.errors}`);
+      continue;
+    }
+
     // Stage 2 (live execution): Docker build + start + curl endpoint (D20)
     state.stage = "live_test";
     const live = await act.runLiveCheck(projectId);

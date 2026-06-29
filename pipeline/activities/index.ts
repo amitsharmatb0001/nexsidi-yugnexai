@@ -316,7 +316,7 @@ Score = 100 − (CRITICAL×10) − (HIGH×5) − (MEDIUM×2) − (LOW×1). Minim
 Output ONLY JSON: {"score":number,"findings":[{"severity":"CRITICAL|HIGH|MEDIUM|LOW","description":"..."}]}`;
 }
 
-// ── Code fix: re-run generators with QA findings attached ────────────────────
+// ── Code fix: re-run generators with QA findings + build error attached ──────
 export async function runCodeFix(projectId: string, iteration: number, reason: string): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
@@ -337,8 +337,16 @@ export async function runCodeFix(projectId: string, iteration: number, reason: s
       )
       .join("\n");
 
+    // Include the build/run reason so the LLM knows the EXACT error to fix.
+    // Without this, after a live_check_fail the LLM only sees QA findings (which passed)
+    // and doesn't know about the TypeScript syntax error that broke the Docker build.
+    const buildError = reason.startsWith("live_check_fail") || reason.startsWith("compile_error")
+      ? `\nBUILD ERROR (fix this first):\n${reason.replace(/^(live_check_fail|compile_error):\s*/, "").slice(0, 800)}\n`
+      : "";
+    const qaContext  = summary ? `\nQA FINDINGS:\n${summary}` : "";
+    const fixContext = `\nFIX ITERATION ${iteration}:${buildError}${qaContext}`;
+
     const plan = getPlan(projectId);
-    const fixContext = `\nFIX THESE QA FINDINGS (iteration ${iteration}):\n${summary}`;
     const patchedPlan: BuildPlan = {
       ...plan,
       shubhamTasks: plan.shubhamTasks.map((t) => ({ ...t, description: t.description + fixContext })),
@@ -346,7 +354,6 @@ export async function runCodeFix(projectId: string, iteration: number, reason: s
     };
 
     // Skip Pranav — DB schema doesn't change between QA iterations.
-    // Re-running Pranav risks overwriting migrations that already work.
     await Promise.all([
       runShubhamAgent(patchedPlan),
       runAanyaAgent(patchedPlan),
