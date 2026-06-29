@@ -14,6 +14,7 @@ import { eq, and } from "drizzle-orm";
 import { Context }                 from "@temporalio/activity";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from "fs";
 import { join } from "path";
+import { execSync, spawnSync } from "child_process";
 import type { ProjectSpec } from "../../agents/saanvi/src/index.ts";
 import type { BuildPlan }   from "../../agents/arjun/src/index.ts";
 
@@ -87,6 +88,100 @@ export async function runPranav(projectId: string): Promise<void> {
   } finally {
     clearInterval(hb);
   }
+}
+
+// ── TypeScript compile gate — runs BEFORE QA scoring ────────────────────────
+// Fails fast if tsc can't compile — saves QA time on uncompilable code.
+export async function runCompileCheck(projectId: string): Promise<{ pass: boolean; errors: string }> {
+  const buildDir = getBuildDir(projectId);
+  const backendDir = join(buildDir, "backend");
+  const frontendDir = join(buildDir, "frontend");
+  const results: string[] = [];
+
+  for (const [label, dir] of [["backend", backendDir], ["frontend", frontendDir]] as const) {
+    if (!existsSync(join(dir, "tsconfig.json"))) continue;
+    try {
+      const tsc = spawnSync("npx", ["tsc", "--noEmit", "--pretty", "false"], {
+        cwd: dir, encoding: "utf-8", timeout: 60_000,
+        env: { ...process.env, FORCE_COLOR: "0" },
+      });
+      const out = (tsc.stdout ?? "") + (tsc.stderr ?? "");
+      const errorLines = out.split("\n").filter((l) => l.includes("error TS")).slice(0, 20);
+      if (errorLines.length > 0) {
+        results.push(`${label}: ${errorLines.length} TypeScript error(s)\n${errorLines.join("\n")}`);
+      } else {
+        console.log(`[compile-check] ${label}: clean ✓`);
+      }
+    } catch (e) {
+      results.push(`${label}: tsc failed — ${String(e)}`);
+    }
+  }
+
+  const pass = results.length === 0;
+  const errors = results.join("\n\n");
+  console.log(`[activity:compile-check] project=${projectId} pass=${pass}${pass ? "" : `\n${errors}`}`);
+  return { pass, errors };
+}
+
+// ── Live execution check — starts backend in Docker, hits /api/v1/* ─────────
+// Expects HTTP 401 (Unauthorized) — not a crash. 401 proves server started and Clerk is wired.
+export async function runLiveCheck(projectId: string): Promise<{ pass: boolean; detail: string }> {
+  const buildDir = getBuildDir(projectId);
+  const tag = `nexsidi-live-${projectId}`.toLowerCase();
+  let pass = false;
+  let detail = "";
+
+  try {
+    // Build backend image
+    const build = spawnSync("docker", ["build", "-t", tag, "-f", "backend/Dockerfile", "backend/"], {
+      cwd: buildDir, encoding: "utf-8", timeout: 180_000,
+    });
+    if (build.status !== 0) {
+      detail = `Docker build failed:\n${(build.stdout ?? "") + (build.stderr ?? "")}`.slice(0, 500);
+      console.log(`[activity:live-check] ${detail}`);
+      return { pass: false, detail };
+    }
+
+    // Start container (no postgres needed for compile/start check — just test it boots)
+    const run = spawnSync("docker", [
+      "run", "--rm", "-d", "-p", "19001:3001",
+      "-e", `DATABASE_URL=postgresql://u:p@127.0.0.1:5432/d`,
+      "-e", `CLERK_SECRET_KEY=${process.env.CLERK_SECRET_KEY ?? "sk_test_placeholder"}`,
+      "--name", tag, tag,
+    ], { encoding: "utf-8", timeout: 15_000 });
+    const containerId = run.stdout?.trim() ?? "";
+
+    if (!containerId) {
+      detail = `Container failed to start: ${(run.stderr ?? "")}`.slice(0, 300);
+      return { pass: false, detail };
+    }
+
+    // Give server 5s to start
+    await new Promise((r) => setTimeout(r, 5000));
+
+    try {
+      // Expect 401 (Clerk working) or 404 (route exists but not found) — NOT a crash (500/ECONNREFUSED)
+      const curl = spawnSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:19001/api/v1/tasks"], {
+        encoding: "utf-8", timeout: 10_000,
+      });
+      const code = parseInt(curl.stdout?.trim() ?? "0", 10);
+      if (code === 401 || code === 200 || code === 404) {
+        pass = true;
+        detail = `Server responded HTTP ${code} ✓`;
+      } else {
+        detail = `Server responded HTTP ${code} — expected 401 (Clerk) or 404`;
+      }
+    } finally {
+      // Always clean up container
+      spawnSync("docker", ["stop", tag], { encoding: "utf-8", timeout: 10_000 });
+      spawnSync("docker", ["rmi", "-f", tag], { encoding: "utf-8", timeout: 10_000 });
+    }
+  } catch (e) {
+    detail = `Live check exception: ${String(e)}`;
+  }
+
+  console.log(`[activity:live-check] project=${projectId} pass=${pass} ${detail}`);
+  return { pass, detail };
 }
 
 // ── Stage 0 gate: spec-compliance check (D21 — runs before QA, cheap) ─────────

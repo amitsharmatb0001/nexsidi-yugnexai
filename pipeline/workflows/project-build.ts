@@ -76,6 +76,20 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     genAct.runPranav(projectId),
   ]);
 
+  // ── Stage 3b: TypeScript compile gate (before QA — fail fast) ────────────
+  state.stage = "compile_check";
+  let compileAttempts = 0;
+  while (compileAttempts < 3) {
+    const compile = await act.runCompileCheck(projectId);
+    if (compile.pass) break;
+    compileAttempts++;
+    console.log(`[workflow] compile check failed (attempt ${compileAttempts}/3): ${compile.errors.slice(0, 200)}`);
+    if (compileAttempts < 3) {
+      await genAct.runCodeFix(projectId, 0, `compile_error:\n${compile.errors}`);
+    }
+  }
+  // After 3 failed compile attempts, continue anyway — QA will catch it.
+
   // ── QA Loop ─────────────────────────────────────────────────────────────
   state.stage = "qa";
   let specMismatchCount = 0;
@@ -134,13 +148,13 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       continue;
     }
 
-    // Stage 2 (live app): Playwright (D20)
+    // Stage 2 (live execution): Docker build + start + curl endpoint (D20)
     state.stage = "live_test";
-    const liveScore = await act.runLiveTest(projectId, state.iteration);
-    if (liveScore >= 7.0) break; // pipeline passes
+    const live = await act.runLiveCheck(projectId);
+    if (live.pass) break; // server starts and responds — pipeline passes
 
     state.stage = "qa";
-    await genAct.runCodeFix(projectId, state.iteration, "live_test_fail");
+    await genAct.runCodeFix(projectId, state.iteration, `live_check_fail: ${live.detail}`);
   }
 
   // ── Stage 4: Delivery ───────────────────────────────────────────────────

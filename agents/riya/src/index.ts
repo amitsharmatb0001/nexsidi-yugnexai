@@ -98,6 +98,7 @@ services:
       DATABASE_URL: postgresql://appuser:apppassword@postgres:5432/${dbName}
       CLERK_SECRET_KEY: \${CLERK_SECRET_KEY}
       CLERK_PUBLISHABLE_KEY: \${CLERK_PUBLISHABLE_KEY}
+      CORS_ORIGIN: "http://localhost:3100"
       PORT: "3001"
       NODE_ENV: production
     ports:

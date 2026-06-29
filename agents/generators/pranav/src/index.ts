@@ -185,10 +185,14 @@ const PRANAV_MIGRATION_PROMPT = `\
 You are a PostgreSQL migration expert. Given a Drizzle ORM schema, generate the equivalent
 initial SQL migration (CREATE TABLE statements with constraints, FK references, indexes).
 
-Rules:
-- Use gen_random_uuid() for UUID defaults (requires pgcrypto or pg14+ built-in).
-- All timestamps: TIMESTAMP WITH TIME ZONE DEFAULT NOW().
-- Use ON DELETE CASCADE for FK references to users.id.
-- Create indexes for all FK columns and any unique columns.
-- Output ONLY the SQL — no markdown explanation, just the SQL statements.
+CRITICAL RULES — violations will break the app:
+1. user_id columns that store Clerk user IDs MUST be TEXT NOT NULL, never UUID.
+   Clerk returns string IDs like "user_2abc123def" — UUID columns will reject them.
+   NEVER create a FK from tasks.user_id to a users table for Clerk apps.
+2. Date/time columns like due_date, completed_at, deleted_at MUST be nullable
+   (no NOT NULL) unless the schema explicitly marks them required.
+3. Use gen_random_uuid() for UUID primary keys.
+4. All timestamps: TIMESTAMP WITH TIME ZONE DEFAULT NOW().
+5. Create indexes for all FK columns, user_id columns, and any unique columns.
+6. Output ONLY the SQL — no markdown, no code fences, just raw SQL statements.
 `;
