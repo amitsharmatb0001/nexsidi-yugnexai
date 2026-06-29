@@ -39,10 +39,11 @@ function translateStage(stage: string): { stage: string; message: string } | nul
 // ── POST /api/pipeline/start ──────────────────────────────────────────────────
 pipelineRouter.post("/start", async (c) => {
   const userId = c.get("userId") as string;
-  const body   = await c.req.json<{ projectId: string; userRequest: string }>();
-  const { projectId, userRequest } = body;
+  const body   = await c.req.json<{ projectId?: string; userRequest: string }>();
+  const { userRequest } = body;
+  // Schema: id = varchar(12). If caller provides one use it; else derive 12 hex chars from a UUID.
+  const projectId = body.projectId?.trim() || randomUUID().replace(/-/g, "").slice(0, 12);
 
-  if (!projectId?.trim()) return c.json({ error: "projectId required" }, 400);
   if (!userRequest?.trim()) return c.json({ error: "userRequest required" }, 400);
 
   // Check if already running — don't double-start

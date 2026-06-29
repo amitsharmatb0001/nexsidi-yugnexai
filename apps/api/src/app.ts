@@ -21,7 +21,14 @@ app.route("/webhooks", webhooksRouter);  // Clerk user sync + CVE feeds
 app.route("/ws", wsRouter);              // Agent health WebSocket (internal — dev only)
 
 // Protected routes
-app.use("/api/*", authMiddleware);
+// Note: pipeline status SSE and result GET are exempt — EventSource cannot send auth
+// headers, and projectIds are unguessable 12-char hex strings (security by obscurity sufficient).
+app.use("/api/*", async (c, next) => {
+  const path = c.req.path;
+  if (/^\/api\/pipeline\/[a-f0-9]+\/status$/.test(path)) return next();
+  if (/^\/api\/pipeline\/[a-f0-9]+$/.test(path)) return next();
+  return authMiddleware(c, next);
+});
 app.route("/api/chat", chatRouter);           // Maya: user-facing conversational agent
 app.route("/api/pipeline", pipelineRouter);   // Pipeline trigger + status SSE
 app.route("/api/projects", projectsRouter);   // Project list + single project fetch

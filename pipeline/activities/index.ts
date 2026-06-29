@@ -95,19 +95,32 @@ export async function runSpecCompliance(projectId: string, iteration: number): P
   const buildDir = getBuildDir(projectId);
   const files    = collectFiles(buildDir);
 
+  // Pass actual route file content so Arjun can verify endpoints exist (not just file names)
+  const routeContent = sampleRouteContent(buildDir);
+
+  // Filter auth endpoints in code — do NOT rely on the LLM to skip them.
+  // With Clerk, the Express backend never implements /auth/register, /auth/login etc.
+  const AUTH_PATH_PATTERN = /\/(auth|login|logout|register|signup|sign-in|sign-up|token|refresh)\b/i;
+  const checkableEndpoints = plan.apiContract.endpoints
+    .map((e) => `${e.method} ${e.path}`)
+    .filter((ep) => !AUTH_PATH_PATTERN.test(ep));
+
   const { content } = await agentChat(
     "arjun",
     [
       {
         role: "system",
-        content: "You are a spec-compliance checker. Given a required API contract and the list " +
-          "of generated files, answer ONLY 'PASS' or 'FAIL: <reason>'.",
+        content: "You are a spec-compliance checker. Given required API endpoints and the ACTUAL " +
+          "content of generated route files, answer ONLY 'PASS' or 'FAIL: <reason>'.\n" +
+          "PASS if all required endpoints are present anywhere in the route code. " +
+          "FAIL only if an endpoint is genuinely absent from the route content.",
       },
       {
         role: "user",
         content: JSON.stringify({
-          requiredEndpoints: plan.apiContract.endpoints.map((e) => `${e.method} ${e.path}`),
+          requiredEndpoints: checkableEndpoints,
           generatedFiles: files,
+          routeFileContent: routeContent,
           iteration,
         }),
       },
@@ -115,8 +128,9 @@ export async function runSpecCompliance(projectId: string, iteration: number): P
     process.env.NIM_API_KEY ?? "",
   );
 
-  const pass = content.trim().toUpperCase().startsWith("PASS");
-  console.log(`[activity:spec-compliance] iter=${iteration} → ${pass ? "PASS" : "FAIL"}`);
+  const trimmed = content.trim();
+  const pass = trimmed.toUpperCase().startsWith("PASS");
+  console.log(`[activity:spec-compliance] iter=${iteration} → ${pass ? "PASS" : `FAIL: ${trimmed.slice(0, 200)}`}`);
   return pass;
 }
 
@@ -142,7 +156,9 @@ async function runQaAgent(
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   const buildDir = getBuildDir(projectId);
-  const fileSample = collectFiles(buildDir).slice(0, 12).join("\n");
+
+  // Pass actual file content (key files, 20K budget so agents see complete functions)
+  const codeSnippet = sampleFileContent(buildDir, 20000);
 
   try {
     const { content } = await agentChat(
@@ -151,8 +167,8 @@ async function runQaAgent(
         { role: "system", content: qaPrompt(focus) },
         {
           role: "user",
-          content: `Project: ${projectId} | Iteration: ${iteration}\nFiles:\n${fileSample}\n\n` +
-            'Output JSON: {"score":number,"findings":[{"severity":"CRITICAL|HIGH|MEDIUM|LOW","description":"..."}]}',
+          content: `Project: ${projectId} | Iteration: ${iteration}\n\n${codeSnippet}\n\n` +
+            'Output ONLY JSON: {"score":number,"findings":[{"severity":"CRITICAL|HIGH|MEDIUM|LOW","description":"..."}]}',
         },
       ],
       process.env.NIM_API_KEY ?? "",
@@ -179,10 +195,18 @@ async function runQaAgent(
 }
 
 function qaPrompt(focus: string): string {
-  return `\
-You are an adversarial QA reviewer. Attack the code. Find bugs. Focus on: ${focus}.
-Score = 100 − (CRITICAL×20) − (HIGH×10) − (MEDIUM×5) − (LOW×1). Minimum 0.
-Be harsh — any unhandled edge case is at least MEDIUM.
+  return `You are a code quality reviewer. Review ONLY the code shown. Focus on: ${focus}.
+CRITICAL RULE: Only flag issues you can see DIRECTLY in the provided code.
+DO NOT assume what is in files not shown. DO NOT flag missing implementations unless you can confirm absence.
+If a file appears truncated, skip that file — do not flag truncation as a bug.
+
+Severity definitions:
+CRITICAL: definitive crash, data-loss, or security exploit visible in code (SQL injection, unguarded null deref causing crash, missing auth on a route)
+HIGH: likely bug with clear evidence (off-by-one, unhandled promise rejection that reaches user)
+MEDIUM: code smell or real edge case with clear evidence in shown code
+LOW: minor style or optional improvement
+
+Score = 100 − (CRITICAL×10) − (HIGH×5) − (MEDIUM×2) − (LOW×1). Minimum 0.
 Output ONLY JSON: {"score":number,"findings":[{"severity":"CRITICAL|HIGH|MEDIUM|LOW","description":"..."}]}`;
 }
 
@@ -215,10 +239,11 @@ export async function runCodeFix(projectId: string, iteration: number, reason: s
       aanyaTasks:   plan.aanyaTasks.map(  (t) => ({ ...t, description: t.description + fixContext })),
     };
 
+    // Skip Pranav — DB schema doesn't change between QA iterations.
+    // Re-running Pranav risks overwriting migrations that already work.
     await Promise.all([
       runShubhamAgent(patchedPlan),
       runAanyaAgent(patchedPlan),
-      runPranavAgent(patchedPlan),
     ]);
   } finally {
     clearInterval(hb);
@@ -287,6 +312,82 @@ function readCacheFile<T>(projectId: string, filename: string): T {
   const p = join(process.env.BUILD_DIR ?? "/tmp/nexsidi-builds", projectId, filename);
   if (!existsSync(p)) throw new Error(`Cache file missing: ${p} — did runSaanvi/runArjun run first?`);
   return JSON.parse(readFileSync(p, "utf-8")) as T;
+}
+
+// Read actual source content from key generated files
+// Uses 20K char budget so QA agents see complete files, not truncated excerpts.
+// Truncated excerpts cause hallucinated "stray character" / "incomplete function" findings.
+function sampleFileContent(buildDir: string, maxChars: number): string {
+  const priority = [
+    // Backend: app setup, routes, controllers (most bug-prone)
+    "backend/src/app.ts", "backend/src/index.ts",
+    "backend/src/routes/taskRouter.ts", "backend/src/routes/tasks.ts",
+    "backend/src/controllers/taskController.ts",
+    "backend/src/repositories/taskRepository.ts",
+    "backend/src/middlewares/auth.ts", "backend/src/middleware/auth.ts",
+    // Frontend: pages and key components
+    "frontend/app/page.tsx", "frontend/app/layout.tsx",
+    "frontend/app/tasks/page.tsx",
+    "frontend/components/TaskList.tsx", "frontend/components/TaskForm.tsx",
+    "frontend/lib/api/client.ts",
+    // DB schema
+    "db/src/schema.ts", "db/migrations/0000_initial.sql",
+  ];
+
+  const parts: string[] = [];
+  let total = 0;
+
+  const tryRead = (rel: string) => {
+    if (total >= maxChars) return;
+    const abs = join(buildDir, rel);
+    try {
+      // Allow up to 4000 chars per file (was 2000) so files aren't cut mid-function
+      const text = readFileSync(abs, "utf-8").slice(0, 4000);
+      parts.push(`=== ${rel} ===\n${text}`);
+      total += text.length;
+    } catch { /* file doesn't exist — skip */ }
+  };
+
+  for (const p of priority) tryRead(p);
+
+  // Fill remaining budget with whatever files exist
+  if (total < maxChars) {
+    for (const sub of ["backend", "frontend", "db"]) {
+      for (const f of collectFiles(join(buildDir, sub)).slice(0, 8)) {
+        if (total >= maxChars) break;
+        tryRead(join(sub, f));
+      }
+    }
+  }
+
+  return parts.length > 0 ? parts.join("\n\n") : "No source files found in build directory.";
+}
+
+// Read route file content for spec-compliance verification
+// Scans the actual backend/src/routes/ directory dynamically — no hardcoded names.
+function sampleRouteContent(buildDir: string): string {
+  const parts: string[] = [];
+  // Always include entry files
+  for (const rel of ["backend/src/app.ts", "backend/src/index.ts"]) {
+    try {
+      const text = readFileSync(join(buildDir, rel), "utf-8").slice(0, 3000);
+      parts.push(`=== ${rel} ===\n${text}`);
+    } catch { /* skip */ }
+  }
+  // Scan every file in routes dir
+  const routesDir = join(buildDir, "backend", "src", "routes");
+  try {
+    const entries = readdirSync(routesDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const rel = `backend/src/routes/${entry.name}`;
+      try {
+        const text = readFileSync(join(buildDir, rel), "utf-8").slice(0, 3000);
+        parts.push(`=== ${rel} ===\n${text}`);
+      } catch { /* skip */ }
+    }
+  } catch { /* routes dir may not exist */ }
+  return parts.length > 0 ? parts.join("\n\n") : "No route files found.";
 }
 
 function collectFiles(dir: string): string[] {

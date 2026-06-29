@@ -4,7 +4,7 @@
 // D: uses Next.js 16.2 (NOT 14 which is EOL, NOT 15)
 
 import { agentChat } from "@nexsidi/llm-client";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync, appendFileSync } from "fs";
 import { join, dirname } from "path";
 import type { BuildPlan, GeneratorTask } from "../../../arjun/src/index.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
@@ -42,6 +42,14 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
   return { success: errors.length === 0, projectId: plan.projectId, outputDir, filesWritten, errors };
 }
 
+// Detect model refusals (content-policy rejections that look like success responses)
+function isRefusal(text: string): boolean {
+  const t = text.trim().slice(0, 120).toLowerCase();
+  return t.startsWith("i'm sorry") || t.startsWith("i am sorry") ||
+    t.startsWith("i can't") || t.startsWith("i cannot") ||
+    t.startsWith("as an ai language model") || t.startsWith("i apologize");
+}
+
 async function generateTask(
   plan: BuildPlan,
   task: GeneratorTask,
@@ -55,7 +63,41 @@ async function generateTask(
     ],
     apiKey,
   );
-  return parseFileOutput(content);
+
+  // If model refused, throw so the Temporal retry picks up the updated fallback chain
+  if (isRefusal(content)) {
+    throw new Error(`Model refused task "${task.description}" — retrying with next model in chain`);
+  }
+
+  try {
+    return parseFileOutput(content);
+  } catch {
+    // Log raw output for debugging then retry with an explicit reminder
+    const debugPath = join(process.env.BUILD_DIR ?? "/tmp/nexsidi-builds", plan.projectId, `debug-aanya-${Date.now()}.txt`);
+    mkdirSync(dirname(debugPath), { recursive: true });
+    writeFileSync(debugPath, `TASK: ${task.description}\n\nRAW OUTPUT:\n${content}`, "utf-8");
+
+    // Retry once with a correction follow-up
+    const { content: fixed } = await agentChat(
+      "aanya",
+      [
+        { role: "system", content: AANYA_SYSTEM_PROMPT },
+        { role: "user", content: buildPrompt(plan, task) },
+        { role: "assistant", content: content },
+        {
+          role: "user",
+          content: `Your response was not in the required format. You MUST use ===FILE: path=== ... ===ENDFILE=== delimiters.\n` +
+            `FILES TO PRODUCE: ${task.outputFiles.join(", ")}\n` +
+            `Rewrite your response now using ONLY ===FILE: path=== blocks. No prose, no markdown, no JSON.`,
+        },
+      ],
+      apiKey,
+    );
+    if (isRefusal(fixed)) {
+      throw new Error(`Model refused correction for task "${task.description}"`);
+    }
+    return parseFileOutput(fixed);
+  }
 }
 
 function buildPrompt(plan: BuildPlan, task: GeneratorTask): string {
@@ -69,10 +111,14 @@ ${plan.sharedTypes}
 === API CONTRACT (backend is at ${backendUrl}) ===
 ${JSON.stringify(plan.apiContract, null, 2)}
 
-Generate COMPLETE, production-ready Next.js 16.2 code. Fully implemented UI with real data.
+Generate COMPLETE, working Next.js 16.2 code. Every function must be fully implemented.
 Tailwind classes only — no inline styles, no CSS modules.
 shadcn/ui components where appropriate (Button, Input, Card, Dialog, etc.).
-Output ONLY JSON: { "files": [{ "path": "...", "content": "..." }] }`;
+REQUIRED output format (no JSON, no markdown):
+===FILE: app/page.tsx===
+<complete content>
+===ENDFILE===
+Repeat for every file. No JSON. Only ===FILE: path=== blocks.`;
 }
 
 // ── Static config files ───────────────────────────────────────────────────────
@@ -167,7 +213,7 @@ export default config;
       content: `FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 COPY . .
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ARG NEXT_PUBLIC_API_URL=http://localhost:3001
@@ -176,7 +222,7 @@ RUN npm run build
 FROM node:22-alpine
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 EXPOSE 3000
@@ -186,17 +232,72 @@ CMD ["npm", "start"]
   ];
 }
 
+// Strip markdown code fences that some models wrap around file content.
+function stripFences(s: string): string {
+  return s.replace(/^```[^\n]*\n/, "").replace(/\n```\s*$/, "");
+}
+
 // ── Parse {"files":[...]} output ─────────────────────────────────────────────
+// Primary: ===FILE: path=== ... ===ENDFILE=== delimiter format (no JSON escaping needed).
+// JSON fallback handles models that still output the old format.
 function parseFileOutput(text: string): Array<{ path: string; content: string }> {
+  // Primary: ===FILE: path=== or === FILE: path === (with optional spaces inside ===)
+  const delimitedBlocks = [...text.matchAll(/={3}\s*FILE:\s*([^\n=][^\n]*?)\s*={3}\s*\n([\s\S]*?)={3}\s*ENDFILE\s*={3}/g)];
+  if (delimitedBlocks.length > 0) {
+    return delimitedBlocks.map((m) => ({ path: m[1]!.trim(), content: stripFences(m[2] ?? "") }));
+  }
+
+  // Secondary: <<<FILE: path>>> ... <<<END>>> (old fence format)
+  const fenceBlocks = [...text.matchAll(/<<<FILE:\s*([^\n>]+)>>>\s*([\s\S]*?)<<<END>>>/g)];
+  if (fenceBlocks.length > 0) return fenceBlocks.map((m) => ({ path: m[1]!.trim(), content: stripFences(m[2] ?? "") }));
+
+  // Tertiary: JSON (strip markdown fence, then sanitize and parse)
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  const jsonStr = fenceMatch?.[1] ?? (() => {
+  const raw = fenceMatch?.[1] ?? (() => {
     const s = text.indexOf("{");
     const e = text.lastIndexOf("}");
     return s !== -1 && e > s ? text.slice(s, e + 1) : text;
   })();
-  const parsed = JSON.parse(jsonStr) as { files?: Array<{ path: string; content: string }> };
-  if (!Array.isArray(parsed.files)) throw new Error("LLM output missing `files` array");
-  return parsed.files.filter((f) => f.path && typeof f.content === "string");
+  try {
+    const p = JSON.parse(raw) as { files?: Array<{ path: string; content: string }> };
+    if (Array.isArray(p.files)) return p.files.filter((f) => f.path && typeof f.content === "string");
+  } catch { /* fall through */ }
+  try {
+    const p = JSON.parse(sanitizeJsonStrings(raw)) as { files?: Array<{ path: string; content: string }> };
+    if (Array.isArray(p.files)) return p.files.filter((f) => f.path && typeof f.content === "string");
+  } catch { /* fall through */ }
+
+  throw new Error("LLM output did not match any parseable format (===FILE===, <<<FILE>>>, or JSON)");
+}
+
+function sanitizeJsonStrings(json: string): string {
+  let inString = false;
+  let result = "";
+  for (let i = 0; i < json.length; i++) {
+    const ch = json[i]!;
+    if (inString) {
+      if (ch === "\\") {
+        const next = json[i + 1];
+        if (next === "\n" || next === "\r") {
+          result += "\\n";
+          if (next === "\r" && json[i + 2] === "\n") i++;
+          i++;
+          continue;
+        }
+        result += ch + (next ?? "");
+        i++;
+        continue;
+      }
+      if (ch === '"') { inString = false; result += ch; continue; }
+      if (ch === "\n") { result += "\\n"; continue; }
+      if (ch === "\r") { result += "\\r"; continue; }
+      result += ch;
+    } else {
+      if (ch === '"') inString = true;
+      result += ch;
+    }
+  }
+  return result;
 }
 
 export function getOutputDir(projectId: string): string {
@@ -206,7 +307,7 @@ export function getOutputDir(projectId: string): string {
 // ── System prompt ─────────────────────────────────────────────────────────────
 const AANYA_SYSTEM_PROMPT = `\
 You are a senior Next.js 16.2 + TypeScript + Tailwind CSS + shadcn/ui frontend engineer.
-Generate COMPLETE, runnable, production-quality code. No TODOs, no placeholder comments.
+Generate COMPLETE, fully working code. No TODOs, no placeholder comments, no incomplete functions.
 
 Stack (non-negotiable):
 - Next.js 16.2 App Router (NOT Pages Router)
@@ -216,14 +317,24 @@ Stack (non-negotiable):
 - Clerk for auth: ClerkProvider in layout, useUser/useAuth in client components
 - Data fetching: fetch() in Server Components, useState/useEffect in Client Components
 
-Clerk patterns:
+Clerk patterns — READ CAREFULLY:
+  // EVERY file with hooks MUST start with: "use client"
   // Layout: <ClerkProvider><SignedIn>...</SignedIn><SignedOut>...</SignedOut></ClerkProvider>
-  // Client: const { userId } = useAuth(); const { user } = useUser();
-  // Server: import { auth } from "@clerk/nextjs/server"; const { userId } = await auth();
-  // Redirect unauthenticated: import { redirect } from "next/navigation"; if (!userId) redirect("/sign-in");
+  // Client hooks: const { getToken, isLoaded, isSignedIn } = useAuth(); const { user } = useUser();
+  // Server components: import { auth } from "@clerk/nextjs/server"; const { userId } = await auth();
+  // Client redirect: NEVER use redirect() — use useRouter() + router.push('/sign-in') instead
+  // Server redirect: import { redirect } from "next/navigation"; if (!userId) redirect("/sign-in");
 
-API calls: fetch from NEXT_PUBLIC_API_URL env (e.g. http://localhost:3001).
-Add Authorization header with Clerk token for protected endpoints.
+API calls from client components — EXACT PATTERN (no exceptions):
+  const { getToken } = useAuth();
+  const token = await getToken();  // ALWAYS use getToken() — NEVER use privateMetadata
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
+  const res = await fetch(apiUrl + "/api/v1/tasks", {
+    method: "GET",
+    headers: { Authorization: "Bearer " + token },
+  });
+  // GET requests: NEVER include a body — put filters in URL query params
+  // e.g. apiUrl + "/api/v1/tasks?status=pending&page=1&perPage=20"
 
 UI quality rules (D18 live eval criteria):
 - Design must feel like a coherent whole — not AI slop (no purple gradients over white cards)
@@ -231,6 +342,10 @@ UI quality rules (D18 live eval criteria):
 - Functional AND beautiful — users can understand what to do without guessing
 - Dark mode support via Tailwind dark: classes
 
-Output ONLY: { "files": [{ "path": "app/...", "content": "..." }] }
+REQUIRED output format — use this EXACTLY, no JSON, no markdown:
+===FILE: app/page.tsx===
+<complete content>
+===ENDFILE===
+Repeat for every file. No JSON. No markdown. Only ===FILE: path=== blocks.
 Every file must be 100% complete. No shortcuts.
 `;

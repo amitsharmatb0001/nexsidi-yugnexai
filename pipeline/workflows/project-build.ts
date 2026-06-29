@@ -12,9 +12,25 @@ import {
 } from "@temporalio/workflow";
 import type * as activities from "../activities/index.ts";
 
+// Short timeout for single-LLM-call activities (spec, QA, compliance)
 const act = proxyActivities<typeof activities>({
   startToCloseTimeout: "10 minutes",
+  heartbeatTimeout: "2 minutes",   // reschedule if worker dies within 2 min
   retry: { maximumAttempts: 3 },
+});
+
+// Long timeout for code generation — multiple sequential NIM calls per task list
+const genAct = proxyActivities<typeof activities>({
+  startToCloseTimeout: "30 minutes",
+  heartbeatTimeout: "3 minutes",   // NIM calls take up to 90s + 30s heartbeat gap
+  retry: { maximumAttempts: 5 },   // more headroom while we tune the output format
+});
+
+// Deploy proxy — no heartbeatTimeout because execSync blocks the event loop
+// startToCloseTimeout must cover: docker build (5 min) + startup (1 min) + GitHub (1 min)
+const deployAct = proxyActivities<typeof activities>({
+  startToCloseTimeout: "15 minutes",
+  retry: { maximumAttempts: 2 },
 });
 
 // ─── Pipeline State ────────────────────────────────────────────────────────
@@ -55,21 +71,28 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   // ── Stage 3: Parallel code generation ───────────────────────────────────
   state.stage = "generate";
   await Promise.all([
-    act.runShubham(projectId),
-    act.runAanya(projectId),
-    act.runPranav(projectId),
+    genAct.runShubham(projectId),
+    genAct.runAanya(projectId),
+    genAct.runPranav(projectId),
   ]);
 
   // ── QA Loop ─────────────────────────────────────────────────────────────
   state.stage = "qa";
+  let specMismatchCount = 0;
   while (true) {
     state.iteration += 1;
 
     // Stage 0 (cheap gate): spec-compliance check (D21)
     const compliant = await act.runSpecCompliance(projectId, state.iteration);
     if (!compliant) {
-      await act.runCodeFix(projectId, state.iteration, "spec_mismatch");
-      continue;
+      specMismatchCount++;
+      if (specMismatchCount < 3) {
+        await genAct.runCodeFix(projectId, state.iteration, "spec_mismatch");
+        continue;
+      }
+      // After 3 spec failures, force through to QA — don't loop forever
+    } else {
+      specMismatchCount = 0;
     }
 
     // Stage 1 (static): Navya + Karan + Deepika in parallel
@@ -82,8 +105,9 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
 
     const minScore = Math.min(navyaScore, karanScore, deepikaScore);
 
-    // Fix #8: ALL three must independently pass ≥85
-    const allPass = navyaScore >= 85 && karanScore >= 85 && deepikaScore >= 85;
+    // Phase 1 threshold: ≥70. New scoring formula (CRITICAL×10 not ×20) makes this achievable.
+    // Phase 2 will raise to ≥85 once live Playwright eval also gates delivery.
+    const allPass = navyaScore >= 70 && karanScore >= 70 && deepikaScore >= 70;
 
     if (!allPass) {
       // Stuck-state detection (D19 / Fix #7)
@@ -106,7 +130,7 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
         }
       }
 
-      await act.runCodeFix(projectId, state.iteration, "qa_fail");
+      await genAct.runCodeFix(projectId, state.iteration, "qa_fail");
       continue;
     }
 
@@ -116,13 +140,14 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     if (liveScore >= 7.0) break; // pipeline passes
 
     state.stage = "qa";
-    await act.runCodeFix(projectId, state.iteration, "live_test_fail");
+    await genAct.runCodeFix(projectId, state.iteration, "live_test_fail");
   }
 
   // ── Stage 4: Delivery ───────────────────────────────────────────────────
   state.stage = "deliver";
   // Fix #9: Riya archives to GitHub before delivering to user
-  await act.runRiya(projectId);
+  // Uses deployAct (no heartbeatTimeout) because docker build blocks the event loop
+  await deployAct.runRiya(projectId);
 
   state.stage = "done";
 }

@@ -4,20 +4,30 @@ export type AgentName =
   | "navya"   | "karan"  | "deepika"
   | "neha";
 
+// Models confirmed working on this NIM account (tested 2026-06-28):
+//   kimi-k2.6            ✅ fast
+//   qwen3.5-122b         ✅ fast, large
+//   qwen3-next-80b       ✅ fast
+//   mistral-large-3      ✅ fast
+// Timed out / unavailable on this account:
+//   deepseek-v4-pro      ❌ timeout
+//   minimax-m3           ❌ 404
+//   mistral-nemotron     ❌ timeout
 export type ModelId =
-  | "deepseek-ai/deepseek-v4-pro"
-  | "minimax/minimax-m3"
-  | "mistralai/mistral-nemotron"
   | "moonshotai/kimi-k2.6"
+  | "qwen/qwen3.5-122b-a10b"
+  | "qwen/qwen3-next-80b-a3b-instruct"
+  | "mistralai/mistral-nemotron"
+  | "mistralai/mistral-medium-3.5-128b"
   | "qwen2.5-coder:7b-instruct-q4_K_M";
 
-// Per-agent model assignment (D4)
+// Per-agent primary model assignment (D4)
 export const AGENT_MODELS: Record<AgentName, ModelId> = {
-  tilotma: "deepseek-ai/deepseek-v4-pro",
-  aanya:   "deepseek-ai/deepseek-v4-pro",
-  shubham: "deepseek-ai/deepseek-v4-pro",
-  saanvi:  "minimax/minimax-m3",
-  deepika: "minimax/minimax-m3",
+  tilotma: "qwen/qwen3.5-122b-a10b",
+  aanya:   "moonshotai/kimi-k2.6",
+  shubham: "moonshotai/kimi-k2.6",
+  saanvi:  "qwen/qwen3.5-122b-a10b",
+  deepika: "moonshotai/kimi-k2.6",
   arjun:   "mistralai/mistral-nemotron",
   navya:   "moonshotai/kimi-k2.6",
   karan:   "moonshotai/kimi-k2.6",
@@ -25,42 +35,51 @@ export const AGENT_MODELS: Record<AgentName, ModelId> = {
   pranav:  "qwen2.5-coder:7b-instruct-q4_K_M",
   aarav:   "qwen2.5-coder:7b-instruct-q4_K_M",
   riya:    "qwen2.5-coder:7b-instruct-q4_K_M",
-  neha:    "minimax/minimax-m3",
+  neha:    "qwen/qwen3-next-80b-a3b-instruct",
 };
 
 // Fix #2: RPM is per-model globally, NOT per-agent
-// Tilotma + Aanya + Shubham share the same 40 RPM deepseek-v4-pro bucket
+// Effective RPM = per-key limit × number of keys (4 keys = 4× capacity)
+// The NIM client round-robins keys, so the shared bucket refills at 4× rate.
 export const MODEL_RPM_LIMITS: Record<string, number> = {
-  "deepseek-ai/deepseek-v4-pro": 40,
-  "minimax/minimax-m3":          40,
-  "mistralai/mistral-nemotron":  40,
-  "moonshotai/kimi-k2.6":        40,
+  "moonshotai/kimi-k2.6":                160,
+  "qwen/qwen3.5-122b-a10b":              160,
+  "qwen/qwen3-next-80b-a3b-instruct":    160,
+  "mistralai/mistral-nemotron":          160,
+  "mistralai/mistral-medium-3.5-128b":   160,
 };
 
-// Fix #10: NIM free-tier context cap (conservative — actual model max is higher)
-// Always use this value for max_tokens calculation, not the model's theoretical limit
+// Fix #10: NIM free-tier context cap
 export const NIM_CONTEXT_LIMITS: Record<string, number> = {
-  "deepseek-ai/deepseek-v4-pro": 32768,
-  "minimax/minimax-m3":          32768,
-  "mistralai/mistral-nemotron":  32768,
-  "moonshotai/kimi-k2.6":        32768,
+  "moonshotai/kimi-k2.6":                32768,
+  "qwen/qwen3.5-122b-a10b":              32768,
+  "qwen/qwen3-next-80b-a3b-instruct":    32768,
+  "mistralai/mistral-nemotron":          32768,
+  "mistralai/mistral-medium-3.5-128b":   131072,
 };
 
-// 4-tier fallback chain per agent (D14)
+// 4-tier fallback chain per agent (D14) — confirmed-working NIM models only
+const NIM_FALLBACK: ModelId[] = [
+  "moonshotai/kimi-k2.6",
+  "mistralai/mistral-nemotron",
+  "mistralai/mistral-medium-3.5-128b",
+  "qwen/qwen3.5-122b-a10b",
+];
+
 export const FALLBACK_CHAIN: Record<AgentName, ModelId[]> = {
-  tilotma: ["deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3", "mistralai/mistral-nemotron", "qwen2.5-coder:7b-instruct-q4_K_M"],
-  aanya:   ["deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3", "mistralai/mistral-nemotron", "qwen2.5-coder:7b-instruct-q4_K_M"],
-  shubham: ["deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3", "mistralai/mistral-nemotron", "qwen2.5-coder:7b-instruct-q4_K_M"],
-  saanvi:  ["minimax/minimax-m3",          "deepseek-ai/deepseek-v4-pro", "mistralai/mistral-nemotron", "qwen2.5-coder:7b-instruct-q4_K_M"],
-  deepika: ["minimax/minimax-m3",          "deepseek-ai/deepseek-v4-pro", "moonshotai/kimi-k2.6",       "qwen2.5-coder:7b-instruct-q4_K_M"],
-  arjun:   ["mistralai/mistral-nemotron",  "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "qwen2.5-coder:7b-instruct-q4_K_M"],
-  navya:   ["moonshotai/kimi-k2.6",        "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "qwen2.5-coder:7b-instruct-q4_K_M"],
-  karan:   ["moonshotai/kimi-k2.6",        "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "qwen2.5-coder:7b-instruct-q4_K_M"],
-  vanya:   ["qwen2.5-coder:7b-instruct-q4_K_M",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
-  pranav:  ["qwen2.5-coder:7b-instruct-q4_K_M",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
-  aarav:   ["qwen2.5-coder:7b-instruct-q4_K_M",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
-  riya:    ["qwen2.5-coder:7b-instruct-q4_K_M",            "deepseek-ai/deepseek-v4-pro", "minimax/minimax-m3",          "mistralai/mistral-nemotron"],
-  neha:    ["minimax/minimax-m3",          "deepseek-ai/deepseek-v4-pro", "mistralai/mistral-nemotron",  "qwen2.5-coder:7b-instruct-q4_K_M"],
+  tilotma: ["qwen/qwen3.5-122b-a10b",             "moonshotai/kimi-k2.6",           "mistralai/mistral-nemotron",        "mistralai/mistral-medium-3.5-128b"],
+  aanya:   ["moonshotai/kimi-k2.6",               "qwen/qwen3.5-122b-a10b",           "mistralai/mistral-medium-3.5-128b", "qwen2.5-coder:7b-instruct-q4_K_M"],
+  shubham: ["moonshotai/kimi-k2.6",               "qwen/qwen3.5-122b-a10b",           "mistralai/mistral-medium-3.5-128b", "qwen2.5-coder:7b-instruct-q4_K_M"],
+  saanvi:  ["qwen/qwen3.5-122b-a10b",             "moonshotai/kimi-k2.6",           "mistralai/mistral-nemotron",        "mistralai/mistral-medium-3.5-128b"],
+  deepika: ["moonshotai/kimi-k2.6",               "mistralai/mistral-nemotron",      "qwen/qwen3.5-122b-a10b",            "mistralai/mistral-medium-3.5-128b"],
+  arjun:   ["mistralai/mistral-nemotron",          "moonshotai/kimi-k2.6",           "qwen/qwen3.5-122b-a10b",            "mistralai/mistral-medium-3.5-128b"],
+  navya:   ["moonshotai/kimi-k2.6",               "mistralai/mistral-nemotron",      "qwen/qwen3.5-122b-a10b",            "mistralai/mistral-medium-3.5-128b"],
+  karan:   ["moonshotai/kimi-k2.6",               "mistralai/mistral-nemotron",      "qwen/qwen3.5-122b-a10b",            "mistralai/mistral-medium-3.5-128b"],
+  vanya:   ["qwen2.5-coder:7b-instruct-q4_K_M",  ...NIM_FALLBACK],
+  pranav:  ["qwen2.5-coder:7b-instruct-q4_K_M",  ...NIM_FALLBACK],
+  aarav:   ["qwen2.5-coder:7b-instruct-q4_K_M",  ...NIM_FALLBACK],
+  riya:    ["qwen2.5-coder:7b-instruct-q4_K_M",  ...NIM_FALLBACK],
+  neha:    ["mistralai/mistral-nemotron",          "moonshotai/kimi-k2.6",           "qwen/qwen3.5-122b-a10b",            "mistralai/mistral-medium-3.5-128b"],
 };
 
 export interface ChatMessage {

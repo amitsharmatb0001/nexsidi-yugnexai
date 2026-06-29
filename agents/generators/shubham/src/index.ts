@@ -36,17 +36,23 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     }
   }
 
-  // Static config files — no LLM needed
+  // Static config files always overwrite LLM output — Dockerfile/tsconfig/package.json
+  // must be structurally correct, never markdown-contaminated from LLM output.
   for (const { path: relPath, content } of buildStaticFiles(plan)) {
-    if (!filesWritten.includes(relPath)) {
-      const absPath = join(outputDir, relPath);
-      mkdirSync(dirname(absPath), { recursive: true });
-      writeFileSync(absPath, content, "utf-8");
-      filesWritten.push(relPath);
-    }
+    const absPath = join(outputDir, relPath);
+    mkdirSync(dirname(absPath), { recursive: true });
+    writeFileSync(absPath, content, "utf-8");
+    if (!filesWritten.includes(relPath)) filesWritten.push(relPath);
   }
 
   return { success: errors.length === 0, projectId: plan.projectId, outputDir, filesWritten, errors };
+}
+
+function isRefusal(text: string): boolean {
+  const t = text.trim().slice(0, 120).toLowerCase();
+  return t.startsWith("i'm sorry") || t.startsWith("i am sorry") ||
+    t.startsWith("i can't") || t.startsWith("i cannot") ||
+    t.startsWith("as an ai language model") || t.startsWith("i apologize");
 }
 
 async function generateTask(
@@ -62,7 +68,33 @@ async function generateTask(
     ],
     apiKey,
   );
-  return parseFileOutput(content);
+
+  if (isRefusal(content)) {
+    throw new Error(`Model refused task "${task.description}" — retrying with next model in chain`);
+  }
+
+  try {
+    return parseFileOutput(content);
+  } catch {
+    // Retry once with explicit format reminder
+    const { content: fixed } = await agentChat(
+      "shubham",
+      [
+        { role: "system", content: SHUBHAM_SYSTEM_PROMPT },
+        { role: "user", content: buildPrompt(plan, task) },
+        { role: "assistant", content: content },
+        {
+          role: "user",
+          content: `Your response was not in the required format. You MUST use ===FILE: path=== ... ===ENDFILE=== delimiters.\n` +
+            `FILES TO PRODUCE: ${task.outputFiles.join(", ")}\n` +
+            `Rewrite your response now using ONLY ===FILE: path=== blocks. No prose, no markdown, no JSON.`,
+        },
+      ],
+      apiKey,
+    );
+    if (isRefusal(fixed)) throw new Error(`Model refused correction for task "${task.description}"`);
+    return parseFileOutput(fixed);
+  }
 }
 
 function buildPrompt(plan: BuildPlan, task: GeneratorTask): string {
@@ -79,7 +111,13 @@ ${JSON.stringify(plan.apiContract, null, 2)}
 ${JSON.stringify(plan.dbSchema, null, 2)}
 
 Generate COMPLETE, production-ready code. Every file must be fully implemented.
-Output ONLY JSON: { "files": [{ "path": "...", "content": "..." }] }`;
+REQUIRED output format (no other format accepted):
+===FILE: src/index.ts===
+<complete file content here>
+===ENDFILE===
+===FILE: src/app.ts===
+<complete file content here>
+===ENDFILE===`;
 }
 
 // ── Static config files ───────────────────────────────────────────────────────
@@ -141,14 +179,14 @@ function buildStaticFiles(plan: BuildPlan): Array<{ path: string; content: strin
       content: `FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 COPY . .
 RUN npm run build
 
 FROM node:22-alpine
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 COPY --from=builder /app/dist ./dist
 EXPOSE 3001
 CMD ["node", "dist/index.js"]
@@ -157,17 +195,73 @@ CMD ["node", "dist/index.js"]
   ];
 }
 
+// Strip markdown code fences that some models wrap around file content.
+// e.g. ```typescript\n...\n``` → ...
+function stripFences(s: string): string {
+  return s.replace(/^```[^\n]*\n/, "").replace(/\n```\s*$/, "");
+}
+
 // ── Parse {"files":[...]} output ─────────────────────────────────────────────
+// Primary: ===FILE: path=== ... ===ENDFILE=== delimiter format (no JSON escaping needed).
+// JSON fallback handles models that still output the old format.
 function parseFileOutput(text: string): Array<{ path: string; content: string }> {
+  // Primary: ===FILE: path=== or === FILE: path === (with optional spaces inside ===)
+  const delimitedBlocks = [...text.matchAll(/={3}\s*FILE:\s*([^\n=][^\n]*?)\s*={3}\s*\n([\s\S]*?)={3}\s*ENDFILE\s*={3}/g)];
+  if (delimitedBlocks.length > 0) {
+    return delimitedBlocks.map((m) => ({ path: m[1]!.trim(), content: stripFences(m[2] ?? "") }));
+  }
+
+  // Secondary: <<<FILE: path>>> ... <<<END>>> (old fence format)
+  const fenceBlocks = [...text.matchAll(/<<<FILE:\s*([^\n>]+)>>>\s*([\s\S]*?)<<<END>>>/g)];
+  if (fenceBlocks.length > 0) return fenceBlocks.map((m) => ({ path: m[1]!.trim(), content: stripFences(m[2] ?? "") }));
+
+  // Tertiary: JSON (strip markdown fence, then sanitize and parse)
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  const jsonStr = fenceMatch?.[1] ?? (() => {
+  const raw = fenceMatch?.[1] ?? (() => {
     const s = text.indexOf("{");
     const e = text.lastIndexOf("}");
     return s !== -1 && e > s ? text.slice(s, e + 1) : text;
   })();
-  const parsed = JSON.parse(jsonStr) as { files?: Array<{ path: string; content: string }> };
-  if (!Array.isArray(parsed.files)) throw new Error("LLM output missing `files` array");
-  return parsed.files.filter((f) => f.path && typeof f.content === "string");
+  try {
+    const p = JSON.parse(raw) as { files?: Array<{ path: string; content: string }> };
+    if (Array.isArray(p.files)) return p.files.filter((f) => f.path && typeof f.content === "string");
+  } catch { /* fall through */ }
+  try {
+    const p = JSON.parse(sanitizeJsonStrings(raw)) as { files?: Array<{ path: string; content: string }> };
+    if (Array.isArray(p.files)) return p.files.filter((f) => f.path && typeof f.content === "string");
+  } catch { /* fall through */ }
+
+  throw new Error("LLM output did not match any parseable format (===FILE===, <<<FILE>>>, or JSON)");
+}
+
+function sanitizeJsonStrings(json: string): string {
+  let inString = false;
+  let result = "";
+  for (let i = 0; i < json.length; i++) {
+    const ch = json[i]!;
+    if (inString) {
+      if (ch === "\\") {
+        const next = json[i + 1];
+        if (next === "\n" || next === "\r") {
+          result += "\\n";
+          if (next === "\r" && json[i + 2] === "\n") i++;
+          i++;
+          continue;
+        }
+        result += ch + (next ?? "");
+        i++;
+        continue;
+      }
+      if (ch === '"') { inString = false; result += ch; continue; }
+      if (ch === "\n") { result += "\\n"; continue; }
+      if (ch === "\r") { result += "\\r"; continue; }
+      result += ch;
+    } else {
+      if (ch === '"') inString = true;
+      result += ch;
+    }
+  }
+  return result;
 }
 
 export function getOutputDir(projectId: string): string {
@@ -186,17 +280,39 @@ Stack (non-negotiable):
 - Security: helmet() for headers, cors({ origin: "http://localhost:3000", credentials: true })
 - Error handling: every async handler in try/catch; return { error: string } on failure
 
-Clerk pattern:
+Auth pattern — FOLLOW EXACTLY:
+  // In src/index.ts — apply globally FIRST:
   import { clerkMiddleware, requireAuth, getAuth } from "@clerk/express";
-  const { userId } = getAuth(req); // in protected routes
+  app.use(clerkMiddleware());
+  // On every protected router — apply requireAuth() as middleware:
+  router.use(requireAuth());
+  // In route handlers — ALWAYS check userId:
+  const { userId } = getAuth(req);
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+  // IDOR prevention — ALWAYS filter by userId in queries:
+  // GET tasks: WHERE user_id = $1 (pass userId)
+  // GET/PUT/DELETE single task: WHERE id = $1 AND user_id = $2 (pass taskId, userId)
 
-DB pattern:
+DB pattern — parameterized queries only (no string interpolation):
   import { Pool } from "pg";
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  // ✅ const { rows } = await pool.query("SELECT * FROM tasks WHERE user_id = $1", [userId]);
+  // NEVER interpolate user input into SQL strings — use $1, $2 placeholders always
+
+Input validation:
+  // Always validate and parse query params before use:
+  const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+  const perPage = Math.min(100, Math.max(1, parseInt(req.query.perPage as string, 10) || 20));
+  const validStatuses = ["pending", "in_progress", "done"] as const;
+  const status = validStatuses.includes(req.query.status as any) ? req.query.status : undefined;
 
 IDs: crypto.randomUUID() for new record IDs.
 Timestamps: use SQL DEFAULT now() — don't set in app code.
 
-Output ONLY: { "files": [{ "path": "src/...", "content": "..." }] }
+REQUIRED output format — use this EXACTLY, no JSON, no markdown:
+===FILE: src/index.ts===
+<complete content>
+===ENDFILE===
+Repeat for every file. No JSON. No markdown. Only ===FILE: path=== blocks.
 Every file must be 100% complete. No shortcuts.
 `;
