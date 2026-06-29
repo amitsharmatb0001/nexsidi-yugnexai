@@ -1,0 +1,414 @@
+TASK: Task management components and pages
+
+RAW OUTPUT:
+===FILE: app/tasks/page.tsx===
+```tsx
+import { useEffect, useState } from 'react';
+import { ClerkProvider, useUser, SignedIn, SignedOut } from '@clerk/nextjs';
+import { TaskStatus } from '@/shared-types';
+import StatusFilter from '@/components/StatusFilter';
+import TaskItem from '@/components/TaskItem';
+
+const fetchTasks = async (status?: TaskStatus, page = 1, perPage = 10) => {
+  const url = new URL(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/tasks`, window.location.origin);
+  url.searchParams.append('page', String(page));
+  url.searchParams.append('perPage', String(perPage));
+  if (status) url.searchParams.append('status', status);
+
+  const res = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${await auth().getToken()}`,
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error((await res.json())?.message || 'Failed to fetch tasks');
+  }
+
+  return (await res.json()) as PaginatedResponse<Task>;
+};
+
+const TasksPage = () => {
+  const { user } = useUser();
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [statusFilter, setStatusFilter] = useState<TaskStatus | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const fetchTaskData = async () => {
+      try {
+        const data = await fetchTasks(statusFilter);
+        setTasks(data.items);
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    fetchTaskData();
+  }, [statusFilter, user]);
+
+  return (
+    <SignedIn>
+      <div className="p-4">
+        <StatusFilter onStatusChange={(status) => setStatusFilter(status)} />
+        <ul className="mt-4 space-y-2">
+          {tasks.map((task) => (
+            <TaskItem key={task.id} task={task} />
+          ))}
+        </ul>
+      </div>
+    </SignedIn>
+  );
+};
+
+export default TasksPage;
+```
+
+===FILE: app/tasks/columns.tsx===
+```tsx
+import { Task } from '@/shared-types';
+
+export const columns = [
+  {
+    title: 'Title',
+    accessorKey: 'title',
+  },
+  {
+    title: 'Description',
+    accessorKey: 'description',
+  },
+  {
+    title: 'Due Date',
+    accessorKey: 'dueDate',
+  },
+  {
+    title: 'Status',
+    accessorKey: 'isCompleted',
+    cell: ({ row }) => (
+      <span
+        className={`rounded-full px-2 py-1 ${
+          (row.original.isCompleted ? 'bg-green-500' : 'bg-red-500') + ' text-white'
+        }`}
+      >
+        {row.original.isCompleted ? 'Completed' : 'Pending'}
+      </span>
+    ),
+  },
+];
+```
+
+===FILE: app/tasks/create/page.tsx===
+```tsx
+import { ClerkProvider, useUser, SignedIn } from '@clerk/nextjs';
+import TaskForm from '@/components/TaskForm';
+
+const CreateTaskPage = () => {
+  const { user } = useUser();
+
+  return (
+    <SignedIn>
+      <div className="p-4">
+        <h2>Create Task</h2>
+        <TaskForm onSubmit={(task) => console.log('Created task:', task)} />
+      </div>
+    </SignedIn>
+  );
+};
+
+export default CreateTaskPage;
+```
+
+===FILE: app/tasks/[id]/page.tsx===
+```tsx
+import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
+import { ClerkProvider, useUser, SignedIn } from '@clerk/nextjs';
+import TaskForm from '@/components/TaskForm';
+
+const fetchTask = async (taskId: string) => {
+  const url = new URL(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/tasks/${taskId}`, window.location.origin);
+
+  const res = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${await auth().getToken()}`,
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error((await res.json())?.message || 'Failed to fetch task');
+  }
+
+  return (await res.json()) as Task;
+};
+
+const ViewTaskPage = () => {
+  const { id } = useParams();
+  const [task, setTask] = useState<Task | null>(null);
+
+  useEffect(() => {
+    if (!id) return;
+
+    const fetchTaskData = async () => {
+      try {
+        const data = await fetchTask(id);
+        setTask(data);
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    fetchTaskData();
+  }, [id]);
+
+  if (!task) return <div>Loading...</div>;
+
+  return (
+    <SignedIn>
+      <div className="p-4">
+        <h2>View Task</h2>
+        <TaskForm task={task} onSubmit={(updatedTask) => console.log('Updated task:', updatedTask)} />
+      </div>
+    </SignedIn>
+  );
+};
+
+export default ViewTaskPage;
+```
+
+===FILE: app/tasks/[id]/edit/page.tsx===
+```tsx
+import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
+import { ClerkProvider, useUser, SignedIn } from '@clerk/nextjs';
+import TaskForm from '@/components/TaskForm';
+
+const fetchTask = async (taskId: string) => {
+  const url = new URL(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/tasks/${taskId}`, window.location.origin);
+
+  const res = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${await auth().getToken()}`,
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error((await res.json())?.message || 'Failed to fetch task');
+  }
+
+  return (await res.json()) as Task;
+};
+
+const EditTaskPage = () => {
+  const { id } = useParams();
+  const [task, setTask] = useState<Task | null>(null);
+
+  useEffect(() => {
+    if (!id) return;
+
+    const fetchTaskData = async () => {
+      try {
+        const data = await fetchTask(id);
+        setTask(data);
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
+    fetchTaskData();
+  }, [id]);
+
+  if (!task) return <div>Loading...</div>;
+
+  return (
+    <SignedIn>
+      <div className="p-4">
+        <h2>Edit Task</h2>
+        <TaskForm task={task} onSubmit={(updatedTask) => console.log('Updated task:', updatedTask)} />
+      </div>
+    </SignedIn>
+  );
+};
+
+export default EditTaskPage;
+```
+
+===FILE: components/TaskItem.tsx===
+```tsx
+import { Task } from '@/shared-types';
+
+const TaskItem = ({ task }: { task: Task }) => (
+  <li className="bg-white dark:bg-gray-800 shadow-md rounded-lg overflow-hidden">
+    <div className="p-4 flex justify-between items-center">
+      <h3 className="text-lg font-semibold">{task.title}</h3>
+      <span
+        className={`rounded-full px-2 py-1 ${
+          (task.isCompleted ? 'bg-green-500' : 'bg-red-500') + ' text-white'
+        }`}
+      >
+        {task.isCompleted ? 'Completed' : 'Pending'}
+      </span>
+    </div>
+  </li>
+);
+
+export default TaskItem;
+```
+
+===FILE: components/TaskForm.tsx===
+```tsx
+import { useForm, SubmitHandler } from 'react-hook-form';
+import { useAuth } from '@clerk/nextjs';
+import { Task, CreateTaskRequest, UpdateTaskRequest } from '@/shared-types';
+
+interface TaskFormProps {
+  task?: Task;
+  onSubmit: (task: Task) => void;
+}
+
+const TaskForm = ({ task = null, onSubmit }: TaskFormProps) => {
+  const { register, handleSubmit, reset, setValue } = useForm<CreateTaskRequest | UpdateTaskRequest>({
+    defaultValues: {
+      title: task?.title || '',
+      description: task?.description || '',
+      dueDate: task?.dueDate ? task.dueDate.toISOString().split('T')[0] : undefined,
+    },
+  });
+
+  useEffect(() => {
+    if (task) {
+      setValue('title', task.title);
+      setValue('description', task.description || '');
+      setValue('dueDate', task.dueDate ? task.dueDate.toISOString().split('T')[0] : undefined);
+    } else {
+      reset();
+    }
+  }, [reset, setValue, task]);
+
+  const { userId } = useAuth();
+
+  const onSubmitHandler: SubmitHandler<CreateTaskRequest | UpdateTaskRequest> = async (data) => {
+    try {
+      let url = `${process.env.NEXT_PUBLIC_API_URL}/api/v1/tasks`;
+      if (task) {
+        url += `/${task.id}`;
+        data = { ...data, isCompleted: task.isCompleted };
+      } else {
+        data = { ...data, userId };
+      }
+
+      const res = await fetch(url, {
+        method: task ? 'PUT' : 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${await auth().getToken()}`,
+        },
+        body: JSON.stringify(data),
+      });
+
+      if (!res.ok) {
+        throw new Error((await res.json())?.message || 'Failed to submit task');
+      }
+
+      onSubmit(await res.json());
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit(onSubmitHandler)}>
+      <div className="mb-4">
+        <label htmlFor="title" className="block text-sm font-medium text-gray-700 dark:text-white">
+          Title
+        </label>
+        <input
+          type="text"
+          id="title"
+          {...register('title', { required: 'Title is required' })}
+          className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+        />
+      </div>
+      <div className="mb-4">
+        <label htmlFor="description" className="block text-sm font-medium text-gray-700 dark:text-white">
+          Description
+        </label>
+        <textarea
+          id="description"
+          {...register('description')}
+          className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+        />
+      </div>
+      <div className="mb-4">
+        <label htmlFor="dueDate" className="block text-sm font-medium text-gray-700 dark:text-white">
+          Due Date
+        </label>
+        <input
+          type="date"
+          id="dueDate"
+          {...register('dueDate')}
+          className="mt-1 block w-full border-gray-300 rounded-md shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+        />
+      </div>
+      <button type="submit" className="bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700">
+        Submit
+      </button>
+    </form>
+  );
+};
+
+export default TaskForm;
+```
+
+===FILE: components/StatusFilter.tsx===
+```tsx
+import { useState } from 'react';
+
+interface StatusFilterProps {
+  onStatusChange: (status: TaskStatus | null) => void;
+}
+
+const StatusFilter = ({ onStatusChange }: StatusFilterProps) => {
+  const [selectedStatus, setSelectedStatus] = useState<TaskStatus | null>(null);
+
+  return (
+    <div className="flex space-x-4">
+      <button
+        onClick={() => {
+          setSelectedStatus(null);
+          onStatusChange(null);
+        }}
+        className={`px-2 py-1 rounded-md border ${
+          selectedStatus === null ? 'bg-indigo-600 text-white' : 'border-gray-300 text-gray-700'
+        }`}
+      >
+        All
+      </button>
+      <button
+        onClick={() => {
+          setSelectedStatus(TaskStatus.PENDING);
+          onStatusChange(TaskStatus.PENDING);
+        }}
+        className={`px-2 py-1 rounded-md border ${
+          selectedStatus === TaskStatus.PENDING ? 'bg-indigo-600 text-white' : 'border-gray-300 text-gray-700'
+        }`}
+      >
+        Pending
+      </button>
+      <button
+        onClick={() => {
+          setSelectedStatus(TaskStatus.COMPLETED);
+          onStatusChange(TaskStatus.COMPLETED);
+        }}
+        className={`px-2 py-1 rounded-md border ${
+          selectedStatus === TaskStatus.COMPLETED ? 'bg-indigo-600 text-white' : 'border-gray-300 text-gray-700'
+        }`}
+      >
+        Completed
+      </button>
+    </div>
+  );
+};
+
+export default StatusFilter;
+```

@@ -1,0 +1,230 @@
+{
+  "projectId": "test9004",
+  "name": "TaskMaster Pro",
+  "description": "A comprehensive task management application allowing users to register, create tasks with specific due dates, and track completion status. Users can organize their workload with a simple, intuitive interface that synchronizes across devices.",
+  "appType": "web",
+  "features": [
+    {
+      "name": "User Authentication",
+      "description": "Secure sign-up and sign-in powered by Clerk integration.",
+      "userStories": [
+        "As a user, I can sign up using my email or social account via Clerk.",
+        "As a user, I can log in securely to access my task list."
+      ]
+    },
+    {
+      "name": "Task Management",
+      "description": "Add, edit, delete, and complete tasks with due date tracking.",
+      "userStories": [
+        "As a user, I can create a new task with a title, description, and due date.",
+        "As a user, I can mark a task as complete to update its status.",
+        "As a user, I can edit the details or due date of an existing task.",
+        "As a user, I can delete a task I no longer need."
+      ]
+    },
+    {
+      "name": "Task Filtering",
+      "description": "View tasks based on completion status or due date urgency.",
+      "userStories": [
+        "As a user, I can view all my active tasks sorted by due date.",
+        "As a user, I can filter tasks by 'Completed' or 'Pending' status."
+      ]
+    }
+  ],
+  "auth": {
+    "provider": "clerk",
+    "features": [
+      "sign-in",
+      "sign-up"
+    ]
+  },
+  "apiEndpoints": [
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/register",
+      "description": "Register a new user via Clerk webhook or direct interaction.",
+      "auth": false,
+      "requestBody": {
+        "email": "string",
+        "clerkId": "string"
+      },
+      "responseBody": {
+        "success": "boolean",
+        "userId": "uuid"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/tasks",
+      "description": "Retrieve all tasks for the authenticated user with optional filtering.",
+      "auth": true,
+      "requestBody": null,
+      "responseBody": [
+        {
+          "id": "uuid",
+          "title": "string",
+          "description": "string",
+          "due_date": "timestamp",
+          "is_completed": "boolean",
+          "created_at": "timestamp"
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/tasks",
+      "description": "Create a new task with a title, optional description, and due date.",
+      "auth": true,
+      "requestBody": {
+        "title": "string",
+        "description": "string",
+        "due_date": "timestamp"
+      },
+      "responseBody": {
+        "id": "uuid",
+        "title": "string",
+        "due_date": "timestamp",
+        "is_completed": "boolean"
+      }
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/tasks/:id",
+      "description": "Update an existing task's title, description, or due date.",
+      "auth": true,
+      "requestBody": {
+        "title": "string",
+        "description": "string",
+        "due_date": "timestamp",
+        "is_completed": "boolean"
+      },
+      "responseBody": {
+        "id": "uuid",
+        "title": "string",
+        "due_date": "timestamp",
+        "is_completed": "boolean"
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/tasks/:id",
+      "description": "Permanently delete a specific task.",
+      "auth": true,
+      "requestBody": null,
+      "responseBody": {
+        "success": "boolean"
+      }
+    }
+  ],
+  "dbTables": [
+    {
+      "name": "users",
+      "fields": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "primaryKey": true,
+          "default": "gen_random_uuid()"
+        },
+        {
+          "name": "clerk_id",
+          "type": "text",
+          "nullable": false,
+          "primaryKey": false,
+          "unique": true
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "nullable": false,
+          "primaryKey": false,
+          "unique": true
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "nullable": false,
+          "primaryKey": false,
+          "default": "now()"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "nullable": false,
+          "primaryKey": false,
+          "default": "now()"
+        }
+      ]
+    },
+    {
+      "name": "tasks",
+      "fields": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "nullable": false,
+          "primaryKey": true,
+          "default": "gen_random_uuid()"
+        },
+        {
+          "name": "user_id",
+          "type": "uuid",
+          "nullable": false,
+          "primaryKey": false,
+          "references": "users.id"
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "nullable": false,
+          "primaryKey": false
+        },
+        {
+          "name": "description",
+          "type": "text",
+          "nullable": true,
+          "primaryKey": false
+        },
+        {
+          "name": "due_date",
+          "type": "timestamptz",
+          "nullable": true,
+          "primaryKey": false
+        },
+        {
+          "name": "is_completed",
+          "type": "boolean",
+          "nullable": false,
+          "primaryKey": false,
+          "default": "false"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz",
+          "nullable": false,
+          "primaryKey": false,
+          "default": "now()"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz",
+          "nullable": false,
+          "primaryKey": false,
+          "default": "now()"
+        }
+      ]
+    }
+  ],
+  "successCriteria": [
+    "User can successfully sign up and log in using Clerk integration",
+    "User can create a new task with a title and specific due date",
+    "User can mark a task as completed, updating its status to true",
+    "User can view a list of their tasks and their respective due dates",
+    "User can edit an existing task's details or due date",
+    "User can delete a task from the system",
+    "Tasks are correctly scoped to the logged-in user and not visible to others"
+  ],
+  "lockedAt": "2026-06-29T03:30:25.174Z",
+  "specHash": "5fad9d7d5b4e904b60df15ebe02b00778544a63a8c61ffc837ae045c2ae8c415"
+}

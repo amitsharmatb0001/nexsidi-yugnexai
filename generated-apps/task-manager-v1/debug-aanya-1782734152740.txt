@@ -1,0 +1,485 @@
+TASK: Next.js app setup with layout and error handling
+FIX THESE QA FINDINGS (iteration 3):
+
+
+RAW OUTPUT:
+```tsx
+// app/layout.tsx
+import { ClerkProvider } from "@clerk/nextjs";
+import "@/styles/globals.css";
+
+const RootLayout = ({ children }: { children: React.ReactNode }) => (
+  <ClerkProvider>
+    {children}
+  </ClerkProvider>
+);
+
+export default RootLayout;
+```
+
+```tsx
+// app/page.tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
+import { TaskStatus, PaginatedResponse } from "@/shared/types";
+import { fetchTasks } from "@/lib/api";
+import TasksList from "@/components/TasksList";
+
+const Home = () => {
+  const router = useRouter();
+  const { getToken, isLoaded, isSignedIn } = useAuth();
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(20);
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    if (!isSignedIn) router.push("/sign-in");
+    fetchTasks(page, perPage).then((data) => setTasks(data.items));
+  }, [isLoaded, isSignedIn, page, perPage, router]);
+
+  const handlePagination = (newPage: number) => {
+    setPage(newPage);
+  };
+
+  return (
+    <div className="container mx-auto p-4">
+      <h1 className="text-3xl font-bold mb-8">Tasks</h1>
+      <TasksList
+        tasks={tasks}
+        onPaginationChange={handlePagination}
+        currentPage={page}
+        perPage={perPage}
+      />
+    </div>
+  );
+};
+
+export default Home;
+```
+
+```tsx
+// app/(auth)/login/page.tsx
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
+
+const LoginPage = () => {
+  const router = useRouter();
+  const { signIn, isLoaded } = useAuth();
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    if (isSignedIn) router.push("/");
+  }, [isLoaded, isSignedIn, router]);
+
+  const handleSignIn = async (email: string, password: string) => {
+    await signIn({ identifier: email, password });
+    router.push("/");
+  };
+
+  return (
+    <div className="container mx-auto p-4">
+      <h1 className="text-3xl font-bold mb-8">Login</h1>
+      <form onSubmit={(e) => e.preventDefault()}>
+        <div className="mb-4">
+          <label htmlFor="email" className="block text-gray-700 text-sm font-bold mb-2">
+            Email
+          </label>
+          <input
+            type="email"
+            id="email"
+            name="email"
+            required
+            className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+          />
+        </div>
+        <div className="mb-4">
+          <label htmlFor="password" className="block text-gray-700 text-sm font-bold mb-2">
+            Password
+          </label>
+          <input
+            type="password"
+            id="password"
+            name="password"
+            required
+            className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+          />
+        </div>
+        <button
+          type="submit"
+          onClick={() => handleSignIn("user@example.com", "password")}
+          className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+        >
+          Sign In
+        </button>
+      </form>
+    </div>
+  );
+};
+
+export default LoginPage;
+```
+
+```tsx
+// app/(auth)/register/page.tsx
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
+
+const RegisterPage = () => {
+  const router = useRouter();
+  const { signUp, isLoaded } = useAuth();
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    if (isSignedIn) router.push("/");
+  }, [isLoaded, isSignedIn, router]);
+
+  const handleRegister = async (email: string, password: string, firstName: string, lastName: string) => {
+    await signUp({ identifier: email, password });
+    router.push("/sign-in");
+  };
+
+  return (
+    <div className="container mx-auto p-4">
+      <h1 className="text-3xl font-bold mb-8">Register</h1>
+      <form onSubmit={(e) => e.preventDefault()}>
+        <div className="mb-4">
+          <label htmlFor="email" className="block text-gray-700 text-sm font-bold mb-2">
+            Email
+          </label>
+          <input
+            type="email"
+            id="email"
+            name="email"
+            required
+            className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+          />
+        </div>
+        <div className="mb-4">
+          <label htmlFor="password" className="block text-gray-700 text-sm font-bold mb-2">
+            Password
+          </label>
+          <input
+            type="password"
+            id="password"
+            name="password"
+            required
+            className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+          />
+        </div>
+        <div className="mb-4">
+          <label htmlFor="firstName" className="block text-gray-700 text-sm font-bold mb-2">
+            First Name
+          </label>
+          <input
+            type="text"
+            id="firstName"
+            name="firstName"
+            required
+            className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+          />
+        </div>
+        <div className="mb-4">
+          <label htmlFor="lastName" className="block text-gray-700 text-sm font-bold mb-2">
+            Last Name
+          </label>
+          <input
+            type="text"
+            id="lastName"
+            name="lastName"
+            required
+            className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+          />
+        </div>
+        <button
+          type="submit"
+          onClick={() => handleRegister("user@example.com", "password", "John", "Doe")}
+          className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+        >
+          Register
+        </button>
+      </form>
+    </div>
+  );
+};
+
+export default RegisterPage;
+```
+
+```css
+/* app/globals.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Inter', sans-serif;
+}
+
+.container {
+  max-width: 1200px;
+}
+```
+
+```js
+// next.config.js
+module.exports = {
+  reactStrictMode: true,
+};
+```
+
+```json
+// package.json
+{
+  "name": "next-app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "^3.2.5",
+    "@types/react": "^18.0.14",
+    "@types/react-dom": "^18.0.5",
+    "react": "^18.0.2",
+    "react-dom": "^18.0.2"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.7",
+    "postcss": "^8.4.16",
+    "tailwindcss": "^3.1.5"
+  }
+}
+```
+
+```json
+// package-lock.json
+{
+  "name": "next-app",
+  "version": "0.1.0",
+  "lockfileVersion": 2,
+  "requires": true,
+  "packages": {
+    ...
+  }
+}
+```
+
+```js
+// tailwind.config.js
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: [
+    "./app/**/*.ts",
+    "./app/**/*.tsx",
+    "./components/**/*.{js,jsx,ts,tsx}",
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+};
+```
+
+```js
+// postcss.config.js
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+};
+```
+
+===FILE: app/lib/api.ts===
+```typescript
+import { useAuth } from "@clerk/nextjs";
+import { PaginatedResponse, TaskStatus } from "@/shared/types";
+
+const fetchTasks = async (page: number = 1, perPage: number = 20, status?: TaskStatus): Promise<PaginatedResponse<Task>> => {
+  const { getToken } = useAuth();
+  const token = await getToken();
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+  const url = new URL(apiUrl + "/api/v1/tasks");
+  if (status) url.searchParams.set("status", status);
+  url.searchParams.set("page", page.toString());
+  url.searchParams.set("perPage", perPage.toString());
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { Authorization: "Bearer " + token },
+  });
+
+  if (!res.ok) {
+    throw new Error(`HTTP error! status: ${res.status}`);
+  }
+
+  return res.json();
+};
+
+export default fetchTasks;
+```
+
+===FILE: app/components/TasksList.tsx===
+```tsx
+import { Task, TaskStatus } from "@/shared/types";
+
+interface TasksListProps {
+  tasks: Task[];
+  onPaginationChange: (newPage: number) => void;
+  currentPage: number;
+  perPage: number;
+}
+
+const TasksList = ({ tasks, onPaginationChange, currentPage, perPage }: TasksListProps) => {
+  return (
+    <div>
+      <ul className="divide-y divide-gray-200">
+        {tasks.map((task) => (
+          <li key={task.id} className="py-4">
+            <div className="flex justify-between items-center">
+              <span>{task.title}</span>
+              <span>{task.isCompleted ? "Completed" : "Pending"}</span>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <div className="mt-4 flex justify-center space-x-2">
+        <button
+          onClick={() => onPaginationChange(currentPage - 1)}
+          disabled={currentPage === 1}
+          className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+        >
+          Previous
+        </button>
+        <button
+          onClick={() => onPaginationChange(currentPage + 1)}
+          disabled={currentPage === Math.ceil(tasks.length / perPage)}
+          className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default TasksList;
+```
+
+===FILE: app/api/tasks.ts===
+```typescript
+import { NextRequest, NextResponse } from "next/server";
+import { TaskStatus, PaginatedResponse } from "@/shared/types";
+import dbConnect from "@/lib/dbConnect";
+import TaskModel from "@/models/Task";
+
+const getTasks = async (req: NextRequest) => {
+  const { searchParams } = new URL(req.url);
+  const page = parseInt(searchParams.get("page") || "1");
+  const perPage = parseInt(searchParams.get("perPage") || "20");
+  const status = searchParams.get("status") as TaskStatus | undefined;
+
+  await dbConnect();
+
+  const query: any = {};
+  if (status) {
+    query.status = status;
+  }
+
+  const tasks = await TaskModel.find(query)
+    .sort({ createdAt: -1 })
+    .skip((page - 1) * perPage)
+    .limit(perPage);
+
+  const count = await TaskModel.countDocuments(query);
+  const totalPages = Math.ceil(count / perPage);
+
+  return NextResponse.json({
+    data: tasks,
+    pagination: {
+      currentPage,
+      perPage,
+      totalPages,
+      totalItems: count,
+    },
+  });
+};
+
+export { getTasks };
+```
+
+===FILE: app/models/Task.ts===
+```typescript
+import mongoose from "mongoose";
+
+const taskSchema = new mongoose.Schema(
+  {
+    title: {
+      type: String,
+      required: true,
+    },
+    description: {
+      type: String,
+      default: "",
+    },
+    status: {
+      type: String,
+      enum: ["pending", "completed"],
+      default: "pending",
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { collection: "tasks" }
+);
+
+const Task = mongoose.models.Task || mongoose.model("Task", taskSchema);
+export default Task;
+```
+
+===FILE: app/lib/dbConnect.ts===
+```typescript
+import mongoose from "mongoose";
+
+let MONGODB_URI = process.env.MONGODB_URI;
+
+if (!MONGODB_URI) {
+  throw new Error(
+    'Please define the MONGODB_URI environment variable inside .env.local'
+  );
+}
+
+const opts = {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+};
+
+async function dbConnect() {
+  if (mongoose.connections[0].readyState === 1) {
+    return;
+  }
+
+  try {
+    await mongoose.connect(MONGODB_URI, opts);
+    console.log("MongoDB connected");
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+export default dbConnect;
+```
+
+This setup includes user authentication with Clerk, task management with a MongoDB database, and basic pagination. You can extend this project further by adding more features such as editing tasks, deleting tasks, and filtering tasks based on different criteria.

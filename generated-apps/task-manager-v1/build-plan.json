@@ -1,0 +1,333 @@
+{
+  "projectId": "test9004",
+  "sharedTypes": "export interface Task {\n  id: string;\n  userId: string;\n  title: string;\n  description: string | null;\n  dueDate: Date | null;\n  isCompleted: boolean;\n  createdAt: Date;\n  updatedAt: Date;\n}\n\nexport enum TaskStatus {\n  PENDING = 'pending',\n  COMPLETED = 'completed'\n}\n\nexport interface ApiErrorResponse {\n  status: number;\n  message: string;\n  code?: string;\n}\n\nexport interface PaginatedResponse<T> {\n  items: T[];\n  total: number;\n  page: number;\n  perPage: number;\n}\n\nexport interface CreateTaskRequest {\n  title: string;\n  description?: string;\n  dueDate?: string; // ISO 8601 format\n}\n\nexport interface UpdateTaskRequest {\n  title?: string;\n  description?: string | null;\n  dueDate?: string | null; // ISO 8601 format\n  isCompleted?: boolean;\n}",
+  "apiContract": {
+    "baseUrl": "http://localhost:3001",
+    "endpoints": [
+      {
+        "method": "POST",
+        "path": "/api/v1/auth/register",
+        "description": "Register a new user by storing Clerk user details",
+        "auth": false,
+        "requestType": "null",
+        "responseType": "{ userId: string }",
+        "errorCodes": []
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/tasks",
+        "description": "List all tasks for authenticated user with pagination",
+        "auth": true,
+        "requestType": "{ status?: TaskStatus; page?: number; perPage?: number }",
+        "responseType": "PaginatedResponse<Omit<Task, 'userId'>>",
+        "errorCodes": [
+          401,
+          500
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/tasks",
+        "description": "Create a new task for authenticated user",
+        "auth": true,
+        "requestType": "CreateTaskRequest",
+        "responseType": "Omit<Task, 'userId' | 'createdAt' | 'updatedAt'>",
+        "errorCodes": [
+          401,
+          422,
+          500
+        ]
+      },
+      {
+        "method": "PUT",
+        "path": "/api/v1/tasks/:id",
+        "description": "Update an existing task",
+        "auth": true,
+        "requestType": "UpdateTaskRequest",
+        "responseType": "Omit<Task, 'userId' | 'createdAt'>",
+        "errorCodes": [
+          401,
+          404,
+          422,
+          500
+        ]
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/tasks/:id",
+        "description": "Delete a specific task",
+        "auth": true,
+        "requestType": "null",
+        "responseType": "{ success: boolean }",
+        "errorCodes": [
+          401,
+          404,
+          500
+        ]
+      }
+    ]
+  },
+  "dbSchema": {
+    "tables": [
+      {
+        "name": "users",
+        "columns": [
+          {
+            "name": "id",
+            "drizzleType": "uuid()",
+            "constraints": [
+              ".primaryKey()",
+              ".default(sql`gen_random_uuid()`)"
+            ]
+          },
+          {
+            "name": "clerk_id",
+            "drizzleType": "varchar(36)",
+            "constraints": [
+              ".notNull()",
+              ".unique()"
+            ]
+          },
+          {
+            "name": "email",
+            "drizzleType": "varchar(255)",
+            "constraints": [
+              ".notNull()",
+              ".unique()"
+            ]
+          },
+          {
+            "name": "created_at",
+            "drizzleType": "timestamp({ withTimezone: true })",
+            "constraints": [
+              ".notNull()",
+              ".default(sql`now()`)"
+            ]
+          },
+          {
+            "name": "updated_at",
+            "drizzleType": "timestamp({ withTimezone: true })",
+            "constraints": [
+              ".notNull()",
+              ".default(sql`now()`)"
+            ]
+          }
+        ],
+        "indexes": [
+          "users_clerk_id_idx",
+          "users_email_idx"
+        ]
+      },
+      {
+        "name": "tasks",
+        "columns": [
+          {
+            "name": "id",
+            "drizzleType": "uuid()",
+            "constraints": [
+              ".primaryKey()",
+              ".default(sql`gen_random_uuid()`)"
+            ]
+          },
+          {
+            "name": "user_id",
+            "drizzleType": "uuid()",
+            "constraints": [
+              ".notNull()"
+            ],
+            "references": "users.id"
+          },
+          {
+            "name": "title",
+            "drizzleType": "varchar(255)",
+            "constraints": [
+              ".notNull()"
+            ]
+          },
+          {
+            "name": "description",
+            "drizzleType": "text()",
+            "constraints": []
+          },
+          {
+            "name": "due_date",
+            "drizzleType": "timestamp({ withTimezone: true })",
+            "constraints": [
+              ".notNull()"
+            ]
+          },
+          {
+            "name": "is_completed",
+            "drizzleType": "boolean()",
+            "constraints": [
+              ".notNull()",
+              ".default(false)"
+            ]
+          },
+          {
+            "name": "created_at",
+            "drizzleType": "timestamp({ withTimezone: true })",
+            "constraints": [
+              ".notNull()",
+              ".default(sql`now()`)"
+            ]
+          },
+          {
+            "name": "updated_at",
+            "drizzleType": "timestamp({ withTimezone: true })",
+            "constraints": [
+              ".notNull()",
+              ".default(sql`now()`)"
+            ]
+          }
+        ],
+        "indexes": [
+          "tasks_user_id_idx",
+          "tasks_due_date_idx",
+          "tasks_is_completed_idx"
+        ]
+      }
+    ]
+  },
+  "shubhamTasks": [
+    {
+      "description": "ExpressJS server setup and configuration",
+      "outputFiles": [
+        "src/index.ts",
+        "src/app.ts",
+        "src/middleware/auth.ts",
+        "src/utils/error-handling.ts",
+        "src/utils/logger.ts",
+        "src/utils/response.ts",
+        "tsconfig.json",
+        ".eslintrc.json",
+        ".prettierrc",
+        "package.json",
+        "Dockerfile"
+      ]
+    },
+    {
+      "description": "API route handlers and controllers",
+      "outputFiles": [
+        "src/controllers/tasks.ts",
+        "src/routes/tasks.ts",
+        "src/services/tasks.ts",
+        "src/validators/tasks.ts",
+        "src/types/requests.ts"
+      ]
+    },
+    {
+      "description": "Clerk integration and webhook handling",
+      "outputFiles": [
+        "src/controllers/auth.ts",
+        "src/routes/auth.ts",
+        "src/services/auth.ts",
+        "src/events/clerk-webhook.ts",
+        "src/config/clerk.ts"
+      ]
+    },
+    {
+      "description": "Testing setup and utilities",
+      "outputFiles": [
+        ".env.test",
+        "jest.config.js",
+        "src/services/__mocks__/tasks.ts",
+        "src/utils/__tests__/error-handling.test.ts",
+        "src/utils/__tests__/logger.test.ts"
+      ]
+    }
+  ],
+  "aanyaTasks": [
+    {
+      "description": "Next.js app setup with layout and error handling",
+      "outputFiles": [
+        "app/layout.tsx",
+        "app/page.tsx",
+        "app/(auth)/login/page.tsx",
+        "app/(auth)/register/page.tsx",
+        "app/globals.css",
+        "next.config.js",
+        "package.json",
+        "package-lock.json",
+        "tailwind.config.js",
+        "postcss.config.js"
+      ]
+    },
+    {
+      "description": "Task management components and pages",
+      "outputFiles": [
+        "app/tasks/page.tsx",
+        "app/tasks/columns.tsx",
+        "app/tasks/create/page.tsx",
+        "app/tasks/[id]/page.tsx",
+        "app/tasks/[id]/edit/page.tsx",
+        "components/TaskItem.tsx",
+        "components/TaskForm.tsx",
+        "components/StatusFilter.tsx"
+      ]
+    },
+    {
+      "description": "API clients and type utilities",
+      "outputFiles": [
+        "lib/api-client.ts",
+        "lib/helpers.ts",
+        "types/task.ts",
+        "middleware/auth.ts"
+      ]
+    },
+    {
+      "description": "UI components and styling",
+      "outputFiles": [
+        "components/Card.tsx",
+        "components/Button.tsx",
+        "components/Input.tsx",
+        "components/StatusBadge.tsx",
+        "components/Header.tsx",
+        "components/Footer.tsx"
+      ]
+    }
+  ],
+  "pranavTasks": [
+    {
+      "description": "Drizzle ORM setup and database initialization",
+      "outputFiles": [
+        "src/db/schema.ts",
+        "src/db/index.ts",
+        "drizzle.config.ts",
+        ".env.database",
+        "prisma/seeds/tasks.ts",
+        "src/repositories/base-repository.ts",
+        "package.json"
+      ]
+    },
+    {
+      "description": "Database migration tools and scripts",
+      "outputFiles": [
+        "src/db/migrations.ts",
+        "scripts/migrate.ts",
+        "scripts/seed.ts",
+        "src/db/config.ts",
+        "src/utils/db-helper.ts"
+      ]
+    },
+    {
+      "description": "Repository implementations",
+      "outputFiles": [
+        "src/repositories/task-repository.ts",
+        "src/repositories/user-repository.ts",
+        "src/dtos/task.dto.ts",
+        "src/types/database.ts"
+      ]
+    },
+    {
+      "description": "Database utilities and testing tools",
+      "outputFiles": [
+        "src/services/db%f-service.ts",
+        "scripts/clean-database.ts",
+        "src/utils/__mocks__/db.ts",
+        "src/utils/test-db.ts"
+      ]
+    }
+  ],
+  "independenceVerified": true
+}

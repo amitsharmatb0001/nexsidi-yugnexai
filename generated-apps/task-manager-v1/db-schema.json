@@ -1,0 +1,122 @@
+{
+  "tables": [
+    {
+      "name": "users",
+      "columns": [
+        {
+          "name": "id",
+          "drizzleType": "uuid()",
+          "constraints": [
+            ".primaryKey()",
+            ".default(sql`gen_random_uuid()`)"
+          ]
+        },
+        {
+          "name": "clerk_id",
+          "drizzleType": "varchar(36)",
+          "constraints": [
+            ".notNull()",
+            ".unique()"
+          ]
+        },
+        {
+          "name": "email",
+          "drizzleType": "varchar(255)",
+          "constraints": [
+            ".notNull()",
+            ".unique()"
+          ]
+        },
+        {
+          "name": "created_at",
+          "drizzleType": "timestamp({ withTimezone: true })",
+          "constraints": [
+            ".notNull()",
+            ".default(sql`now()`)"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "drizzleType": "timestamp({ withTimezone: true })",
+          "constraints": [
+            ".notNull()",
+            ".default(sql`now()`)"
+          ]
+        }
+      ],
+      "indexes": [
+        "users_clerk_id_idx",
+        "users_email_idx"
+      ]
+    },
+    {
+      "name": "tasks",
+      "columns": [
+        {
+          "name": "id",
+          "drizzleType": "uuid()",
+          "constraints": [
+            ".primaryKey()",
+            ".default(sql`gen_random_uuid()`)"
+          ]
+        },
+        {
+          "name": "user_id",
+          "drizzleType": "uuid()",
+          "constraints": [
+            ".notNull()"
+          ],
+          "references": "users.id"
+        },
+        {
+          "name": "title",
+          "drizzleType": "varchar(255)",
+          "constraints": [
+            ".notNull()"
+          ]
+        },
+        {
+          "name": "description",
+          "drizzleType": "text()",
+          "constraints": []
+        },
+        {
+          "name": "due_date",
+          "drizzleType": "timestamp({ withTimezone: true })",
+          "constraints": [
+            ".notNull()"
+          ]
+        },
+        {
+          "name": "is_completed",
+          "drizzleType": "boolean()",
+          "constraints": [
+            ".notNull()",
+            ".default(false)"
+          ]
+        },
+        {
+          "name": "created_at",
+          "drizzleType": "timestamp({ withTimezone: true })",
+          "constraints": [
+            ".notNull()",
+            ".default(sql`now()`)"
+          ]
+        },
+        {
+          "name": "updated_at",
+          "drizzleType": "timestamp({ withTimezone: true })",
+          "constraints": [
+            ".notNull()",
+            ".default(sql`now()`)"
+          ]
+        }
+      ],
+      "indexes": [
+        "tasks_user_id_idx",
+        "tasks_due_date_idx",
+        "tasks_is_completed_idx"
+      ]
+    }
+  ]
+}

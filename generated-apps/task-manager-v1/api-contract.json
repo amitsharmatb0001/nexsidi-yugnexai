@@ -1,0 +1,66 @@
+{
+  "baseUrl": "http://localhost:3001",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/register",
+      "description": "Register a new user by storing Clerk user details",
+      "auth": false,
+      "requestType": "null",
+      "responseType": "{ userId: string }",
+      "errorCodes": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/tasks",
+      "description": "List all tasks for authenticated user with pagination",
+      "auth": true,
+      "requestType": "{ status?: TaskStatus; page?: number; perPage?: number }",
+      "responseType": "PaginatedResponse<Omit<Task, 'userId'>>",
+      "errorCodes": [
+        401,
+        500
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/tasks",
+      "description": "Create a new task for authenticated user",
+      "auth": true,
+      "requestType": "CreateTaskRequest",
+      "responseType": "Omit<Task, 'userId' | 'createdAt' | 'updatedAt'>",
+      "errorCodes": [
+        401,
+        422,
+        500
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/tasks/:id",
+      "description": "Update an existing task",
+      "auth": true,
+      "requestType": "UpdateTaskRequest",
+      "responseType": "Omit<Task, 'userId' | 'createdAt'>",
+      "errorCodes": [
+        401,
+        404,
+        422,
+        500
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/tasks/:id",
+      "description": "Delete a specific task",
+      "auth": true,
+      "requestType": "null",
+      "responseType": "{ success: boolean }",
+      "errorCodes": [
+        401,
+        404,
+        500
+      ]
+    }
+  ]
+}

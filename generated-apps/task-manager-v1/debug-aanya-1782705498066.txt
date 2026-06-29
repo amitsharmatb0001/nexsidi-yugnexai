@@ -1,0 +1,220 @@
+TASK: API clients and type utilities
+
+RAW OUTPUT:
+===FILE: lib/api-client.ts===
+```typescript
+import { TaskStatus, Task, ApiErrorResponse, PaginatedResponse, CreateTaskRequest, UpdateTaskRequest } from "@/types/task";
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
+async function getAuthHeader(): Promise<HeadersInit> {
+  const { getToken } = await import("@clerk/nextjs/server");
+  const token = await getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function handleResponse<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    const error: ApiErrorResponse = await response.json().catch(() => ({
+      status: response.status,
+      message: response.statusText,
+    }));
+    throw error;
+  }
+  return response.json();
+}
+
+export async function registerUser(): Promise<{ userId: string }> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/auth/register`, {
+    method: "POST",
+    credentials: "include",
+  });
+  return handleResponse<{ userId: string }>(response);
+}
+
+export async function getTasks(
+  status?: TaskStatus,
+  page: number = 1,
+  perPage: number = 10
+): Promise<PaginatedResponse<Omit<Task, "userId">>> {
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  if (page) params.set("page", page.toString());
+  if (perPage) params.set("perPage", perPage.toString());
+
+  const headers = await getAuthHeader();
+  const response = await fetch(`${API_BASE_URL}/api/v1/tasks?${params.toString()}`, {
+    method: "GET",
+    headers,
+    credentials: "include",
+  });
+  return handleResponse<PaginatedResponse<Omit<Task, "userId">>>(response);
+}
+
+export async function createTask(request: CreateTaskRequest): Promise<Omit<Task, "userId" | "createdAt" | "updatedAt">> {
+  const headers = await getAuthHeader();
+  const response = await fetch(`${API_BASE_URL}/api/v1/tasks`, {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    credentials: "include",
+  });
+  return handleResponse<Omit<Task, "userId" | "createdAt" | "updatedAt">>(response);
+}
+
+export async function updateTask(
+  id: string,
+  request: UpdateTaskRequest
+): Promise<Omit<Task, "userId" | "createdAt">> {
+  const headers = await getAuthHeader();
+  const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${id}`, {
+    method: "PUT",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    credentials: "include",
+  });
+  return handleResponse<Omit<Task, "userId" | "createdAt">>(response);
+}
+
+export async function deleteTask(id: string): Promise<{ success: boolean }> {
+  const headers = await getAuthHeader();
+  const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${id}`, {
+    method: "DELETE",
+    headers,
+    credentials: "include",
+  });
+  return handleResponse<{ success: boolean }>(response);
+}
+```
+
+===FILE: lib/helpers.ts===
+```typescript
+import { type ClassValue, clsx } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+
+export function formatDate(date: Date | null): string {
+  if (!date) return "No due date";
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(date));
+}
+
+export function formatDateTime(date: Date): string {
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+export function truncate(str: string, length: number): string {
+  if (str.length <= length) return str;
+  return str.slice(0, length) + "...";
+}
+
+export function isOverdue(dueDate: Date | null): boolean {
+  if (!dueDate) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const due = new Date(dueDate);
+  due.setHours(0, 0, 0, 0);
+  return due < today;
+}
+
+export function getInitials(name: string): string {
+  return name
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+}
+```
+
+===FILE: types/task.ts===
+```typescript
+export interface Task {
+  id: string;
+  userId: string;
+  title: string;
+  description: string | null;
+  dueDate: Date | null;
+  isCompleted: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export enum TaskStatus {
+  PENDING = "pending",
+  COMPLETED = "completed",
+}
+
+export interface ApiErrorResponse {
+  status: number;
+  message: string;
+  code?: string;
+}
+
+export interface PaginatedResponse<T> {
+  items: T[];
+  total: number;
+  page: number;
+  perPage: number;
+}
+
+export interface CreateTaskRequest {
+  title: string;
+  description?: string;
+  dueDate?: string; // ISO 8601 format
+}
+
+export interface UpdateTaskRequest {
+  title?: string;
+  description?: string | null;
+  dueDate?: string | null; // ISO 8601 format
+  isCompleted?: boolean;
+}
+```
+
+===FILE: middleware/auth.ts===
+```typescript
+import { auth } from "@clerk/nextjs/server";
+import { NextResponse, type NextRequest } from "next/server";
+
+const protectedRoutes = ["/tasks", "/tasks/(.*)", "/profile"];
+const publicRoutes = ["/", "/sign-in(.*)", "/sign-up(.*)"];
+
+export async function middleware(request: NextRequest) {
+  const { userId } = await auth();
+  const path = request.nextUrl.pathname;
+
+  const isProtectedRoute = protectedRoutes.some((route) =>
+    new RegExp(`^${route.replace(/\(.*\)/, ".*")}$`).test(path)
+  );
+  const isPublicRoute = publicRoutes.some((route) =>
+    new RegExp(`^${route.replace(/\(.*\)/, ".*")}$`).test(path)
+  );
+
+  if (isProtectedRoute && !userId) {
+    return NextResponse.redirect(new URL("/sign-in", request.url));
+  }
+
+  if (isPublicRoute && userId) {
+    return NextResponse.redirect(new URL("/tasks", request.url));
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/((?!.*\\..*|_next).*)", "/", "/(api|trpc)(.*)"],
+};
+```
