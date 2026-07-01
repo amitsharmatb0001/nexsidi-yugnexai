@@ -1,0 +1,17 @@
+{
+  "name": "@nexsidi/agent-maya",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nexsidi/agent-bus": "workspace:*",
+    "@nexsidi/context-chain": "workspace:*",
+    "@nexsidi/db": "workspace:*",
+    "@nexsidi/llm-client": "workspace:*",
+    "@nexsidi/prompt-audit": "workspace:*",
+    "ioredis": "^5.11.1"
+  }
+}

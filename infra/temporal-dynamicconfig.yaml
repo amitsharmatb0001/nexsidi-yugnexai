@@ -1,0 +1,4 @@
+# Temporal dynamic config for local dev
+limit.maxIDLength:
+  - value: 255
+    constraints: {}

@@ -1,0 +1,16 @@
+/* @yugnex/nexui — Master CSS Entry Point
+   Imports all NexUI stylesheets in dependency order.
+
+   Usage (Next.js app/layout.tsx or globals.css):
+     import "@yugnex/nexui/css/nexui.css";
+
+   Or in CSS:
+     @import "@yugnex/nexui/css/nexui.css";
+
+   This is the equivalent of `import "tailwindcss"` — one import,
+   everything you need: tokens, reset, fonts, icons, utilities.
+*/
+
+@import "./nexui-tokens.css";
+@import "./nexui-base.css";
+@import "./nexui-icons.css";

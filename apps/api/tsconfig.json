@@ -1,0 +1,4 @@
+{
+  "extends": "../../tsconfig.bun.json",
+  "include": ["src", "../../agents/maya/src", "../../pipeline"]
+}

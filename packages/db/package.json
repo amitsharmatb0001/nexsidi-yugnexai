@@ -1,0 +1,23 @@
+{
+  "name": "@nexsidi/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts",
+    "./client": "./src/client.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "generate": "drizzle-kit generate",
+    "migrate": "bun src/migrate.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.40.0",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.30.0"
+  }
+}

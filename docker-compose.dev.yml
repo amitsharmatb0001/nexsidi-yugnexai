@@ -1,0 +1,79 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NexSidi local dev infrastructure
+# Ollama runs NATIVELY on Windows (NOT here) — reach via host.docker.internal:11434
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nexsidi
+      POSTGRES_USER: nexsidi
+      POSTGRES_PASSWORD: nexsidi_dev
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexsidi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  temporal:
+    image: temporalio/auto-setup:1.24
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: nexsidi
+      POSTGRES_PWD: nexsidi_dev
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig.yaml
+    ports:
+      - "7233:7233"
+    volumes:
+      - ./infra/temporal-dynamicconfig.yaml:/etc/temporal/config/dynamicconfig.yaml
+    healthcheck:
+      test: ["CMD", "temporal", "server", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  temporal-ui:
+    image: temporalio/ui:2.30.3
+    restart: unless-stopped
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8088:8080"
+
+volumes:
+  postgres_data:
+  redis_data:
+  # Fix #4: named volume for instinct memory (Patent Claim 2)
+  # Mounted by API at XDG_DATA_HOME — survives docker-compose down
+  instinct_memory:

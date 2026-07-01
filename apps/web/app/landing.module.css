@@ -1,0 +1,277 @@
+/* NexSidi Landing Page — Component Styles */
+
+.root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--nx-bg-base);
+  color: var(--nx-text);
+  overflow: hidden;
+}
+
+/* ── Nav ────────────────────────────────────────────────────── */
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--nx-sp-8);
+  height: 58px;
+  border-bottom: 1px solid var(--nx-border);
+  background: rgba(8, 12, 16, 0.85);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.navBrand {
+  font-family: var(--nx-ff-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--nx-text);
+  display: flex;
+  align-items: center;
+  gap: var(--nx-sp-2);
+}
+
+.navLogo {
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, var(--nx-accent) 0%, var(--nx-accent-bright) 100%);
+  border-radius: var(--nx-r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--nx-text-inv);
+  box-shadow: 0 0 14px rgba(232,144,16,0.45);
+}
+
+.signInBtn {
+  font-size: var(--nx-fs-sm);
+  font-weight: 500;
+  color: var(--nx-text2);
+  cursor: pointer;
+  background: none;
+  border: none;
+  transition: color var(--nx-dur-fast);
+}
+.signInBtn:hover { color: var(--nx-text); }
+
+.dashLink {
+  font-size: var(--nx-fs-sm);
+  font-weight: 500;
+  color: var(--nx-text2);
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  transition: color var(--nx-dur-fast);
+}
+.dashLink:hover { color: var(--nx-text); text-decoration: none; }
+
+/* ── Hero ───────────────────────────────────────────────────── */
+.hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--nx-sp-20) var(--nx-sp-6) var(--nx-sp-16);
+  animation: nx-fade-in 0.55s var(--nx-ease-out) both;
+  position: relative;
+  isolation: isolate;
+}
+
+/* Dot-grid background */
+.hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, rgba(255,255,255,0.038) 1px, transparent 1px);
+  background-size: 30px 30px;
+  pointer-events: none;
+  z-index: -2;
+}
+
+/* Radial amber glow behind content */
+.hero::after {
+  content: '';
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 800px;
+  height: 500px;
+  background: radial-gradient(ellipse at center,
+    rgba(232,144,16,0.1) 0%,
+    rgba(232,144,16,0.04) 45%,
+    transparent 72%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* ── Badge ──────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nx-sp-2);
+  padding: 5px 14px;
+  border-radius: var(--nx-r-full);
+  border: 1px solid rgba(232,144,16,0.28);
+  background: rgba(232,144,16,0.07);
+  color: var(--nx-accent-text);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  margin-bottom: var(--nx-sp-8);
+  backdrop-filter: blur(8px);
+}
+
+.badgeDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--nx-accent);
+  box-shadow: 0 0 9px rgba(232,144,16,0.9);
+  animation: nx-pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+/* ── Headline ───────────────────────────────────────────────── */
+.headline {
+  font-family: var(--nx-ff-display);
+  font-size: clamp(40px, 7vw, 76px);
+  font-weight: 800;
+  line-height: 1.02;
+  letter-spacing: -0.04em;
+  max-width: 760px;
+  margin-bottom: var(--nx-sp-6);
+  background: linear-gradient(
+    155deg,
+    #F0F6FC 0%,
+    #E6EDF3 30%,
+    var(--nx-accent-text) 65%,
+    var(--nx-accent) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ── Subline ────────────────────────────────────────────────── */
+.subline {
+  font-size: clamp(15px, 2vw, 17px);
+  color: var(--nx-text2);
+  max-width: 480px;
+  line-height: 1.75;
+  margin-bottom: var(--nx-sp-10);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* ── CTA ────────────────────────────────────────────────────── */
+.cta {
+  display: flex;
+  gap: var(--nx-sp-3);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.ctaPrimary {
+  display: flex;
+  align-items: center;
+  gap: var(--nx-sp-2);
+  padding: 13px 28px;
+  background: linear-gradient(135deg, var(--nx-accent) 0%, var(--nx-accent-bright) 100%);
+  color: var(--nx-text-inv);
+  border-radius: var(--nx-r-lg);
+  font-family: var(--nx-ff-display);
+  font-size: var(--nx-fs-md);
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  text-decoration: none;
+  letter-spacing: -0.02em;
+  transition:
+    transform var(--nx-dur-base) var(--nx-ease-spring),
+    box-shadow var(--nx-dur-base) var(--nx-ease-out);
+}
+.ctaPrimary:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 0 36px rgba(232,144,16,0.55), 0 0 10px rgba(232,144,16,0.3), 0 6px 20px rgba(0,0,0,0.4);
+  text-decoration: none;
+  color: var(--nx-text-inv);
+}
+.ctaPrimary:active { transform: translateY(0) scale(1); }
+
+.ctaSecondary {
+  display: flex;
+  align-items: center;
+  gap: var(--nx-sp-2);
+  padding: 13px 24px;
+  background: rgba(255,255,255,0.03);
+  color: var(--nx-text);
+  border-radius: var(--nx-r-lg);
+  font-family: var(--nx-ff-display);
+  font-size: var(--nx-fs-md);
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--nx-border);
+  text-decoration: none;
+  letter-spacing: -0.02em;
+  transition:
+    border-color var(--nx-dur-base),
+    background var(--nx-dur-base),
+    transform var(--nx-dur-base) var(--nx-ease-spring);
+  backdrop-filter: blur(8px);
+}
+.ctaSecondary:hover {
+  border-color: rgba(232,144,16,0.4);
+  background: rgba(232,144,16,0.06);
+  transform: translateY(-2px);
+  text-decoration: none;
+  color: var(--nx-text);
+}
+.ctaSecondary:active { transform: translateY(0); }
+
+/* ── Stats strip ────────────────────────────────────────────── */
+.statsRow {
+  display: flex;
+  align-items: center;
+  gap: var(--nx-sp-8);
+  margin-top: var(--nx-sp-16);
+  padding-top: var(--nx-sp-8);
+  border-top: 1px solid var(--nx-border-muted);
+}
+.statItem { text-align: center; }
+.statNum {
+  font-family: var(--nx-ff-display);
+  font-size: var(--nx-fs-2xl);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  background: linear-gradient(135deg, var(--nx-text) 0%, var(--nx-accent-text) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  display: block;
+}
+.statLabel {
+  font-size: 10px;
+  color: var(--nx-text3);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-top: 2px;
+  display: block;
+}
+.statDivider {
+  width: 1px;
+  height: 28px;
+  background: var(--nx-border-muted);
+  flex-shrink: 0;
+}

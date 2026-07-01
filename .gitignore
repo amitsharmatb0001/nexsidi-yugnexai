@@ -1,0 +1,14 @@
+node_modules/
+.next/
+dist/
+.env
+*.local
+.worktrees/
+sandbox/target/
+keys/
+*.pem
+.STEER.processed
+AGENT_STOP
+coverage/
+.nyc_output/
+*.tsbuildinfo

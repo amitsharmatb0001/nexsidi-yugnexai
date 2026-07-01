@@ -1,0 +1,226 @@
+/* NexSidi Web App — Global Styles
+   Display: Space Grotesk (loaded via fonts.bunny.net)
+   Body:    Inter (loaded via fonts.bunny.net)
+   Mono:    JetBrains Mono (loaded via fonts.bunny.net)
+   Icons:   NexuiIcons (local WOFF2 — /nexui-fonts/NexuiIcons.woff2)
+*/
+
+/* ── NexuiIcons (local WOFF2) ──────────────────────────────── */
+@font-face {
+  font-family: 'NexuiIcons';
+  font-style:  normal;
+  font-weight: normal;
+  font-display: block;
+  src: url('/nexui-fonts/NexuiIcons.woff2') format('woff2');
+}
+
+/* ── Design Tokens ─────────────────────────────────────────── */
+:root {
+  --nx-bg-base:      #080C10;
+  --nx-bg-elevated:  #0D1117;
+  --nx-bg-overlay:   #161B22;
+  --nx-bg-subtle:    #1C2128;
+  --nx-bg-muted:     #2D333B;
+
+  --nx-border:       rgba(56, 63, 72, 0.85);
+  --nx-border-muted: rgba(56, 63, 72, 0.4);
+  --nx-border-accent:rgba(232, 144, 16, 0.35);
+
+  --nx-text:         #F0F6FC;
+  --nx-text2:        #8B949E;
+  --nx-text3:        #6E7681;
+  --nx-text-inv:     #080C10;
+
+  --nx-accent:       #E89010;
+  --nx-accent-text:  #F5B342;
+  --nx-accent-bright:#FFD166;
+  --nx-accent-muted: rgba(232, 144, 16, 0.12);
+
+  --nx-green:        #3FB950;
+  --nx-green-muted:  rgba(63, 185, 80, 0.12);
+  --nx-blue:         #58A6FF;
+  --nx-blue-muted:   rgba(88, 166, 255, 0.12);
+  --nx-red:          #F85149;
+  --nx-red-muted:    rgba(248, 81, 73, 0.12);
+  --nx-yellow:       #D29922;
+  --nx-yellow-muted: rgba(210, 153, 34, 0.12);
+  --nx-purple:       #BC8CFF;
+  --nx-purple-muted: rgba(188, 140, 255, 0.12);
+  --nx-cyan:         #39D0D8;
+  --nx-cyan-muted:   rgba(57, 208, 216, 0.12);
+  --nx-orange:       #F0883E;
+  --nx-orange-muted: rgba(240, 136, 62, 0.12);
+
+  /* Space Grotesk first — loaded via bunny.net CDN */
+  --nx-ff-sans:    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --nx-ff-mono:    'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  --nx-ff-display: 'Space Grotesk', 'Inter', -apple-system, sans-serif;
+  --nx-ff-icons:   'NexuiIcons';
+
+  --nx-fs-xs:   11px;  --nx-fs-sm:  13px;  --nx-fs-base: 14px;
+  --nx-fs-md:   15px;  --nx-fs-lg:  16px;  --nx-fs-xl:   18px;
+  --nx-fs-2xl:  20px;  --nx-fs-3xl: 24px;  --nx-fs-4xl:  30px;
+  --nx-fs-5xl:  38px;  --nx-fs-6xl: 52px;
+
+  --nx-lh-tight:   1.15;  --nx-lh-normal: 1.5;
+  --nx-lh-relaxed: 1.7;   --nx-lh-code:   1.75;
+
+  --nx-sp-1: 4px;   --nx-sp-2: 8px;    --nx-sp-3: 12px;
+  --nx-sp-4: 16px;  --nx-sp-5: 20px;   --nx-sp-6: 24px;
+  --nx-sp-8: 32px;  --nx-sp-10: 40px;  --nx-sp-12: 48px;
+  --nx-sp-16: 64px; --nx-sp-20: 80px;
+
+  --nx-r-sm: 4px;   --nx-r-md: 6px;   --nx-r-lg: 10px;
+  --nx-r-xl: 14px;  --nx-r-2xl: 20px; --nx-r-full: 9999px;
+
+  --nx-shadow-sm:   0 1px 3px rgba(0,0,0,0.5);
+  --nx-shadow-md:   0 4px 16px rgba(0,0,0,0.6);
+  --nx-shadow-lg:   0 12px 40px rgba(0,0,0,0.7);
+  --nx-glow-accent: 0 0 32px rgba(232,144,16,0.35), 0 0 8px rgba(232,144,16,0.2);
+  --nx-glow-green:  0 0 20px rgba(63,185,80,0.25);
+  --nx-glow-blue:   0 0 20px rgba(88,166,255,0.25);
+
+  --nx-dur-fast: 100ms; --nx-dur-base: 180ms; --nx-dur-slow: 320ms;
+  --nx-ease-out:    cubic-bezier(0.0, 0.0, 0.2, 1);
+  --nx-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --nx-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Grid background helpers */
+  --nx-grid-line:   rgba(255,255,255,0.035);
+  --nx-grid-size:   40px;
+}
+
+/* ── Reset ─────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "kern" 1, "liga" 1, "cv02" 1, "cv03" 1, "cv04" 1;
+}
+
+body {
+  margin: 0;
+  font-family: var(--nx-ff-sans);
+  font-size: var(--nx-fs-base);
+  line-height: var(--nx-lh-relaxed);
+  color: var(--nx-text);
+  background-color: var(--nx-bg-base);
+}
+
+h1,h2,h3,h4,h5,h6 {
+  margin: 0;
+  font-family: var(--nx-ff-display);
+  line-height: var(--nx-lh-tight);
+  letter-spacing: -0.02em;
+}
+h1 { font-size: var(--nx-fs-4xl); font-weight: 700; }
+h2 { font-size: var(--nx-fs-3xl); font-weight: 700; }
+h3 { font-size: var(--nx-fs-2xl); font-weight: 600; }
+h4 { font-size: var(--nx-fs-xl);  font-weight: 600; }
+
+p  { margin: 0; }
+a  { color: var(--nx-accent-text); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+button { cursor: pointer; border: none; background: none; font: inherit; }
+input, textarea, select { font: inherit; }
+code, pre { font-family: var(--nx-ff-mono); }
+img, svg  { display: block; max-width: 100%; }
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
+
+/* ── Focus / Selection ─────────────────────────────────────── */
+:focus-visible             { outline: 2px solid var(--nx-accent); outline-offset: 2px; }
+:focus:not(:focus-visible) { outline: none; }
+::selection                { background: rgba(232,144,16,0.2); color: var(--nx-text); }
+
+/* ── NexuiIcons ────────────────────────────────────────────── */
+.nxi {
+  font-family: 'NexuiIcons' !important;
+  font-style: normal; font-weight: normal; font-variant: normal;
+  text-transform: none; line-height: 1;
+  display: inline-block; vertical-align: middle; speak: never;
+  -webkit-font-smoothing: antialiased;
+}
+.nxi-folder::before      { content: "\E001"; }
+.nxi-folder-open::before { content: "\E002"; }
+.nxi-file::before        { content: "\E003"; }
+.nxi-check::before       { content: "\E004"; }
+.nxi-x::before           { content: "\E005"; }
+.nxi-chevron-r::before   { content: "\E006"; }
+.nxi-chevron-d::before   { content: "\E007"; }
+.nxi-chevron-l::before   { content: "\E008"; }
+.nxi-plus::before        { content: "\E009"; }
+.nxi-minus::before       { content: "\E00A"; }
+.nxi-trash::before       { content: "\E00B"; }
+.nxi-code::before        { content: "\E00C"; }
+.nxi-terminal::before    { content: "\E00D"; }
+.nxi-git-branch::before  { content: "\E00E"; }
+.nxi-git-commit::before  { content: "\E00F"; }
+.nxi-search::before      { content: "\E010"; }
+.nxi-eye::before         { content: "\E011"; }
+.nxi-copy::before        { content: "\E012"; }
+.nxi-clock::before       { content: "\E013"; }
+.nxi-warning::before     { content: "\E014"; }
+.nxi-info::before        { content: "\E015"; }
+.nxi-download::before    { content: "\E016"; }
+.nxi-link::before        { content: "\E017"; }
+.nxi-user::before        { content: "\E018"; }
+.nxi-dots::before        { content: "\E019"; }
+.nxi-refresh::before     { content: "\E01A"; }
+.nxi-arrow-r::before     { content: "\E01B"; }
+.nxi-arrow-u::before     { content: "\E01C"; }
+.nxi-settings::before    { content: "\E01D"; }
+.nxi-star::before        { content: "\E01E"; }
+
+/* ── Keyframes ─────────────────────────────────────────────── */
+@keyframes nx-fade-in    { from { opacity:0; transform:translateY(8px) } to { opacity:1; transform:translateY(0) } }
+@keyframes nx-pulse      { 0%,100% { opacity:1; transform:scale(1) } 50% { opacity:.45; transform:scale(0.85) } }
+@keyframes nx-spin       { from { transform:rotate(0deg) } to { transform:rotate(360deg) } }
+@keyframes nx-shimmer    { 0% { background-position:-200% 0 } 100% { background-position:200% 0 } }
+@keyframes nx-slide-up   { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:none } }
+@keyframes nx-slide-in-r { from { opacity:0; transform:translateX(10px) } to { opacity:1; transform:none } }
+@keyframes nx-glow-pulse { 0%,100% { box-shadow: var(--nx-glow-accent) } 50% { box-shadow: 0 0 48px rgba(232,144,16,0.55), 0 0 12px rgba(232,144,16,0.3) } }
+@keyframes nx-border-flow {
+  0%   { background-position: 0% 50% }
+  50%  { background-position: 100% 50% }
+  100% { background-position: 0% 50% }
+}
+
+/* ── Global helpers ────────────────────────────────────────── */
+.nx-animate-fade  { animation: nx-fade-in  var(--nx-dur-slow) var(--nx-ease-out) both; }
+.nx-animate-slide { animation: nx-slide-up var(--nx-dur-slow) var(--nx-ease-out) both; }
+.nx-spin          { animation: nx-spin 1s linear infinite; }
+.nx-pulse         { animation: nx-pulse 2s ease-in-out infinite; }
+.nx-truncate      { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.nx-sr-only       { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border-width:0; }
+
+/* Gradient text utility */
+.nx-gradient-text {
+  background: linear-gradient(135deg, #F0F6FC 0%, var(--nx-accent-text) 60%, var(--nx-accent) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Dot grid background utility */
+.nx-grid-bg {
+  background-image:
+    linear-gradient(var(--nx-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--nx-grid-line) 1px, transparent 1px);
+  background-size: var(--nx-grid-size) var(--nx-grid-size);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

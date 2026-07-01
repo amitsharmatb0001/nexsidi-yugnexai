@@ -1,0 +1,15 @@
+[package]
+name = "nexsidi-sandbox"
+version = "0.1.0"
+edition = "2021"
+
+# Patent Claim 5: 4-tier kernel isolation for generated code execution
+# Tier 1: bubblewrap/seatbelt (process-level)
+# Tier 2: seccomp filter (syscall allowlist)
+# Tier 3: network namespace (no outbound by default)
+# Tier 4: read-only filesystem overlay (tmpfs for writes)
+# Full implementation: Phase 2
+
+[[bin]]
+name = "sandbox"
+path = "src/main.rs"

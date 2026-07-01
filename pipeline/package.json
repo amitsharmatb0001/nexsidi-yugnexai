@@ -1,0 +1,22 @@
+{
+  "name": "@nexsidi/pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "worker": "bun worker.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nexsidi/agent-bus": "workspace:*",
+    "@nexsidi/context-chain": "workspace:*",
+    "@nexsidi/db": "workspace:*",
+    "@nexsidi/llm-client": "workspace:*",
+    "@temporalio/activity": "^1.11.0",
+    "@temporalio/client": "^1.11.0",
+    "@temporalio/worker": "^1.11.0",
+    "@temporalio/workflow": "^1.11.0",
+    "drizzle-orm": "^0.40.0",
+    "ioredis": "^5.4.1"
+  }
+}

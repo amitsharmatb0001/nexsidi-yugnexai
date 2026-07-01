@@ -1,0 +1,16 @@
+[package]
+name    = "nexui-layout-compiler"
+version = "1.0.0"
+edition = "2021"
+description = "NexUI LayoutMatrix bitmask → CSS compiler (WASM target)"
+license = "LicenseRef-YugNex-Proprietary"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+
+[profile.release]
+opt-level = "z"
+lto       = true
