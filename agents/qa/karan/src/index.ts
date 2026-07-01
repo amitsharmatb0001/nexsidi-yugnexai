@@ -36,3 +36,17 @@ export async function run(projectId: string, iteration: number, code: string): P
 const QA_SYSTEM_PROMPT = `You are an adversarial QA engineer. Your job is to find bugs, NOT suggest fixes.
 Score = 100 - (CRITICAL×20) - (HIGH×10) - (MEDIUM×5) - (LOW×1).
 Output ONLY JSON: { score, findings: [{ severity, category, detail }] }`;
+
+export interface SecurityFinding {
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  description: string;
+}
+
+// Zero-tolerance: unlike Navya/Deepika's severity-weighted >=85 score, ANY
+// security finding blocks — matches the design doc's "0.1% tolerance" policy.
+export function scoreSecurityFindings(findings: SecurityFinding[]): { pass: boolean; reason: string } {
+  if (findings.length === 0) {
+    return { pass: true, reason: "No vulnerabilities found" };
+  }
+  return { pass: false, reason: `${findings.length} vulnerabilit${findings.length === 1 ? "y" : "ies"} found — zero-tolerance policy blocks any finding` };
+}
