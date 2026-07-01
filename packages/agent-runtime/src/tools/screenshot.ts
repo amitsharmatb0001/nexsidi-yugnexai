@@ -1,5 +1,5 @@
 import { chromium } from "playwright";
-import { resolve } from "path";
+import { resolve, sep } from "path";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
 
@@ -10,7 +10,7 @@ export async function execScreenshot(args: { url: string; outputPath: string }):
   }
   const outAbs = resolve(args.outputPath);
   const cwdAbs = resolve(process.cwd());
-  if (!outAbs.startsWith(cwdAbs)) {
+  if (outAbs !== cwdAbs && !outAbs.startsWith(cwdAbs + sep)) {
     return { status: "error", summary: "screenshot outputPath escapes the working directory" };
   }
 
