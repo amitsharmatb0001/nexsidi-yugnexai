@@ -19,3 +19,9 @@ export interface DagTask {
 export interface Dag {
   tasks: DagTask[];
 }
+
+export interface PipelineCheckpoint<T = unknown> {
+  stage: string;
+  data: T;
+  writtenAt: string; // ISO timestamp
+}
