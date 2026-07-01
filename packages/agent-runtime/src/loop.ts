@@ -7,6 +7,8 @@ import { execWriteFile, execReadFile, execListFiles, FILE_TOOL_DEFS } from "./to
 import { execRunCommand, COMMAND_TOOL_DEF } from "./tools/command.ts";
 import { execHttpRequest, HTTP_TOOL_DEF } from "./tools/http.ts";
 import { execDockerCompose, DOCKER_TOOL_DEF } from "./tools/docker.ts";
+import { execWebSearch, WEB_SEARCH_TOOL_DEF } from "./tools/websearch.ts";
+import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 
 const MAX_ITERATIONS = 40;
@@ -20,6 +22,8 @@ export interface AgentRunConfig {
   sandboxDir: string;         // all file ops scoped here
   enableDockerTools?: boolean; // Riya only
   enableHttpTools?: boolean;   // Shubham verification
+  enableWebSearch?: boolean;   // fact-checking / package verification
+  enableScreenshot?: boolean;  // visual QA
 }
 
 export interface AgentRunResult {
@@ -47,14 +51,20 @@ const TASK_COMPLETE_TOOL: NimToolDef = {
   },
 };
 
-export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> {
-  const tools: NimToolDef[] = [
+export function buildToolList(config: AgentRunConfig): NimToolDef[] {
+  return [
     ...FILE_TOOL_DEFS,
     COMMAND_TOOL_DEF,
     ...(config.enableHttpTools ? [HTTP_TOOL_DEF] : []),
     ...(config.enableDockerTools ? [DOCKER_TOOL_DEF] : []),
+    ...(config.enableWebSearch ? [WEB_SEARCH_TOOL_DEF] : []),
+    ...(config.enableScreenshot ? [SCREENSHOT_TOOL_DEF] : []),
     TASK_COMPLETE_TOOL,
   ];
+}
+
+export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> {
+  const tools: NimToolDef[] = buildToolList(config);
 
   const messages: NimMessage[] = [
     { role: "system", content: config.systemPrompt },
@@ -144,6 +154,14 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         }
         case "docker_compose": {
           result = execDockerCompose(config.sandboxDir, args as { action: "up" | "down" | "logs" | "ps"; service?: string; timeout_ms?: number });
+          break;
+        }
+        case "web_search": {
+          result = await execWebSearch(args as { query: string; timeout_ms?: number });
+          break;
+        }
+        case "screenshot": {
+          result = await execScreenshot(args as { url: string; outputPath: string });
           break;
         }
         case "task_complete": {
