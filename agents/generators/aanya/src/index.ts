@@ -16,7 +16,11 @@ export function getOutputDir(projectId: string): string {
 const NEXUI_PUBLISH_DIR = resolve(process.env.NEXUI_DIR ?? join(process.cwd(), "nexui-publish"));
 
 // ── Main entry ────────────────────────────────────────────────────────────────
-export async function run(plan: BuildPlan): Promise<GeneratorResult> {
+// mode "preview": Stage 3 UI-only build shown to the user for design approval
+//                 before any backend exists — mock data only, no fetch() calls.
+// mode "integrate": wires the already-approved preview UI to the real backend
+//                 API — no layout/visual changes, only mock data → real fetch().
+export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId);
   mkdirSync(outputDir, { recursive: true });
@@ -32,8 +36,8 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     agentName: "aanya",
     model: "moonshotai/kimi-k2.6",
     apiKey,
-    systemPrompt: AANYA_AGENT_SYSTEM_PROMPT,
-    initialMessage: buildAgentTask(plan),
+    systemPrompt: buildAgentPrompt(mode),
+    initialMessage: buildAgentTask(plan, mode),
     sandboxDir: outputDir,
     enableHttpTools: false,
   });
@@ -66,7 +70,11 @@ function vendorNexui(outputDir: string): void {
 }
 
 // ── Agent system prompt ───────────────────────────────────────────────────────
-const AANYA_AGENT_SYSTEM_PROMPT = `\
+// Shared base (stack rules, NexUI usage, layout patterns, critical rules) is the
+// same regardless of mode. Mode-specific addenda below tell Aanya whether this
+// is a mock-data-only preview build (Stage 3, pre-approval) or a real-backend
+// integration pass (post-approval, wiring the locked preview to live APIs).
+const AANYA_SHARED_PROMPT_BASE = `\
 You are Aanya, a senior Next.js 16.2 + TypeScript frontend engineer.
 You have tools to write files and run commands. DO NOT output text — USE TOOLS.
 
@@ -87,7 +95,8 @@ STACK (non-negotiable):
   NEVER use Tailwind, shadcn/ui, @radix-ui, or any external UI library
   NEVER use @apply in CSS — use NexUI CSS variables or classnames from nexui-utils.css
 - Auth: @clerk/nextjs — ClerkProvider wraps in layout.tsx (already in scaffold)
-- API calls: fetch() with Bearer token from useAuth().getToken()
+- API calls: see the MODE-specific instructions at the end of this prompt for
+  whether to call the backend now or use mock data instead
 
 NEXUI COMPONENT USAGE:
   import { Button, Panel, Card, CardHeader, CardBody, Badge, Input, Checkbox, Spinner } from "@yugnex/nexui-react";
@@ -151,15 +160,50 @@ CRITICAL RULES:
 VERIFICATION GATE: Do not call task_complete until "npx next build" exits 0.
 `;
 
-function buildAgentTask(plan: BuildPlan): string {
+const AANYA_PREVIEW_ADDENDUM = `
+MODE: PREVIEW ONLY (Stage 3 — UI-first design approval, no backend yet)
+- Use mock/placeholder data defined inline in each component (const arrays/objects
+  at the top of the file, or a local mock-data module) — no fetch() calls anywhere.
+- Do NOT write hooks that call the backend (no useEffect fetching from an API,
+  no API client, no SWR/react-query against a real endpoint).
+- Focus entirely on layout, visual hierarchy, and correct NexUI component usage.
+- This build will be shown to the user for design approval BEFORE any backend
+  exists — there is no live API to call yet, so mock everything realistically
+  using the shapes from SHARED TYPES / the API contract as a reference only.
+`;
+
+const AANYA_INTEGRATE_ADDENDUM = `
+MODE: INTEGRATE (post-approval — wire the locked preview to the real backend)
+- Wire the already-approved UI (from the locked preview) to the real backend API.
+- API calls: fetch() with Bearer token from useAuth().getToken().
+- Do NOT change layout or visual design from the locked preview — only replace
+  mock data with real fetch calls (plus the loading/error states around them).
+`;
+
+export function buildAgentPrompt(mode: "preview" | "integrate"): string {
+  const addendum = mode === "preview" ? AANYA_PREVIEW_ADDENDUM : AANYA_INTEGRATE_ADDENDUM;
+  return AANYA_SHARED_PROMPT_BASE + addendum;
+}
+
+function buildAgentTask(plan: BuildPlan, mode: "preview" | "integrate"): string {
   const backendUrl = plan.apiContract.baseUrl ?? "http://localhost:3001";
-  return `Build a complete Next.js 16.2 frontend for this project.
+
+  const goal = mode === "preview"
+    ? "Build a complete Next.js 16.2 frontend PREVIEW (mock data only, no backend calls yet) for this project."
+    : "Wire the already-built and approved Next.js 16.2 frontend preview to the real backend API for this project.";
+
+  const apiSection = mode === "preview"
+    ? `BACKEND API CONTRACT (reference only — NOT running yet, do NOT call it; use it to shape your mock data):
+${JSON.stringify(plan.apiContract, null, 2)}`
+    : `BACKEND API (running at ${backendUrl}):
+${JSON.stringify(plan.apiContract, null, 2)}`;
+
+  return `${goal}
 
 PROJECT: ${plan.appName ?? "web app"}
 DESCRIPTION: ${plan.appDescription ?? ""}
 
-BACKEND API (running at ${backendUrl}):
-${JSON.stringify(plan.apiContract, null, 2)}
+${apiSection}
 
 SHARED TYPES (use these exact field names in your TypeScript interfaces):
 ${plan.sharedTypes ?? ""}
