@@ -4,3 +4,4 @@ export { COMMAND_TOOL_DEF, execRunCommand } from "./tools/command.ts";
 export { HTTP_TOOL_DEF, execHttpRequest } from "./tools/http.ts";
 export { DOCKER_TOOL_DEF, execDockerCompose } from "./tools/docker.ts";
 export { WEB_SEARCH_TOOL_DEF, execWebSearch } from "./tools/websearch.ts";
+export { SCREENSHOT_TOOL_DEF, execScreenshot } from "./tools/screenshot.ts";
