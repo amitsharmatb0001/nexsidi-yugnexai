@@ -7,6 +7,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@nexsidi/agent-runtime": "workspace:*",
     "@nexsidi/agent-bus": "workspace:*",
     "@nexsidi/context-chain": "workspace:*",
     "@nexsidi/db": "workspace:*",

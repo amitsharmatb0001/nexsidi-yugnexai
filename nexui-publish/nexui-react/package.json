@@ -1,0 +1,44 @@
+{
+  "name": "@yugnex/nexui-react",
+  "version": "2.0.1",
+  "description": "React component library for @yugnex/nexui. Full replacement for Tailwind CSS + MUI + shadcn/ui. Zero external dependencies.",
+  "license": "LicenseRef-YugNex-Proprietary",
+  "author": "YugNex Technology (OPC) Private Limited <legal@yugnex.com>",
+  "type": "module",
+  "main":   "./dist/index.js",
+  "module": "./dist/index.js",
+  "types":  "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types":  "./dist/index.d.ts"
+    },
+    "./provider":   { "import": "./dist/provider.js",   "types": "./dist/provider.d.ts"   },
+    "./toast":      { "import": "./dist/toast.js",      "types": "./dist/toast.d.ts"      },
+    "./modal":      { "import": "./dist/modal.js",      "types": "./dist/modal.d.ts"      },
+    "./tabs":       { "import": "./dist/tabs.js",       "types": "./dist/tabs.d.ts"       },
+    "./select":     { "import": "./dist/select.js",     "types": "./dist/select.d.ts"     },
+    "./tooltip":    { "import": "./dist/tooltip.js",    "types": "./dist/tooltip.d.ts"    },
+    "./card":       { "import": "./dist/card.js",       "types": "./dist/card.d.ts"       },
+    "./primitives": { "import": "./dist/primitives.js", "types": "./dist/primitives.d.ts" }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build":       "tsc --project tsconfig.json",
+    "build:watch": "tsc --project tsconfig.json --watch",
+    "typecheck":   "tsc --noEmit",
+    "clean":       "rm -rf dist"
+  },
+  "peerDependencies": {
+    "react":           ">=18.0.0",
+    "react-dom":       ">=18.0.0",
+    "@yugnex/nexui":   "^2.0.1"
+  },
+  "devDependencies": {
+    "typescript":       "^5.5.0",
+    "@types/react":     "^18.0.0",
+    "@types/react-dom": "^18.0.0"
+  },
+  "dependencies": {},
+  "sideEffects": false
+}

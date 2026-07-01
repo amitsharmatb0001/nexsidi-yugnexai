@@ -1,0 +1,8 @@
+{
+  "name": "nexui-publish-workspace",
+  "private": true,
+  "workspaces": [
+    "nexui",
+    "nexui-react"
+  ]
+}

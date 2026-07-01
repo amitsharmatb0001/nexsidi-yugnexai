@@ -1,0 +1,59 @@
+YUGNEX PROPRIETARY SOFTWARE LICENSE
+Version 1.0, Effective January 2026
+
+Copyright (c) 2026 YugNex Technology (OPC) Private Limited
+DIPP234393 — Bhilwara, Rajasthan, India
+
+All rights reserved.
+
+GRANT OF LICENSE
+
+YugNex Technology (OPC) Private Limited ("YugNex") grants to the licensee
+a non-exclusive, non-transferable, non-sublicensable license to use this
+software ("@yugnex/nexui") solely for:
+
+  (a) Internal use within products and services developed and operated by
+      YugNex Technology (OPC) Private Limited, including but not limited to
+      the NexSidi platform; and
+
+  (b) Any other use explicitly authorized in writing by YugNex.
+
+RESTRICTIONS
+
+The licensee may NOT:
+
+  1. Distribute, sell, sublicense, or otherwise transfer this software or
+     any derivative works to any third party without explicit written
+     authorization from YugNex.
+
+  2. Remove or alter any copyright, trademark, or proprietary notices
+     contained in the software.
+
+  3. Use the software as the basis for a competing product or service.
+
+  4. Reverse-engineer, decompile, or disassemble the compiled WASM binary
+     modules included with this package.
+
+INTELLECTUAL PROPERTY
+
+This software embodies methods described in Indian Patent Application
+#202611001020 filed January 5, 2026. Unauthorized use of the patented
+methods is prohibited.
+
+DISCLAIMER OF WARRANTIES
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+LIMITATION OF LIABILITY
+
+IN NO EVENT SHALL YUGNEX BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+CONTACT
+
+YugNex Technology (OPC) Private Limited
+legal@yugnex.com
+https://yugnex.com
