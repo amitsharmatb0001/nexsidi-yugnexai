@@ -164,8 +164,10 @@ Only generic labels are ever shown externally — to users, outside developers, 
 
 ## Open Follow-Ups (not blocking this design)
 
-1. Reconcile CLAUDE.md's internal "10 PATENT CLAIMS" table against the actual filed provisional — they currently don't match.
-2. Confirm actual provisional filing date (this doc says Dec 31 2025, CLAUDE.md says Jan 5 2026) — Amit's responsibility.
-3. Design the screenshot/browser tool for Stage 5 Tier 3 (implementation-plan scope).
-4. Design real OTP/payment integration when pricing is decided (currently feature-flagged off).
-5. Design GCP deploy path when needed (currently feature-flagged off).
+| # | Item | Owner |
+|---|---|---|
+| 1 | Reconcile CLAUDE.md's internal "10 PATENT CLAIMS" table against the actual filed provisional — they currently don't match | Claude — documentation edit, done during/after implementation |
+| 2 | Confirm actual provisional filing date (this doc says Dec 31 2025, CLAUDE.md says Jan 5 2026) | **Amit** — legal fact only you/counsel can confirm |
+| 3 | Design + build the screenshot/browser tool for Stage 5 Tier 3 | Claude — part of the implementation plan (Section 5's tool loop work), not a separate ask |
+| 4 | Design + build real OTP/payment integration | Claude builds it, but it's blocked until Amit decides pricing — a business call, not a technical one |
+| 5 | Design + build the GCP deploy path | Claude builds it, triggered whenever Amit says it's needed — timing is Amit's call, the build is Claude's |
