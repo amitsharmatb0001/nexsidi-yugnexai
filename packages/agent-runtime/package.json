@@ -6,6 +6,7 @@
   "main": "./src/index.ts",
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.109.0",
     "@nexsidi/llm-client": "workspace:*",
     "playwright": "^1.50.1"
   }

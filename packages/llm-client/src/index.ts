@@ -1,6 +1,8 @@
 export { agentChat } from "./router.ts";
 export { nimChat, nimChatWithTools } from "./nim.ts";
 export type { NimToolDef, NimToolCall, NimMessage, NimToolResponse } from "./nim.ts";
+export { claudeChat, claudeChatWithTools, translateNimToolToClaudeTool, CLAUDE_ESCALATION_MODEL, ClaudeRefusalError } from "./claude.ts";
+export type { ClaudeToolDef, ClaudeToolCall, ClaudeMessage, ClaudeContentBlockParam, ClaudeChatWithToolsResult } from "./claude.ts";
 export { ollamaChat } from "./ollama.ts";
 export { waitForToken, getBucketState } from "./token-bucket.ts";
 export { getState, getAllStates } from "./circuit-breaker.ts";

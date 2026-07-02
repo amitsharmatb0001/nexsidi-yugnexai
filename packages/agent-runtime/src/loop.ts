@@ -11,7 +11,10 @@ import { execWebSearch, WEB_SEARCH_TOOL_DEF } from "./tools/websearch.ts";
 import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 
-const MAX_ITERATIONS = 40;
+// Exported so claude-loop.ts's runAgentWithClaude() can reuse the exact same
+// iteration cap instead of redefining it (per Task 15 spec — "same
+// MAX_ITERATIONS constant, import it, don't redefine").
+export const MAX_ITERATIONS = 40;
 
 export interface AgentRunConfig {
   agentName: string;
@@ -34,7 +37,10 @@ export interface AgentRunResult {
   errors: string[];
 }
 
-const TASK_COMPLETE_TOOL: NimToolDef = {
+// Exported for the same reason as MAX_ITERATIONS above — claude-loop.ts
+// reuses this exact contract (translated to Claude's tool format) instead of
+// redefining it.
+export const TASK_COMPLETE_TOOL: NimToolDef = {
   type: "function",
   function: {
     name: "task_complete",
