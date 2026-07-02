@@ -25,6 +25,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@nexsidi/agent-bus": "workspace:*",
+        "@nexsidi/agent-runtime": "workspace:*",
         "@nexsidi/context-chain": "workspace:*",
         "@nexsidi/db": "workspace:*",
         "@nexsidi/llm-client": "workspace:*",
@@ -45,6 +46,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@nexsidi/agent-bus": "workspace:*",
+        "@nexsidi/agent-runtime": "workspace:*",
         "@nexsidi/context-chain": "workspace:*",
         "@nexsidi/db": "workspace:*",
         "@nexsidi/llm-client": "workspace:*",
@@ -107,6 +109,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@nexsidi/agent-bus": "workspace:*",
+        "@nexsidi/agent-runtime": "workspace:*",
         "@nexsidi/context-chain": "workspace:*",
         "@nexsidi/db": "workspace:*",
         "@nexsidi/llm-client": "workspace:*",
@@ -128,6 +131,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@nexsidi/agent-bus": "workspace:*",
+        "@nexsidi/agent-runtime": "workspace:*",
         "@nexsidi/context-chain": "workspace:*",
         "@nexsidi/db": "workspace:*",
         "@nexsidi/llm-client": "workspace:*",
@@ -179,6 +183,14 @@
       "version": "0.1.0",
       "dependencies": {
         "ioredis": "^5.4.1",
+      },
+    },
+    "packages/agent-runtime": {
+      "name": "@nexsidi/agent-runtime",
+      "version": "1.0.0",
+      "dependencies": {
+        "@nexsidi/llm-client": "workspace:*",
+        "playwright": "^1.50.1",
       },
     },
     "packages/context-chain": {
@@ -441,6 +453,8 @@
 
     "@nexsidi/agent-riya": ["@nexsidi/agent-riya@workspace:agents/riya"],
 
+    "@nexsidi/agent-runtime": ["@nexsidi/agent-runtime@workspace:packages/agent-runtime"],
+
     "@nexsidi/agent-saanvi": ["@nexsidi/agent-saanvi@workspace:agents/saanvi"],
 
     "@nexsidi/agent-shubham": ["@nexsidi/agent-shubham@workspace:agents/generators/shubham"],
@@ -695,6 +709,8 @@
 
     "fs-monkey": ["fs-monkey@1.1.0", "", {}, "sha512-QMUezzXWII9EV5aTFXW1UBVUO77wYPpjqIF8/AviUCThNeSYZykpoTixUeaNNBwmCev0AMDWMAni+f8Hxb1IFw=="],
 
+    "fsevents": ["fsevents@2.3.2", "", { "os": "darwin" }, "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="],
+
     "gel": ["gel@2.2.0", "", { "dependencies": { "@petamoriken/float16": "^3.8.7", "debug": "^4.3.4", "env-paths": "^3.0.0", "semver": "^7.6.2", "shell-quote": "^1.8.1", "which": "^4.0.0" }, "bin": { "gel": "dist/cli.mjs" } }, "sha512-q0ma7z2swmoamHQusey8ayo8+ilVdzDt4WTxSPzq/yRqvucWRfymRVMvNgmSC0XK7eNjjEZEcplxpgaNojKdmQ=="],
 
     "get-caller-file": ["get-caller-file@2.0.5", "", {}, "sha512-DyFP3BM/3YHTQOCUL/w0OZHR0lpKeGrxotcHWcqNEdnltqFwXVfhEBQ94eIo34AfQpo0rGki4cyIiftY06h2Fg=="],
@@ -760,6 +776,10 @@
     "node-releases": ["node-releases@2.0.49", "", {}, "sha512-f06bl1D+8ZDkn2oOQQKAh5/otFWqVnM1Q5oerA8Pex7UfT66Tx4IPHIqVVFKqFT3FUtaDstdgkM7yT7JWhqxfw=="],
 
     "picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
+
+    "playwright": ["playwright@1.61.1", "", { "dependencies": { "playwright-core": "1.61.1" }, "optionalDependencies": { "fsevents": "2.3.2" }, "bin": { "playwright": "cli.js" } }, "sha512-DWnY5o3YbLWK4GovuAVwpqL+1VwGNdUGrRr++8j8PtQQzvAVZUIMjKQ90fY689sEJZJBbZVw1rXaOKSTitkzPQ=="],
+
+    "playwright-core": ["playwright-core@1.61.1", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-h7Qlt6m4REp25qvIdvbDtVmD4LqVXfpRxhORv9L0jzETM05p4fuPJ3dKyuSXQxDSbXnmS79HAgi9589lGSpLkg=="],
 
     "postcss": ["postcss@8.4.31", "", { "dependencies": { "nanoid": "^3.3.6", "picocolors": "^1.0.0", "source-map-js": "^1.0.2" } }, "sha512-PS08Iboia9mts/2ygV3eLpY5ghnUcfLV/EXTOW1E2qYxJKGGBUtNjN76FYHnMs36RmARn41bC0AZmn+rR0OVpQ=="],
 

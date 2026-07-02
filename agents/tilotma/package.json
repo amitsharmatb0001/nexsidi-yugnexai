@@ -10,6 +10,7 @@
     "@nexsidi/db": "workspace:*",
     "@nexsidi/llm-client": "workspace:*",
     "@nexsidi/agent-bus": "workspace:*",
+    "@nexsidi/agent-runtime": "workspace:*",
     "@nexsidi/context-chain": "workspace:*"
   }
 }
