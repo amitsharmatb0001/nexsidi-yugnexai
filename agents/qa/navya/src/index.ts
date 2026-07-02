@@ -70,10 +70,12 @@ export function parseAndScoreFindings(content: string): { score: number; passed:
     });
   } catch {
     // D25 default-FAIL: score is forced to 0 here, NOT run through the
-    // normal weighted formula (a lone CRITICAL would only cost -20, i.e.
-    // score 80 — still "passing" by the ≥85 threshold, which would make an
-    // unparseable response silently pass QA). An unparseable response gets
-    // the worst possible score, unconditionally.
+    // normal weighted formula (a lone CRITICAL would score 80, which already
+    // fails the ≥85 threshold — so this isn't needed to prevent a silent
+    // pass). It's forced to 0 regardless, because an unparseable response is
+    // categorically worse than "one confirmed critical bug": it means the
+    // review didn't happen at all, and should read as the worst possible
+    // outcome, not just barely-failing.
     return {
       score: 0,
       passed: false,

@@ -196,19 +196,23 @@ test("a Navya finding with a frontend/ file path routes faultAgent to aanya", as
   expect(result.faultAgent).toBe("aanya");
 });
 
-test("a Deepika finding with a backend/ file path routes faultAgent to shubham", async () => {
+// Uses a db/ path (routes to "pranav") rather than backend/ ("shubham") on
+// purpose — "shubham" is identifyFaultAgent's own default fallback, so a
+// backend/ case here couldn't distinguish "file threading actually worked"
+// from "file was silently ignored and it fell through to the default."
+test("a Deepika finding with a db/ file path routes faultAgent to pranav, proving file threading (not just the default) drives routing", async () => {
   const agents = makeAgents({
     runDeepika: async (): Promise<DeepikaResult> => ({
       agent: "deepika",
       score: 50,
       passed: false,
-      findings: [{ severity: "HIGH", category: "n-plus-one", detail: "tasks list issues one query per row", file: "backend/src/routes/tasks.routes.ts" }],
+      findings: [{ severity: "HIGH", category: "missing-index", detail: "full table scan on tasks query", file: "db/migrations/0001_tasks.sql" }],
     }),
   });
 
   const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents);
 
-  expect(result.faultAgent).toBe("shubham");
+  expect(result.faultAgent).toBe("pranav");
 });
 
 // Findings are combined from all three agents (mapped into Stage 4's Finding
