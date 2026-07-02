@@ -6,8 +6,12 @@
 import { runAgent } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
-import { db, projects } from "@nexsidi/db";
-import { eq } from "drizzle-orm";
+// @nexsidi/db and drizzle-orm are imported dynamically inside run() (at the
+// point of use) rather than at module top level — @nexsidi/db's client
+// throws eagerly at import time if DATABASE_URL isn't set, which would make
+// this whole module (including the pure resolveDeployTarget()) impossible to
+// unit-test without a configured Postgres connection. Deferring the import
+// keeps deploy-target.test.ts infra-free.
 
 export interface DeployResult {
   success: boolean;
@@ -16,7 +20,28 @@ export interface DeployResult {
   errors: string[];
 }
 
-export async function run(projectId: string): Promise<DeployResult> {
+// Stage 6's deployTarget gate (Task 13). "gcp" is explicitly not yet
+// implemented — this throws rather than silently falling back to a local
+// deploy, per the design doc's Open Follow-Up #5. Called FIRST in run(),
+// before any docker/deploy work starts, so a "gcp" request fails loudly and
+// immediately instead of quietly doing the wrong thing.
+export function resolveDeployTarget(target: "local" | "gcp"): { mode: "docker-compose" } {
+  if (target === "gcp") {
+    throw new Error(
+      "GCP deploy target not yet implemented — per design doc Open Follow-Up #5, build when Amit says it's needed"
+    );
+  }
+  return { mode: "docker-compose" };
+}
+
+// `deployTarget` defaults to "local" (matches FeatureFlags' documented default
+// in pipeline/orchestrator/flags.ts / types.ts) so existing callers that only
+// ever deployed locally — e.g. pipeline/activities/index.ts's legacy Temporal
+// activity — keep compiling and behaving exactly as before without having to
+// thread the new flag through immediately.
+export async function run(projectId: string, deployTarget: "local" | "gcp" = "local"): Promise<DeployResult> {
+  resolveDeployTarget(deployTarget);
+
   const buildDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId);
   mkdirSync(buildDir, { recursive: true });
 
@@ -40,7 +65,9 @@ export async function run(projectId: string): Promise<DeployResult> {
   // Archive to GitHub (fire-and-forget, errors non-fatal)
   const githubRepo = await archiveToGitHub(projectId, buildDir).catch(() => null);
 
-  // Persist appUrl + status to DB
+  // Persist appUrl + status to DB (dynamic import — see top-of-file comment)
+  const { db, projects } = await import("@nexsidi/db");
+  const { eq } = await import("drizzle-orm");
   await db
     .update(projects)
     .set({
