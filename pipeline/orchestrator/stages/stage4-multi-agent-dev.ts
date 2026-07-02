@@ -32,6 +32,7 @@ import { join } from "node:path";
 import { hashContext, signOutput, triggerRollback, verifyContext } from "@nexsidi/context-chain";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 import type { GeneratorResult } from "../../../agents/generators/shubham/src/index.ts";
+import { assertValidIdentifier } from "../checkpoint.ts";
 import type { Dag } from "../types.ts";
 
 export interface Stage4Result {
@@ -84,6 +85,7 @@ interface KeyPaths {
 // Generates (or reuses, if already generated earlier in this project's
 // pipeline run) the per-project signing keypair described above.
 export function getProjectKeyPair(projectId: string): KeyPaths {
+  assertValidIdentifier(projectId, "projectId");
   const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
   const keysDir = join(buildDir, projectId, "keys");
   const privateKeyPath = join(keysDir, "private.pem");

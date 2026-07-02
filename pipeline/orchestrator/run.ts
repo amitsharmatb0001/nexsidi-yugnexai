@@ -1,4 +1,4 @@
-// Orchestrator entry point — wires Stages 1-3 together with checkpointing.
+// Orchestrator entry point — wires Stages 1-6 together with checkpointing.
 //
 // Split into two functions on purpose:
 //   - runPipelineWithStages: pure sequencing/gating logic, takes stage
@@ -9,11 +9,13 @@
 //     transitively pulls in Saanvi/Aanya's real agent code, which calls live
 //     LLMs and isn't safe to load at module-eval time in a test run.
 import { writeCheckpoint } from "./checkpoint.ts";
-import type { GatewayDecision } from "./types.ts";
+import type { GatewayDecision, Dag } from "./types.ts";
+import type { BuildPlan } from "../../agents/arjun/src/index.ts";
 
 export interface Stage1Output {
   spec: unknown; // ProjectSpec — flows to Stage 2's human-readable summary
-  plan: unknown; // BuildPlan (Arjun's output) — flows to Stage 3's generator call
+  plan: unknown; // BuildPlan (Arjun's output) — flows to Stage 3/4's generator calls
+  dag: unknown;  // Dag (Arjun's task breakdown) — flows to Stage 4's dag param
 }
 
 export interface Stage3Output {
@@ -21,25 +23,67 @@ export interface Stage3Output {
   outputDir: string;
 }
 
+// Mirrors stage4-multi-agent-dev.ts's real Stage4Result shape structurally
+// (not imported from it) — same "stays untyped/hand-rolled on purpose to
+// keep run.test.ts's stubs decoupled from agent internals" convention
+// Stage1Output/Stage3Output already use.
+export interface Stage4Output {
+  backendOutputDir: string;
+  frontendOutputDir: string;
+  filesWritten: string[];
+}
+
+// Mirrors stage5-adversarial-qa.ts's real Stage5Result shape structurally.
+export interface Stage5Output {
+  pass: boolean;
+  findings: unknown[];
+  faultAgent?: string;
+}
+
+// Mirrors stage6-deployment.ts's real Stage6Result shape structurally.
+export interface Stage6Output {
+  success: boolean;
+  appUrl: string;
+  findings?: unknown;
+  deliverySummary: unknown;
+}
+
 export interface PipelineStages {
   stage1: (projectId: string, userInput: string) => Promise<Stage1Output>;
   stage2: (projectId: string, spec: unknown) => Promise<GatewayDecision>;
   stage3: (projectId: string, plan: unknown) => Promise<Stage3Output>;
+  stage4: (projectId: string, plan: unknown, dag: unknown) => Promise<Stage4Output>;
+  stage5: (projectId: string, stage4Result: Stage4Output) => Promise<Stage5Output>;
+  stage6: (projectId: string, stage4Result: Stage4Output) => Promise<Stage6Output>;
 }
 
 /**
- * Runs Stage 1 -> Stage 2 (approval gate) -> Stage 3 (build + approval gate)
- * using injected stage implementations, checkpointing the result of each
- * stage as it completes. If Stage 2's decision is not "proceed", the
- * pipeline stops before Stage 3 ever runs.
+ * Runs the full 6-stage pipeline — Stage 1 (requirements) -> Stage 2
+ * (approval gate) -> Stage 3 (UI preview + second approval gate) -> Stage 4
+ * (multi-agent dev) -> Stage 5 (adversarial QA) -> Stage 6 (deploy) — using
+ * injected stage implementations, checkpointing the result of each stage as
+ * it completes. Two gates can stop the pipeline before it reaches Stage 6:
+ *
+ *   - Stage 2's decision is not "proceed" -> stops before Stage 3 runs.
+ *   - Stage 3's own human approval gate resolves to `locked: false` -> stops
+ *     before Stage 4 runs (nothing has been generated yet at that point, so
+ *     there is nothing to roll back).
+ *   - Stage 5's adversarial QA fails (`pass: false`) -> stops before Stage 6
+ *     deploys an unvetted build. A fault-isolated re-fix-and-retest loop
+ *     (per the design doc) is a distinct, larger feature and is NOT
+ *     implemented here — see this fix's report for the explicit scope call;
+ *     `stage5Result.faultAgent` is threaded through for a future loop to
+ *     consume, but nothing currently retries Shubham/Aanya/Pranav on it.
  *
  * Stage 1 now runs Arjun (agents/arjun/src/index.ts) after Saanvi, so it
- * produces both the locked `spec` (ProjectSpec) and a real `plan` (BuildPlan).
- * Stage 2 receives `spec` — it summarizes spec.name/description/features for
- * human review, fields BuildPlan does not carry. Stage 3 receives `plan` —
- * Aanya's generator requires the real BuildPlan shape (apiContract,
- * sharedTypes, dbSchema, ...). See stage1-requirements.ts and
- * stage3-ui-preview.ts for the full rationale.
+ * produces the locked `spec` (ProjectSpec), a real `plan` (BuildPlan), and a
+ * `dag` (Dag). Stage 2 receives `spec` — it summarizes
+ * spec.name/description/features for human review, fields BuildPlan does not
+ * carry. Stage 3 and Stage 4 both receive `plan` — Aanya's and
+ * Pranav's/Shubham's generators require the real BuildPlan shape
+ * (apiContract, sharedTypes, dbSchema, ...). Stage 4 also receives `dag`.
+ * See stage1-requirements.ts, stage3-ui-preview.ts, and
+ * stage4-multi-agent-dev.ts for the full rationale.
  */
 export async function runPipelineWithStages(
   projectId: string,
@@ -58,19 +102,53 @@ export async function runPipelineWithStages(
 
   const stage3Result = await stages.stage3(projectId, stage1Result.plan);
   writeCheckpoint(projectId, "03-ui-preview", stage3Result);
+
+  if (!stage3Result.locked) {
+    return; // Stage 3's own human approval gate declined — stage4 does not run
+  }
+
+  const stage4Result = await stages.stage4(projectId, stage1Result.plan, stage1Result.dag);
+  writeCheckpoint(projectId, "04-dev", stage4Result);
+
+  const stage5Result = await stages.stage5(projectId, stage4Result);
+  writeCheckpoint(projectId, "05-qa", stage5Result);
+
+  if (!stage5Result.pass) {
+    return; // Stage 5 adversarial QA failed — stage6 does not deploy an unvetted build
+  }
+
+  const stage6Result = await stages.stage6(projectId, stage4Result);
+  writeCheckpoint(projectId, "06-deployment", stage6Result);
 }
 
-/** Real entry point — wires the actual Stage 1-3 implementations. */
+/** Real entry point — wires the actual Stage 1-6 implementations. */
 export async function runPipeline(projectId: string, userInput: string): Promise<void> {
-  const [{ runStage1 }, { runStage2 }, { runStage3 }] = await Promise.all([
+  const [
+    { runStage1 },
+    { runStage2 },
+    { runStage3 },
+    { runStage4 },
+    { runStage5 },
+    { runStage6 },
+  ] = await Promise.all([
     import("./stages/stage1-requirements.ts"),
     import("./stages/stage2-gateway.ts"),
     import("./stages/stage3-ui-preview.ts"),
+    import("./stages/stage4-multi-agent-dev.ts"),
+    import("./stages/stage5-adversarial-qa.ts"),
+    import("./stages/stage6-deployment.ts"),
   ]);
 
   await runPipelineWithStages(projectId, userInput, {
     stage1: runStage1,
     stage2: runStage2,
     stage3: runStage3,
+    // runStage4's real signature takes the typed BuildPlan/Dag Arjun
+    // actually produces (not `unknown`) — cast at this single real-wiring
+    // boundary rather than loosening runStage4's own signature, same
+    // approach stage3-ui-preview.ts uses internally for its `plan` param.
+    stage4: (pid, plan, dag) => runStage4(pid, plan as BuildPlan, dag as Dag),
+    stage5: runStage5,
+    stage6: runStage6,
   });
 }

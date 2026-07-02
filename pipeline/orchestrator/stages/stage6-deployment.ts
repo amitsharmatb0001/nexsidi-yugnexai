@@ -5,20 +5,19 @@
 // since those were deploy-config issues invisible before containers were
 // actually running (see design doc, Stage 6 section).
 //
-// ── Stage 5 live-retest status (read before touching this file) ────────────
-// As of this task (Task 13), Task 12 (pipeline/orchestrator/stages/stage5-
-// adversarial-qa.ts) has NOT landed yet — only stage4-multi-agent-dev.ts
-// exists in pipeline/orchestrator/stages/ as of this writing. Importing a
-// `runStage5` here would fail to resolve, so the live-retest call below is a
-// clearly-marked stub (`runLiveRetestStub`) rather than a blocker on Task 12
-// landing, per this task's brief. When stage5-adversarial-qa.ts exists and
-// exports a function that can run QA against a live URL, replace
-// `defaultDeps.liveRetestFn` with a real dynamic import — the same
+// ── Stage 5 live-retest status ──────────────────────────────────────────────
+// stage5-adversarial-qa.ts now exists and exports `runStage5(projectId,
+// stage4Result): Promise<Stage5Result>`. runStage6()'s default `deps` below
+// wraps it via a real dynamic import (`runRealLiveRetest`) — the same
 // `await import(...)` pattern stage4-multi-agent-dev.ts uses for its agent
-// calls — and delete `runLiveRetestStub`.
+// calls. `runLiveRetestStub` is kept (exported) purely as an opt-in stub for
+// callers/tests that want to bypass a real QA re-run — it is no longer the
+// default and MUST NOT be reintroduced as the default without a comment
+// explaining why real QA coverage is being turned off again.
 import { resolveFlags } from "../flags.ts";
 import { run as runRiya, type DeployResult } from "../../../agents/riya/src/index.ts";
 import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
+import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
 // never appear in anything that could be user-facing. buildDeliverySummary()
@@ -72,49 +71,80 @@ export function buildDeliverySummary(
   };
 }
 
-// STUB — see the file-header comment. Preserves the "re-run Stage 5 QA
-// against the live URL" contract without blocking Stage 6 on Task 12's
-// landing. Always reports a pass with no findings so deployment isn't
-// artificially blocked by a stub — this MUST be replaced with the real Stage
-// 5 live retest before this pipeline is considered production-ready; do not
-// remove this warning without wiring the real call.
-async function runLiveRetestStub(projectId: string, appUrl: string): Promise<LiveRetestResult> {
+// Opt-in stub — kept for callers/tests that deliberately want to bypass a
+// real QA re-run (e.g. exercising deploy-only logic without paying for a
+// live LLM run). No longer the default; see `runRealLiveRetest` below and
+// the file-header comment.
+export async function runLiveRetestStub(projectId: string, appUrl: string): Promise<LiveRetestResult> {
   console.warn(
     `[stage6] Stage 5 live-retest STUBBED for project ${projectId} against ${appUrl} — ` +
-      `stage5-adversarial-qa.ts (Task 12) is not available yet. Treating as pass with no ` +
-      `findings so deployment is not blocked on it, but this is NOT real QA coverage.`,
+      `explicitly bypassing real adversarial QA. This is NOT real QA coverage.`,
   );
   return { pass: true, findings: [] };
 }
 
+// Real live-retest: re-runs Stage 5's adversarial QA (Navya/Karan/Deepika +
+// Tilotma's Tier 3 evidence review) against the SAME Stage 4 output
+// directories now that the app is actually deployed and running at `appUrl`.
+// Stage 5's real entry point (runStage5) re-reads code straight off disk
+// from stage4Result.backendOutputDir/frontendOutputDir — Riya's deploy does
+// not write generated code to a different output directory, it deploys what
+// Stage 4 already wrote for this projectId (same BUILD_DIR convention every
+// stage uses) — so Stage 4's pre-deploy output dirs are still the correct
+// ones to re-scan here; there is no separate post-deploy output dir to
+// reconcile.
+//
+// The one part of Stage 5 that genuinely needs the LIVE url is Tilotma's
+// Tier 3 evidence collector — it screenshots a running app
+// (agents/tilotma/src/tier3-review.ts) and reads its target from
+// `process.env.TIER3_REVIEW_URL` (defaulting to localhost:3000 when unset).
+// This wrapper points that env var at the just-deployed `appUrl` for the
+// duration of the call and restores whatever was there before, so a live
+// retest actually reviews the deployed instance rather than whatever
+// TIER3_REVIEW_URL happened to be set to.
+async function runRealLiveRetest(
+  projectId: string,
+  appUrl: string,
+  stage4Result: Stage4Result,
+): Promise<LiveRetestResult> {
+  const { runStage5 } = await import("./stage5-adversarial-qa.ts");
+
+  const previousUrl = process.env.TIER3_REVIEW_URL;
+  process.env.TIER3_REVIEW_URL = appUrl;
+  try {
+    const result: Stage5Result = await runStage5(projectId, stage4Result);
+    return { pass: result.pass, findings: result.findings };
+  } finally {
+    if (previousUrl === undefined) {
+      delete process.env.TIER3_REVIEW_URL;
+    } else {
+      process.env.TIER3_REVIEW_URL = previousUrl;
+    }
+  }
+}
+
 // Injectable seam for testing — runStage6() below wraps this with the real
-// Riya.run + the live-retest stub. Real docker deployment and a real live
+// Riya.run + the real live-retest. Real docker deployment and a real live
 // LLM-driven QA re-run are not unit-testable; the deterministic parts this
 // stage owns (flag plumbing, fail-fast on deploy failure, delivery summary
-// shape) are what stage6-deployment.test.ts covers via these injected stubs.
+// shape) are what stage6-deployment.test.ts covers via injected stubs — none
+// of those tests rely on the default, they all pass their own `deps`.
 export interface Stage6Deps {
   deployFn: (projectId: string, deployTarget: "local" | "gcp") => Promise<DeployResult>;
   liveRetestFn: (projectId: string, appUrl: string) => Promise<LiveRetestResult>;
 }
 
-const defaultDeps: Stage6Deps = {
-  deployFn: runRiya,
-  liveRetestFn: runLiveRetestStub,
-};
-
 export async function runStage6(
   projectId: string,
   stage4Result: Stage4Result,
-  deps: Stage6Deps = defaultDeps,
+  // Default constructed per-call (not a module-level constant) so
+  // liveRetestFn can close over this call's own `stage4Result` — the real
+  // live retest needs it to know which output directories to re-scan.
+  deps: Stage6Deps = {
+    deployFn: runRiya,
+    liveRetestFn: (pid, appUrl) => runRealLiveRetest(pid, appUrl, stage4Result),
+  },
 ): Promise<Stage6Result> {
-  // stage4Result isn't consumed directly here — Riya reads the already-
-  // written backend/frontend output directories straight off BUILD_DIR for
-  // this projectId (same convention every other stage uses). It's accepted
-  // as a parameter per this task's required signature so the stage's input
-  // type makes the Stage 4 -> Stage 6 dependency explicit in the pipeline's
-  // types, matching how stage5's runStage5(projectId, stage4Result) does it.
-  void stage4Result;
-
   const flags = resolveFlags();
 
   const deployResult = await deps.deployFn(projectId, flags.deployTarget);

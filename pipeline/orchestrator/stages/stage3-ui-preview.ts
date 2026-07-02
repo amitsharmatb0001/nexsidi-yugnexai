@@ -37,7 +37,16 @@ export async function runStage3(
     );
   }
 
-  writeCheckpoint(projectId, "03-design-lock", {
+  // Same checkpoint key run.ts's runPipelineWithStages later writes for this
+  // stage's final result ("03-ui-preview") — a prior version of this file
+  // used a separate "03-design-lock" key here, which meant the same stage
+  // wrote two different checkpoint files (final-whole-branch-review.md F4).
+  // Writing this interim record (before the human decision is known, so a
+  // crash during the up-to-30-minute poll below doesn't lose the fact that
+  // Aanya's preview build already succeeded) under the SAME key run.ts uses
+  // means run.ts's post-stage3 write simply supersedes it once the decision
+  // resolves — one key, one file, per stage.
+  writeCheckpoint(projectId, "03-ui-preview", {
     locked: true,
     outputDir: result.outputDir,
     lockedAt: new Date().toISOString(),

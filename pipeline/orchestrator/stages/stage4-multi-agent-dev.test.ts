@@ -4,7 +4,16 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hashContext, signOutput } from "@nexsidi/context-chain";
-import { identifyFaultAgent, verifyAgentHandoff } from "./stage4-multi-agent-dev.ts";
+import { getProjectKeyPair, identifyFaultAgent, verifyAgentHandoff } from "./stage4-multi-agent-dev.ts";
+
+// ── getProjectKeyPair path-traversal guard (final-whole-branch-review.md F5) ──
+test("getProjectKeyPair throws on a path-traversal projectId instead of writing keys outside BUILD_DIR", () => {
+  expect(() => getProjectKeyPair("../../escaped")).toThrow(/Invalid projectId/);
+});
+
+test("getProjectKeyPair throws on a projectId containing a path separator", () => {
+  expect(() => getProjectKeyPair("some/nested/id")).toThrow(/Invalid projectId/);
+});
 
 // Only the two deterministic parts of Stage 4 are unit-tested here — real
 // agent calls (Pranav/Shubham/Aanya's run()) hit live LLMs and aren't

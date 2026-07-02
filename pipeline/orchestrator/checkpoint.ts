@@ -4,7 +4,11 @@ import type { PipelineCheckpoint } from "./types.ts";
 
 const INVALID_IDENTIFIER = /\.\.|\/|\\/;
 
-function assertValidIdentifier(name: string, label: "projectId" | "stage"): void {
+// Exported so other project-scoped-filesystem-path builders (e.g. Stage 4's
+// per-project keypair path, Tilotma's Tier 3 screenshot path) can reuse the
+// exact same guard instead of re-implementing it — see final-whole-branch-
+// review.md F5.
+export function assertValidIdentifier(name: string, label: "projectId" | "stage"): void {
   if (!name || INVALID_IDENTIFIER.test(name)) {
     throw new Error(
       `Invalid ${label}: ${JSON.stringify(name)} — must not contain "..", "/", or "\\"`

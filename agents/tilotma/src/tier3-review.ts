@@ -24,6 +24,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { runAgent } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS } from "@nexsidi/llm-client";
+import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
 
 export interface Tier3ReviewResult {
   pass: boolean;
@@ -41,6 +42,8 @@ export async function runTier3Review(
   projectId: string,
   frontendOutputDir: string,
 ): Promise<Tier3ReviewResult> {
+  assertValidIdentifier(projectId, "projectId");
+
   const apiKey = process.env.NIM_API_KEY ?? "";
   const appUrl = process.env.TIER3_REVIEW_URL ?? "http://localhost:3000";
   const screenshotDir = join(SCREENSHOT_ROOT, projectId).replace(/\\/g, "/");
