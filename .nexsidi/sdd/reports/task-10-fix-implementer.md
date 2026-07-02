@@ -153,8 +153,7 @@ agents/generators/shubham/src/index.ts(103,21): error TS2339: Property 'appDescr
 
 ## Commit
 
-(filled in after `git commit` — see repo log for
-"fix: wire Arjun into Stage 1 to produce a real BuildPlan for Stage 3 (was silently stubbed, would crash at runtime)")
+f515ac3 — "fix: wire Arjun into Stage 1 to produce a real BuildPlan for Stage 3 (was silently stubbed, would crash at runtime)"
 
 ## Concerns
 
