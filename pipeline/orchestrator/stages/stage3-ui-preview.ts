@@ -1,16 +1,15 @@
 // Stage 3 — UI-only design preview + a second human approval gate.
 //
-// KNOWN GAP: Aanya's real `run()` (agents/generators/aanya/src/index.ts)
-// takes a `BuildPlan` (apiContract, dbSchema, sharedTypes, ...) produced by
-// Arjun (agents/arjun/src/index.ts, run(spec): Promise<BuildPlan>). No stage
-// in this pipeline invokes Arjun yet — Stage 1 only produces a `ProjectSpec`.
-// `runPipeline` in ../run.ts currently passes Stage 1's spec straight through
-// as this stage's `plan` argument, since it's the only artifact available.
-// That is NOT a real BuildPlan: Aanya's prompt builder reads
-// `plan.apiContract.baseUrl` and `plan.sharedTypes` unconditionally, so a real
-// (non-stubbed) end-to-end run of `runPipeline` will throw a TypeError here
-// until an Arjun stage is wired in between Stage 1 and Stage 3. Flagged in
-// the Task 10 report rather than papered over.
+// Aanya's real `run()` (agents/generators/aanya/src/index.ts) takes a
+// `BuildPlan` (apiContract, dbSchema, sharedTypes, ...) produced by Arjun
+// (agents/arjun/src/index.ts, run(spec): Promise<BuildPlan>). Stage 1 now
+// calls Arjun and returns the real `BuildPlan` alongside the `ProjectSpec`
+// (see stage1-requirements.ts); `runPipelineWithStages` in ../run.ts passes
+// that `plan` — not the raw spec — as this stage's `plan` argument, so the
+// `plan as BuildPlan` cast below reflects the real runtime shape. The `plan`
+// parameter here is still typed `unknown` because this function is invoked
+// through the injectable `PipelineStages` interface, which stays untyped on
+// purpose to keep run.test.ts's stubs decoupled from agent internals.
 import { run as runAanya } from "../../../agents/generators/aanya/src/index.ts";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 import { writeCheckpoint } from "../checkpoint.ts";

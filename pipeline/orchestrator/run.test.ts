@@ -19,7 +19,7 @@ test("runPipelineWithStages checkpoints after each stage and stops at an unappro
   await runPipelineWithStages(TEST_PROJECT, "build me a task manager", {
     stage1: async () => {
       calls.push("stage1");
-      return { spec: { name: "test spec" } };
+      return { spec: { name: "test spec" }, plan: { appName: "test spec" } };
     },
     stage2: async (): Promise<GatewayDecision> => {
       calls.push("stage2");
@@ -32,7 +32,10 @@ test("runPipelineWithStages checkpoints after each stage and stops at an unappro
   });
 
   expect(calls).toEqual(["stage1", "stage2"]); // stage3 never runs — gate blocked it
-  expect(readCheckpoint(TEST_PROJECT, "01-requirements")).toEqual({ spec: { name: "test spec" } });
+  expect(readCheckpoint(TEST_PROJECT, "01-requirements")).toEqual({
+    spec: { name: "test spec" },
+    plan: { appName: "test spec" },
+  });
   expect(readCheckpoint(TEST_PROJECT, "02-gateway")).toEqual({
     decision: "review",
     feedback: "change the color",
@@ -49,7 +52,7 @@ test("runPipelineWithStages lets stage3 run when stage2 decides proceed", async 
   await runPipelineWithStages(TEST_PROJECT, "build me a task manager", {
     stage1: async () => {
       calls.push("stage1");
-      return { spec: { name: "test spec" } };
+      return { spec: { name: "test spec" }, plan: { appName: "test spec" } };
     },
     stage2: async (): Promise<GatewayDecision> => {
       calls.push("stage2");
@@ -71,13 +74,16 @@ test("runPipelineWithStages lets stage3 run when stage2 decides proceed", async 
   cleanup();
 });
 
-test("runPipelineWithStages passes stage1's spec through to stage2 and stage3", async () => {
+test("runPipelineWithStages passes stage1's spec to stage2 and stage1's plan to stage3", async () => {
   cleanup();
   const receivedByStage2: unknown[] = [];
   const receivedByStage3: unknown[] = [];
 
   await runPipelineWithStages(TEST_PROJECT, "build me a task manager", {
-    stage1: async () => ({ spec: { name: "spec-from-stage1" } }),
+    stage1: async () => ({
+      spec: { name: "spec-from-stage1" },
+      plan: { appName: "plan-from-stage1" },
+    }),
     stage2: async (_projectId, spec): Promise<GatewayDecision> => {
       receivedByStage2.push(spec);
       return { decision: "proceed" };
@@ -89,7 +95,7 @@ test("runPipelineWithStages passes stage1's spec through to stage2 and stage3", 
   });
 
   expect(receivedByStage2).toEqual([{ name: "spec-from-stage1" }]);
-  expect(receivedByStage3).toEqual([{ name: "spec-from-stage1" }]);
+  expect(receivedByStage3).toEqual([{ appName: "plan-from-stage1" }]);
 
   cleanup();
 });

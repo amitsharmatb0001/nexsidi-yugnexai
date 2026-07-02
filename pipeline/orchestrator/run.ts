@@ -12,7 +12,8 @@ import { writeCheckpoint } from "./checkpoint.ts";
 import type { GatewayDecision } from "./types.ts";
 
 export interface Stage1Output {
-  spec: unknown;
+  spec: unknown; // ProjectSpec — flows to Stage 2's human-readable summary
+  plan: unknown; // BuildPlan (Arjun's output) — flows to Stage 3's generator call
 }
 
 export interface Stage3Output {
@@ -32,9 +33,13 @@ export interface PipelineStages {
  * stage as it completes. If Stage 2's decision is not "proceed", the
  * pipeline stops before Stage 3 ever runs.
  *
- * NOTE: Stage 3 is currently invoked with Stage 1's `spec` as its `plan`
- * argument — there is no Arjun (BuildPlan) stage wired in yet. See the
- * KNOWN GAP comment in ./stages/stage3-ui-preview.ts.
+ * Stage 1 now runs Arjun (agents/arjun/src/index.ts) after Saanvi, so it
+ * produces both the locked `spec` (ProjectSpec) and a real `plan` (BuildPlan).
+ * Stage 2 receives `spec` — it summarizes spec.name/description/features for
+ * human review, fields BuildPlan does not carry. Stage 3 receives `plan` —
+ * Aanya's generator requires the real BuildPlan shape (apiContract,
+ * sharedTypes, dbSchema, ...). See stage1-requirements.ts and
+ * stage3-ui-preview.ts for the full rationale.
  */
 export async function runPipelineWithStages(
   projectId: string,
@@ -51,7 +56,7 @@ export async function runPipelineWithStages(
     return; // blocked — stage3 does not run
   }
 
-  const stage3Result = await stages.stage3(projectId, stage1Result.spec);
+  const stage3Result = await stages.stage3(projectId, stage1Result.plan);
   writeCheckpoint(projectId, "03-ui-preview", stage3Result);
 }
 

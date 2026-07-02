@@ -40,6 +40,8 @@ export interface GeneratorTask {
 
 export interface BuildPlan {
   projectId: string;
+  appName: string;              // display name — copied from ProjectSpec.name, not LLM-produced
+  appDescription: string;       // copied from ProjectSpec.description, not LLM-produced
   sharedTypes: string;          // TypeScript type declarations shared by frontend + backend
   apiContract: {
     baseUrl: "http://localhost:3001";
@@ -75,6 +77,8 @@ export async function run(spec: ProjectSpec): Promise<BuildPlan> {
 
   const plan: Omit<BuildPlan, "buildPlanHash"> = {
     projectId: spec.projectId,
+    appName: spec.name,
+    appDescription: spec.description,
     sharedTypes: typeof raw.sharedTypes === "string" ? raw.sharedTypes : "",
     apiContract: {
       baseUrl: "http://localhost:3001",
