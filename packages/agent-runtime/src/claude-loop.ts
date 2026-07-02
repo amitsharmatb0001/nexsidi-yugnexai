@@ -58,7 +58,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   const errors: string[] = [];
   let iterations = 0;
 
-  console.log(`[${config.agentName}:claude-agent] Starting — model: claude-opus-4-8, maxIter: ${MAX_ITERATIONS}`);
+  console.log(`[${config.agentName}:claude-agent] Starting — model: claude-sonnet-5, maxIter: ${MAX_ITERATIONS}`);
 
   while (iterations < MAX_ITERATIONS) {
     iterations++;
@@ -207,7 +207,7 @@ export async function runAgentEscalated(
 
   console.log(
     `[${config.agentName}:escalation] NIM path failed (success=false) after ${nimResult.iterations} iterations — ` +
-      `escalating to Claude (claude-opus-4-8) as one-time retry`,
+      `escalating to Claude (claude-sonnet-5) as one-time retry`,
   );
 
   const claudeResult = await deps.runClaude(config);

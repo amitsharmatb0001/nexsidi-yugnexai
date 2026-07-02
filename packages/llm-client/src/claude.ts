@@ -12,10 +12,11 @@ import { waitForToken } from "./token-bucket.ts";
 import type { ChatMessage } from "./types.ts";
 import type { NimToolDef } from "./nim.ts";
 
-// Exact string, no date suffix — Anthropic's most capable Opus-tier model.
-// This is the "hardest problem" escalation tier: correct choice is Opus, NOT
-// claude-sonnet-4-6 (lighter/faster mid-tier — wrong here on purpose).
-export const CLAUDE_ESCALATION_MODEL = "claude-opus-4-8";
+// Exact string, no date suffix — Claude Sonnet 5, Anthropic's best combination
+// of speed and intelligence per Anthropic's own model comparison. Used as the
+// hardest-problem escalation tier per explicit user choice (not
+// claude-sonnet-4-6, the lighter/older mid-tier model).
+export const CLAUDE_ESCALATION_MODEL = "claude-sonnet-5";
 
 // Claude escalation calls are a rare one-shot retry (not a hot loop like
 // NIM's per-agent traffic), so a single generous fixed ceiling is enough to
@@ -101,10 +102,11 @@ export async function claudeChat(
   const requestParams = {
     model: CLAUDE_ESCALATION_MODEL,
     max_tokens: maxTokens,
-    // Extended thinking on Opus 4.8: adaptive only. Do NOT use budget_tokens
+    // Extended thinking on Sonnet 5: adaptive only. Do NOT use budget_tokens
     // — it 400s on this model.
     thinking: { type: "adaptive" as const },
-    // NOT setting temperature/top_p/top_k — removed/rejected on Opus 4.8.
+    // NOT setting temperature/top_p/top_k — left unset (matches existing
+    // behavior; not documented as removed for Sonnet 5, but no reason to add).
     ...(systemParts.length > 0 ? { system: systemParts.join("\n\n") } : {}),
     messages: anthropicMessages,
   };

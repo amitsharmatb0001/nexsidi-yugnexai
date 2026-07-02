@@ -74,7 +74,7 @@ test("translateNimToolToClaudeTool round-trips every real tool def shape (FILE_T
 });
 
 test("CLAUDE_ESCALATION_MODEL is the exact model id string with no date suffix", () => {
-  expect(CLAUDE_ESCALATION_MODEL).toBe("claude-opus-4-8");
+  expect(CLAUDE_ESCALATION_MODEL).toBe("claude-sonnet-5");
 });
 
 test("ClaudeRefusalError carries the refusal category and a readable message, distinct from a generic Error", () => {
