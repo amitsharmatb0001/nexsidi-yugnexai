@@ -93,7 +93,7 @@ test("runStage5WithAgents fails when Navya is below 85, even with a clean Karan"
       agent: "navya",
       score: 60,
       passed: false,
-      findings: [{ severity: "🔴", category: "null-ref", detail: "unchecked req.body.title access" }],
+      findings: [{ severity: "CRITICAL", category: "null-ref", detail: "unchecked req.body.title access" }],
     }),
   });
 
@@ -108,7 +108,7 @@ test("runStage5WithAgents fails when Deepika is below 85, even with a clean Kara
       agent: "deepika",
       score: 40,
       passed: false,
-      findings: [{ severity: "🟡", category: "n-plus-one", detail: "tasks list issues one query per row" }],
+      findings: [{ severity: "HIGH", category: "n-plus-one", detail: "tasks list issues one query per row" }],
     }),
   });
 
@@ -163,13 +163,46 @@ test("a Karan finding on a db/ path routes faultAgent to pranav", async () => {
   expect(result.faultAgent).toBe("pranav");
 });
 
-test("a Navya/Deepika-only failure (no file info in their real Finding type) falls back to the shubham default", async () => {
+test("a Navya/Deepika-only failure falls back to the shubham default when the model omits a file path", async () => {
   const agents = makeAgents({
     runNavya: async (): Promise<NavyaResult> => ({
       agent: "navya",
       score: 50,
       passed: false,
-      findings: [{ severity: "🔴", category: "race-condition", detail: "double-submit on task creation" }],
+      findings: [{ severity: "CRITICAL", category: "race-condition", detail: "double-submit on task creation" }],
+    }),
+  });
+
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents);
+
+  expect(result.faultAgent).toBe("shubham");
+});
+
+// Task 14: Navya/Deepika's Finding gained an optional `file` field so their
+// findings can fault-isolate to the actually-responsible agent instead of
+// always falling through to identifyFaultAgent's "shubham" default.
+test("a Navya finding with a frontend/ file path routes faultAgent to aanya", async () => {
+  const agents = makeAgents({
+    runNavya: async (): Promise<NavyaResult> => ({
+      agent: "navya",
+      score: 50,
+      passed: false,
+      findings: [{ severity: "CRITICAL", category: "null-ref", detail: "unchecked user.name access", file: "frontend/app/dashboard/page.tsx" }],
+    }),
+  });
+
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents);
+
+  expect(result.faultAgent).toBe("aanya");
+});
+
+test("a Deepika finding with a backend/ file path routes faultAgent to shubham", async () => {
+  const agents = makeAgents({
+    runDeepika: async (): Promise<DeepikaResult> => ({
+      agent: "deepika",
+      score: 50,
+      passed: false,
+      findings: [{ severity: "HIGH", category: "n-plus-one", detail: "tasks list issues one query per row", file: "backend/src/routes/tasks.routes.ts" }],
     }),
   });
 
@@ -192,7 +225,7 @@ test("combined findings include mapped entries from all three agents on failure"
       agent: "navya",
       score: 70,
       passed: false,
-      findings: [{ severity: "🟡", category: "logic", detail: "off-by-one in pagination" }],
+      findings: [{ severity: "HIGH", category: "logic", detail: "off-by-one in pagination" }],
     }),
     runDeepika: async (): Promise<DeepikaResult> => ({
       agent: "deepika",
@@ -212,6 +245,6 @@ test("combined findings include mapped entries from all three agents on failure"
   });
   expect(result.findings[1]).toEqual({
     file: "",
-    issue: "[logic/🟡] logic: off-by-one in pagination",
+    issue: "[logic/HIGH] logic: off-by-one in pagination",
   });
 });

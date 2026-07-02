@@ -57,27 +57,23 @@ export interface Stage5Agents {
 // ── Finding-shape reconciliation ────────────────────────────────────────────
 // Stage 4's `Finding` (the shape identifyFaultAgent consumes) is
 // `{ file: string; issue: string }`. None of the three QA agents produce that
-// shape natively:
-//   - Karan's SecurityFinding carries an OPTIONAL `file` (best-effort from the
-//     model) plus `severity`/`description` — maps cleanly, `file` falls back
-//     to "" when the model didn't supply one.
-//   - Navya/Deepika's Finding (`severity`/`category`/`detail`) carries NO file
-//     path at all in the real type — there is nothing honest to map into
-//     `file` beyond "". This means a Navya/Deepika-only failure's findings
-//     fall through identifyFaultAgent's default ("shubham") rather than being
-//     misattributed to a specific agent. That is a real limitation of Navya/
-//     Deepika's current output shape, not a bug in this stage; flagged here
-//     rather than silently working around it.
+// shape natively, but all three now carry an OPTIONAL `file` (best-effort
+// from the model) alongside their own severity/description fields — Task 14
+// added `file?` to Navya/Deepika's Finding to match Karan's SecurityFinding,
+// so a Navya/Deepika-only failure can now fault-isolate to the actual
+// responsible agent instead of always falling through to identifyFaultAgent's
+// "shubham" default (still the fallback when the model doesn't supply a
+// file path).
 function karanFindingToFinding(f: SecurityFinding): Finding {
   return { file: f.file ?? "", issue: `[security/${f.severity}] ${f.description}` };
 }
 
 function navyaFindingToFinding(f: NavyaFinding): Finding {
-  return { file: "", issue: `[logic/${f.severity}] ${f.category}: ${f.detail}` };
+  return { file: f.file ?? "", issue: `[logic/${f.severity}] ${f.category}: ${f.detail}` };
 }
 
 function deepikaFindingToFinding(f: DeepikaFinding): Finding {
-  return { file: "", issue: `[performance/${f.severity}] ${f.category}: ${f.detail}` };
+  return { file: f.file ?? "", issue: `[performance/${f.severity}] ${f.category}: ${f.detail}` };
 }
 
 /**
