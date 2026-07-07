@@ -79,3 +79,60 @@ Nothing.
 - Run `bun run dev` from `apps/api/` to start the API
 - Temporal must be running: `docker-compose -f docker-compose.dev.yml up temporal temporal-ui`
 - NIM API key needed: `export NIM_API_KEY=...` in `.env`
+
+---
+
+### Phase 5: Harness Enforcement Layer (2026-07-07) ✓
+
+Per `final-bundle/phase5-harness-enforcement-plan.md` — made core-reasoning
+Rules 6 (evidence), 7 (3-strike), and 9 (output contracts) mechanically
+unskippable for every agent on every provider (NIM, Claude, Gemini), and
+injected skill doctrine into agent system prompts at runtime.
+
+**Tasks 1-7 complete, TDD throughout, 275/275 tests green at each step:**
+- Task 1: Evidence ledger (`packages/agent-runtime/src/enforce/evidence.ts`) —
+  commit `52a234b`
+- Task 2: Wire execRunCommand/execReadFile/execHttpRequest into the ledger —
+  commit `bd3147b`
+- Task 3: Default-FAIL completion gate, wired into all three loops (NIM,
+  Claude, Gemini) — commit `b38f0d9`
+- Task 4: Mechanical 3-strike escalation + `escalationReason` logging —
+  commit `90d85ac`
+- Task 5: Output contract validator (`validateHandoff`) — zod schemas for
+  ProjectSpec/BuildPlan/DeployResult/ReadyToBuild/Verdict — commit `488e700`
+- Task 6: `assembleSystemPrompt()` — skills injected at runtime, wired into
+  all three loops — commit `4a3fc0b`
+- Task 7: Authorization gate primitive (Wing-2 ready) — commit `4c48e4f`
+
+**Task 8 (this entry) — live-run verification:**
+- Full suite: `bun test` → 275 pass, 0 fail, 34 files (re-run at Task 8 time
+  to confirm no drift since Task 7's commit)
+- Live pipeline run with enforcement ON (`scripts/stress-test.ts`,
+  project `stress-phase5-<timestamp>`) — confirmed via the run's own log:
+  the very first Aanya system-prompt token count jumped from ~3800 (pre-
+  Task-6 baseline, seen in earlier same-session runs) to ~5400 tokens on
+  an otherwise-identical first call, proving `assembleSystemPrompt()`'s
+  core-reasoning + doctrine injection is live in the real pipeline, not
+  just passing in isolated tests.
+- **Known-open, not fixed this session (Rule 8 — report, don't fix
+  unprompted):** Step 3 (baseline vs with-skill eval delta via
+  `nexsidi-skill-evals/scripts/run-evals.ts`) could not be completed —
+  the script takes `--api-key` as a CLI arg, which would put the live
+  NIM key into the child process's argv (a real OS-level exposure via
+  `ps`), violating the standing "never embed secret literal values in a
+  Bash command line" rule. The plan's own Known-Open Items section
+  already flagged "Eval runner has never hit a live endpoint
+  (compile-verified only)" — still true after this session. Fixing this
+  cleanly needs `run-evals.ts` changed to read the key from a file path
+  arg or rely purely on an env var already present in the process
+  environment (never passed as a flag) — a small, separate follow-up.
+- `scripts/sync-skills.ts`, the `CLAUDE.md` naming fix (`nexsidi-agent-
+  tools` → `packages/agent-runtime`), and the `nexsidi-skills-complete.zip`
+  sync were explicitly deferred per direct instruction this session
+  ("dont check the zip & claude md you have thge curret codebase acess")
+  — not done, not forgotten.
+
+**Real, ongoing cost note:** Task 6 adds ~1.4k tokens of core-reasoning
+doctrine to every agent's system prompt on every call, pipeline-wide —
+this is a permanent token-cost increase, not a one-time change. Worth
+watching NIM/Claude/Gemini spend after this lands.
