@@ -11,6 +11,8 @@ import { execWebSearch, WEB_SEARCH_TOOL_DEF } from "./tools/websearch.ts";
 import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
+import { createStrikeCounter, buildFailureSignature, type StrikeCounter } from "./enforce/strikes.ts";
+import type { ToolResult } from "./tools/file.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 
 // Exported so claude-loop.ts's runAgentWithClaude() can reuse the exact same
@@ -46,6 +48,12 @@ export interface AgentRunResult {
   filesWritten: string[];
   iterations: number;
   errors: string[];
+  // Phase 5 Task 4: populated on every success:false exit so
+  // runAgentEscalated (claude-loop.ts) can log WHY it's escalating, not just
+  // that it is. "three_strikes" = the same command failed identically 4
+  // times; "cannot_finish" = any other non-success exit (max iterations,
+  // agent stopped without task_complete, transport failures).
+  escalationReason?: "three_strikes" | "cannot_finish";
 }
 
 // Exported for the same reason as MAX_ITERATIONS above — claude-loop.ts
@@ -89,6 +97,40 @@ export function sanitizeToolCalls(toolCalls: NimToolCall[]): { sanitized: NimToo
   return { sanitized, malformedIds };
 }
 
+// Phase 5 Task 4: mechanical 3-strike escalation (Rule 7). Pure and
+// dependency-free on purpose, same as sanitizeToolCalls above — the loop
+// calls this on every run_command result; a successful result passes
+// through untouched. On the 3rd identical failure it injects a forced-pivot
+// instruction into next_actions; on the 4th it reports exhausted so the
+// caller can terminate the run.
+export function evaluateCommandStrike(
+  counter: StrikeCounter,
+  command: string,
+  toolResult: ToolResult,
+): { toolResult: ToolResult; exhausted: boolean } {
+  if (toolResult.status !== "error") return { toolResult, exhausted: false };
+
+  const signature = buildFailureSignature(command, toolResult.output ?? toolResult.summary);
+  const strike = counter.recordFailure(signature);
+
+  if (strike.exhausted) return { toolResult, exhausted: true };
+
+  if (strike.strikes === 3) {
+    return {
+      toolResult: {
+        ...toolResult,
+        next_actions: [
+          ...(toolResult.next_actions ?? []),
+          "This approach failed 3 times with the same error. Do not retry it. Change approach fundamentally or call escalate.",
+        ],
+      },
+      exhausted: false,
+    };
+  }
+
+  return { toolResult, exhausted: false };
+}
+
 export function buildToolList(config: AgentRunConfig): NimToolDef[] {
   return [
     ...FILE_TOOL_DEFS,
@@ -115,6 +157,9 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   const filesWritten: string[] = [];
   const errors: string[] = [];
   let iterations = 0;
+  // Phase 5 Task 4: mechanical 3-strike escalation — see enforce/strikes.ts.
+  const strikeCounter = createStrikeCounter();
+  let exhaustedThreeStrikes = false;
 
   const modelChain: ModelId[] = [config.model, ...(config.fallbackModels ?? [])];
   let modelIdx = 0;
@@ -209,7 +254,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     if (sanitizedToolCalls.length === 0) {
       if (choice.finish_reason === "stop") {
         console.log(`[${config.agentName}:agent] Model stopped without task_complete — treating as done`);
-        return { success: false, summary: choice.message.content ?? "no content", filesWritten, iterations, errors: [...errors, "Agent stopped without calling task_complete"] };
+        return { success: false, summary: choice.message.content ?? "no content", filesWritten, iterations, errors: [...errors, "Agent stopped without calling task_complete"], escalationReason: "cannot_finish" };
       }
       continue;
     }
@@ -255,7 +300,11 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           break;
         }
         case "run_command": {
-          result = execRunCommand(config.sandboxDir, args as { command: string; timeout_ms?: number }, ledger);
+          const commandArgs = args as { command: string; timeout_ms?: number };
+          const r = execRunCommand(config.sandboxDir, commandArgs, ledger);
+          const strike = evaluateCommandStrike(strikeCounter, commandArgs.command, r);
+          result = strike.toolResult;
+          if (strike.exhausted) exhaustedThreeStrikes = true;
           break;
         }
         case "http_request": {
@@ -298,6 +347,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
             filesWritten: [...filesWritten, ...(a.files_written ?? [])].filter((v, i, arr) => arr.indexOf(v) === i),
             iterations,
             errors,
+            ...(a.verification_passed ? {} : { escalationReason: "cannot_finish" as const }),
           };
         }
         default: {
@@ -309,15 +359,28 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     }
 
     messages.push(...toolResults);
+
+    // Phase 5 Task 4: the SAME command failed identically a 4th time after
+    // already being told to pivot on strike 3 — stop retrying, let
+    // runAgentEscalated (claude-loop.ts) fire with a logged reason instead
+    // of burning the rest of MAX_ITERATIONS on a failure that won't resolve
+    // itself.
+    if (exhaustedThreeStrikes) {
+      errors.push("Three-strikes exhausted: the same command failed identically 4 times");
+      break;
+    }
   }
 
   return {
     success: false,
-    summary: abortedOnTransportFailures
-      ? `Aborted after ${MAX_CONSECUTIVE_TRANSPORT_FAILURES} consecutive transport failures (${iterations} real model turns completed)`
-      : `Max iterations (${MAX_ITERATIONS}) reached without task_complete`,
+    summary: exhaustedThreeStrikes
+      ? `Three-strikes exhausted (${iterations} real model turns completed)`
+      : abortedOnTransportFailures
+        ? `Aborted after ${MAX_CONSECUTIVE_TRANSPORT_FAILURES} consecutive transport failures (${iterations} real model turns completed)`
+        : `Max iterations (${MAX_ITERATIONS}) reached without task_complete`,
     filesWritten,
     iterations,
-    errors: [...errors, "Max iterations exceeded"],
+    errors: exhaustedThreeStrikes ? errors : [...errors, "Max iterations exceeded"],
+    escalationReason: exhaustedThreeStrikes ? "three_strikes" : "cannot_finish",
   };
 }

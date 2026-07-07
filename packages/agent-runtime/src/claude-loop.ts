@@ -289,9 +289,11 @@ export async function runAgentEscalated(
     return { ...nimResult, escalated: false };
   }
 
+  // Phase 5 Task 4: nexsidi-token-budget requires every escalation logged
+  // with cause, not just that it happened.
   console.log(
     `[${config.agentName}:escalation] NIM path failed (success=false) after ${nimResult.iterations} iterations — ` +
-      `escalating to Claude (claude-sonnet-5) as one-time retry`,
+      `reason: ${nimResult.escalationReason ?? "cannot_finish"} — escalating to Claude (claude-sonnet-5) as one-time retry`,
   );
 
   const claudeConfig: AgentRunConfig = { ...config, initialMessage: buildEscalationMessage(config.initialMessage, nimResult) };

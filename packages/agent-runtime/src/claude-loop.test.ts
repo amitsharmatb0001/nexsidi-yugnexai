@@ -261,3 +261,36 @@ test("resolveEscalationRunner falls back to runAgentWithClaude for any other val
   expect(resolveEscalationRunner()).toBe(runAgentWithClaude);
   delete process.env.ESCALATION_PROVIDER;
 });
+
+// Phase 5 Task 4: nexsidi-token-budget requires every escalation logged with
+// cause. runAgentEscalated must surface nimResult.escalationReason in its
+// log line, defaulting to "cannot_finish" when the NIM result predates this
+// field (or exits via a path that doesn't set it).
+test("runAgentEscalated logs the NIM result's escalationReason (three_strikes)", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const deps: AgentEscalationDeps = {
+      runNim: async () => ({ success: false, summary: "s", filesWritten: [], iterations: 5, errors: [], escalationReason: "three_strikes" }),
+      runClaude: async () => claudeSuccess(),
+    };
+    await runAgentEscalated(BASE_CONFIG, deps);
+  } finally {
+    console.log = originalLog;
+  }
+  expect(logs.some((l) => l.includes("reason: three_strikes"))).toBe(true);
+});
+
+test("runAgentEscalated defaults the logged reason to cannot_finish when escalationReason is absent", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+  try {
+    const deps: AgentEscalationDeps = { runNim: nimFailure, runClaude: async () => claudeSuccess() };
+    await runAgentEscalated(BASE_CONFIG, deps);
+  } finally {
+    console.log = originalLog;
+  }
+  expect(logs.some((l) => l.includes("reason: cannot_finish"))).toBe(true);
+});
