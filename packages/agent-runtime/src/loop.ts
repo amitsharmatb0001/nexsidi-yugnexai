@@ -9,6 +9,8 @@ import { execHttpRequest, HTTP_TOOL_DEF } from "./tools/http.ts";
 import { execDockerCompose, DOCKER_TOOL_DEF } from "./tools/docker.ts";
 import { execWebSearch, WEB_SEARCH_TOOL_DEF } from "./tools/websearch.ts";
 import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
+import { createEvidenceLedger } from "./enforce/evidence.ts";
+import { checkCompletion } from "./enforce/completion-gate.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 
 // Exported so claude-loop.ts's runAgentWithClaude() can reuse the exact same
@@ -101,6 +103,9 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
 
 export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> {
   const tools: NimToolDef[] = buildToolList(config);
+  // Phase 5 Task 3: per-run ledger backing the completion gate — see
+  // enforce/evidence.ts and enforce/completion-gate.ts.
+  const ledger = createEvidenceLedger();
 
   const messages: NimMessage[] = [
     { role: "system", content: config.systemPrompt },
@@ -234,7 +239,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           break;
         }
         case "read_file": {
-          result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number });
+          result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number }, ledger);
           break;
         }
         case "list_files": {
@@ -250,11 +255,11 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           break;
         }
         case "run_command": {
-          result = execRunCommand(config.sandboxDir, args as { command: string; timeout_ms?: number });
+          result = execRunCommand(config.sandboxDir, args as { command: string; timeout_ms?: number }, ledger);
           break;
         }
         case "http_request": {
-          result = await execHttpRequest(args as { method: string; url: string; headers?: Record<string, string>; body?: string; timeout_ms?: number });
+          result = await execHttpRequest(args as { method: string; url: string; headers?: Record<string, string>; body?: string; timeout_ms?: number }, ledger);
           break;
         }
         case "docker_compose": {
@@ -271,6 +276,18 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         }
         case "task_complete": {
           const a = args as { summary: string; files_written: string[]; verification_passed: boolean };
+          // Phase 5 Task 3: default-FAIL completion gate — rejected without
+          // fresh evidence, even if the model claims verification_passed.
+          // Rejection falls through to the normal tool-result path below
+          // (result assigned, no early return) so it counts toward
+          // MAX_ITERATIONS — a model spamming task_complete still terminates.
+          const check = checkCompletion(ledger, { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed });
+          if (!check.allowed) {
+            console.log(`[${config.agentName}:agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);
+            result = { status: "error", summary: check.reason };
+            break;
+          }
+          ledger.consume();
           console.log(`[${config.agentName}:agent] DONE after ${iterations} iterations. Verified: ${a.verification_passed}`);
           if (!a.verification_passed) {
             errors.push("Agent completed without verification passing");

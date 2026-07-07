@@ -23,6 +23,8 @@ import { execHttpRequest } from "./tools/http.ts";
 import { execDockerCompose } from "./tools/docker.ts";
 import { execWebSearch } from "./tools/websearch.ts";
 import { execScreenshot } from "./tools/screenshot.ts";
+import { createEvidenceLedger } from "./enforce/evidence.ts";
+import { checkCompletion } from "./enforce/completion-gate.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -46,6 +48,8 @@ export function isUnrecoverableGeminiError(err: unknown): boolean {
 export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentRunResult> {
   const nimTools = buildToolList(config);
   const tools: GeminiToolDef[] = nimTools.map(translateNimToolToGeminiTool);
+  // Phase 5 Task 3: same evidence ledger + completion gate as loop.ts.
+  const ledger = createEvidenceLedger();
 
   const messages: GeminiMessage[] = [
     { role: "system", content: config.systemPrompt },
@@ -113,7 +117,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "read_file": {
-          result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number });
+          result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number }, ledger);
           break;
         }
         case "list_files": {
@@ -129,11 +133,11 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "run_command": {
-          result = execRunCommand(config.sandboxDir, args as { command: string; timeout_ms?: number });
+          result = execRunCommand(config.sandboxDir, args as { command: string; timeout_ms?: number }, ledger);
           break;
         }
         case "http_request": {
-          result = await execHttpRequest(args as { method: string; url: string; headers?: Record<string, string>; body?: string; timeout_ms?: number });
+          result = await execHttpRequest(args as { method: string; url: string; headers?: Record<string, string>; body?: string; timeout_ms?: number }, ledger);
           break;
         }
         case "docker_compose": {
@@ -150,6 +154,16 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
         case "task_complete": {
           const a = args as { summary: string; files_written: string[]; verification_passed: boolean };
+          // Phase 5 Task 3: same default-FAIL completion gate as loop.ts —
+          // rejection falls through to the normal tool-result path (no
+          // early return) so it counts toward MAX_ITERATIONS.
+          const check = checkCompletion(ledger, { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed });
+          if (!check.allowed) {
+            console.log(`[${config.agentName}:gemini-agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);
+            result = { status: "error", summary: check.reason };
+            break;
+          }
+          ledger.consume();
           console.log(`[${config.agentName}:gemini-agent] DONE after ${iterations} iterations. Verified: ${a.verification_passed}`);
           if (!a.verification_passed) {
             errors.push("Agent completed without verification passing");
