@@ -12,6 +12,7 @@ import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
 import { createStrikeCounter, buildFailureSignature, type StrikeCounter } from "./enforce/strikes.ts";
+import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import type { ToolResult } from "./tools/file.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 
@@ -149,8 +150,12 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   // enforce/evidence.ts and enforce/completion-gate.ts.
   const ledger = createEvidenceLedger();
 
+  // Phase 5 Task 6: skills injected at runtime — core-reasoning doctrine +
+  // this agent's own doctrine (if any) layered ahead of its basePrompt.
+  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt });
+
   const messages: NimMessage[] = [
-    { role: "system", content: config.systemPrompt },
+    { role: "system", content: systemPrompt },
     { role: "user", content: config.initialMessage },
   ];
 

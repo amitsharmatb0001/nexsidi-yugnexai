@@ -25,6 +25,7 @@ import { execWebSearch } from "./tools/websearch.ts";
 import { execScreenshot } from "./tools/screenshot.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
+import { assembleSystemPrompt } from "./prompt-assembly.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -51,8 +52,11 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   // Phase 5 Task 3: same evidence ledger + completion gate as loop.ts.
   const ledger = createEvidenceLedger();
 
+  // Phase 5 Task 6: same skills-at-runtime injection as loop.ts.
+  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt });
+
   const messages: GeminiMessage[] = [
-    { role: "system", content: config.systemPrompt },
+    { role: "system", content: systemPrompt },
     { role: "user", content: config.initialMessage },
   ];
 
