@@ -1,13 +1,19 @@
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
+import type { EvidenceLedger } from "../enforce/evidence.ts";
 
-export async function execHttpRequest(args: {
-  method: string;
-  url: string;
-  headers?: Record<string, string>;
-  body?: string;
-  timeout_ms?: number;
-}): Promise<ToolResult> {
+// Phase 5 Task 2: ledger is optional — see command.ts's execRunCommand for
+// the identical rationale (existing call sites keep compiling unchanged).
+export async function execHttpRequest(
+  args: {
+    method: string;
+    url: string;
+    headers?: Record<string, string>;
+    body?: string;
+    timeout_ms?: number;
+  },
+  ledger?: EvidenceLedger,
+): Promise<ToolResult> {
   // Only allow localhost URLs — agents must not reach external services
   const parsed = new URL(args.url);
   if (parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
@@ -35,6 +41,8 @@ export async function execHttpRequest(args: {
     const text = await res.text().catch(() => "(no body)");
     const body = text.slice(0, 2000);
     const success = res.status >= 200 && res.status < 500;
+
+    if (success) ledger?.record("http_check", `${method} ${args.url} -> ${res.status}`);
 
     return {
       status: success ? "success" : "error",

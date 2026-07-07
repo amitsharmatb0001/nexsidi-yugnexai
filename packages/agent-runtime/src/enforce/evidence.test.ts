@@ -1,5 +1,10 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createEvidenceLedger } from "./evidence.ts";
+import { execRunCommand } from "../tools/command.ts";
+import { execReadFile } from "../tools/file.ts";
 
 // Phase 5 Task 1 (final-bundle/phase5-harness-enforcement-plan.md): per-run
 // evidence ledger backing Rule 6 (evidence before claims). Tool executors
@@ -59,4 +64,58 @@ test("all three evidence kinds are accepted", () => {
   ledger.record("file_read", "path");
   ledger.record("http_check", "url");
   expect(ledger.consume()).toHaveLength(3);
+});
+
+// ── Task 2: tool executor integration ───────────────────────────────────────
+// Executors accept an OPTIONAL ledger param — existing call sites and tests
+// (loop.ts, claude-loop.ts, gemini-loop.ts, and every existing tool test)
+// keep compiling and passing unchanged. Only successful executions record
+// evidence — a failed command is debugging information, not proof of success.
+
+let sandboxDir: string;
+beforeEach(() => {
+  sandboxDir = mkdtempSync(join(tmpdir(), "nexsidi-evidence-test-"));
+});
+afterEach(() => {
+  rmSync(sandboxDir, { recursive: true, force: true });
+});
+
+test("execRunCommand records command_output evidence on success when given a ledger", () => {
+  const ledger = createEvidenceLedger();
+  const result = execRunCommand(sandboxDir, { command: "pwd" }, ledger);
+  expect(result.status).toBe("success");
+  expect(ledger.hasFreshEvidence()).toBe(true);
+  const records = ledger.consume();
+  expect(records).toHaveLength(1);
+  expect(records[0]!.kind).toBe("command_output");
+  expect(records[0]!.ref).toContain("pwd");
+});
+
+test("execRunCommand records NO evidence when the command fails, even with a ledger", () => {
+  const ledger = createEvidenceLedger();
+  const result = execRunCommand(sandboxDir, { command: "not-a-real-command-xyz" }, ledger);
+  expect(result.status).toBe("error");
+  expect(ledger.hasFreshEvidence()).toBe(false);
+});
+
+test("execRunCommand works exactly as before when no ledger is passed (existing call sites unaffected)", () => {
+  const result = execRunCommand(sandboxDir, { command: "pwd" });
+  expect(result.status).toBe("success");
+});
+
+test("execReadFile records file_read evidence on success when given a ledger", () => {
+  writeFileSync(join(sandboxDir, "a.ts"), "export const x = 1;");
+  const ledger = createEvidenceLedger();
+  const result = execReadFile(sandboxDir, { path: "a.ts" }, ledger);
+  expect(result.status).toBe("success");
+  const records = ledger.consume();
+  expect(records).toHaveLength(1);
+  expect(records[0]).toEqual({ kind: "file_read", ref: "a.ts" });
+});
+
+test("execReadFile records NO evidence when the file does not exist, even with a ledger", () => {
+  const ledger = createEvidenceLedger();
+  const result = execReadFile(sandboxDir, { path: "missing.ts" }, ledger);
+  expect(result.status).toBe("error");
+  expect(ledger.hasFreshEvidence()).toBe(false);
 });

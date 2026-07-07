@@ -1,6 +1,7 @@
 import { spawnSync } from "child_process";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
+import type { EvidenceLedger } from "../enforce/evidence.ts";
 
 // Command allowlist — from nexsidi-sandbox skill (Anthropic autonomous-coding baseline)
 const ALLOWED_COMMANDS = new Set([
@@ -46,9 +47,14 @@ export function truncateOutput(text: string, headChars: number, tailChars: numbe
   return `${head}\n...[truncated ${text.length - headChars - tailChars} chars]...\n${tail}`;
 }
 
+// Phase 5 Task 2: ledger is optional so existing call sites (loop.ts,
+// claude-loop.ts, gemini-loop.ts, and every pre-existing test) keep
+// compiling and passing unchanged. Only a SUCCESSFUL run is evidence — a
+// failed command is debugging information, not proof of anything working.
 export function execRunCommand(
   cwd: string,
   args: { command: string; timeout_ms?: number },
+  ledger?: EvidenceLedger,
 ): ToolResult {
   const parts = args.command.trim().split(/\s+/);
   const [cmd, ...cmdArgs] = parts;
@@ -76,6 +82,8 @@ export function execRunCommand(
     const stderr = truncateOutput(result.stderr ?? "", 1000, 5000);
     const combined = [stdout, stderr].filter(Boolean).join("\n").trim();
     const success = result.status === 0;
+
+    if (success) ledger?.record("command_output", `${args.command} -> exited 0`);
 
     return {
       status: success ? "success" : "error",

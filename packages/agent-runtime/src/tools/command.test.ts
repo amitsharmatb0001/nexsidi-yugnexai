@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
-import { truncateOutput } from "./command.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { truncateOutput, execRunCommand } from "./command.ts";
 
 // Full-system audit TO1: execRunCommand used to keep the HEAD of long
 // command output (stdout.slice(0, 6000)). Real build tool errors (npm
@@ -40,4 +43,23 @@ test("the real failure line at the tail survives truncation even with a huge mid
 
   expect(result).toContain("ERESOLVE unable to resolve dependency tree");
   expect(result).toContain("Could not resolve dependency");
+});
+
+// Real 2026-07-07 stress-test bug, root-caused via direct repro
+// (spawnSync("npm", ["install"]) throws ENOENT in ~6ms without shell:true on
+// Windows — Node's own docs: ".bat and .cmd files cannot be spawned
+// directly... the shell option must be set to true"). Agents burned many
+// iterations on workarounds (node -e "fs.unlinkSync(...)" instead of
+// run_command('rm ...'), repeated failed npx/tsc attempts) because every
+// npm/npx/tsc-family command failed instantly on Windows. This test exercises
+// the REAL spawn path (no mocking) so a regression here fails loudly.
+test("execRunCommand actually runs npm-family commands on this platform (not ENOENT)", () => {
+  const sandboxDir = mkdtempSync(join(tmpdir(), "nexsidi-command-test-"));
+  try {
+    const result = execRunCommand(sandboxDir, { command: "npm --version" });
+    expect(result.status).toBe("success");
+    expect(result.summary).not.toContain("ENOENT");
+  } finally {
+    rmSync(sandboxDir, { recursive: true, force: true });
+  }
 });

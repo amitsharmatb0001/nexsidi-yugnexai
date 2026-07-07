@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, unlinkSync } from "fs";
 import { join, dirname, resolve } from "path";
 import type { NimToolDef } from "@nexsidi/llm-client";
+import type { EvidenceLedger } from "../enforce/evidence.ts";
 
 export interface ToolResult {
   status: "success" | "error";
@@ -92,7 +93,8 @@ export function execDeleteFile(sandboxDir: string, args: { path: string }): Tool
   }
 }
 
-export function execReadFile(sandboxDir: string, args: { path: string; offset?: number; limit?: number }): ToolResult {
+// Phase 5 Task 2: ledger is optional — see execRunCommand's identical note.
+export function execReadFile(sandboxDir: string, args: { path: string; offset?: number; limit?: number }, ledger?: EvidenceLedger): ToolResult {
   try {
     const abs = guardPath(sandboxDir, args.path);
     if (!existsSync(abs)) {
@@ -103,6 +105,7 @@ export function execReadFile(sandboxDir: string, args: { path: string; offset?: 
     const limit = args.limit ?? 8000;
     if (offset > 0) content = content.slice(offset);
     if (content.length > limit) content = content.slice(0, limit) + `\n...[truncated, ${content.length - limit} more chars]`;
+    ledger?.record("file_read", args.path);
     return { status: "success", summary: `Read ${args.path}`, output: content };
   } catch (err) {
     return { status: "error", summary: `read_file failed: ${String(err)}`, next_actions: ["check path exists with list_files"] };
