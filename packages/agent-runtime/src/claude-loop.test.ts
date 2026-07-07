@@ -7,7 +7,8 @@
 // the mandatory stress-test runs, not unit tests, mirroring how loop.ts's
 // runAgent() itself has no direct unit test of its live-call behavior.
 import { test, expect } from "bun:test";
-import { runAgentEscalated, type AgentEscalationDeps } from "./claude-loop.ts";
+import { runAgentEscalated, buildEscalationMessage, isUnrecoverableClaudeError, resolveEscalationRunner, runAgentWithClaude, type AgentEscalationDeps } from "./claude-loop.ts";
+import { runAgentWithGemini } from "./gemini-loop.ts";
 import type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
 const BASE_CONFIG: AgentRunConfig = {
@@ -36,6 +37,16 @@ function nimFailure(): Promise<AgentRunResult> {
     filesWritten: [],
     iterations: 40,
     errors: ["Max iterations exceeded"],
+  });
+}
+
+function nimFailureWithProgress(): Promise<AgentRunResult> {
+  return Promise.resolve({
+    success: false,
+    summary: "NIM ran out of iterations mid-task",
+    filesWritten: ["src/index.ts", "src/routes/tasks.ts"],
+    iterations: 40,
+    errors: ["npm install failed: ETIMEDOUT", "tsc: 3 errors in src/routes/tasks.ts"],
   });
 }
 
@@ -110,13 +121,33 @@ test("both fail -> returns Claude's (more informative) result, escalated: true",
   expect(result.summary).not.toBe("NIM gave up");
 });
 
-test("runAgentEscalated passes the SAME config through to both the NIM and Claude paths", async () => {
+test("runAgentEscalated passes the ORIGINAL config unchanged to the NIM path", async () => {
   const seenConfigs: AgentRunConfig[] = [];
   const deps: AgentEscalationDeps = {
     runNim: async (cfg) => {
       seenConfigs.push(cfg);
       return nimFailure();
     },
+    runClaude: async () => claudeSuccess(),
+  };
+
+  await runAgentEscalated(BASE_CONFIG, deps);
+
+  expect(seenConfigs).toHaveLength(1);
+  expect(seenConfigs[0]).toBe(BASE_CONFIG); // exact same reference — NIM path is untouched
+});
+
+// L6 (full-system audit): runAgentWithClaude previously started cold with
+// zero knowledge of what the failed NIM attempt tried, wrote, or errored on
+// — wasting whatever real progress NIM made before hitting MAX_ITERATIONS.
+// The Claude config must now carry that context forward in initialMessage,
+// while every OTHER field (systemPrompt, sandboxDir, model, ...) stays
+// identical to what the NIM path used.
+
+test("runAgentEscalated hands NIM's filesWritten/errors to Claude via an enriched initialMessage, leaving every other config field untouched", async () => {
+  const seenConfigs: AgentRunConfig[] = [];
+  const deps: AgentEscalationDeps = {
+    runNim: nimFailureWithProgress,
     runClaude: async (cfg) => {
       seenConfigs.push(cfg);
       return claudeSuccess();
@@ -125,7 +156,108 @@ test("runAgentEscalated passes the SAME config through to both the NIM and Claud
 
   await runAgentEscalated(BASE_CONFIG, deps);
 
-  expect(seenConfigs).toHaveLength(2);
-  expect(seenConfigs[0]).toBe(BASE_CONFIG);
-  expect(seenConfigs[1]).toBe(BASE_CONFIG);
+  expect(seenConfigs).toHaveLength(1);
+  const claudeConfig = seenConfigs[0]!;
+  expect(claudeConfig).not.toBe(BASE_CONFIG); // rebuilt, not the same reference
+  expect(claudeConfig.systemPrompt).toBe(BASE_CONFIG.systemPrompt);
+  expect(claudeConfig.sandboxDir).toBe(BASE_CONFIG.sandboxDir);
+  expect(claudeConfig.model).toBe(BASE_CONFIG.model);
+  expect(claudeConfig.initialMessage).toContain(BASE_CONFIG.initialMessage);
+  expect(claudeConfig.initialMessage).toContain("src/index.ts");
+  expect(claudeConfig.initialMessage).toContain("src/routes/tasks.ts");
+  expect(claudeConfig.initialMessage).toContain("npm install failed: ETIMEDOUT");
+});
+
+test("runAgentEscalated leaves initialMessage unchanged when NIM made zero progress (no files, no errors)", async () => {
+  const seenConfigs: AgentRunConfig[] = [];
+  const deps: AgentEscalationDeps = {
+    // NIM result with no files written and no errors recorded — e.g. an
+    // immediate empty-response bail before anything was attempted.
+    runNim: async () => ({ success: false, summary: "empty response", filesWritten: [], iterations: 1, errors: [] }),
+    runClaude: async (cfg) => {
+      seenConfigs.push(cfg);
+      return claudeSuccess();
+    },
+  };
+
+  await runAgentEscalated(BASE_CONFIG, deps);
+
+  expect(seenConfigs[0]!.initialMessage).toBe(BASE_CONFIG.initialMessage);
+});
+
+test("buildEscalationMessage appends files-written and errors sections when either is present", () => {
+  const msg = buildEscalationMessage("build a task manager", {
+    success: false,
+    summary: "gave up",
+    filesWritten: ["a.ts"],
+    iterations: 40,
+    errors: ["boom"],
+  });
+  expect(msg).toContain("build a task manager");
+  expect(msg).toContain("a.ts");
+  expect(msg).toContain("boom");
+});
+
+test("buildEscalationMessage returns the original message unchanged when there's nothing to hand off", () => {
+  const msg = buildEscalationMessage("build a task manager", {
+    success: false,
+    summary: "gave up immediately",
+    filesWritten: [],
+    iterations: 1,
+    errors: [],
+  });
+  expect(msg).toBe("build a task manager");
+});
+
+// Found live 2026-07-06 testing Claude-via-Vertex-AI (packages/llm-client/src/
+// claude.ts's createClaudeClient): a fresh Vertex AI project's default quota
+// for a foundation model is 0/near-zero until Google approves an explicit
+// quota-increase request (can take hours) — every retry within the same run
+// hits the identical wall. runAgentWithClaude's catch block previously
+// treated every error identically (log, sleep 5s, retry, up to
+// MAX_ITERATIONS=40 times) — for this error class that's ~200s of guaranteed
+// waste before the run fails anyway. Same category as auth/permission
+// failures: retrying THIS run will never succeed.
+test("isUnrecoverableClaudeError recognizes a Vertex AI quota-exhaustion error", () => {
+  const err = new Error(
+    '[Claude claude-sonnet-5] rate limited: 429 {"error":{"code":429,"message":"Quota exceeded for ' +
+    'aiplatform.googleapis.com/online_prediction_input_tokens_per_minute_per_base_model with base model: ' +
+    'anthropic-claude-sonnet-5. Please submit a quota increase request.","status":"RESOURCE_EXHAUSTED"}}',
+  );
+  expect(isUnrecoverableClaudeError(err)).toBe(true);
+});
+
+test("isUnrecoverableClaudeError recognizes an authentication failure", () => {
+  expect(isUnrecoverableClaudeError(new Error("[Claude claude-sonnet-5] authentication failed: invalid x-api-key"))).toBe(true);
+});
+
+test("isUnrecoverableClaudeError recognizes a permission-denied failure", () => {
+  expect(isUnrecoverableClaudeError(new Error("[Claude claude-sonnet-5] permission denied: model not enabled"))).toBe(true);
+});
+
+test("isUnrecoverableClaudeError does NOT flag a generic transient error (network blip, ordinary rate limit) — those are worth retrying", () => {
+  expect(isUnrecoverableClaudeError(new Error("[Claude claude-sonnet-5] connection error: fetch failed"))).toBe(false);
+  expect(isUnrecoverableClaudeError(new Error("AbortError: The operation was aborted."))).toBe(false);
+});
+
+// 2026-07-06: Claude on Vertex is blocked project-wide by Google's
+// partner-model sales gating (see gemini.ts's header comment for the live
+// evidence) — Gemini has no such gating and was confirmed working live.
+// ESCALATION_PROVIDER lets the second-tier model be swapped per environment
+// without touching runAgentEscalated's own orchestration logic.
+test("resolveEscalationRunner defaults to runAgentWithClaude when ESCALATION_PROVIDER is unset", () => {
+  delete process.env.ESCALATION_PROVIDER;
+  expect(resolveEscalationRunner()).toBe(runAgentWithClaude);
+});
+
+test("resolveEscalationRunner returns runAgentWithGemini when ESCALATION_PROVIDER=gemini", () => {
+  process.env.ESCALATION_PROVIDER = "gemini";
+  expect(resolveEscalationRunner()).toBe(runAgentWithGemini);
+  delete process.env.ESCALATION_PROVIDER;
+});
+
+test("resolveEscalationRunner falls back to runAgentWithClaude for any other value", () => {
+  process.env.ESCALATION_PROVIDER = "anthropic";
+  expect(resolveEscalationRunner()).toBe(runAgentWithClaude);
+  delete process.env.ESCALATION_PROVIDER;
 });

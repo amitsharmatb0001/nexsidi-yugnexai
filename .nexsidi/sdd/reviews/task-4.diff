@@ -1,0 +1,113 @@
+diff --git a/pipeline/orchestrator/dag.test.ts b/pipeline/orchestrator/dag.test.ts
+new file mode 100644
+index 0000000..84fa6af
+--- /dev/null
++++ b/pipeline/orchestrator/dag.test.ts
+@@ -0,0 +1,55 @@
++import { test, expect } from "bun:test";
++import { buildDag, CycleDetectedError, DanglingReferenceError } from "./dag.ts";
++
++test("buildDag accepts a valid acyclic graph", () => {
++  const dag = buildDag([
++    { id: "db-schema", description: "Design schema", complexity: 3, dependsOn: [] },
++    { id: "backend-api", description: "Build API", complexity: 5, dependsOn: ["db-schema"] },
++    { id: "frontend-integrate", description: "Wire UI", complexity: 4, dependsOn: ["backend-api"] },
++  ]);
++  expect(dag.tasks.length).toBe(3);
++});
++
++test("buildDag throws CycleDetectedError on a circular dependency", () => {
++  expect(() =>
++    buildDag([
++      { id: "a", description: "A", complexity: 1, dependsOn: ["b"] },
++      { id: "b", description: "B", complexity: 1, dependsOn: ["a"] },
++    ])
++  ).toThrow(CycleDetectedError);
++});
++
++test("buildDag throws DanglingReferenceError when dependsOn references non-existent task", () => {
++  expect(() =>
++    buildDag([
++      { id: "task-1", description: "First task", complexity: 2, dependsOn: ["nonexistent-task"] },
++    ])
++  ).toThrow(DanglingReferenceError);
++});
++
++test("buildDag handles multiple dangling references with clear error message", () => {
++  expect(() =>
++    buildDag([
++      { id: "task-a", description: "A", complexity: 1, dependsOn: ["missing-1", "missing-2"] },
++      { id: "task-b", description: "B", complexity: 1, dependsOn: [] },
++    ])
++  ).toThrow(DanglingReferenceError);
++});
++
++test("buildDag accepts complex valid DAG with multiple dependencies", () => {
++  const dag = buildDag([
++    { id: "database", description: "Set up DB", complexity: 3, dependsOn: [] },
++    { id: "auth-service", description: "Auth API", complexity: 4, dependsOn: ["database"] },
++    { id: "user-service", description: "User API", complexity: 4, dependsOn: ["database"] },
++    { id: "frontend", description: "Frontend UI", complexity: 5, dependsOn: ["auth-service", "user-service"] },
++  ]);
++  expect(dag.tasks.length).toBe(4);
++});
++
++test("buildDag detects self-referential cycle", () => {
++  expect(() =>
++    buildDag([
++      { id: "self-ref", description: "Self loop", complexity: 1, dependsOn: ["self-ref"] },
++    ])
++  ).toThrow(CycleDetectedError);
++});
+diff --git a/pipeline/orchestrator/dag.ts b/pipeline/orchestrator/dag.ts
+new file mode 100644
+index 0000000..3742e70
+--- /dev/null
++++ b/pipeline/orchestrator/dag.ts
+@@ -0,0 +1,46 @@
++import type { DagTask, Dag } from "./types.ts";
++
++export class CycleDetectedError extends Error {
++  constructor(cyclePath: string[]) {
++    super(`Cycle detected in task graph: ${cyclePath.join(" -> ")}`);
++  }
++}
++
++export class DanglingReferenceError extends Error {
++  constructor(taskId: string, missingDeps: string[]) {
++    super(
++      `Task "${taskId}" depends on non-existent tasks: ${missingDeps.join(", ")}`
++    );
++  }
++}
++
++export function buildDag(tasks: DagTask[]): Dag {
++  const byId = new Map(tasks.map((t) => [t.id, t]));
++
++  // Validation pass 1: check for dangling references
++  for (const task of tasks) {
++    const missingDeps = task.dependsOn.filter((depId) => !byId.has(depId));
++    if (missingDeps.length > 0) {
++      throw new DanglingReferenceError(task.id, missingDeps);
++    }
++  }
++
++  // Validation pass 2: cycle detection using DFS
++  const visiting = new Set<string>();
++  const visited = new Set<string>();
++
++  function visit(id: string, path: string[]): void {
++    if (visited.has(id)) return;
++    if (visiting.has(id)) throw new CycleDetectedError([...path, id]);
++    visiting.add(id);
++    const task = byId.get(id);
++    if (task) {
++      for (const dep of task.dependsOn) visit(dep, [...path, id]);
++    }
++    visiting.delete(id);
++    visited.add(id);
++  }
++
++  for (const task of tasks) visit(task.id, []);
++  return { tasks };
++}

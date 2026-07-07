@@ -53,7 +53,11 @@ export interface PipelineStages {
   stage2: (projectId: string, spec: unknown) => Promise<GatewayDecision>;
   stage3: (projectId: string, plan: unknown) => Promise<Stage3Output>;
   stage4: (projectId: string, plan: unknown, dag: unknown) => Promise<Stage4Output>;
-  stage5: (projectId: string, stage4Result: Stage4Output) => Promise<Stage5Output>;
+  // `plan` added as a 3rd param (A6) — NOT 2nd, so existing 2-arg stubs
+  // (positionally expecting stage4Result second) keep working unchanged.
+  // runQAFixLoop (the real Stage 5 wiring below) needs `plan` to call
+  // Shubham/Aanya's fix() functions.
+  stage5: (projectId: string, stage4Result: Stage4Output, plan: unknown) => Promise<Stage5Output>;
   stage6: (projectId: string, stage4Result: Stage4Output) => Promise<Stage6Output>;
 }
 
@@ -68,12 +72,17 @@ export interface PipelineStages {
  *   - Stage 3's own human approval gate resolves to `locked: false` -> stops
  *     before Stage 4 runs (nothing has been generated yet at that point, so
  *     there is nothing to roll back).
- *   - Stage 5's adversarial QA fails (`pass: false`) -> stops before Stage 6
- *     deploys an unvetted build. A fault-isolated re-fix-and-retest loop
- *     (per the design doc) is a distinct, larger feature and is NOT
- *     implemented here — see this fix's report for the explicit scope call;
- *     `stage5Result.faultAgent` is threaded through for a future loop to
- *     consume, but nothing currently retries Shubham/Aanya/Pranav on it.
+ *   - Stage 5's adversarial QA fails (`pass: false`) AND the fix loop (A6,
+ *     see stage5-qa-fix-loop.ts) can't get it passing within its iteration
+ *     budget -> stops before Stage 6 deploys an unvetted build. The real
+ *     `stage5` implementation wired in `runPipeline()` below is
+ *     `runQAFixLoop`, not the bare single-pass `runStage5` — on failure it
+ *     routes findings to the fault-isolated agent (Shubham/Aanya only;
+ *     Pranav has no agentic fix path yet), retests, and repeats up to a
+ *     small cap or until stuck-detection fires. `PipelineStages.stage5`'s
+ *     signature is unchanged (`Stage5Output` already covers `pass`/
+ *     `findings`/`faultAgent`) — only which function gets passed for it
+ *     changed, so `runPipelineWithStages` and its tests needed no changes.
  *
  * Stage 1 now runs Arjun (agents/arjun/src/index.ts) after Saanvi, so it
  * produces the locked `spec` (ProjectSpec), a real `plan` (BuildPlan), and a
@@ -110,7 +119,7 @@ export async function runPipelineWithStages(
   const stage4Result = await stages.stage4(projectId, stage1Result.plan, stage1Result.dag);
   writeCheckpoint(projectId, "04-dev", stage4Result);
 
-  const stage5Result = await stages.stage5(projectId, stage4Result);
+  const stage5Result = await stages.stage5(projectId, stage4Result, stage1Result.plan);
   writeCheckpoint(projectId, "05-qa", stage5Result);
 
   if (!stage5Result.pass) {
@@ -128,14 +137,16 @@ export async function runPipeline(projectId: string, userInput: string): Promise
     { runStage2 },
     { runStage3 },
     { runStage4 },
-    { runStage5 },
+    { runQAFixLoop },
     { runStage6 },
   ] = await Promise.all([
     import("./stages/stage1-requirements.ts"),
     import("./stages/stage2-gateway.ts"),
     import("./stages/stage3-ui-preview.ts"),
     import("./stages/stage4-multi-agent-dev.ts"),
-    import("./stages/stage5-adversarial-qa.ts"),
+    // A6: the real Stage 5 wiring is the fix loop, not the bare single-pass
+    // runStage5 — see the doc comment above runPipelineWithStages.
+    import("./stages/stage5-qa-fix-loop.ts"),
     import("./stages/stage6-deployment.ts"),
   ]);
 
@@ -148,7 +159,7 @@ export async function runPipeline(projectId: string, userInput: string): Promise
     // boundary rather than loosening runStage4's own signature, same
     // approach stage3-ui-preview.ts uses internally for its `plan` param.
     stage4: (pid, plan, dag) => runStage4(pid, plan as BuildPlan, dag as Dag),
-    stage5: runStage5,
+    stage5: (pid, stage4Result, plan) => runQAFixLoop(pid, plan as BuildPlan, stage4Result),
     stage6: runStage6,
   });
 }

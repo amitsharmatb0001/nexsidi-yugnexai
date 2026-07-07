@@ -33,6 +33,19 @@ function validateCommand(command: string): string | null {
   return null;
 }
 
+// Full-system audit TO1: real build-tool errors (npm ERESOLVE conflicts,
+// "Failed to compile" from next build) sit at the END of long output, but
+// the previous slice(0, 6000) kept only the HEAD — agents saw progress
+// noise and never the actual failure, then blindly re-ran the same
+// command repeatedly (observed in stress-test runs 8/9/10). Keeps a small
+// head for command-invocation context plus the tail where errors live.
+export function truncateOutput(text: string, headChars: number, tailChars: number): string {
+  if (text.length <= headChars + tailChars) return text;
+  const head = text.slice(0, headChars);
+  const tail = text.slice(-tailChars);
+  return `${head}\n...[truncated ${text.length - headChars - tailChars} chars]...\n${tail}`;
+}
+
 export function execRunCommand(
   cwd: string,
   args: { command: string; timeout_ms?: number },
@@ -59,8 +72,8 @@ export function execRunCommand(
       env: { ...process.env, FORCE_COLOR: "0", NPM_CONFIG_FUND: "false", NPM_CONFIG_AUDIT: "false" },
     });
 
-    const stdout = (result.stdout ?? "").slice(0, 6000);
-    const stderr = (result.stderr ?? "").slice(0, 6000);
+    const stdout = truncateOutput(result.stdout ?? "", 1000, 5000);
+    const stderr = truncateOutput(result.stderr ?? "", 1000, 5000);
     const combined = [stdout, stderr].filter(Boolean).join("\n").trim();
     const success = result.status === 0;
 

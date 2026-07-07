@@ -1,5 +1,13 @@
 import { test, expect } from "bun:test";
-import { translateNimToolToClaudeTool, CLAUDE_ESCALATION_MODEL, ClaudeRefusalError } from "./claude.ts";
+import {
+  translateNimToolToClaudeTool,
+  CLAUDE_ESCALATION_MODEL,
+  resolveClaudeModel,
+  supportsAdaptiveThinking,
+  ClaudeRefusalError,
+  withCacheBreakpoint,
+  withLastMessageCacheBreakpoint,
+} from "./claude.ts";
 import type { NimToolDef } from "./nim.ts";
 
 // Deterministic, no network — this is the required test per the task spec.
@@ -90,4 +98,111 @@ test("ClaudeRefusalError handles a null category/explanation (stop_details can b
   const err = new ClaudeRefusalError(null, null);
   expect(err.category).toBeNull();
   expect(err.message).toContain("refusal");
+});
+
+// ── Prompt caching (T7) ─────────────────────────────────────────────────────
+
+test("withCacheBreakpoint wraps a plain string into a single text block with cache_control", () => {
+  const blocks = withCacheBreakpoint("hello");
+  expect(blocks).toEqual([{ type: "text", text: "hello", cache_control: { type: "ephemeral" } }]);
+});
+
+test("withCacheBreakpoint marks only the LAST block of an existing content array, leaving earlier blocks untouched", () => {
+  const original: Array<{ type: string; [k: string]: unknown }> = [
+    { type: "text", text: "first" },
+    { type: "text", text: "second" },
+  ];
+  const blocks = withCacheBreakpoint(original as never);
+  expect(blocks[0]).toEqual({ type: "text", text: "first" });
+  expect(blocks[1]).toEqual({ type: "text", text: "second", cache_control: { type: "ephemeral" } });
+});
+
+test("withCacheBreakpoint does not mutate the input array or its blocks", () => {
+  const original = [{ type: "text" as const, text: "first" }];
+  const blocks = withCacheBreakpoint(original);
+  expect(original[0]).not.toHaveProperty("cache_control");
+  expect(blocks).not.toBe(original);
+});
+
+test("withCacheBreakpoint returns an empty array unchanged", () => {
+  expect(withCacheBreakpoint([])).toEqual([]);
+});
+
+test("withCacheBreakpoint skips a trailing thinking block (cache_control is not a valid field on it)", () => {
+  const blocks = withCacheBreakpoint([
+    { type: "thinking", thinking: "reasoning...", signature: "sig" },
+  ]);
+  expect(blocks).toEqual([{ type: "thinking", thinking: "reasoning...", signature: "sig" }]);
+});
+
+test("withLastMessageCacheBreakpoint marks only the last message, leaving earlier messages' identity untouched", () => {
+  const messages = [
+    { role: "user" as const, content: "turn 1" },
+    { role: "assistant" as const, content: "turn 2" },
+    { role: "user" as const, content: "turn 3" },
+  ];
+  const result = withLastMessageCacheBreakpoint(messages);
+
+  expect(result[0]).toBe(messages[0]); // untouched — same reference
+  expect(result[1]).toBe(messages[1]); // untouched — same reference
+  expect(result[2]).not.toBe(messages[2]); // rebuilt with cache_control
+  expect(result[2]!.content).toEqual([{ type: "text", text: "turn 3", cache_control: { type: "ephemeral" } }]);
+});
+
+test("withLastMessageCacheBreakpoint on a single-message array still caches that one message", () => {
+  const messages = [{ role: "user" as const, content: "only turn" }];
+  const result = withLastMessageCacheBreakpoint(messages);
+  expect(result[0]!.content).toEqual([{ type: "text", text: "only turn", cache_control: { type: "ephemeral" } }]);
+});
+
+test("withLastMessageCacheBreakpoint returns an empty array unchanged", () => {
+  expect(withLastMessageCacheBreakpoint([])).toEqual([]);
+});
+
+test("withLastMessageCacheBreakpoint handles a tool_result content array as the last message (the runAgentWithClaude loop shape)", () => {
+  const messages = [
+    { role: "assistant" as const, content: "acknowledged" },
+    {
+      role: "user" as const,
+      content: [{ type: "tool_result" as const, tool_use_id: "toolu_1", content: "{}" }],
+    },
+  ];
+  const result = withLastMessageCacheBreakpoint(messages);
+  expect(result[1]!.content).toEqual([
+    { type: "tool_result", tool_use_id: "toolu_1", content: "{}", cache_control: { type: "ephemeral" } },
+  ]);
+});
+
+// Vertex quota probe 2026-07-06 (scripts/ping-vertex-models.ts + Service Usage
+// API): this GCP project has ZERO quota for claude-sonnet-5 on Vertex but a
+// pre-granted 15,000 tokens/min for claude-opus-4-1 / claude-sonnet-4 at
+// us-east5. The escalation model therefore has to be overridable per
+// environment (CLAUDE_MODEL env var) without changing the direct-API default.
+test("resolveClaudeModel returns the escalation default when CLAUDE_MODEL is unset", () => {
+  delete process.env.CLAUDE_MODEL;
+  expect(resolveClaudeModel()).toBe(CLAUDE_ESCALATION_MODEL);
+});
+
+test("resolveClaudeModel honors a CLAUDE_MODEL override", () => {
+  process.env.CLAUDE_MODEL = "claude-opus-4-1";
+  expect(resolveClaudeModel()).toBe("claude-opus-4-1");
+  delete process.env.CLAUDE_MODEL;
+});
+
+test("resolveClaudeModel ignores a blank CLAUDE_MODEL", () => {
+  process.env.CLAUDE_MODEL = "  ";
+  expect(resolveClaudeModel()).toBe(CLAUDE_ESCALATION_MODEL);
+  delete process.env.CLAUDE_MODEL;
+});
+
+// Adaptive thinking is only valid on Claude 4.6+ models — sending
+// thinking:{type:"adaptive"} to an older override model (claude-opus-4-1,
+// claude-sonnet-4) is a 400. The request builder must gate it on the model.
+test("supportsAdaptiveThinking is true for the 4.6+ family and false for older models", () => {
+  expect(supportsAdaptiveThinking("claude-sonnet-5")).toBe(true);
+  expect(supportsAdaptiveThinking("claude-opus-4-8")).toBe(true);
+  expect(supportsAdaptiveThinking("claude-sonnet-4-6")).toBe(true);
+  expect(supportsAdaptiveThinking("claude-opus-4-1")).toBe(false);
+  expect(supportsAdaptiveThinking("claude-sonnet-4")).toBe(false);
+  expect(supportsAdaptiveThinking("claude-sonnet-4@20250514")).toBe(false);
 });

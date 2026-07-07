@@ -1,0 +1,38 @@
+diff --git a/pipeline/orchestrator/flags.test.ts b/pipeline/orchestrator/flags.test.ts
+new file mode 100644
+index 0000000..b680e35
+--- /dev/null
++++ b/pipeline/orchestrator/flags.test.ts
+@@ -0,0 +1,17 @@
++import { test, expect } from "bun:test";
++import { resolveFlags } from "./flags.ts";
++
++test("resolveFlags defaults to demo-safe values with no env vars set", () => {
++  delete process.env.NEXSIDI_REQUIRE_OTP;
++  delete process.env.NEXSIDI_REQUIRE_PAYMENT;
++  delete process.env.NEXSIDI_DEPLOY_TARGET;
++  expect(resolveFlags()).toEqual({ requireOtp: false, requirePayment: false, deployTarget: "local" });
++});
++
++test("resolveFlags respects env var overrides", () => {
++  process.env.NEXSIDI_REQUIRE_OTP = "true";
++  process.env.NEXSIDI_DEPLOY_TARGET = "gcp";
++  expect(resolveFlags()).toEqual({ requireOtp: true, requirePayment: false, deployTarget: "gcp" });
++  delete process.env.NEXSIDI_REQUIRE_OTP;
++  delete process.env.NEXSIDI_DEPLOY_TARGET;
++});
+diff --git a/pipeline/orchestrator/flags.ts b/pipeline/orchestrator/flags.ts
+new file mode 100644
+index 0000000..11df6ad
+--- /dev/null
++++ b/pipeline/orchestrator/flags.ts
+@@ -0,0 +1,9 @@
++import type { FeatureFlags } from "./types.ts";
++
++export function resolveFlags(): FeatureFlags {
++  return {
++    requireOtp: process.env.NEXSIDI_REQUIRE_OTP === "true",
++    requirePayment: process.env.NEXSIDI_REQUIRE_PAYMENT === "true",
++    deployTarget: process.env.NEXSIDI_DEPLOY_TARGET === "gcp" ? "gcp" : "local",
++  };
++}

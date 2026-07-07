@@ -31,8 +31,12 @@ const SIDE_STYLES: Record<TooltipSide, any> = {
 export function Tooltip({ content, side = "top", delay = 400, disabled, children }: TooltipProps) {
   const [visible, setVisible]     = useState(false);
   const [animated, setAnimated]   = useState(false);
-  const showTimer = useRef<ReturnType<typeof setTimeout>>();
-  const hideTimer = useRef<ReturnType<typeof setTimeout>>();
+  // React 19's @types/react requires useRef to receive an initial value —
+  // the old zero-argument form is a hard type error in every generated
+  // project that typechecks this vendored source (see stress-test runs
+  // 2026-07-04: each run independently burned iterations rediscovering this).
+  const showTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const show = useCallback(() => {
     clearTimeout(hideTimer.current);

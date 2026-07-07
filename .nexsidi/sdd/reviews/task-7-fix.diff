@@ -1,0 +1,83 @@
+diff --git a/packages/agent-runtime/src/tools/screenshot.test.ts b/packages/agent-runtime/src/tools/screenshot.test.ts
+new file mode 100644
+index 0000000..d1daae5
+--- /dev/null
++++ b/packages/agent-runtime/src/tools/screenshot.test.ts
+@@ -0,0 +1,26 @@
++import { test, expect } from "bun:test";
++import { execScreenshot } from "./screenshot.ts";
++
++test("execScreenshot blocks non-localhost URLs (same policy as http_request)", async () => {
++  const result = await execScreenshot({ url: "https://example.com", outputPath: "shot.png" });
++  expect(result.status).toBe("error");
++  expect(result.summary).toContain("localhost");
++});
++
++test("execScreenshot rejects a path traversal attempt in outputPath", async () => {
++  const result = await execScreenshot({ url: "http://localhost:3200", outputPath: "../../etc/shot.png" });
++  expect(result.status).toBe("error");
++});
++
++test("execScreenshot rejects a sibling-directory path that shares a string prefix but is not actually inside cwd", async () => {
++  // When `bun test packages/agent-runtime/src/tools/screenshot.test.ts` runs from the repo root,
++  // process.cwd() is the repo root itself (e.g. ".../worktrees/eager-varahamihira-967edb"), not the
++  // package directory. "../eager-varahamihira-967edb-evil/x.png" resolves to a sibling directory
++  // (".../worktrees/eager-varahamihira-967edb-evil/x.png") that shares a string prefix with cwd
++  // (the raw string "eager-varahamihira-967edb") but is NOT inside it. A bare `startsWith(cwdAbs)`
++  // check would incorrectly allow this; the fixed guard must reject it.
++  const cwdName = process.cwd().split(/[\\/]/).filter(Boolean).pop()!;
++  const result = await execScreenshot({ url: "http://localhost:3200", outputPath: `../${cwdName}-evil/x.png` });
++  expect(result.status).toBe("error");
++  expect(result.summary).toContain("escapes the working directory");
++});
+diff --git a/packages/agent-runtime/src/tools/screenshot.ts b/packages/agent-runtime/src/tools/screenshot.ts
+new file mode 100644
+index 0000000..4a270f8
+--- /dev/null
++++ b/packages/agent-runtime/src/tools/screenshot.ts
+@@ -0,0 +1,45 @@
++import { chromium } from "playwright";
++import { resolve, sep } from "path";
++import type { NimToolDef } from "@nexsidi/llm-client";
++import type { ToolResult } from "./file.ts";
++
++export async function execScreenshot(args: { url: string; outputPath: string }): Promise<ToolResult> {
++  const parsed = new URL(args.url);
++  if (parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
++    return { status: "error", summary: `screenshot blocked: only localhost allowed, got '${parsed.hostname}'` };
++  }
++  const outAbs = resolve(args.outputPath);
++  const cwdAbs = resolve(process.cwd());
++  if (outAbs !== cwdAbs && !outAbs.startsWith(cwdAbs + sep)) {
++    return { status: "error", summary: "screenshot outputPath escapes the working directory" };
++  }
++
++  let browser;
++  try {
++    browser = await chromium.launch();
++    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
++    await page.goto(args.url, { timeout: 15_000, waitUntil: "networkidle" });
++    await page.screenshot({ path: outAbs, fullPage: true });
++    return { status: "success", summary: `Screenshot saved to ${args.outputPath}`, output: outAbs };
++  } catch (err) {
++    return { status: "error", summary: `screenshot failed: ${String(err)}` };
++  } finally {
++    await browser?.close();
++  }
++}
++
++export const SCREENSHOT_TOOL_DEF: NimToolDef = {
++  type: "function",
++  function: {
++    name: "screenshot",
++    description: "Take a screenshot of a running localhost app for visual QA review (padding, layout, broken CSS). Use before judging any visual claim.",
++    parameters: {
++      type: "object",
++      properties: {
++        url: { type: "string", description: "Localhost URL to screenshot" },
++        outputPath: { type: "string", description: "Relative path to save the PNG" },
++      },
++      required: ["url", "outputPath"],
++    },
++  },
++};

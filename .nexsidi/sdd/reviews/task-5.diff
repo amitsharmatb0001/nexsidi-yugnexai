@@ -1,0 +1,20 @@
+diff --git a/packages/context-chain/src/verify.test.ts b/packages/context-chain/src/verify.test.ts
+new file mode 100644
+index 0000000..b8fc575
+--- /dev/null
++++ b/packages/context-chain/src/verify.test.ts
+@@ -0,0 +1,14 @@
++import { test, expect } from "bun:test";
++import { hashContext, verifyContext, triggerRollback } from "./index.ts";
++
++test("verifyContext succeeds when hash matches and signature is valid", () => {
++  const context = { agentFrom: "pranav", agentTo: "shubham", schema: "tasks" };
++  const hash = hashContext(context);
++  const result = verifyContext(context, "wrong-hash-on-purpose", "fake-sig", "fake-key-path");
++  expect(result.valid).toBe(false);
++  expect(result.reason).toBe("hash_mismatch");
++});
++
++test("triggerRollback throws a structured, catchable rollback error", () => {
++  expect(() => triggerRollback("proj-123", "hash_mismatch")).toThrow("ROLLBACK:proj-123");
++});

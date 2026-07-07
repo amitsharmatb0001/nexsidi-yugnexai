@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hashContext, signOutput } from "@nexsidi/context-chain";
-import { getProjectKeyPair, identifyFaultAgent, verifyAgentHandoff } from "./stage4-multi-agent-dev.ts";
+import { getProjectKeyPair, identifyFaultAgent, identifyFaultAgents, groupFindingsByAgent, verifyAgentHandoff } from "./stage4-multi-agent-dev.ts";
 
 // ── getProjectKeyPair path-traversal guard (final-whole-branch-review.md F5) ──
 test("getProjectKeyPair throws on a path-traversal projectId instead of writing keys outside BUILD_DIR", () => {
@@ -44,6 +44,62 @@ test("identifyFaultAgent routes a db migration finding to pranav", () => {
 
 test("identifyFaultAgent defaults to shubham for an unrecognized path prefix", () => {
   expect(identifyFaultAgent([{ file: "docs/README.md", issue: "typo" }])).toBe("shubham");
+});
+
+// identifyFaultAgents (plural) - real 2026-07-06 stress-test bug: the QA fix
+// loop (stage5-qa-fix-loop.ts) used identifyFaultAgent's SINGLE result to
+// decide which one agent to fix per round. A real run had findings spanning
+// BOTH backend/ and frontend/ files in the same QA pass - since findings[0]
+// was a backend/ file, the loop fixed Shubham every round and NEVER touched
+// Aanya's frontend XSS finding, no matter how many retries ran. This returns
+// the FULL set of implicated agents so the fix loop can route findings to
+// every agent that actually has findings in a single round, not just the first.
+test("identifyFaultAgents returns every agent with at least one finding, not just the first", () => {
+  const agents = identifyFaultAgents([
+    { file: "backend/src/index.ts", issue: "missing CSRF protection" },
+    { file: "frontend/components/TaskForm.tsx", issue: "missing input sanitization" },
+  ]);
+  expect([...agents].sort()).toEqual(["aanya", "shubham"]);
+});
+
+test("identifyFaultAgents returns a single-element set when all findings are in one agent's files", () => {
+  const agents = identifyFaultAgents([
+    { file: "backend/src/index.ts", issue: "missing CSRF protection" },
+    { file: "backend/src/controllers/tasks.ts", issue: "SQL injection risk" },
+  ]);
+  expect([...agents]).toEqual(["shubham"]);
+});
+
+test("identifyFaultAgents includes pranav for db/ findings alongside other agents in the same round", () => {
+  const agents = identifyFaultAgents([
+    { file: "backend/src/index.ts", issue: "missing CSRF protection" },
+    { file: "db/migrations/0001_tasks.sql", issue: "missing index" },
+  ]);
+  expect([...agents].sort()).toEqual(["pranav", "shubham"]);
+});
+
+test("identifyFaultAgents defaults an unrecognized path prefix to shubham, same as identifyFaultAgent", () => {
+  const agents = identifyFaultAgents([{ file: "docs/README.md", issue: "typo" }]);
+  expect([...agents]).toEqual(["shubham"]);
+});
+
+// groupFindingsByAgent - the fix loop needs each agent's OWN subset of
+// findings (not just which agents are implicated) so fixShubham only
+// receives backend findings and fixAanya only receives frontend findings.
+test("groupFindingsByAgent partitions mixed backend/frontend findings into separate per-agent lists", () => {
+  const groups = groupFindingsByAgent([
+    { file: "backend/src/index.ts", issue: "missing CSRF protection" },
+    { file: "frontend/components/TaskForm.tsx", issue: "missing input sanitization" },
+    { file: "backend/src/controllers/tasks.ts", issue: "SQL injection risk" },
+  ]);
+  expect(groups.get("shubham")).toEqual([
+    { file: "backend/src/index.ts", issue: "missing CSRF protection" },
+    { file: "backend/src/controllers/tasks.ts", issue: "SQL injection risk" },
+  ]);
+  expect(groups.get("aanya")).toEqual([
+    { file: "frontend/components/TaskForm.tsx", issue: "missing input sanitization" },
+  ]);
+  expect(groups.has("pranav")).toBe(false);
 });
 
 // ── verifyAgentHandoff — real signature + hash chain (same keypair pattern as

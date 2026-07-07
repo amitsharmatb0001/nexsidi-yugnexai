@@ -7,6 +7,7 @@
 // Uses the official @anthropic-ai/sdk — never raw fetch — per this repo's
 // convention (see nim.ts for the NIM-side fetch pattern this mirrors).
 import Anthropic from "@anthropic-ai/sdk";
+import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
 import { canRequest, recordFailure, recordSuccess } from "./circuit-breaker.ts";
 import { waitForToken } from "./token-bucket.ts";
 import type { ChatMessage } from "./types.ts";
@@ -17,6 +18,29 @@ import type { NimToolDef } from "./nim.ts";
 // hardest-problem escalation tier per explicit user choice (not
 // claude-sonnet-4-6, the lighter/older mid-tier model).
 export const CLAUDE_ESCALATION_MODEL = "claude-sonnet-5";
+
+// Vertex quota probe 2026-07-06 (scripts/ping-vertex-models.ts + Service
+// Usage API): this GCP project has ZERO Vertex quota for claude-sonnet-5 but
+// a pre-granted 15,000 tokens/min for claude-opus-4-1 / claude-sonnet-4 at
+// us-east5. CLAUDE_MODEL overrides the escalation model per environment
+// (e.g. set claude-opus-4-1 alongside CLAUDE_PROVIDER=vertex) without
+// touching the direct-API default above.
+export function resolveClaudeModel(): string {
+  const override = process.env.CLAUDE_MODEL?.trim();
+  return override ? override : CLAUDE_ESCALATION_MODEL;
+}
+
+// thinking:{type:"adaptive"} is only valid on Claude 4.6+ models — older
+// models (claude-opus-4-1, claude-sonnet-4, ...) reject it with a 400, so
+// requests must omit the thinking param entirely for them. Matched by model
+// family rather than an allowlist so future 4.6+/5.x ids keep working.
+export function supportsAdaptiveThinking(model: string): boolean {
+  return (
+    /claude-(sonnet|opus|haiku)-5/.test(model) ||
+    /claude-fable/.test(model) ||
+    /claude-(sonnet|opus)-4-[6-9]/.test(model)
+  );
+}
 
 // Claude escalation calls are a rare one-shot retry (not a hot loop like
 // NIM's per-agent traffic), so a single generous fixed ceiling is enough to
@@ -37,6 +61,40 @@ const TOOL_CALL_MAX_TOKENS = 16000;
 
 function circuitKeyFor(model: string): string {
   return `claude:${model}`;
+}
+
+// GCP-credit fallback: when direct Anthropic billing is unavailable, the
+// escalation tier can run through Claude on Vertex AI instead — same
+// models, billed against GCP credit. Selected via CLAUDE_PROVIDER=vertex.
+// AnthropicVertex extends the same BaseAnthropic class as Anthropic
+// (confirmed against the installed SDK's own client.d.ts), so it's
+// structurally interchangeable at every call site below (.messages.create,
+// .messages.stream) — no adapter needed, just a different constructor.
+//
+// Region is NOT defaulted here on purpose: which GCP regions serve which
+// Claude model changes over time and isn't something to hardcode from
+// memory — check Anthropic's current Vertex AI region table (or the
+// Vertex AI Model Garden page for Claude Sonnet 5 specifically) and set
+// GOOGLE_CLOUD_REGION to a supported region before enabling this path.
+function createClaudeClient(apiKey: string): Anthropic | AnthropicVertex {
+  if (process.env.CLAUDE_PROVIDER !== "vertex") {
+    return new Anthropic({ apiKey });
+  }
+  const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+  const region = process.env.GOOGLE_CLOUD_REGION;
+  if (!projectId) {
+    throw new Error("[llm-client] CLAUDE_PROVIDER=vertex requires GOOGLE_CLOUD_PROJECT to be set");
+  }
+  if (!region) {
+    throw new Error(
+      "[llm-client] CLAUDE_PROVIDER=vertex requires GOOGLE_CLOUD_REGION to be set — check Anthropic's current " +
+      "Vertex AI region availability for claude-sonnet-5 before choosing one, it is not defaulted here",
+    );
+  }
+  // Auth is via GCP Application Default Credentials (gcloud auth
+  // application-default login), not an API key — apiKey is accepted here
+  // for call-site symmetry with the direct-Anthropic path but is unused.
+  return new AnthropicVertex({ projectId, region });
 }
 
 // Distinguishes a policy refusal (stop_reason: "refusal") from a thrown SDK
@@ -71,6 +129,56 @@ function extractText(content: Array<{ type: string; text?: string }>): string {
     .join("\n");
 }
 
+// ── Prompt caching (T7, full-system audit) ─────────────────────────────────
+//
+// Render order is tools -> system -> messages (shared/prompt-caching.md), so
+// a single breakpoint on the (only) system block also caches every tool
+// definition above it — no separate tools-level marker needed.
+function cachedSystemBlocks(text: string): Anthropic.Messages.TextBlockParam[] {
+  return [{ type: "text", text, cache_control: { type: "ephemeral" } }];
+}
+
+// thinking/redacted_thinking/mid_conv_system blocks don't accept cache_control
+// (per shared/prompt-caching.md's supported-block-type list, and the SDK's
+// own types) — an assistant turn can end in one of these if adaptive
+// thinking produced trailing reasoning with no following text/tool_use.
+type NonCacheableBlockType = "thinking" | "redacted_thinking" | "mid_conv_system";
+function supportsCacheControl(
+  block: Anthropic.Messages.ContentBlockParam,
+): block is Exclude<Anthropic.Messages.ContentBlockParam, { type: NonCacheableBlockType }> {
+  return block.type !== "thinking" && block.type !== "redacted_thinking" && block.type !== "mid_conv_system";
+}
+
+// Marks the last content block of a message so the growing conversation
+// prefix is cached turn-over-turn (runAgentWithClaude in claude-loop.ts
+// resends the SAME system+tools with an ever-longer message history on every
+// iteration — this is the textbook multi-turn caching case). Exported for
+// unit testing the block-shape logic without a live API call.
+export function withCacheBreakpoint(
+  content: string | Anthropic.Messages.ContentBlockParam[],
+): Anthropic.Messages.ContentBlockParam[] {
+  const blocks: Anthropic.Messages.ContentBlockParam[] =
+    typeof content === "string" ? [{ type: "text", text: content }] : [...content];
+  const last = blocks[blocks.length - 1];
+  if (!last || !supportsCacheControl(last)) return blocks;
+  blocks[blocks.length - 1] = { ...last, cache_control: { type: "ephemeral" } };
+  return blocks;
+}
+
+// Applies withCacheBreakpoint to only the LAST message, leaving every earlier
+// message untouched — each call rebuilds anthropicMessages fresh from the
+// caller's ClaudeMessage[], so this never accumulates stale breakpoints
+// across iterations (max 4 per request; here we use exactly 2: system + this).
+export function withLastMessageCacheBreakpoint(
+  messages: Anthropic.Messages.MessageParam[],
+): Anthropic.Messages.MessageParam[] {
+  const updated = [...messages];
+  const last = updated[updated.length - 1];
+  if (!last) return updated;
+  updated[updated.length - 1] = { ...last, content: withCacheBreakpoint(last.content) };
+  return updated;
+}
+
 // ── One-shot chat (mirrors nimChat()'s shape) ──────────────────────────────
 
 export async function claudeChat(
@@ -85,7 +193,7 @@ export async function claudeChat(
 
   await waitForToken(CLAUDE_ESCALATION_MODEL, CLAUDE_RPM_LIMIT);
 
-  const client = new Anthropic({ apiKey });
+  const client = createClaudeClient(apiKey);
 
   const systemParts: string[] = [];
   const anthropicMessages: Anthropic.Messages.MessageParam[] = [];
@@ -99,15 +207,17 @@ export async function claudeChat(
 
   const maxTokens = opts?.maxTokens ?? 8000;
 
+  const model = resolveClaudeModel();
   const requestParams = {
-    model: CLAUDE_ESCALATION_MODEL,
+    model,
     max_tokens: maxTokens,
     // Extended thinking on Sonnet 5: adaptive only. Do NOT use budget_tokens
-    // — it 400s on this model.
-    thinking: { type: "adaptive" as const },
+    // — it 400s on this model. Omitted entirely on pre-4.6 override models,
+    // where adaptive itself 400s.
+    ...(supportsAdaptiveThinking(model) ? { thinking: { type: "adaptive" as const } } : {}),
     // NOT setting temperature/top_p/top_k — left unset (matches existing
     // behavior; not documented as removed for Sonnet 5, but no reason to add).
-    ...(systemParts.length > 0 ? { system: systemParts.join("\n\n") } : {}),
+    ...(systemParts.length > 0 ? { system: cachedSystemBlocks(systemParts.join("\n\n")) } : {}),
     messages: anthropicMessages,
   };
 
@@ -124,11 +234,21 @@ export async function claudeChat(
 
     const content = extractText(response.content);
     recordSuccess(circuitKey);
+    // T3+L10 (full-system audit): Claude usage was discarded here too —
+    // this is the expensive tier, so visibility matters even more than on
+    // the NIM side. Logged at this single call point rather than widening
+    // the return type.
+    // T7 follow-up: with caching active, input_tokens alone is misleading —
+    // it's ONLY the uncached remainder (shared/prompt-caching.md: "input_tokens
+    // is the uncached remainder only"). Logging cache_creation/cache_read
+    // too is the only way to tell a real cache hit apart from a silent
+    // invalidator forcing a full-price rewrite on every single call.
+    console.log(`[claude:${model}] usage: ${response.usage.input_tokens} in / ${response.usage.output_tokens} out / ${response.usage.cache_creation_input_tokens ?? 0} cache-write / ${response.usage.cache_read_input_tokens ?? 0} cache-read`);
     return { content };
   } catch (err) {
     recordFailure(circuitKey);
     if (err instanceof ClaudeRefusalError) throw err;
-    throw new Error(`[Claude ${CLAUDE_ESCALATION_MODEL}] ${describeError(err)}`);
+    throw new Error(`[Claude ${model}] ${describeError(err)}`);
   }
 }
 
@@ -181,7 +301,7 @@ export async function claudeChatWithTools(
 
   await waitForToken(CLAUDE_ESCALATION_MODEL, CLAUDE_RPM_LIMIT);
 
-  const client = new Anthropic({ apiKey });
+  const client = createClaudeClient(apiKey);
 
   const systemParts: string[] = [];
   const anthropicMessages: Anthropic.Messages.MessageParam[] = [];
@@ -193,12 +313,13 @@ export async function claudeChatWithTools(
     }
   }
 
+  const model = resolveClaudeModel();
   const requestParams = {
-    model: CLAUDE_ESCALATION_MODEL,
+    model,
     max_tokens: TOOL_CALL_MAX_TOKENS,
-    thinking: { type: "adaptive" as const },
-    ...(systemParts.length > 0 ? { system: systemParts.join("\n\n") } : {}),
-    messages: anthropicMessages,
+    ...(supportsAdaptiveThinking(model) ? { thinking: { type: "adaptive" as const } } : {}),
+    ...(systemParts.length > 0 ? { system: cachedSystemBlocks(systemParts.join("\n\n")) } : {}),
+    messages: withLastMessageCacheBreakpoint(anthropicMessages),
     tools: tools.map((t) => ({
       name: t.name,
       description: t.description,
@@ -219,6 +340,8 @@ export async function claudeChatWithTools(
       .map((b) => ({ id: b.id, name: b.name, input: (b.input ?? {}) as Record<string, unknown> }));
 
     recordSuccess(circuitKey);
+    // T3+L10 / T7 follow-up: see claudeChat's identical comment above.
+    console.log(`[claude:${model}] usage: ${response.usage.input_tokens} in / ${response.usage.output_tokens} out / ${response.usage.cache_creation_input_tokens ?? 0} cache-write / ${response.usage.cache_read_input_tokens ?? 0} cache-read`);
     return {
       content: extractText(response.content),
       toolCalls,
@@ -228,7 +351,7 @@ export async function claudeChatWithTools(
   } catch (err) {
     recordFailure(circuitKey);
     if (err instanceof ClaudeRefusalError) throw err;
-    throw new Error(`[Claude ${CLAUDE_ESCALATION_MODEL}] ${describeError(err)}`);
+    throw new Error(`[Claude ${model}] ${describeError(err)}`);
   }
 }
 

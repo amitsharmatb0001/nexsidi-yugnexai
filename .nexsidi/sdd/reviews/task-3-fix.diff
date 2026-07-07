@@ -1,0 +1,161 @@
+diff --git a/pipeline/orchestrator/gateway.test.ts b/pipeline/orchestrator/gateway.test.ts
+new file mode 100644
+index 0000000..953a67a
+--- /dev/null
++++ b/pipeline/orchestrator/gateway.test.ts
+@@ -0,0 +1,68 @@
++import { test, expect } from "bun:test";
++import { writeGatewayRequest, readGatewayDecision } from "./gateway.ts";
++import { mkdirSync, writeFileSync, rmSync } from "fs";
++import { join } from "path";
++
++const TEST_PROJECT = "test-gateway-proj";
++const BUILD_DIR = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
++
++test("readGatewayDecision returns null when no decision file exists yet", async () => {
++  expect(await readGatewayDecision(TEST_PROJECT, "02-gateway")).toBeNull();
++});
++
++test("readGatewayDecision parses a proceed decision", async () => {
++  const dir = join(BUILD_DIR, TEST_PROJECT, "gateway");
++  mkdirSync(dir, { recursive: true });
++  writeFileSync(join(dir, "02-gateway.decision.json"), JSON.stringify({ decision: "proceed" }), "utf-8");
++  expect(await readGatewayDecision(TEST_PROJECT, "02-gateway")).toEqual({ decision: "proceed" });
++  rmSync(join(BUILD_DIR, TEST_PROJECT), { recursive: true, force: true });
++});
++
++test("readGatewayDecision parses a review decision with feedback", async () => {
++  const dir = join(BUILD_DIR, TEST_PROJECT, "gateway");
++  mkdirSync(dir, { recursive: true });
++  writeFileSync(join(dir, "02-gateway.decision.json"), JSON.stringify({ decision: "review", feedback: "change the color" }), "utf-8");
++  expect(await readGatewayDecision(TEST_PROJECT, "02-gateway")).toEqual({ decision: "review", feedback: "change the color" });
++  rmSync(join(BUILD_DIR, TEST_PROJECT), { recursive: true, force: true });
++});
++
++test("writeGatewayRequest throws on a path-traversal projectId", () => {
++  expect(() => writeGatewayRequest("../../escaped-project", "02-gateway", "test summary")).toThrow();
++});
++
++test("readGatewayDecision throws on a path-traversal projectId", async () => {
++  await expect(readGatewayDecision(TEST_PROJECT + "/../escaped", "02-gateway")).rejects.toThrow();
++});
++
++test("readGatewayDecision throws a clear error on malformed decision JSON on disk", async () => {
++  const dir = join(BUILD_DIR, TEST_PROJECT, "gateway");
++  mkdirSync(dir, { recursive: true });
++  writeFileSync(join(dir, "corrupt-gateway.decision.json"), "{ not valid json", "utf-8");
++
++  await expect(readGatewayDecision(TEST_PROJECT, "corrupt-gateway")).rejects.toThrow(
++    /Gateway decision corrupt: test-gateway-proj\/corrupt-gateway/
++  );
++
++  rmSync(join(BUILD_DIR, TEST_PROJECT), { recursive: true, force: true });
++});
++
++test("readGatewayDecision retries on unparseable JSON before giving up (race-tolerance backstop)", async () => {
++  const dir = join(BUILD_DIR, TEST_PROJECT, "gateway");
++  mkdirSync(dir, { recursive: true });
++  // Simulates an external writer caught mid-write: content never becomes valid,
++  // so this proves the retry loop still gives up and throws after exhausting
++  // its attempts, rather than retrying forever or silently swallowing the error.
++  writeFileSync(join(dir, "retry-gateway.decision.json"), "{ still not valid json", "utf-8");
++
++  const start = Date.now();
++  await expect(readGatewayDecision(TEST_PROJECT, "retry-gateway")).rejects.toThrow(
++    /Gateway decision corrupt: test-gateway-proj\/retry-gateway/
++  );
++  const elapsed = Date.now() - start;
++
++  // 3 attempts total means 2 retry delays (~50ms each) elapse before the
++  // final throw — proves the retries actually happened, not an immediate throw.
++  expect(elapsed).toBeGreaterThanOrEqual(90);
++
++  rmSync(join(BUILD_DIR, TEST_PROJECT), { recursive: true, force: true });
++});
+diff --git a/pipeline/orchestrator/gateway.ts b/pipeline/orchestrator/gateway.ts
+new file mode 100644
+index 0000000..2516c55
+--- /dev/null
++++ b/pipeline/orchestrator/gateway.ts
+@@ -0,0 +1,81 @@
++import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync } from "fs";
++import { join, dirname } from "path";
++import type { GatewayDecision } from "./types.ts";
++
++const DECISION_READ_RETRY_DELAY_MS = 50;
++const DECISION_READ_MAX_ATTEMPTS = 3;
++
++function sleep(ms: number): Promise<void> {
++  return new Promise((resolve) => setTimeout(resolve, ms));
++}
++
++const INVALID_IDENTIFIER = /\.\.|\/|\\/;
++
++function assertValidIdentifier(name: string, label: "projectId" | "stage"): void {
++  if (!name || INVALID_IDENTIFIER.test(name)) {
++    throw new Error(
++      `Invalid ${label}: ${JSON.stringify(name)} — must not contain "..", "/", or "\\"`
++    );
++  }
++}
++
++function requestPath(projectId: string, stage: string): string {
++  assertValidIdentifier(projectId, "projectId");
++  assertValidIdentifier(stage, "stage");
++  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
++  return join(buildDir, projectId, "gateway", `${stage}.request.json`);
++}
++
++function decisionPath(projectId: string, stage: string): string {
++  assertValidIdentifier(projectId, "projectId");
++  assertValidIdentifier(stage, "stage");
++  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
++  return join(buildDir, projectId, "gateway", `${stage}.decision.json`);
++}
++
++export function writeGatewayRequest(projectId: string, stage: string, summary: string): void {
++  const path = requestPath(projectId, stage);
++  mkdirSync(dirname(path), { recursive: true });
++  const tmpPath = `${path}.tmp`;
++  writeFileSync(tmpPath, JSON.stringify({ summary, requestedAt: new Date().toISOString() }, null, 2), "utf-8");
++  renameSync(tmpPath, path);
++}
++
++/**
++ * Reads and parses the gateway decision file.
++ *
++ * Unlike checkpoint.ts's readCheckpoint, this file's writer is EXTERNAL to
++ * this codebase — a human or UI writes decision.json directly, and this
++ * module has no control over (or guarantee of) atomic writes on that side.
++ * External writers of decision.json SHOULD write atomically (temp file +
++ * rename) to avoid readers ever observing a partial write. The retry below
++ * is a defensive backstop for when they don't — it is not a substitute for
++ * the external writer doing the right thing.
++ *
++ * If JSON.parse fails, we assume it may be a transient mid-write read and
++ * retry a few times with a short delay before treating the file as
++ * genuinely corrupt and throwing.
++ */
++export async function readGatewayDecision(
++  projectId: string,
++  stage: string
++): Promise<GatewayDecision | null> {
++  const path = decisionPath(projectId, stage);
++  if (!existsSync(path)) return null;
++
++  let lastError: unknown;
++  for (let attempt = 1; attempt <= DECISION_READ_MAX_ATTEMPTS; attempt++) {
++    const raw = readFileSync(path, "utf-8");
++    try {
++      return JSON.parse(raw) as GatewayDecision;
++    } catch (err) {
++      lastError = err;
++      if (attempt < DECISION_READ_MAX_ATTEMPTS) {
++        await sleep(DECISION_READ_RETRY_DELAY_MS);
++      }
++    }
++  }
++
++  const message = lastError instanceof Error ? lastError.message : String(lastError);
++  throw new Error(`Gateway decision corrupt: ${projectId}/${stage} — ${message}`);
++}

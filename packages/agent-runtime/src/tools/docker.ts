@@ -1,6 +1,7 @@
 import { spawnSync } from "child_process";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
+import { truncateOutput } from "./command.ts";
 
 export function execDockerCompose(
   cwd: string,
@@ -31,8 +32,8 @@ export function execDockerCompose(
     env: { ...process.env, FORCE_COLOR: "0", COMPOSE_PROGRESS: "plain" },
   });
 
-  const stdout = (result.stdout ?? "").slice(0, 8000);
-  const stderr = (result.stderr ?? "").slice(0, 8000);
+  const stdout = truncateOutput(result.stdout ?? "", 1000, 7000);
+  const stderr = truncateOutput(result.stderr ?? "", 1000, 7000);
   const combined = [stdout, stderr].filter(Boolean).join("\n").trim();
   const success = result.status === 0;
 

@@ -128,25 +128,36 @@ const CODE_EXTENSIONS = new Set([
 const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build"]);
 const MAX_CODE_CHARS = 200_000; // bound the QA prompt payload
 
+export interface LabeledDir {
+  label: string; // "backend" | "frontend" — must match identifyFaultAgent's prefix check
+  path: string;
+}
+
 // Real-entry-point-only helper: walks Stage 4's output directories and
 // concatenates readable source files into one "code" blob for Navya/Karan/
-// Deepika's `run(projectId, iteration, code)` signature. Never invoked by
-// stage5-adversarial-qa.test.ts (which only exercises runStage5WithAgents
-// with injected stubs) — best-effort and deliberately untested, same
-// footing as Riya's real docker deploy call in stage6-deployment.ts. Reading
-// node:fs/node:path at the top of this file has no side effects at
-// module-eval time (unlike importing an agent module that wires up a live
-// LLM client) so there is no need to defer these imports.
-function collectCode(dirs: string[]): string {
+// Deepika's `run(projectId, iteration, code)` signature.
+//
+// A4 (full-system audit): each dir is now labeled ("backend"/"frontend")
+// and every file's relative path is prefixed with that label before being
+// shown to the QA agents. Previously relPath was relative to EACH agent's
+// own output dir with no prefix at all (e.g. "src/controllers/notes.ts"),
+// so identifyFaultAgent's startsWith("backend/") check could never match —
+// fault isolation always fell through to its "shubham" default regardless
+// of which agent actually caused the finding. Confirmed via stress-test
+// run 10: Karan's real finding.file was literally "src/controllers/notes.ts"
+// (no prefix) — proof the model faithfully echoes whatever path format the
+// "// FILE:" header shows it, so prefixing the header is the actual fix,
+// not a cosmetic change.
+export function collectCode(dirs: LabeledDir[]): string {
   const chunks: string[] = [];
-  for (const dir of dirs) {
-    walkDir(dir, dir, chunks);
+  for (const { label, path } of dirs) {
+    walkDir(path, path, label, chunks);
   }
   const joined = chunks.join("\n\n");
   return joined.length > MAX_CODE_CHARS ? joined.slice(0, MAX_CODE_CHARS) : joined;
 }
 
-function walkDir(root: string, dir: string, chunks: string[]): void {
+function walkDir(root: string, dir: string, label: string, chunks: string[]): void {
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -164,12 +175,12 @@ function walkDir(root: string, dir: string, chunks: string[]): void {
       continue;
     }
     if (stat.isDirectory()) {
-      walkDir(root, full, chunks);
+      walkDir(root, full, label, chunks);
     } else if (stat.isFile() && CODE_EXTENSIONS.has(extname(entry))) {
       try {
         const content = readFileSync(full, "utf-8");
         const relPath = full.slice(root.length + 1).replace(/\\/g, "/");
-        chunks.push(`// FILE: ${relPath}\n${content}`);
+        chunks.push(`// FILE: ${label}/${relPath}\n${content}`);
       } catch {
         // unreadable file — skip rather than fail the whole QA pass
       }
@@ -190,10 +201,15 @@ export async function runStage5(projectId: string, stage4Result: Stage4Result): 
 
   const iteration = 1; // Stage 5 runs QA once per Stage 4 handoff; Stage 6 owns the live-retest loop.
 
+  const labeledDirs = (s4: Stage4Result): LabeledDir[] => [
+    { label: "backend", path: s4.backendOutputDir },
+    { label: "frontend", path: s4.frontendOutputDir },
+  ];
+
   const agents: Stage5Agents = {
-    runNavya: (pid, s4) => runNavyaReal(pid, iteration, collectCode([s4.backendOutputDir, s4.frontendOutputDir])),
-    runKaran: (pid, s4) => runKaranReal(pid, iteration, collectCode([s4.backendOutputDir, s4.frontendOutputDir])),
-    runDeepika: (pid, s4) => runDeepikaReal(pid, iteration, collectCode([s4.backendOutputDir, s4.frontendOutputDir])),
+    runNavya: (pid, s4) => runNavyaReal(pid, iteration, collectCode(labeledDirs(s4))),
+    runKaran: (pid, s4) => runKaranReal(pid, iteration, collectCode(labeledDirs(s4))),
+    runDeepika: (pid, s4) => runDeepikaReal(pid, iteration, collectCode(labeledDirs(s4))),
     runTier3Review: (pid, s4) => runTier3ReviewReal(pid, s4.frontendOutputDir),
   };
 

@@ -57,23 +57,33 @@ export interface BuildPlan {
   buildPlanHash: string;        // SHA-256 — verified by each generator before starting
 }
 
+export interface ArjunDeps {
+  chat: typeof agentChat;
+}
+
 // ── Main entry ────────────────────────────────────────────────────────────────
-export async function run(spec: ProjectSpec): Promise<BuildPlan> {
+// `deps` is injectable (defaults to the real agentChat) for the same reason
+// as Saanvi's run() — see agents/saanvi/src/index.ts's SaanviDeps comment.
+export async function run(spec: ProjectSpec, deps: ArjunDeps = { chat: agentChat }): Promise<BuildPlan> {
   const apiKey = process.env.NIM_API_KEY ?? "";
+  const messages = [
+    { role: "system" as const, content: ARJUN_SYSTEM_PROMPT },
+    { role: "user" as const, content: JSON.stringify(spec, null, 2) },
+  ];
 
-  const { content } = await agentChat(
-    "arjun",
-    [
-      { role: "system", content: ARJUN_SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: JSON.stringify(spec, null, 2),
-      },
-    ],
-    apiKey,
-  );
-
-  const raw = parseJson(content) as Omit<BuildPlan, "projectId" | "buildPlanHash">;
+  // A7 (full-system audit): one retry on empty/unparseable response before
+  // giving up — see Saanvi's identical fix for the full rationale
+  // (stress-test run 9 crashed the whole pipeline on one empty response).
+  let rawResult: unknown;
+  try {
+    const { content } = await deps.chat("arjun", messages, apiKey);
+    rawResult = parseJson(content);
+  } catch (firstErr) {
+    console.log(`[arjun] first attempt failed (${String(firstErr)}) — retrying once`);
+    const { content } = await deps.chat("arjun", messages, apiKey);
+    rawResult = parseJson(content);
+  }
+  const raw = rawResult as Omit<BuildPlan, "projectId" | "buildPlanHash">;
 
   const plan: Omit<BuildPlan, "buildPlanHash"> = {
     projectId: spec.projectId,

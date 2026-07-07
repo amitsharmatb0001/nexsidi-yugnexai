@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { CLAUDE_ESCALATION_MODEL, type NimToolDef } from "@nexsidi/llm-client";
+import { CLAUDE_ESCALATION_MODEL, geminiWebSearch, type NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
 
 // Real server-side web search via Claude's Messages API — the `web_search`
@@ -16,9 +16,29 @@ const SEARCH_SYSTEM_PROMPT =
   "current best practice. Use the web_search tool, then give a concise, " +
   "well-cited summary of what you found — include source URLs.";
 
+// 2026-07-06: Claude on Vertex is blocked project-wide by Google's
+// partner-model sales gating (see packages/llm-client/src/gemini.ts's header
+// comment for the live evidence) — routes through Gemini's google_search
+// grounding tool instead when ESCALATION_PROVIDER=gemini, same switch used
+// by the agent tool-calling loop (claude-loop.ts's resolveEscalationRunner).
+async function execWebSearchViaGemini(args: { query: string; timeout_ms?: number }): Promise<ToolResult> {
+  try {
+    const { content, sources } = await geminiWebSearch(args.query, { timeoutMs: args.timeout_ms });
+    const sourceLines = sources.map((s, i) => `[${i + 1}] ${s.title} — ${s.url}`).join("\n");
+    const output = [content, sourceLines ? `Sources:\n${sourceLines}` : ""].filter(Boolean).join("\n\n");
+    return { status: "success", summary: `search: "${args.query}"`, output: output.slice(0, 3000) };
+  } catch (err) {
+    return { status: "error", summary: `web_search failed: ${String(err)}` };
+  }
+}
+
 export async function execWebSearch(args: { query: string; timeout_ms?: number }): Promise<ToolResult> {
   if (!args.query.trim()) {
     return { status: "error", summary: "web_search requires a non-empty query" };
+  }
+
+  if (process.env.ESCALATION_PROVIDER === "gemini") {
+    return execWebSearchViaGemini(args);
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;

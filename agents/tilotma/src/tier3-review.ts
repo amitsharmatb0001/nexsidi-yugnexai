@@ -9,11 +9,11 @@
 // default, defaulting to "NEEDS WORK" unless the evidence overwhelmingly
 // supports "READY".
 //
-// ── Design choice: two separate runAgent() calls, not one run with two turns ──
+// ── Design choice: two separate agent runs, not one run with two turns ──
 // D26 (already established for Navya/Karan/Deepika) is "fresh-context
 // evaluator — no write tools, no generation history": a self-review inside
 // the SAME conversation just re-reads its own reasoning trace and tends to
-// rubber-stamp it. A genuinely separate runAgent() call means Stage 2 sees
+// rubber-stamp it. A genuinely separate agent run means Stage 2 sees
 // ONLY Stage 1's raw findings text (not the tool-call trail that produced
 // them) and takes its OWN screenshots of the same running app before
 // judging — that is what makes it a "reality check" rather than a
@@ -22,9 +22,21 @@
 // pattern exists to provide.
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { runAgent } from "@nexsidi/agent-runtime";
+import { runAgentEscalated } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS } from "@nexsidi/llm-client";
 import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
+
+// Both passes use runAgentEscalated (Task 15), not plain runAgent: NIM/
+// open-source (deepseek-v4-pro) runs first and is used whenever it succeeds
+// — routine visual review is well within its range and Claude Sonnet 5 stays
+// unused (and unbilled) for the common case. Only when the open-source pass
+// fails to produce a verified result (task_complete never called with
+// verification_passed, malformed tool loop, model gives up) does this
+// escalate to Sonnet 5 for a single retry of the SAME task. This is the
+// intended shape of the escalation tier per explicit user direction: hard
+// judgment calls only, never a routine-cost default — see
+// packages/agent-runtime/src/claude-loop.ts's runAgentEscalated for the
+// exact one-time-retry contract.
 
 export interface Tier3ReviewResult {
   pass: boolean;
@@ -50,7 +62,7 @@ export async function runTier3Review(
   mkdirSync(join(process.cwd(), screenshotDir), { recursive: true });
 
   // ── Stage 1: Evidence Collector ─────────────────────────────────────────
-  const stage1 = await runAgent({
+  const stage1 = await runAgentEscalated({
     agentName: "tilotma-evidence-collector",
     model: AGENT_MODELS.tilotma,
     apiKey,
@@ -63,8 +75,8 @@ export async function runTier3Review(
 
   const stage1Findings = parseFindings(stage1.summary);
 
-  // ── Stage 2: Reality Checker — a genuinely separate runAgent() call ─────
-  const stage2 = await runAgent({
+  // ── Stage 2: Reality Checker — a genuinely separate agent run ───────────
+  const stage2 = await runAgentEscalated({
     agentName: "tilotma-reality-checker",
     model: AGENT_MODELS.tilotma,
     apiKey,

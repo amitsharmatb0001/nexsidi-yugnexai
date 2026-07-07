@@ -41,6 +41,15 @@ export async function agentChat(
 
     try {
       const content = await callModel(model, messages, apiKey, opts?.maxTokens);
+      // T3 (full-system audit): agentChat returned modelUsed but no caller
+      // logged it — impossible to tell from the outside whether an agent
+      // ran on its primary model or silently fell through the chain (e.g.
+      // Arjun's primary was marked "❌ timeout" in a stale comment in
+      // types.ts while still being AGENT_MODELS.arjun — this log line is
+      // what would have surfaced that instead of it going unnoticed).
+      if (model !== chain[0]) {
+        console.log(`[agentChat:${agentName}] used fallback model ${model} (primary ${chain[0]} failed)`);
+      }
       return { content, modelUsed: model };
     } catch (err) {
       errors.push(`${model}: ${String(err)}`);

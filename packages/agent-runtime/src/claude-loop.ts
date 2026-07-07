@@ -24,7 +24,8 @@ import {
   type ClaudeToolDef,
 } from "@nexsidi/llm-client";
 import { runAgent, buildToolList, MAX_ITERATIONS, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
-import { execWriteFile, execReadFile, execListFiles } from "./tools/file.ts";
+import { runAgentWithGemini } from "./gemini-loop.ts";
+import { execWriteFile, execReadFile, execListFiles, execEditFile, execDeleteFile } from "./tools/file.ts";
 import { execRunCommand } from "./tools/command.ts";
 import { execHttpRequest } from "./tools/http.ts";
 import { execDockerCompose } from "./tools/docker.ts";
@@ -32,6 +33,29 @@ import { execWebSearch } from "./tools/websearch.ts";
 import { execScreenshot } from "./tools/screenshot.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
+
+// L6 (full-system audit): runAgentWithClaude previously started cold on
+// escalation — zero knowledge of what the failed NIM attempt tried, wrote,
+// or errored on, discarding whatever real progress NIM made before hitting
+// MAX_ITERATIONS. Pure and exported for direct unit testing without going
+// through the DI harness.
+export function buildEscalationMessage(originalMessage: string, nimResult: AgentRunResult): string {
+  if (nimResult.filesWritten.length === 0 && nimResult.errors.length === 0) {
+    return originalMessage;
+  }
+  const parts: string[] = [
+    originalMessage,
+    "",
+    "--- A previous automated attempt already worked on this task and ran out of iterations before finishing. Build on what it did — read the files it wrote before rewriting them, and don't repeat the errors it already hit. ---",
+  ];
+  if (nimResult.filesWritten.length > 0) {
+    parts.push(`Files already written (read them first): ${nimResult.filesWritten.join(", ")}`);
+  }
+  if (nimResult.errors.length > 0) {
+    parts.push(`Errors the previous attempt hit (avoid repeating these): ${nimResult.errors.join("; ")}`);
+  }
+  return parts.join("\n");
+}
 
 /**
  * Claude-based tool-calling loop — same shape/contract as runAgent(), used
@@ -43,6 +67,24 @@ export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
  * NIM path, so the Claude path needs its own credential rather than reusing
  * that field.
  */
+// Found live 2026-07-06 testing Claude-via-Vertex-AI: a fresh Vertex AI
+// project's default quota for a foundation model is 0/near-zero until an
+// explicit quota-increase request is approved by Google (can take hours) —
+// every retry within the same run hits the identical wall. Same category as
+// auth/permission failures: retrying THIS run will never succeed. Detecting
+// these lets the loop abort early instead of burning the full 40-iteration,
+// 5s-sleep-per-attempt budget (~200s) on a guaranteed-repeat failure.
+// Pure and exported for direct unit testing.
+export function isUnrecoverableClaudeError(err: unknown): boolean {
+  const message = String(err);
+  return (
+    message.includes("RESOURCE_EXHAUSTED") ||
+    message.includes("quota increase request") ||
+    message.includes("authentication failed") ||
+    message.includes("permission denied")
+  );
+}
+
 export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentRunResult> {
   const claudeApiKey = process.env.ANTHROPIC_API_KEY ?? "";
 
@@ -57,6 +99,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   const filesWritten: string[] = [];
   const errors: string[] = [];
   let iterations = 0;
+  let abortedOnUnrecoverableError = false;
 
   console.log(`[${config.agentName}:claude-agent] Starting — model: claude-sonnet-5, maxIter: ${MAX_ITERATIONS}`);
 
@@ -68,6 +111,11 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
     try {
       response = await claudeChatWithTools(messages, tools, claudeApiKey);
     } catch (err) {
+      if (isUnrecoverableClaudeError(err)) {
+        errors.push(`Claude call failed on iteration ${iterations} with an unrecoverable error — aborting early instead of retrying: ${String(err)}`);
+        abortedOnUnrecoverableError = true;
+        break;
+      }
       errors.push(`Claude call failed on iteration ${iterations}: ${String(err)}`);
       // Try to continue — next iteration might succeed after a cooldown
       await new Promise((r) => setTimeout(r, 5000));
@@ -120,6 +168,14 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           result = execListFiles(config.sandboxDir, args as { dir?: string; recursive?: boolean });
           break;
         }
+        case "edit_file": {
+          result = execEditFile(config.sandboxDir, args as { path: string; old_str: string; new_str: string });
+          break;
+        }
+        case "delete_file": {
+          result = execDeleteFile(config.sandboxDir, args as { path: string });
+          break;
+        }
         case "run_command": {
           result = execRunCommand(config.sandboxDir, args as { command: string; timeout_ms?: number });
           break;
@@ -167,10 +223,12 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
 
   return {
     success: false,
-    summary: `Max iterations (${MAX_ITERATIONS}) reached without task_complete`,
+    summary: abortedOnUnrecoverableError
+      ? "Aborted early: hit an unrecoverable error (quota exhaustion, auth failure, or permission denied)"
+      : `Max iterations (${MAX_ITERATIONS}) reached without task_complete`,
     filesWritten,
     iterations,
-    errors: [...errors, "Max iterations exceeded"],
+    errors: abortedOnUnrecoverableError ? errors : [...errors, "Max iterations exceeded"],
   };
 }
 
@@ -195,9 +253,20 @@ export interface AgentEscalationDeps {
  * stubs — same pattern as pipeline/orchestrator/run.ts's
  * runPipelineWithStages and stage6-deployment.ts's injectable `deps`.
  */
+// 2026-07-06: Claude on Vertex is blocked project-wide by Google's
+// partner-model sales gating — every Claude model on this GCP project
+// either has 0 quota or isn't Model-Garden-enabled at all (verified live via
+// raw curl against the documented endpoint, see gemini.ts's header comment).
+// Gemini has no such gating and was confirmed working live. ESCALATION_PROVIDER
+// swaps the second-tier model per environment without touching
+// runAgentEscalated's own orchestration logic below.
+export function resolveEscalationRunner(): (config: AgentRunConfig) => Promise<AgentRunResult> {
+  return process.env.ESCALATION_PROVIDER === "gemini" ? runAgentWithGemini : runAgentWithClaude;
+}
+
 export async function runAgentEscalated(
   config: AgentRunConfig,
-  deps: AgentEscalationDeps = { runNim: runAgent, runClaude: runAgentWithClaude },
+  deps: AgentEscalationDeps = { runNim: runAgent, runClaude: resolveEscalationRunner() },
 ): Promise<AgentRunResult & { escalated: boolean }> {
   const nimResult = await deps.runNim(config);
 
@@ -210,6 +279,7 @@ export async function runAgentEscalated(
       `escalating to Claude (claude-sonnet-5) as one-time retry`,
   );
 
-  const claudeResult = await deps.runClaude(config);
+  const claudeConfig: AgentRunConfig = { ...config, initialMessage: buildEscalationMessage(config.initialMessage, nimResult) };
+  const claudeResult = await deps.runClaude(claudeConfig);
   return { ...claudeResult, escalated: true };
 }

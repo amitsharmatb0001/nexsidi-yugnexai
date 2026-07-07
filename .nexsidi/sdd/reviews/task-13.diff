@@ -1,0 +1,382 @@
+diff --git a/agents/riya/src/deploy-target.test.ts b/agents/riya/src/deploy-target.test.ts
+new file mode 100644
+index 0000000..912948f
+--- /dev/null
++++ b/agents/riya/src/deploy-target.test.ts
+@@ -0,0 +1,11 @@
++import { test, expect } from "bun:test";
++import { resolveDeployTarget } from "./index.ts";
++
++test("resolveDeployTarget local returns docker-compose config", () => {
++  const config = resolveDeployTarget("local");
++  expect(config.mode).toBe("docker-compose");
++});
++
++test("resolveDeployTarget gcp is explicitly not-yet-implemented, not a silent fallback", () => {
++  expect(() => resolveDeployTarget("gcp")).toThrow("GCP deploy target not yet implemented");
++});
+diff --git a/agents/riya/src/index.ts b/agents/riya/src/index.ts
+index 331f3a9..3fdadb4 100644
+--- a/agents/riya/src/index.ts
++++ b/agents/riya/src/index.ts
+@@ -6,8 +6,12 @@
+ import { runAgent } from "@nexsidi/agent-runtime";
+ import { mkdirSync, writeFileSync } from "fs";
+ import { join } from "path";
+-import { db, projects } from "@nexsidi/db";
+-import { eq } from "drizzle-orm";
++// @nexsidi/db and drizzle-orm are imported dynamically inside run() (at the
++// point of use) rather than at module top level — @nexsidi/db's client
++// throws eagerly at import time if DATABASE_URL isn't set, which would make
++// this whole module (including the pure resolveDeployTarget()) impossible to
++// unit-test without a configured Postgres connection. Deferring the import
++// keeps deploy-target.test.ts infra-free.
+ 
+ export interface DeployResult {
+   success: boolean;
+@@ -16,7 +20,28 @@ export interface DeployResult {
+   errors: string[];
+ }
+ 
+-export async function run(projectId: string): Promise<DeployResult> {
++// Stage 6's deployTarget gate (Task 13). "gcp" is explicitly not yet
++// implemented — this throws rather than silently falling back to a local
++// deploy, per the design doc's Open Follow-Up #5. Called FIRST in run(),
++// before any docker/deploy work starts, so a "gcp" request fails loudly and
++// immediately instead of quietly doing the wrong thing.
++export function resolveDeployTarget(target: "local" | "gcp"): { mode: "docker-compose" } {
++  if (target === "gcp") {
++    throw new Error(
++      "GCP deploy target not yet implemented — per design doc Open Follow-Up #5, build when Amit says it's needed"
++    );
++  }
++  return { mode: "docker-compose" };
++}
++
++// `deployTarget` defaults to "local" (matches FeatureFlags' documented default
++// in pipeline/orchestrator/flags.ts / types.ts) so existing callers that only
++// ever deployed locally — e.g. pipeline/activities/index.ts's legacy Temporal
++// activity — keep compiling and behaving exactly as before without having to
++// thread the new flag through immediately.
++export async function run(projectId: string, deployTarget: "local" | "gcp" = "local"): Promise<DeployResult> {
++  resolveDeployTarget(deployTarget);
++
+   const buildDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId);
+   mkdirSync(buildDir, { recursive: true });
+ 
+@@ -40,7 +65,9 @@ export async function run(projectId: string): Promise<DeployResult> {
+   // Archive to GitHub (fire-and-forget, errors non-fatal)
+   const githubRepo = await archiveToGitHub(projectId, buildDir).catch(() => null);
+ 
+-  // Persist appUrl + status to DB
++  // Persist appUrl + status to DB (dynamic import — see top-of-file comment)
++  const { db, projects } = await import("@nexsidi/db");
++  const { eq } = await import("drizzle-orm");
+   await db
+     .update(projects)
+     .set({
+diff --git a/pipeline/orchestrator/stages/stage6-deployment.test.ts b/pipeline/orchestrator/stages/stage6-deployment.test.ts
+new file mode 100644
+index 0000000..ec38cac
+--- /dev/null
++++ b/pipeline/orchestrator/stages/stage6-deployment.test.ts
+@@ -0,0 +1,148 @@
++import { afterEach, expect, test } from "bun:test";
++import {
++  buildDeliverySummary,
++  INTERNAL_AGENT_NAMES,
++  runStage6,
++  type Stage6Deps,
++} from "./stage6-deployment.ts";
++import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
++import type { DeployResult } from "../../../agents/riya/src/index.ts";
++
++// Real docker deployment and a real live-LLM QA re-run aren't unit-testable —
++// per this plan's stated testing philosophy, only the deterministic parts of
++// Stage 6 are covered here: deployTarget flag plumbing, fail-fast on deploy
++// failure, and the confidentiality-safe delivery summary shape. Riya and the
++// live-retest step are replaced with injected stubs (Stage6Deps).
++
++const STAGE4_RESULT: Stage4Result = {
++  backendOutputDir: "C:/tmp/nexsidi-builds/test-proj/backend",
++  frontendOutputDir: "C:/tmp/nexsidi-builds/test-proj/frontend",
++  filesWritten: ["backend/src/index.ts", "frontend/app/page.tsx"],
++};
++
++afterEach(() => {
++  delete process.env.NEXSIDI_DEPLOY_TARGET;
++});
++
++test("runStage6 passes resolveFlags().deployTarget through to the deploy function", async () => {
++  process.env.NEXSIDI_DEPLOY_TARGET = "gcp";
++
++  const seenTargets: Array<"local" | "gcp"> = [];
++  const deps: Stage6Deps = {
++    deployFn: async (_projectId, deployTarget) => {
++      seenTargets.push(deployTarget);
++      return { success: true, appUrl: "http://localhost:3200", githubRepo: null, errors: [] };
++    },
++    liveRetestFn: async () => ({ pass: true, findings: [] }),
++  };
++
++  await runStage6("test-proj", STAGE4_RESULT, deps);
++
++  expect(seenTargets).toEqual(["gcp"]);
++});
++
++test("runStage6 defaults to local deployTarget when no env override is set", async () => {
++  delete process.env.NEXSIDI_DEPLOY_TARGET;
++
++  const seenTargets: Array<"local" | "gcp"> = [];
++  const deps: Stage6Deps = {
++    deployFn: async (_projectId, deployTarget) => {
++      seenTargets.push(deployTarget);
++      return { success: true, appUrl: "http://localhost:3200", githubRepo: null, errors: [] };
++    },
++    liveRetestFn: async () => ({ pass: true, findings: [] }),
++  };
++
++  await runStage6("test-proj", STAGE4_RESULT, deps);
++
++  expect(seenTargets).toEqual(["local"]);
++});
++
++test("runStage6 fails fast and skips the live retest when deploy fails", async () => {
++  let retestCalled = false;
++  const deps: Stage6Deps = {
++    deployFn: async () => ({
++      success: false,
++      appUrl: "http://localhost:3200",
++      githubRepo: null,
++      errors: ["docker compose up failed: port conflict"],
++    }),
++    liveRetestFn: async () => {
++      retestCalled = true;
++      return { pass: true, findings: [] };
++    },
++  };
++
++  const result = await runStage6("test-proj", STAGE4_RESULT, deps);
++
++  expect(retestCalled).toBe(false);
++  expect(result.success).toBe(false);
++  expect(result.deliverySummary.status).toBe("failed");
++});
++
++test("runStage6 returns success + findings from the live retest when deploy succeeds", async () => {
++  const deps: Stage6Deps = {
++    deployFn: async () => ({
++      success: true,
++      appUrl: "http://localhost:3201",
++      githubRepo: "https://github.com/nexsidi-builds/nexsidi-test-proj",
++      errors: [],
++    }),
++    liveRetestFn: async () => ({ pass: true, findings: [{ note: "clean" }] }),
++  };
++
++  const result = await runStage6("test-proj", STAGE4_RESULT, deps);
++
++  expect(result.success).toBe(true);
++  expect(result.appUrl).toBe("http://localhost:3201");
++  expect(result.findings).toEqual([{ note: "clean" }]);
++  expect(result.deliverySummary).toEqual({
++    status: "delivered",
++    appUrl: "http://localhost:3201",
++    githubRepo: "https://github.com/nexsidi-builds/nexsidi-test-proj",
++  });
++});
++
++test("runStage6 reports failed delivery when deploy succeeds but the live retest finds problems", async () => {
++  const deps: Stage6Deps = {
++    deployFn: async () => ({
++      success: true,
++      appUrl: "http://localhost:3202",
++      githubRepo: null,
++      errors: [],
++    }),
++    liveRetestFn: async () => ({ pass: false, findings: [{ issue: "CORS origin mismatch" }] }),
++  };
++
++  const result = await runStage6("test-proj", STAGE4_RESULT, deps);
++
++  expect(result.success).toBe(false);
++  expect(result.deliverySummary.status).toBe("failed");
++});
++
++// ── Confidentiality: buildDeliverySummary must never leak internal agent names ──
++test("buildDeliverySummary never contains any internal agent name", () => {
++  const deployResult: DeployResult = {
++    success: true,
++    appUrl: "http://localhost:3200",
++    githubRepo: "https://github.com/nexsidi-builds/nexsidi-test-proj",
++    errors: [],
++  };
++  const summary = buildDeliverySummary(deployResult, { pass: true, findings: [] });
++  const serialized = JSON.stringify(summary).toLowerCase();
++
++  for (const name of INTERNAL_AGENT_NAMES) {
++    expect(serialized).not.toContain(name);
++  }
++});
++
++test("buildDeliverySummary reports delivered only when both deploy and retest pass", () => {
++  const deployResult: DeployResult = {
++    success: true,
++    appUrl: "http://localhost:3200",
++    githubRepo: null,
++    errors: [],
++  };
++  expect(buildDeliverySummary(deployResult, { pass: true, findings: [] }).status).toBe("delivered");
++  expect(buildDeliverySummary(deployResult, { pass: false, findings: [] }).status).toBe("failed");
++});
+diff --git a/pipeline/orchestrator/stages/stage6-deployment.ts b/pipeline/orchestrator/stages/stage6-deployment.ts
+new file mode 100644
+index 0000000..b5b8654
+--- /dev/null
++++ b/pipeline/orchestrator/stages/stage6-deployment.ts
+@@ -0,0 +1,145 @@
++// Stage 6 — Deployment: wraps Riya with the deployTarget flag, then re-runs
++// Stage 5's adversarial QA against the LIVE deployed URL. This is the "live
++// retest" the design doc calls out explicitly — it is what would have caught
++// Sprint 1's CORS-origin-mismatch and unmounted-routes bugs immediately,
++// since those were deploy-config issues invisible before containers were
++// actually running (see design doc, Stage 6 section).
++//
++// ── Stage 5 live-retest status (read before touching this file) ────────────
++// As of this task (Task 13), Task 12 (pipeline/orchestrator/stages/stage5-
++// adversarial-qa.ts) has NOT landed yet — only stage4-multi-agent-dev.ts
++// exists in pipeline/orchestrator/stages/ as of this writing. Importing a
++// `runStage5` here would fail to resolve, so the live-retest call below is a
++// clearly-marked stub (`runLiveRetestStub`) rather than a blocker on Task 12
++// landing, per this task's brief. When stage5-adversarial-qa.ts exists and
++// exports a function that can run QA against a live URL, replace
++// `defaultDeps.liveRetestFn` with a real dynamic import — the same
++// `await import(...)` pattern stage4-multi-agent-dev.ts uses for its agent
++// calls — and delete `runLiveRetestStub`.
++import { resolveFlags } from "../flags.ts";
++import { run as runRiya, type DeployResult } from "../../../agents/riya/src/index.ts";
++import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
++
++// Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
++// never appear in anything that could be user-facing. buildDeliverySummary()
++// below is the one thing in this stage that produces user-facing output, and
++// its own test (stage6-deployment.test.ts) asserts none of these names ever
++// appear in what it returns.
++const INTERNAL_AGENT_NAMES = [
++  "tilotma",
++  "saanvi",
++  "arjun",
++  "vanya",
++  "aanya",
++  "shubham",
++  "pranav",
++  "riya",
++  "navya",
++  "karan",
++  "deepika",
++] as const;
++
++export interface LiveRetestResult {
++  pass: boolean;
++  findings: unknown;
++}
++
++export interface Stage6Result {
++  success: boolean;
++  appUrl: string;
++  findings?: unknown;
++  deliverySummary: DeliverySummary;
++}
++
++export interface DeliverySummary {
++  status: "delivered" | "failed";
++  appUrl: string;
++  githubRepo: string | null;
++}
++
++// Generic-labeled delivery summary — "URL + repo + feature list" per the
++// design doc's Confidentiality table. No QA scores, no iteration counts, no
++// agent names. Deterministic and unit-tested directly (see
++// stage6-deployment.test.ts) rather than only indirectly through runStage6.
++export function buildDeliverySummary(
++  deployResult: DeployResult,
++  retest: LiveRetestResult,
++): DeliverySummary {
++  return {
++    status: deployResult.success && retest.pass ? "delivered" : "failed",
++    appUrl: deployResult.appUrl,
++    githubRepo: deployResult.githubRepo,
++  };
++}
++
++// STUB — see the file-header comment. Preserves the "re-run Stage 5 QA
++// against the live URL" contract without blocking Stage 6 on Task 12's
++// landing. Always reports a pass with no findings so deployment isn't
++// artificially blocked by a stub — this MUST be replaced with the real Stage
++// 5 live retest before this pipeline is considered production-ready; do not
++// remove this warning without wiring the real call.
++async function runLiveRetestStub(projectId: string, appUrl: string): Promise<LiveRetestResult> {
++  console.warn(
++    `[stage6] Stage 5 live-retest STUBBED for project ${projectId} against ${appUrl} — ` +
++      `stage5-adversarial-qa.ts (Task 12) is not available yet. Treating as pass with no ` +
++      `findings so deployment is not blocked on it, but this is NOT real QA coverage.`,
++  );
++  return { pass: true, findings: [] };
++}
++
++// Injectable seam for testing — runStage6() below wraps this with the real
++// Riya.run + the live-retest stub. Real docker deployment and a real live
++// LLM-driven QA re-run are not unit-testable; the deterministic parts this
++// stage owns (flag plumbing, fail-fast on deploy failure, delivery summary
++// shape) are what stage6-deployment.test.ts covers via these injected stubs.
++export interface Stage6Deps {
++  deployFn: (projectId: string, deployTarget: "local" | "gcp") => Promise<DeployResult>;
++  liveRetestFn: (projectId: string, appUrl: string) => Promise<LiveRetestResult>;
++}
++
++const defaultDeps: Stage6Deps = {
++  deployFn: runRiya,
++  liveRetestFn: runLiveRetestStub,
++};
++
++export async function runStage6(
++  projectId: string,
++  stage4Result: Stage4Result,
++  deps: Stage6Deps = defaultDeps,
++): Promise<Stage6Result> {
++  // stage4Result isn't consumed directly here — Riya reads the already-
++  // written backend/frontend output directories straight off BUILD_DIR for
++  // this projectId (same convention every other stage uses). It's accepted
++  // as a parameter per this task's required signature so the stage's input
++  // type makes the Stage 4 -> Stage 6 dependency explicit in the pipeline's
++  // types, matching how stage5's runStage5(projectId, stage4Result) does it.
++  void stage4Result;
++
++  const flags = resolveFlags();
++
++  const deployResult = await deps.deployFn(projectId, flags.deployTarget);
++
++  if (!deployResult.success) {
++    // Fail fast — do not spend time re-running QA against a deploy that
++    // didn't come up healthy in the first place.
++    return {
++      success: false,
++      appUrl: deployResult.appUrl,
++      findings: { deployErrors: deployResult.errors },
++      deliverySummary: buildDeliverySummary(deployResult, { pass: false, findings: null }),
++    };
++  }
++
++  const retest = await deps.liveRetestFn(projectId, deployResult.appUrl);
++
++  return {
++    success: retest.pass,
++    appUrl: deployResult.appUrl,
++    findings: retest.findings,
++    deliverySummary: buildDeliverySummary(deployResult, retest),
++  };
++}
++
++// Exported for the test file's confidentiality assertion — keeps the list of
++// names to check in one place instead of duplicating it in the test.
++export { INTERNAL_AGENT_NAMES };

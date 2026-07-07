@@ -50,23 +50,43 @@ export interface ProjectSpec {
   specHash: string; // SHA-256 of spec before this field — immutable after lock
 }
 
+export interface SaanviDeps {
+  chat: typeof agentChat;
+}
+
 // ── Main entry ────────────────────────────────────────────────────────────────
-export async function run(projectId: string, userRequest: string): Promise<ProjectSpec> {
+// `deps` is injectable (defaults to the real agentChat) so the retry
+// behavior below is unit-testable without a live LLM call — matches this
+// codebase's established DI pattern (e.g. runAgentEscalated's `deps` param).
+export async function run(
+  projectId: string,
+  userRequest: string,
+  deps: SaanviDeps = { chat: agentChat },
+): Promise<ProjectSpec> {
   const apiKey = process.env.NIM_API_KEY ?? "";
+  const messages = [
+    { role: "system" as const, content: SAANVI_SYSTEM_PROMPT },
+    {
+      role: "user" as const,
+      content: `Project ID: ${projectId}\n\nUser request:\n${userRequest}\n\nOutput ONLY the JSON object. No markdown, no prose.`,
+    },
+  ];
 
-  const { content } = await agentChat(
-    "saanvi",
-    [
-      { role: "system", content: SAANVI_SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: `Project ID: ${projectId}\n\nUser request:\n${userRequest}\n\nOutput ONLY the JSON object. No markdown, no prose.`,
-      },
-    ],
-    apiKey,
-  );
-
-  const raw = parseJson(content) as Omit<ProjectSpec, "projectId" | "lockedAt" | "specHash">;
+  // A7 (full-system audit): one empty/unparseable response used to crash
+  // the entire pipeline outright (stress-test run 9 — died 12s into a
+  // fresh run on Saanvi's very first call). One retry absorbs a transient
+  // blip without masking a genuinely broken account/model, which will fail
+  // the retry too and surface the real error.
+  let rawResult: unknown;
+  try {
+    const { content } = await deps.chat("saanvi", messages, apiKey);
+    rawResult = parseJson(content);
+  } catch (firstErr) {
+    console.log(`[saanvi] first attempt failed (${String(firstErr)}) — retrying once`);
+    const { content } = await deps.chat("saanvi", messages, apiKey);
+    rawResult = parseJson(content);
+  }
+  const raw = rawResult as Omit<ProjectSpec, "projectId" | "lockedAt" | "specHash">;
 
   const spec: Omit<ProjectSpec, "specHash"> = {
     projectId,

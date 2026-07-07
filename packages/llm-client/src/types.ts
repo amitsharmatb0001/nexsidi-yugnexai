@@ -13,24 +13,53 @@ export type AgentName =
 //   deepseek-v4-pro      ❌ timeout
 //   minimax-m3           ❌ 404
 //   mistral-nemotron     ❌ timeout
+// Confirmed working 2026-07-03 (scripts/ping-nim.ts):
+//   z-ai/glm-5.2         ✅ fast THAT DAY — DEMOTED 2026-07-04: scripts/
+//                           ping-glm.ts probed 5 request shapes (tiny chat,
+//                           tools no-history, tools with tool-result history,
+//                           ~90K input, ~24K input) and ALL FIVE hung past the
+//                           120s timeout. The endpoint is intermittently
+//                           unresponsive — stress-2/3 logs show it answering
+//                           iteration 1 then hanging on iteration 2 in every
+//                           agent, and hanging outright for all 3 QA agents.
+//                           Removed from ALL chains (not just demoted): a
+//                           hanging endpoint costs a full 120s timeout per
+//                           attempt before failover. Re-promote only after a
+//                           future ping-glm.ts run passes cleanly.
+// NOTE the "confirmed working" dates matter: free-tier NIM endpoints have no
+// SLA and their reliability changes day to day — mistral-nemotron was marked
+// "❌ timeout" on 2026-06-28 above yet served Arjun fine in later runs, and
+// processed an 85K-token QA review on 2026-07-04. Re-verify with ping-nim.ts
+// / ping-glm.ts before trusting any entry in this comment block.
 export type ModelId =
   | "moonshotai/kimi-k2.6"
   | "qwen/qwen3.5-122b-a10b"
   | "qwen/qwen3-next-80b-a3b-instruct"
   | "mistralai/mistral-nemotron"
   | "mistralai/mistral-medium-3.5-128b"
-  | "qwen2.5-coder:7b-instruct-q4_K_M";
+  | "qwen2.5-coder:7b-instruct-q4_K_M"
+  | "z-ai/glm-5.2";
 
 // Per-agent primary model assignment (D4)
+// Roster history for aanya/shubham/navya/karan/deepika:
+//   kimi-k2.6 (failed F7, 2026-07-03) -> z-ai/glm-5.2 (2026-07-03) ->
+//   current (2026-07-04): glm-5.2's endpoint proven hanging via
+//   scripts/ping-glm.ts (see ModelId comment above) and removed entirely.
+// Replacements chosen from what DEMONSTRABLY worked in stress-2/3 run logs,
+// not from assumptions: mistral-medium-3.5-128b performed all of Aanya's and
+// Shubham's actual generation work as the fallback in both runs; qwen3.5-122b
+// handled Karan's and Navya's 80K+ token QA reviews; mistral-nemotron handled
+// Deepika's 85K-token review. QA trio kept on 3 DIFFERENT primaries per D4's
+// parallel-dispatch rate-limit rule (they run simultaneously).
 export const AGENT_MODELS: Record<AgentName, ModelId> = {
   tilotma: "qwen/qwen3.5-122b-a10b",
-  aanya:   "moonshotai/kimi-k2.6",
-  shubham: "moonshotai/kimi-k2.6",
+  aanya:   "mistralai/mistral-medium-3.5-128b",
+  shubham: "mistralai/mistral-medium-3.5-128b",
   saanvi:  "qwen/qwen3.5-122b-a10b",
-  deepika: "moonshotai/kimi-k2.6",
+  deepika: "mistralai/mistral-nemotron",
   arjun:   "mistralai/mistral-nemotron",
-  navya:   "moonshotai/kimi-k2.6",
-  karan:   "moonshotai/kimi-k2.6",
+  navya:   "qwen/qwen3.5-122b-a10b",
+  karan:   "mistralai/mistral-medium-3.5-128b",
   vanya:   "qwen2.5-coder:7b-instruct-q4_K_M",
   pranav:  "qwen2.5-coder:7b-instruct-q4_K_M",
   aarav:   "qwen2.5-coder:7b-instruct-q4_K_M",
@@ -47,15 +76,22 @@ export const MODEL_RPM_LIMITS: Record<string, number> = {
   "qwen/qwen3-next-80b-a3b-instruct":    160,
   "mistralai/mistral-nemotron":          160,
   "mistralai/mistral-medium-3.5-128b":   160,
+  "z-ai/glm-5.2":                        160, // not independently verified — matches the other confirmed-working models' rate on this account until observed otherwise
 };
 
 // Fix #10: NIM free-tier context cap
 export const NIM_CONTEXT_LIMITS: Record<string, number> = {
   "moonshotai/kimi-k2.6":                32768,
-  "qwen/qwen3.5-122b-a10b":              32768,
+  // Measured directly, not assumed: scripts/ping-qa-large.ts intentionally
+  // overshot and got the API's own 400 error back verbatim — "This model's
+  // maximum context length is 262144 tokens" (2026-07-04). The prior 32768
+  // entry was never measured for this model; it was a guessed default that
+  // happened to also match several genuinely-32K models in this table.
+  "qwen/qwen3.5-122b-a10b":              262144,
   "qwen/qwen3-next-80b-a3b-instruct":    32768,
   "mistralai/mistral-nemotron":          32768,
   "mistralai/mistral-medium-3.5-128b":   131072,
+  "z-ai/glm-5.2":                        32768, // not independently verified — conservative default, same as the other 32K-class models above; model itself demoted from every fallback chain (see ModelId comment) after being proven to hang on every request shape
 };
 
 // 4-tier fallback chain per agent (D14) — confirmed-working NIM models only
@@ -68,13 +104,21 @@ const NIM_FALLBACK: ModelId[] = [
 
 export const FALLBACK_CHAIN: Record<AgentName, ModelId[]> = {
   tilotma: ["qwen/qwen3.5-122b-a10b",             "moonshotai/kimi-k2.6",           "mistralai/mistral-nemotron",        "mistralai/mistral-medium-3.5-128b"],
-  aanya:   ["moonshotai/kimi-k2.6",               "qwen/qwen3.5-122b-a10b",           "mistralai/mistral-medium-3.5-128b", "qwen2.5-coder:7b-instruct-q4_K_M"],
-  shubham: ["moonshotai/kimi-k2.6",               "qwen/qwen3.5-122b-a10b",           "mistralai/mistral-medium-3.5-128b", "qwen2.5-coder:7b-instruct-q4_K_M"],
+  // aanya/shubham/navya/karan/deepika: glm-5.2 removed from ALL chains
+  // (2026-07-04) after scripts/ping-glm.ts proved its endpoint hangs past
+  // the 120s timeout on every request shape — as a fallback it would cost a
+  // full 2-minute stall per attempt before failing over. kimi-k2.6 removed
+  // earlier (2026-07-03) after failing reproducibly in these exact roles.
+  // Replacements are the models that DID the work in stress-2/3 run logs
+  // (see AGENT_MODELS comment above). QA trio primaries kept distinct per
+  // D4's parallel-dispatch rule.
+  aanya:   ["mistralai/mistral-medium-3.5-128b",  "qwen/qwen3.5-122b-a10b",         "qwen2.5-coder:7b-instruct-q4_K_M"],
+  shubham: ["mistralai/mistral-medium-3.5-128b",  "qwen/qwen3.5-122b-a10b",         "qwen2.5-coder:7b-instruct-q4_K_M"],
   saanvi:  ["qwen/qwen3.5-122b-a10b",             "moonshotai/kimi-k2.6",           "mistralai/mistral-nemotron",        "mistralai/mistral-medium-3.5-128b"],
-  deepika: ["moonshotai/kimi-k2.6",               "mistralai/mistral-nemotron",      "qwen/qwen3.5-122b-a10b",            "mistralai/mistral-medium-3.5-128b"],
+  deepika: ["mistralai/mistral-nemotron",          "qwen/qwen3.5-122b-a10b",         "mistralai/mistral-medium-3.5-128b"],
   arjun:   ["mistralai/mistral-nemotron",          "moonshotai/kimi-k2.6",           "qwen/qwen3.5-122b-a10b",            "mistralai/mistral-medium-3.5-128b"],
-  navya:   ["moonshotai/kimi-k2.6",               "mistralai/mistral-nemotron",      "qwen/qwen3.5-122b-a10b",            "mistralai/mistral-medium-3.5-128b"],
-  karan:   ["moonshotai/kimi-k2.6",               "mistralai/mistral-nemotron",      "qwen/qwen3.5-122b-a10b",            "mistralai/mistral-medium-3.5-128b"],
+  navya:   ["qwen/qwen3.5-122b-a10b",             "mistralai/mistral-nemotron",     "mistralai/mistral-medium-3.5-128b"],
+  karan:   ["mistralai/mistral-medium-3.5-128b",  "mistralai/mistral-nemotron",     "qwen/qwen3.5-122b-a10b"],
   vanya:   ["qwen2.5-coder:7b-instruct-q4_K_M",  ...NIM_FALLBACK],
   pranav:  ["qwen2.5-coder:7b-instruct-q4_K_M",  ...NIM_FALLBACK],
   aarav:   ["qwen2.5-coder:7b-instruct-q4_K_M",  ...NIM_FALLBACK],

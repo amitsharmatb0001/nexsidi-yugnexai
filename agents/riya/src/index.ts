@@ -3,7 +3,7 @@
 // makes HTTP health check, fixes compose/Dockerfile and retries.
 // Agent ACTS via tools — no one-shot generation.
 
-import { runAgent } from "@nexsidi/agent-runtime";
+import { runAgentEscalated } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 // @nexsidi/db and drizzle-orm are imported dynamically inside run() (at the
@@ -51,7 +51,11 @@ export async function run(projectId: string, deployTarget: "local" | "gcp" = "lo
   const dbPort = 5433;
   const appUrl = `http://localhost:${frontendPort}`;
 
-  const result = await runAgent({
+  // runAgentEscalated (Task 15): NIM/kimi-k2.6 first, Sonnet 5 as a one-time
+  // escalation only when NIM genuinely can't finish — hard-problem
+  // escalation only, not a routine-cost default. See
+  // packages/agent-runtime/src/claude-loop.ts.
+  const result = await runAgentEscalated({
     agentName: "riya",
     model: "moonshotai/kimi-k2.6",
     apiKey: process.env.NIM_API_KEY ?? "",
@@ -145,7 +149,7 @@ Ports to use:
 - Frontend:   host port ${frontendPort} → container port 3000
 
 Clerk credentials (for environment variables):
-- NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = ${process.env.CLERK_PUBLISHABLE_KEY ?? ""}
+- NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = ${process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? ""}
 - CLERK_SECRET_KEY = ${process.env.CLERK_SECRET_KEY ?? ""}
 
 Project ID: ${projectId}

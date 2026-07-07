@@ -1,0 +1,553 @@
+diff --git a/agents/qa/deepika/src/index.test.ts b/agents/qa/deepika/src/index.test.ts
+new file mode 100644
+index 0000000..c83080e
+--- /dev/null
++++ b/agents/qa/deepika/src/index.test.ts
+@@ -0,0 +1,104 @@
++import { test, expect } from "bun:test";
++import { parseAndScoreFindings } from "./index.ts";
++
++// parseAndScoreFindings is the deterministic parsing/scoring logic behind
++// run() — run() itself calls agentChat (a live LLM call) and isn't
++// unit-testable, so these tests exercise the pure function directly, same
++// pattern as Karan's scoring.test.ts (Task 9).
++
++test("zero findings -> score 100, passed true", () => {
++  const result = parseAndScoreFindings(JSON.stringify({ findings: [] }));
++  expect(result.score).toBe(100);
++  expect(result.passed).toBe(true);
++  expect(result.findings).toEqual([]);
++});
++
++test("bare array shape (no findings wrapper) is also accepted", () => {
++  const result = parseAndScoreFindings(
++    JSON.stringify([{ severity: "LOW", category: "allocation", detail: "minor unnecessary copy" }]),
++  );
++  expect(result.findings).toHaveLength(1);
++  expect(result.score).toBe(99);
++});
++
++test("a mix of findings landing above 85 passes — exact CRITICAL/HIGH/MEDIUM/LOW arithmetic", () => {
++  // 1 MEDIUM (-5) + 2 LOW (-2) = 100 - 7 = 93 >= 85 -> passes
++  const result = parseAndScoreFindings(
++    JSON.stringify({
++      findings: [
++        { severity: "MEDIUM", category: "big-o", detail: "O(n^2) sort on already-sorted input" },
++        { severity: "LOW", category: "allocation", detail: "unnecessary array copy in a hot path" },
++        { severity: "LOW", category: "allocation", detail: "redundant JSON.parse/stringify roundtrip" },
++      ],
++    }),
++  );
++  expect(result.score).toBe(93);
++  expect(result.passed).toBe(true);
++});
++
++test("a mix of findings landing below 85 fails — exact CRITICAL/HIGH/MEDIUM/LOW arithmetic", () => {
++  // 1 CRITICAL (-20) + 1 HIGH (-10) = 100 - 30 = 70 < 85 -> fails
++  const result = parseAndScoreFindings(
++    JSON.stringify({
++      findings: [
++        { severity: "CRITICAL", category: "memory-leak", detail: "event listener never removed on unmount" },
++        { severity: "HIGH", category: "n-plus-one", detail: "tasks list issues one query per row" },
++      ],
++    }),
++  );
++  expect(result.score).toBe(70);
++  expect(result.passed).toBe(false);
++});
++
++test("score never goes below 0 even with many CRITICAL findings", () => {
++  const findings = Array.from({ length: 10 }, () => ({
++    severity: "CRITICAL",
++    category: "memory-leak",
++    detail: "unbounded cache growth",
++  }));
++  const result = parseAndScoreFindings(JSON.stringify({ findings }));
++  expect(result.score).toBe(0);
++  expect(result.passed).toBe(false);
++});
++
++test("unknown/garbage severity value falls back safely to MEDIUM, does not crash, does not drop the finding", () => {
++  const result = parseAndScoreFindings(
++    JSON.stringify({
++      findings: [{ severity: "SUPER_DUPER_BAD", category: "unknown", detail: "model made up a severity" }],
++    }),
++  );
++  expect(result.findings).toHaveLength(1);
++  expect(result.findings[0]!.severity).toBe("MEDIUM");
++  expect(result.score).toBe(95); // treated as MEDIUM: 100 - 5
++});
++
++test("unparseable JSON content -> default-FAIL (score 0, not passed), not a silent pass", () => {
++  const result = parseAndScoreFindings("this is not JSON at all {{{");
++  expect(result.score).toBe(0);
++  expect(result.passed).toBe(false);
++  expect(result.findings).toHaveLength(1);
++  expect(result.findings[0]!.severity).toBe("CRITICAL");
++});
++
++test("a finding with a file field is preserved through parsing", () => {
++  const result = parseAndScoreFindings(
++    JSON.stringify({
++      findings: [
++        {
++          severity: "HIGH",
++          category: "blocking-call",
++          detail: "synchronous fs.readFileSync on the request path",
++          file: "backend/src/routes/tasks.routes.ts",
++        },
++      ],
++    }),
++  );
++  expect(result.findings[0]!.file).toBe("backend/src/routes/tasks.routes.ts");
++});
++
++test("a finding without a file field leaves file undefined rather than inventing one", () => {
++  const result = parseAndScoreFindings(
++    JSON.stringify({ findings: [{ severity: "LOW", category: "allocation", detail: "no file supplied" }] }),
++  );
++  expect(result.findings[0]!.file).toBeUndefined();
++});
+diff --git a/agents/qa/deepika/src/index.ts b/agents/qa/deepika/src/index.ts
+index 7df39b3..9e25132 100644
+--- a/agents/qa/deepika/src/index.ts
++++ b/agents/qa/deepika/src/index.ts
+@@ -3,6 +3,18 @@
+ // D25: default-FAIL contract (must earn a pass).
+ // D26: fresh-context evaluator — no write tools, no generation history.
+ // Fix #8: score returned individually; pipeline passes only if ALL agents ≥85.
++//
++// ── Real parsing (Task 14) ───────────────────────────────────────────────────
++// Previously `run()` called agentChat for real but discarded the response and
++// hardcoded `score = 100, findings: []` — a no-op dressed up as a passing QA
++// result. This mirrors Karan's fix (Task 9, agents/qa/karan/src/index.ts):
++// parse the model's JSON output for real, compute score from the parsed
++// findings (never trust a self-reported score), default-FAIL on parse
++// failure. Severity changed from emoji to CRITICAL/HIGH/MEDIUM/LOW to match
++// the scoring formula already documented above (they didn't match before)
++// and Karan's SecurityFinding convention. `file?` added so Stage 5 can
++// fault-isolate Deepika findings to a specific agent instead of always
++// defaulting to "shubham" (see stage5-adversarial-qa.ts).
+ import { agentChat } from "@nexsidi/llm-client";
+ 
+ export interface QAResult {
+@@ -13,9 +25,10 @@ export interface QAResult {
+ }
+ 
+ export interface Finding {
+-  severity: "🔴" | "🟡" | "🟢" | "💡";
++  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+   category: string;
+   detail:   string;
++  file?:    string; // best-effort file path — lets Stage 5 fault-isolate to the responsible agent
+ }
+ 
+ export async function run(projectId: string, iteration: number, code: string): Promise<QAResult> {
+@@ -28,11 +41,60 @@ export async function run(projectId: string, iteration: number, code: string): P
+     process.env.NIM_API_KEY ?? "",
+   );
+ 
+-  // TODO Phase 1: parse content into QAResult with findings
+-  const score = 100;
+-  return { agent: "deepika", score, passed: score >= 85, findings: [] };
++  return { agent: "deepika", ...parseAndScoreFindings(content) };
+ }
+ 
+-const QA_SYSTEM_PROMPT = `You are an adversarial QA engineer. Your job is to find bugs, NOT suggest fixes.
+-Score = 100 - (CRITICAL×20) - (HIGH×10) - (MEDIUM×5) - (LOW×1).
+-Output ONLY JSON: { score, findings: [{ severity, category, detail }] }`;
++// D25 default-FAIL: unparseable output is never treated as "everything's
++// fine" — it becomes a synthetic CRITICAL finding that fails the check.
++// Score is ALWAYS computed from the parsed findings, never trusted from a
++// `score` field the model might self-report.
++export function parseAndScoreFindings(content: string): { score: number; passed: boolean; findings: Finding[] } {
++  let findings: Finding[];
++  try {
++    const parsed = JSON.parse(content) as { findings?: unknown[] } | unknown[];
++    const raw = Array.isArray(parsed) ? parsed : (parsed.findings ?? []);
++    if (!Array.isArray(raw)) throw new Error("findings is not an array");
++    findings = raw.map((entry): Finding => {
++      const r = entry as Record<string, unknown>;
++      const severity = r.severity;
++      const validSeverity =
++        severity === "CRITICAL" || severity === "HIGH" || severity === "MEDIUM" || severity === "LOW"
++          ? severity
++          : "MEDIUM"; // unknown severity from the model — assume MEDIUM rather than dropping the finding
++      return {
++        severity: validSeverity,
++        category: typeof r.category === "string" ? r.category : "unspecified",
++        detail: typeof r.detail === "string" ? r.detail : "unspecified finding",
++        file: typeof r.file === "string" ? r.file : undefined,
++      };
++    });
++  } catch {
++    // D25 default-FAIL: score is forced to 0 here, NOT run through the
++    // normal weighted formula (a lone CRITICAL would only cost -20, i.e.
++    // score 80 — still "passing" by the ≥85 threshold, which would make an
++    // unparseable response silently pass QA). An unparseable response gets
++    // the worst possible score, unconditionally.
++    return {
++      score: 0,
++      passed: false,
++      findings: [
++        {
++          severity: "CRITICAL",
++          category: "parse-failure",
++          detail: `Deepika's output could not be parsed as JSON — treating as a potential performance issue per D25 default-FAIL. Raw output: ${content.slice(0, 200)}`,
++        },
++      ],
++    };
++  }
++
++  const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
++  for (const f of findings) counts[f.severity]++;
++  const score = Math.max(0, 100 - counts.CRITICAL * 20 - counts.HIGH * 10 - counts.MEDIUM * 5 - counts.LOW * 1);
++  return { score, passed: score >= 85, findings };
++}
++
++const QA_SYSTEM_PROMPT = `You are Deepika, an adversarial performance QA engineer. Your job is to maximize error detection, NOT to confirm correctness and NOT to suggest fixes.
++Hunt specifically for: Big-O complexity blowups (nested loops over large collections, quadratic-or-worse algorithms), memory leaks (via allocation pattern analysis — unbounded caches, listeners never removed, closures retaining large objects), and N+1 query patterns or blocking synchronous calls on the hot path.
++Score = 100 - (CRITICAL×20) - (HIGH×10) - (MEDIUM×5) - (LOW×1). Pass threshold is 85 — this is computed by the caller, not by you.
++Output ONLY JSON: { findings: [{ severity: "CRITICAL"|"HIGH"|"MEDIUM"|"LOW", category: string, detail: string, file: string }] }
++If the code has no performance issues at all, output: { findings: [] }`;
+diff --git a/agents/qa/navya/src/index.test.ts b/agents/qa/navya/src/index.test.ts
+new file mode 100644
+index 0000000..a3613eb
+--- /dev/null
++++ b/agents/qa/navya/src/index.test.ts
+@@ -0,0 +1,104 @@
++import { test, expect } from "bun:test";
++import { parseAndScoreFindings } from "./index.ts";
++
++// parseAndScoreFindings is the deterministic parsing/scoring logic behind
++// run() — run() itself calls agentChat (a live LLM call) and isn't
++// unit-testable, so these tests exercise the pure function directly, same
++// pattern as Karan's scoring.test.ts (Task 9).
++
++test("zero findings -> score 100, passed true", () => {
++  const result = parseAndScoreFindings(JSON.stringify({ findings: [] }));
++  expect(result.score).toBe(100);
++  expect(result.passed).toBe(true);
++  expect(result.findings).toEqual([]);
++});
++
++test("bare array shape (no findings wrapper) is also accepted", () => {
++  const result = parseAndScoreFindings(
++    JSON.stringify([{ severity: "LOW", category: "style", detail: "minor inconsistency" }]),
++  );
++  expect(result.findings).toHaveLength(1);
++  expect(result.score).toBe(99);
++});
++
++test("a mix of findings landing above 85 passes — exact CRITICAL/HIGH/MEDIUM/LOW arithmetic", () => {
++  // 1 MEDIUM (-5) + 2 LOW (-2) = 100 - 7 = 93 >= 85 -> passes
++  const result = parseAndScoreFindings(
++    JSON.stringify({
++      findings: [
++        { severity: "MEDIUM", category: "null-ref", detail: "unchecked optional chaining" },
++        { severity: "LOW", category: "style", detail: "unused variable" },
++        { severity: "LOW", category: "style", detail: "magic number" },
++      ],
++    }),
++  );
++  expect(result.score).toBe(93);
++  expect(result.passed).toBe(true);
++});
++
++test("a mix of findings landing below 85 fails — exact CRITICAL/HIGH/MEDIUM/LOW arithmetic", () => {
++  // 1 CRITICAL (-20) + 1 HIGH (-10) = 100 - 30 = 70 < 85 -> fails
++  const result = parseAndScoreFindings(
++    JSON.stringify({
++      findings: [
++        { severity: "CRITICAL", category: "null-ref", detail: "unchecked req.body.title access" },
++        { severity: "HIGH", category: "type-mismatch", detail: "string compared to number" },
++      ],
++    }),
++  );
++  expect(result.score).toBe(70);
++  expect(result.passed).toBe(false);
++});
++
++test("score never goes below 0 even with many CRITICAL findings", () => {
++  const findings = Array.from({ length: 10 }, () => ({
++    severity: "CRITICAL",
++    category: "null-ref",
++    detail: "unchecked access",
++  }));
++  const result = parseAndScoreFindings(JSON.stringify({ findings }));
++  expect(result.score).toBe(0);
++  expect(result.passed).toBe(false);
++});
++
++test("unknown/garbage severity value falls back safely to MEDIUM, does not crash, does not drop the finding", () => {
++  const result = parseAndScoreFindings(
++    JSON.stringify({
++      findings: [{ severity: "SUPER_DUPER_BAD", category: "unknown", detail: "model made up a severity" }],
++    }),
++  );
++  expect(result.findings).toHaveLength(1);
++  expect(result.findings[0]!.severity).toBe("MEDIUM");
++  expect(result.score).toBe(95); // treated as MEDIUM: 100 - 5
++});
++
++test("unparseable JSON content -> default-FAIL (score 0, not passed), not a silent pass", () => {
++  const result = parseAndScoreFindings("this is not JSON at all {{{");
++  expect(result.score).toBe(0);
++  expect(result.passed).toBe(false);
++  expect(result.findings).toHaveLength(1);
++  expect(result.findings[0]!.severity).toBe("CRITICAL");
++});
++
++test("a finding with a file field is preserved through parsing", () => {
++  const result = parseAndScoreFindings(
++    JSON.stringify({
++      findings: [
++        {
++          severity: "HIGH",
++          category: "unreachable-code",
++          detail: "dead branch after early return",
++          file: "backend/src/routes/tasks.routes.ts",
++        },
++      ],
++    }),
++  );
++  expect(result.findings[0]!.file).toBe("backend/src/routes/tasks.routes.ts");
++});
++
++test("a finding without a file field leaves file undefined rather than inventing one", () => {
++  const result = parseAndScoreFindings(
++    JSON.stringify({ findings: [{ severity: "LOW", category: "style", detail: "no file supplied" }] }),
++  );
++  expect(result.findings[0]!.file).toBeUndefined();
++});
+diff --git a/agents/qa/navya/src/index.ts b/agents/qa/navya/src/index.ts
+index 21bfab3..a2981ee 100644
+--- a/agents/qa/navya/src/index.ts
++++ b/agents/qa/navya/src/index.ts
+@@ -3,6 +3,18 @@
+ // D25: default-FAIL contract (must earn a pass).
+ // D26: fresh-context evaluator — no write tools, no generation history.
+ // Fix #8: score returned individually; pipeline passes only if ALL agents ≥85.
++//
++// ── Real parsing (Task 14) ───────────────────────────────────────────────────
++// Previously `run()` called agentChat for real but discarded the response and
++// hardcoded `score = 100, findings: []` — a no-op dressed up as a passing QA
++// result. This mirrors Karan's fix (Task 9, agents/qa/karan/src/index.ts):
++// parse the model's JSON output for real, compute score from the parsed
++// findings (never trust a self-reported score), default-FAIL on parse
++// failure. Severity changed from emoji to CRITICAL/HIGH/MEDIUM/LOW to match
++// the scoring formula already documented above (they didn't match before)
++// and Karan's SecurityFinding convention. `file?` added so Stage 5 can
++// fault-isolate Navya findings to a specific agent instead of always
++// defaulting to "shubham" (see stage5-adversarial-qa.ts).
+ import { agentChat } from "@nexsidi/llm-client";
+ 
+ export interface QAResult {
+@@ -13,9 +25,10 @@ export interface QAResult {
+ }
+ 
+ export interface Finding {
+-  severity: "🔴" | "🟡" | "🟢" | "💡";
++  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+   category: string;
+   detail:   string;
++  file?:    string; // best-effort file path — lets Stage 5 fault-isolate to the responsible agent
+ }
+ 
+ export async function run(projectId: string, iteration: number, code: string): Promise<QAResult> {
+@@ -28,11 +41,60 @@ export async function run(projectId: string, iteration: number, code: string): P
+     process.env.NIM_API_KEY ?? "",
+   );
+ 
+-  // TODO Phase 1: parse content into QAResult with findings
+-  const score = 100;
+-  return { agent: "navya", score, passed: score >= 85, findings: [] };
++  return { agent: "navya", ...parseAndScoreFindings(content) };
+ }
+ 
+-const QA_SYSTEM_PROMPT = `You are an adversarial QA engineer. Your job is to find bugs, NOT suggest fixes.
+-Score = 100 - (CRITICAL×20) - (HIGH×10) - (MEDIUM×5) - (LOW×1).
+-Output ONLY JSON: { score, findings: [{ severity, category, detail }] }`;
++// D25 default-FAIL: unparseable output is never treated as "everything's
++// fine" — it becomes a synthetic CRITICAL finding that fails the check.
++// Score is ALWAYS computed from the parsed findings, never trusted from a
++// `score` field the model might self-report.
++export function parseAndScoreFindings(content: string): { score: number; passed: boolean; findings: Finding[] } {
++  let findings: Finding[];
++  try {
++    const parsed = JSON.parse(content) as { findings?: unknown[] } | unknown[];
++    const raw = Array.isArray(parsed) ? parsed : (parsed.findings ?? []);
++    if (!Array.isArray(raw)) throw new Error("findings is not an array");
++    findings = raw.map((entry): Finding => {
++      const r = entry as Record<string, unknown>;
++      const severity = r.severity;
++      const validSeverity =
++        severity === "CRITICAL" || severity === "HIGH" || severity === "MEDIUM" || severity === "LOW"
++          ? severity
++          : "MEDIUM"; // unknown severity from the model — assume MEDIUM rather than dropping the finding
++      return {
++        severity: validSeverity,
++        category: typeof r.category === "string" ? r.category : "unspecified",
++        detail: typeof r.detail === "string" ? r.detail : "unspecified finding",
++        file: typeof r.file === "string" ? r.file : undefined,
++      };
++    });
++  } catch {
++    // D25 default-FAIL: score is forced to 0 here, NOT run through the
++    // normal weighted formula (a lone CRITICAL would only cost -20, i.e.
++    // score 80 — still "passing" by the ≥85 threshold, which would make an
++    // unparseable response silently pass QA). An unparseable response gets
++    // the worst possible score, unconditionally.
++    return {
++      score: 0,
++      passed: false,
++      findings: [
++        {
++          severity: "CRITICAL",
++          category: "parse-failure",
++          detail: `Navya's output could not be parsed as JSON — treating as a potential logic flaw per D25 default-FAIL. Raw output: ${content.slice(0, 200)}`,
++        },
++      ],
++    };
++  }
++
++  const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
++  for (const f of findings) counts[f.severity]++;
++  const score = Math.max(0, 100 - counts.CRITICAL * 20 - counts.HIGH * 10 - counts.MEDIUM * 5 - counts.LOW * 1);
++  return { score, passed: score >= 85, findings };
++}
++
++const QA_SYSTEM_PROMPT = `You are Navya, an adversarial logic QA engineer. Your job is to maximize error detection, NOT to confirm correctness and NOT to suggest fixes.
++Hunt specifically for: type inconsistencies, null/undefined references, algorithmic flaws (off-by-one, incorrect boundary conditions, wrong operator precedence), race conditions, and unreachable code paths.
++Score = 100 - (CRITICAL×20) - (HIGH×10) - (MEDIUM×5) - (LOW×1). Pass threshold is 85 — this is computed by the caller, not by you.
++Output ONLY JSON: { findings: [{ severity: "CRITICAL"|"HIGH"|"MEDIUM"|"LOW", category: string, detail: string, file: string }] }
++If the code has no logic issues at all, output: { findings: [] }`;
+diff --git a/pipeline/orchestrator/stages/stage5-adversarial-qa.test.ts b/pipeline/orchestrator/stages/stage5-adversarial-qa.test.ts
+index 7e4d7de..0789a11 100644
+--- a/pipeline/orchestrator/stages/stage5-adversarial-qa.test.ts
++++ b/pipeline/orchestrator/stages/stage5-adversarial-qa.test.ts
+@@ -93,7 +93,7 @@ test("runStage5WithAgents fails when Navya is below 85, even with a clean Karan"
+       agent: "navya",
+       score: 60,
+       passed: false,
+-      findings: [{ severity: "🔴", category: "null-ref", detail: "unchecked req.body.title access" }],
++      findings: [{ severity: "CRITICAL", category: "null-ref", detail: "unchecked req.body.title access" }],
+     }),
+   });
+ 
+@@ -108,7 +108,7 @@ test("runStage5WithAgents fails when Deepika is below 85, even with a clean Kara
+       agent: "deepika",
+       score: 40,
+       passed: false,
+-      findings: [{ severity: "🟡", category: "n-plus-one", detail: "tasks list issues one query per row" }],
++      findings: [{ severity: "HIGH", category: "n-plus-one", detail: "tasks list issues one query per row" }],
+     }),
+   });
+ 
+@@ -163,13 +163,46 @@ test("a Karan finding on a db/ path routes faultAgent to pranav", async () => {
+   expect(result.faultAgent).toBe("pranav");
+ });
+ 
+-test("a Navya/Deepika-only failure (no file info in their real Finding type) falls back to the shubham default", async () => {
++test("a Navya/Deepika-only failure falls back to the shubham default when the model omits a file path", async () => {
+   const agents = makeAgents({
+     runNavya: async (): Promise<NavyaResult> => ({
+       agent: "navya",
+       score: 50,
+       passed: false,
+-      findings: [{ severity: "🔴", category: "race-condition", detail: "double-submit on task creation" }],
++      findings: [{ severity: "CRITICAL", category: "race-condition", detail: "double-submit on task creation" }],
++    }),
++  });
++
++  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents);
++
++  expect(result.faultAgent).toBe("shubham");
++});
++
++// Task 14: Navya/Deepika's Finding gained an optional `file` field so their
++// findings can fault-isolate to the actually-responsible agent instead of
++// always falling through to identifyFaultAgent's "shubham" default.
++test("a Navya finding with a frontend/ file path routes faultAgent to aanya", async () => {
++  const agents = makeAgents({
++    runNavya: async (): Promise<NavyaResult> => ({
++      agent: "navya",
++      score: 50,
++      passed: false,
++      findings: [{ severity: "CRITICAL", category: "null-ref", detail: "unchecked user.name access", file: "frontend/app/dashboard/page.tsx" }],
++    }),
++  });
++
++  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents);
++
++  expect(result.faultAgent).toBe("aanya");
++});
++
++test("a Deepika finding with a backend/ file path routes faultAgent to shubham", async () => {
++  const agents = makeAgents({
++    runDeepika: async (): Promise<DeepikaResult> => ({
++      agent: "deepika",
++      score: 50,
++      passed: false,
++      findings: [{ severity: "HIGH", category: "n-plus-one", detail: "tasks list issues one query per row", file: "backend/src/routes/tasks.routes.ts" }],
+     }),
+   });
+ 
+@@ -192,7 +225,7 @@ test("combined findings include mapped entries from all three agents on failure"
+       agent: "navya",
+       score: 70,
+       passed: false,
+-      findings: [{ severity: "🟡", category: "logic", detail: "off-by-one in pagination" }],
++      findings: [{ severity: "HIGH", category: "logic", detail: "off-by-one in pagination" }],
+     }),
+     runDeepika: async (): Promise<DeepikaResult> => ({
+       agent: "deepika",
+@@ -212,6 +245,6 @@ test("combined findings include mapped entries from all three agents on failure"
+   });
+   expect(result.findings[1]).toEqual({
+     file: "",
+-    issue: "[logic/🟡] logic: off-by-one in pagination",
++    issue: "[logic/HIGH] logic: off-by-one in pagination",
+   });
+ });
+diff --git a/pipeline/orchestrator/stages/stage5-adversarial-qa.ts b/pipeline/orchestrator/stages/stage5-adversarial-qa.ts
+index 4272bdf..f653316 100644
+--- a/pipeline/orchestrator/stages/stage5-adversarial-qa.ts
++++ b/pipeline/orchestrator/stages/stage5-adversarial-qa.ts
+@@ -57,27 +57,23 @@ export interface Stage5Agents {
+ // ── Finding-shape reconciliation ────────────────────────────────────────────
+ // Stage 4's `Finding` (the shape identifyFaultAgent consumes) is
+ // `{ file: string; issue: string }`. None of the three QA agents produce that
+-// shape natively:
+-//   - Karan's SecurityFinding carries an OPTIONAL `file` (best-effort from the
+-//     model) plus `severity`/`description` — maps cleanly, `file` falls back
+-//     to "" when the model didn't supply one.
+-//   - Navya/Deepika's Finding (`severity`/`category`/`detail`) carries NO file
+-//     path at all in the real type — there is nothing honest to map into
+-//     `file` beyond "". This means a Navya/Deepika-only failure's findings
+-//     fall through identifyFaultAgent's default ("shubham") rather than being
+-//     misattributed to a specific agent. That is a real limitation of Navya/
+-//     Deepika's current output shape, not a bug in this stage; flagged here
+-//     rather than silently working around it.
++// shape natively, but all three now carry an OPTIONAL `file` (best-effort
++// from the model) alongside their own severity/description fields — Task 14
++// added `file?` to Navya/Deepika's Finding to match Karan's SecurityFinding,
++// so a Navya/Deepika-only failure can now fault-isolate to the actual
++// responsible agent instead of always falling through to identifyFaultAgent's
++// "shubham" default (still the fallback when the model doesn't supply a
++// file path).
+ function karanFindingToFinding(f: SecurityFinding): Finding {
+   return { file: f.file ?? "", issue: `[security/${f.severity}] ${f.description}` };
+ }
+ 
+ function navyaFindingToFinding(f: NavyaFinding): Finding {
+-  return { file: "", issue: `[logic/${f.severity}] ${f.category}: ${f.detail}` };
++  return { file: f.file ?? "", issue: `[logic/${f.severity}] ${f.category}: ${f.detail}` };
+ }
+ 
+ function deepikaFindingToFinding(f: DeepikaFinding): Finding {
+-  return { file: "", issue: `[performance/${f.severity}] ${f.category}: ${f.detail}` };
++  return { file: f.file ?? "", issue: `[performance/${f.severity}] ${f.category}: ${f.detail}` };
+ }
+ 
+ /**

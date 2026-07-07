@@ -1,0 +1,131 @@
+diff --git a/pipeline/orchestrator/checkpoint.test.ts b/pipeline/orchestrator/checkpoint.test.ts
+new file mode 100644
+index 0000000..0b0a7ca
+--- /dev/null
++++ b/pipeline/orchestrator/checkpoint.test.ts
+@@ -0,0 +1,39 @@
++import { test, expect } from "bun:test";
++import { writeCheckpoint, readCheckpoint } from "./checkpoint.ts";
++import { mkdirSync, rmSync, writeFileSync } from "fs";
++import { join } from "path";
++
++const TEST_PROJECT = "test-checkpoint-proj";
++const BUILD_DIR = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
++
++test("writeCheckpoint then readCheckpoint returns the same data", () => {
++  writeCheckpoint(TEST_PROJECT, "01-requirements", { specId: "abc123", done: true });
++  const result = readCheckpoint<{ specId: string; done: boolean }>(TEST_PROJECT, "01-requirements");
++  expect(result).toEqual({ specId: "abc123", done: true });
++  rmSync(join(BUILD_DIR, TEST_PROJECT), { recursive: true, force: true });
++});
++
++test("readCheckpoint returns null when no checkpoint exists (fresh start)", () => {
++  const result = readCheckpoint(TEST_PROJECT, "nonexistent-stage");
++  expect(result).toBeNull();
++});
++
++test("writeCheckpoint throws on a path-traversal projectId", () => {
++  expect(() => writeCheckpoint("../../escaped-project", "01-requirements", { pwned: true })).toThrow();
++});
++
++test("readCheckpoint throws on a path-traversal projectId", () => {
++  expect(() => readCheckpoint(TEST_PROJECT + "/../escaped", "01-requirements")).toThrow();
++});
++
++test("readCheckpoint throws a clear error on malformed JSON on disk", () => {
++  const dir = join(BUILD_DIR, TEST_PROJECT, "checkpoints");
++  mkdirSync(dir, { recursive: true });
++  writeFileSync(join(dir, "corrupt-stage.json"), "{ not valid json", "utf-8");
++
++  expect(() => readCheckpoint(TEST_PROJECT, "corrupt-stage")).toThrow(
++    /Checkpoint corrupt: test-checkpoint-proj\/corrupt-stage/
++  );
++
++  rmSync(join(BUILD_DIR, TEST_PROJECT), { recursive: true, force: true });
++});
+diff --git a/pipeline/orchestrator/checkpoint.ts b/pipeline/orchestrator/checkpoint.ts
+new file mode 100644
+index 0000000..3dc1d75
+--- /dev/null
++++ b/pipeline/orchestrator/checkpoint.ts
+@@ -0,0 +1,47 @@
++import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync } from "fs";
++import { join, dirname } from "path";
++import type { PipelineCheckpoint } from "./types.ts";
++
++const INVALID_IDENTIFIER = /\.\.|\/|\\/;
++
++function assertValidIdentifier(name: string, label: "projectId" | "stage"): void {
++  if (!name || INVALID_IDENTIFIER.test(name)) {
++    throw new Error(
++      `Invalid ${label}: ${JSON.stringify(name)} — must not contain "..", "/", or "\\"`
++    );
++  }
++}
++
++function checkpointPath(projectId: string, stage: string): string {
++  assertValidIdentifier(projectId, "projectId");
++  assertValidIdentifier(stage, "stage");
++  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
++  return join(buildDir, projectId, "checkpoints", `${stage}.json`);
++}
++
++export function writeCheckpoint(projectId: string, stage: string, data: unknown): void {
++  const path = checkpointPath(projectId, stage);
++  mkdirSync(dirname(path), { recursive: true });
++  const envelope: PipelineCheckpoint = {
++    stage,
++    data,
++    writtenAt: new Date().toISOString(),
++  };
++  const tmpPath = `${path}.tmp`;
++  writeFileSync(tmpPath, JSON.stringify(envelope, null, 2), "utf-8");
++  renameSync(tmpPath, path);
++}
++
++export function readCheckpoint<T>(projectId: string, stage: string): T | null {
++  const path = checkpointPath(projectId, stage);
++  if (!existsSync(path)) return null;
++  const raw = readFileSync(path, "utf-8");
++  let envelope: PipelineCheckpoint<T>;
++  try {
++    envelope = JSON.parse(raw) as PipelineCheckpoint<T>;
++  } catch (err) {
++    const message = err instanceof Error ? err.message : String(err);
++    throw new Error(`Checkpoint corrupt: ${projectId}/${stage} — ${message}`);
++  }
++  return envelope.data;
++}
+diff --git a/pipeline/orchestrator/types.ts b/pipeline/orchestrator/types.ts
+new file mode 100644
+index 0000000..f3a0bff
+--- /dev/null
++++ b/pipeline/orchestrator/types.ts
+@@ -0,0 +1,27 @@
++export interface FeatureFlags {
++  requireOtp: boolean;
++  requirePayment: boolean;
++  deployTarget: "local" | "gcp";
++}
++
++export interface GatewayDecision {
++  decision: "proceed" | "review";
++  feedback?: string;
++}
++
++export interface DagTask {
++  id: string;
++  description: string;
++  complexity: number;
++  dependsOn: string[];
++}
++
++export interface Dag {
++  tasks: DagTask[];
++}
++
++export interface PipelineCheckpoint<T = unknown> {
++  stage: string;
++  data: T;
++  writtenAt: string; // ISO timestamp
++}

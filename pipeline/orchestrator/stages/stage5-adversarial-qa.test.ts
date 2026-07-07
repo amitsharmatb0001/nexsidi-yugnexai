@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { runStage5WithAgents, type Stage5Agents } from "./stage5-adversarial-qa.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runStage5WithAgents, collectCode, type Stage5Agents } from "./stage5-adversarial-qa.ts";
 import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { QAResult as KaranResult } from "../../../agents/qa/karan/src/index.ts";
 import type { QAResult as NavyaResult } from "../../../agents/qa/navya/src/index.ts";
@@ -251,4 +254,40 @@ test("combined findings include mapped entries from all three agents on failure"
     file: "",
     issue: "[logic/HIGH] logic: off-by-one in pagination",
   });
+});
+
+// ── A4 (full-system audit): collectCode must prefix file paths so
+// identifyFaultAgent's backend/frontend/db prefix matching can ever
+// actually match ──────────────────────────────────────────────────────────
+// Bug found in stress-test run 10: collectCode's relPath was relative to
+// EACH agent's own output dir (e.g. "src/controllers/notes.ts"), never
+// prefixed with "backend/"/"frontend/" — identifyFaultAgent's
+// startsWith("backend/") check could never match, so fault isolation
+// always fell through to its "shubham" default regardless of which agent
+// actually caused the finding. Karan's real run-10 finding.file was
+// literally "src/controllers/notes.ts" (no prefix) — proof the model
+// faithfully echoes whatever path format the "// FILE:" header shows it.
+test("collectCode prefixes every file with its agent label, not just the bare relative path", () => {
+  const root = mkdtempSync(join(tmpdir(), "nexsidi-collectcode-test-"));
+  const backendDir = join(root, "backend");
+  const frontendDir = join(root, "frontend");
+  mkdirSync(join(backendDir, "src", "controllers"), { recursive: true });
+  mkdirSync(join(frontendDir, "app", "dashboard"), { recursive: true });
+  writeFileSync(join(backendDir, "src", "controllers", "notes.ts"), "export const x = 1;");
+  writeFileSync(join(frontendDir, "app", "dashboard", "page.tsx"), "export default function Page() {}");
+
+  try {
+    const code = collectCode([
+      { label: "backend", path: backendDir },
+      { label: "frontend", path: frontendDir },
+    ]);
+
+    expect(code).toContain("// FILE: backend/src/controllers/notes.ts");
+    expect(code).toContain("// FILE: frontend/app/dashboard/page.tsx");
+    // The exact bug from run 10 — this is what a real finding.file value
+    // needs to look like for identifyFaultAgent to route it correctly.
+    expect(code).not.toContain("// FILE: src/controllers/notes.ts");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

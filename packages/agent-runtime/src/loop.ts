@@ -2,8 +2,8 @@
 // Replaces the one-shot agentChat() + parse pattern.
 // Agents run until they call task_complete or hit MAX_ITERATIONS.
 
-import { nimChatWithTools, type NimToolDef, type NimMessage } from "@nexsidi/llm-client";
-import { execWriteFile, execReadFile, execListFiles, FILE_TOOL_DEFS } from "./tools/file.ts";
+import { nimChatWithTools, type NimToolDef, type NimMessage, type NimToolCall } from "@nexsidi/llm-client";
+import { execWriteFile, execReadFile, execListFiles, execEditFile, execDeleteFile, FILE_TOOL_DEFS } from "./tools/file.ts";
 import { execRunCommand, COMMAND_TOOL_DEF } from "./tools/command.ts";
 import { execHttpRequest, HTTP_TOOL_DEF } from "./tools/http.ts";
 import { execDockerCompose, DOCKER_TOOL_DEF } from "./tools/docker.ts";
@@ -19,6 +19,15 @@ export const MAX_ITERATIONS = 40;
 export interface AgentRunConfig {
   agentName: string;
   model: ModelId;
+  // Optional additional NIM models tried, in order, if `model` fails or its
+  // circuit breaker opens — added after stress-test 1 (F7) found the loop had
+  // no recovery besides retrying the same broken model until MAX_ITERATIONS,
+  // then falling all the way through to Task 15's Claude escalation. Each
+  // model in the chain is tried once; once the chain is exhausted, falls back
+  // to the original sleep-and-retry-the-last-model behavior. This sits BELOW
+  // runAgentEscalated's Claude escalation (packages/agent-runtime/src/claude-
+  // loop.ts) — still open-source only, tried before ever reaching for Sonnet 5.
+  fallbackModels?: ModelId[];
   apiKey: string;
   systemPrompt: string;
   initialMessage: string;
@@ -57,6 +66,27 @@ export const TASK_COMPLETE_TOOL: NimToolDef = {
   },
 };
 
+// Full-system audit T1/L1: replaces any tool_call whose `function.arguments`
+// isn't valid JSON with a safe "{}" placeholder, and records which call ids
+// were touched. Exists so the CALLER can push only sanitized tool_calls into
+// conversation history — never the raw, possibly-truncated-mid-JSON string a
+// model produced when it hit the token cap mid-write_file. Pure and
+// dependency-free on purpose: directly unit-testable without mocking the
+// network (see loop.test.ts).
+export function sanitizeToolCalls(toolCalls: NimToolCall[]): { sanitized: NimToolCall[]; malformedIds: Set<string> } {
+  const malformedIds = new Set<string>();
+  const sanitized = toolCalls.map((call) => {
+    try {
+      JSON.parse(call.function.arguments);
+      return call;
+    } catch {
+      malformedIds.add(call.id);
+      return { ...call, function: { ...call.function, arguments: "{}" } };
+    }
+  });
+  return { sanitized, malformedIds };
+}
+
 export function buildToolList(config: AgentRunConfig): NimToolDef[] {
   return [
     ...FILE_TOOL_DEFS,
@@ -81,21 +111,54 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   const errors: string[] = [];
   let iterations = 0;
 
-  console.log(`[${config.agentName}:agent] Starting — model: ${config.model}, maxIter: ${MAX_ITERATIONS}`);
+  const modelChain: ModelId[] = [config.model, ...(config.fallbackModels ?? [])];
+  let modelIdx = 0;
+
+  // L3 (full-system audit): `iterations` now counts real model turns only.
+  // Previously incremented at the TOP of the loop, so every transport
+  // failure + sleep(5s) cycle also consumed the main budget — stress-test
+  // runs 3/5/7 showed 30+ "iterations" that were pure sleeps with zero
+  // model interaction, exhausting MAX_ITERATIONS on network noise rather
+  // than actual agent attempts. Transport failures on the LAST model in the
+  // chain now get their own small budget and abort early instead.
+  const MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5;
+  let consecutiveTransportFailures = 0;
+  let abortedOnTransportFailures = false;
+
+  console.log(`[${config.agentName}:agent] Starting — model: ${config.model}, maxIter: ${MAX_ITERATIONS}` +
+    (modelChain.length > 1 ? `, fallbacks: ${modelChain.slice(1).join(", ")}` : ""));
 
   while (iterations < MAX_ITERATIONS) {
-    iterations++;
-    console.log(`[${config.agentName}:agent] Iteration ${iterations}`);
+    const currentModel = modelChain[modelIdx] ?? config.model;
 
     let response;
     try {
-      response = await nimChatWithTools(config.model, messages, tools, config.apiKey);
+      response = await nimChatWithTools(currentModel, messages, tools, config.apiKey);
     } catch (err) {
-      errors.push(`NIM call failed on iteration ${iterations}: ${String(err)}`);
-      // Try to continue — next iteration might succeed after a cooldown
+      errors.push(`NIM call failed (model: ${currentModel}): ${String(err)}`);
+      if (modelIdx < modelChain.length - 1) {
+        modelIdx++;
+        // Include the actual error — previously only pushed to the errors
+        // array (which callers rarely surface), so run logs showed models
+        // "falling back" dozens of times with the REASON invisible, making
+        // model-failure diagnosis impossible from logs alone.
+        console.log(`[${config.agentName}:agent] ${currentModel} failed (${String(err).slice(0, 300)}) — falling back to next model: ${modelChain[modelIdx]}`);
+        continue; // no sleep — a different model's circuit breaker is likely still closed
+      }
+      consecutiveTransportFailures++;
+      if (consecutiveTransportFailures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES) {
+        errors.push(`Aborting after ${MAX_CONSECUTIVE_TRANSPORT_FAILURES} consecutive transport failures on ${currentModel} — not burning the rest of the iteration budget on network noise`);
+        abortedOnTransportFailures = true;
+        break;
+      }
+      // Chain exhausted — same original behavior: sleep and retry the last model
       await new Promise(r => setTimeout(r, 5000));
       continue;
     }
+
+    consecutiveTransportFailures = 0;
+    iterations++;
+    console.log(`[${config.agentName}:agent] Iteration ${iterations} (model: ${currentModel})`);
 
     const choice = response.choices[0];
     if (!choice) {
@@ -103,15 +166,42 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
       break;
     }
 
+    // T1 fix: sanitize BEFORE pushing to `messages` — an unparseable
+    // arguments string that survives into history poisons every subsequent
+    // request (NIM re-validates the full array). Previously the raw
+    // tool_calls were pushed here and only checked for valid JSON later, at
+    // execution time — too late, the damage to history was already done.
+    // Confirmed via stress-test run 5: the same parse error replayed at the
+    // identical byte offset for 14 consecutive iterations.
+    const { sanitized: sanitizedToolCalls, malformedIds } = sanitizeToolCalls(choice.message.tool_calls ?? []);
+
     const assistantMsg: NimMessage = {
       role: "assistant",
       content: choice.message.content ?? null,
-      tool_calls: choice.message.tool_calls,
+      tool_calls: sanitizedToolCalls.length > 0 ? sanitizedToolCalls : undefined,
     };
     messages.push(assistantMsg);
 
+    // Output was cut off by the token cap — any tool_calls present may be
+    // incomplete even after sanitizing. Tell the model directly instead of
+    // silently continuing with truncated state (this is what let a model
+    // write half a file, get cut off, and then have no way to know why the
+    // next turn's history looked wrong).
+    if (choice.finish_reason === "length") {
+      errors.push(`Output truncated (finish_reason: length) on iteration ${iterations}`);
+      const truncationNotice = "Your previous response was cut off — it was too long. Write large files in smaller pieces (split one write_file into several), or shorten your reasoning before tool calls.";
+      if (sanitizedToolCalls.length > 0) {
+        for (const call of sanitizedToolCalls) {
+          messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ status: "error", summary: truncationNotice }) });
+        }
+      } else {
+        messages.push({ role: "user", content: truncationNotice });
+      }
+      continue;
+    }
+
     // No tool calls — model is done but didn't call task_complete
-    if (!choice.message.tool_calls?.length) {
+    if (sanitizedToolCalls.length === 0) {
       if (choice.finish_reason === "stop") {
         console.log(`[${config.agentName}:agent] Model stopped without task_complete — treating as done`);
         return { success: false, summary: choice.message.content ?? "no content", filesWritten, iterations, errors: [...errors, "Agent stopped without calling task_complete"] };
@@ -121,15 +211,16 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
     // Execute all tool calls
     const toolResults: NimMessage[] = [];
-    for (const call of choice.message.tool_calls) {
-      const toolName = call.function.name;
-      let args: Record<string, unknown>;
-      try {
-        args = JSON.parse(call.function.arguments);
-      } catch {
-        toolResults.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ status: "error", summary: "Invalid JSON in tool arguments" }) });
+    for (const call of sanitizedToolCalls) {
+      if (malformedIds.has(call.id)) {
+        toolResults.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ status: "error", summary: "Invalid JSON in tool arguments — retry this call with valid JSON" }) });
         continue;
       }
+
+      const toolName = call.function.name;
+      // Safe: sanitizeToolCalls guarantees every non-malformed call's
+      // arguments already parsed successfully once.
+      const args = JSON.parse(call.function.arguments) as Record<string, unknown>;
 
       console.log(`[${config.agentName}:agent] Tool call: ${toolName}(${JSON.stringify(args).slice(0, 120)})`);
 
@@ -148,6 +239,14 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         }
         case "list_files": {
           result = execListFiles(config.sandboxDir, args as { dir?: string; recursive?: boolean });
+          break;
+        }
+        case "edit_file": {
+          result = execEditFile(config.sandboxDir, args as { path: string; old_str: string; new_str: string });
+          break;
+        }
+        case "delete_file": {
+          result = execDeleteFile(config.sandboxDir, args as { path: string });
           break;
         }
         case "run_command": {
@@ -197,7 +296,9 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
   return {
     success: false,
-    summary: `Max iterations (${MAX_ITERATIONS}) reached without task_complete`,
+    summary: abortedOnTransportFailures
+      ? `Aborted after ${MAX_CONSECUTIVE_TRANSPORT_FAILURES} consecutive transport failures (${iterations} real model turns completed)`
+      : `Max iterations (${MAX_ITERATIONS}) reached without task_complete`,
     filesWritten,
     iterations,
     errors: [...errors, "Max iterations exceeded"],

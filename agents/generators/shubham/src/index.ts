@@ -2,7 +2,7 @@
 // Uses tool-calling loop: write_file → run npm install → run tsc → fix → repeat.
 // No longer does one-shot LLM generation. Agent ACTS on real tool feedback.
 
-import { runAgent } from "@nexsidi/agent-runtime";
+import { runAgentEscalated } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
@@ -28,14 +28,70 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
   // Write static scaffold first — agent focuses only on business logic
   writeStaticScaffold(plan, outputDir);
 
-  const result = await runAgent({
+  // Primary history: kimi-k2.6 (failed, F7) -> z-ai/glm-5.2 (2026-07-03) ->
+  // mistral-medium-3.5-128b (2026-07-04). glm-5.2 demoted after
+  // scripts/ping-glm.ts proved its endpoint hangs past the 120s timeout on
+  // every request shape — and stress-3's log shows this agent succeeded in 21
+  // iterations entirely on mistral-medium (the then-fallback) after glm's
+  // iteration-1 hang. Dropped from the chain entirely: a hanging endpoint
+  // costs a full 120s timeout per attempt before failing over.
+  // runAgentEscalated (Task 15): open-source chain first; Sonnet 5 single
+  // retry only when the whole chain genuinely can't finish. See
+  // packages/agent-runtime/src/claude-loop.ts.
+  const result = await runAgentEscalated({
     agentName: "shubham",
-    model: "moonshotai/kimi-k2.6",
+    model: "mistralai/mistral-medium-3.5-128b",
+    // qwen3.5-122b: confirmed working under 80K+ token inputs in stress-3's
+    // QA fallbacks — a genuinely different architecture for the second try.
+    fallbackModels: ["qwen/qwen3.5-122b-a10b"],
     apiKey,
     systemPrompt: SHUBHAM_AGENT_SYSTEM_PROMPT,
     initialMessage: buildAgentTask(plan),
     sandboxDir: outputDir,
     enableHttpTools: false, // HTTP verification done by Riya after docker up
+  });
+
+  return {
+    success: result.success,
+    projectId: plan.projectId,
+    outputDir,
+    filesWritten: result.filesWritten,
+    errors: result.errors,
+  };
+}
+
+// A6 (full-system audit, Phase C): Stage 5 QA findings previously went
+// nowhere — run.ts's own comment documented the gap: "a fault-isolated
+// re-fix-and-retest loop ... is NOT implemented here." runFix() targets the
+// SAME outputDir run() already wrote to (files already exist there) with a
+// fix-focused task instead of a from-scratch build task — the agent reads
+// the affected files and edits them, it doesn't regenerate the project.
+export function buildFixTask(findings: string[]): string {
+  return `An adversarial QA review found the following issues in the backend code you already wrote. Fix ONLY these specific issues — do not rewrite unrelated files, do not refactor working code that wasn't flagged.
+
+ISSUES TO FIX:
+${findings.map((f, i) => `${i + 1}. ${f}`).join("\n")}
+
+Workflow:
+1. Use read_file to see the exact current content of each affected file
+2. Use edit_file for targeted fixes (cheaper than rewriting the whole file) — use write_file only if the fix genuinely requires touching most of the file
+3. Run "npx tsc --noEmit" (or the project's build command) to verify nothing broke
+4. Call task_complete with verification_passed: true only after verifying the fix actually addresses the issue`;
+}
+
+export async function runFix(plan: BuildPlan, findings: string[]): Promise<GeneratorResult> {
+  const apiKey = process.env.NIM_API_KEY ?? "";
+  const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
+
+  const result = await runAgentEscalated({
+    agentName: "shubham",
+    model: "mistralai/mistral-medium-3.5-128b",
+    fallbackModels: ["qwen/qwen3.5-122b-a10b"],
+    apiKey,
+    systemPrompt: SHUBHAM_AGENT_SYSTEM_PROMPT,
+    initialMessage: buildFixTask(findings),
+    sandboxDir: outputDir,
+    enableHttpTools: false,
   });
 
   return {
@@ -96,14 +152,35 @@ If you cannot fix tsc errors after 5 attempts, call task_complete with verificat
 and explain exactly what failed.
 `;
 
+// Renames each endpoint's `path` field to `route` for the PROMPT TEXT ONLY —
+// same fix applied to Aanya's generator after stress-test 1 (F7) found a
+// mid-tier model conflating a backend route (e.g. "/api/v1/notes",
+// RestEndpoint.path) with write_file's own "path" parameter (a source file
+// path, e.g. "src/routes/notes.ts") because both share the literal key name
+// "path" in the same prompt context. Applied proactively here — same
+// mechanism, not yet independently reproduced for Shubham, but the identical
+// collision exists in this prompt too. Does not touch RestEndpoint/BuildPlan
+// itself, only how the contract is rendered into the prompt.
+function renderApiContractForPrompt(apiContract: BuildPlan["apiContract"]): string {
+  const renamed = {
+    baseUrl: apiContract.baseUrl,
+    endpoints: apiContract.endpoints.map(({ path, ...rest }) => ({ route: path, ...rest })),
+  };
+  return JSON.stringify(renamed, null, 2);
+}
+
 function buildAgentTask(plan: BuildPlan): string {
   return `Build a complete Express + TypeScript backend for this project.
 
 PROJECT: ${plan.appName ?? "web app"}
 DESCRIPTION: ${plan.appDescription ?? ""}
 
+IMPORTANT — do not confuse these two unrelated things:
+- Each endpoint's "route" below (e.g. "/api/v1/notes") is the URL ROUTE to implement — pass it to router.get/post/put/patch/delete(), never to write_file's "path" argument.
+- write_file's "path" argument is always a SOURCE FILE PATH relative to the project root (e.g. "src/routes/notes.ts"). Every write_file call must use a distinct file path — never reuse the same path for two different pieces of content.
+
 API CONTRACT (implement ALL these endpoints):
-${JSON.stringify(plan.apiContract, null, 2)}
+${renderApiContractForPrompt(plan.apiContract)}
 
 DATABASE SCHEMA (use these EXACT table and column names):
 ${JSON.stringify(plan.dbSchema, null, 2)}

@@ -57,6 +57,38 @@ export function identifyFaultAgent(findings: Finding[]): string {
   return "shubham"; // default to backend if path doesn't match a known prefix
 }
 
+function agentForFile(file: string): string {
+  if (file.startsWith("backend/")) return "shubham";
+  if (file.startsWith("frontend/")) return "aanya";
+  if (file.startsWith("db/")) return "pranav";
+  return "shubham"; // same fallback as identifyFaultAgent
+}
+
+// Real 2026-07-06 stress-test bug: the QA fix loop used identifyFaultAgent's
+// SINGLE result to fix one agent per round. A real run had findings spanning
+// both backend/ and frontend/ files in the same QA pass — since findings[0]
+// was a backend/ file, the loop kept fixing Shubham and never touched
+// Aanya's frontend finding, no matter how many retries ran. Returns every
+// agent with at least one finding so the fix loop can route findings to all
+// of them in a single round instead of just the first.
+export function identifyFaultAgents(findings: Finding[]): Set<string> {
+  return new Set(findings.map((f) => agentForFile(f.file)));
+}
+
+// Companion to identifyFaultAgents: the fix loop needs each agent's OWN
+// subset of findings (fixShubham should only see backend findings, fixAanya
+// only frontend), not just which agents are implicated overall.
+export function groupFindingsByAgent(findings: Finding[]): Map<string, Finding[]> {
+  const groups = new Map<string, Finding[]>();
+  for (const f of findings) {
+    const agent = agentForFile(f.file);
+    const list = groups.get(agent);
+    if (list) list.push(f);
+    else groups.set(agent, [f]);
+  }
+  return groups;
+}
+
 // The real hash-chain gate, invoked at every agent-to-agent handoff below.
 // Unlike the plan's original placeholder (which called a hash-only check),
 // this calls the REAL verifyContext — hash AND RSA-SHA256 signature both have

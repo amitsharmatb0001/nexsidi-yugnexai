@@ -16,7 +16,17 @@ import React, {
 } from "react";
 
 // ─── JSX type augmentation so nex-* tags work in TSX ──────────────────────
-declare global {
+// Full-system audit finding (2026-07-04): React 19 moved the JSX namespace
+// out of the global scope and into the `react` module itself. Augmenting
+// `declare global { namespace JSX }` (the React 18-era pattern this used to
+// use) silently fails to merge with React 19's types — consumers on React
+// 19 got "Property 'nex-panel' does not exist on type JSX.IntrinsicElements"
+// and Claude Sonnet 5 had to rediscover and hand-write this exact same
+// augmentation, under `declare module "react"`, in the generated project's
+// own types/ dir, on multiple independent stress-test runs (2026-07-03/04).
+// Fixing it once here means every future generated project gets it correct
+// out of the vendored package instead of re-solving the same bug per project.
+declare module "react" {
   namespace JSX {
     interface IntrinsicElements {
       "nex-panel":       any;

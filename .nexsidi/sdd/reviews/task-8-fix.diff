@@ -1,0 +1,22 @@
+diff --git a/pipeline/activities/index.ts b/pipeline/activities/index.ts
+index a58e6e5..3b8250d 100644
+--- a/pipeline/activities/index.ts
++++ b/pipeline/activities/index.ts
+@@ -70,7 +70,7 @@ export async function runAanya(projectId: string): Promise<void> {
+   const ctx = Context.current();
+   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
+   try {
+-    const result = await runAanyaAgent(getPlan(projectId));
++    const result = await runAanyaAgent(getPlan(projectId), "integrate");
+     if (!result.success) throw new Error(`[aanya] ${result.errors.join("; ")}`);
+     console.log(`[activity:aanya] ${result.filesWritten.length} files → ${result.outputDir}`);
+   } finally {
+@@ -356,7 +356,7 @@ export async function runCodeFix(projectId: string, iteration: number, reason: s
+     // Skip Pranav — DB schema doesn't change between QA iterations.
+     await Promise.all([
+       runShubhamAgent(patchedPlan),
+-      runAanyaAgent(patchedPlan),
++      runAanyaAgent(patchedPlan, "integrate"),
+     ]);
+   } finally {
+     clearInterval(hb);

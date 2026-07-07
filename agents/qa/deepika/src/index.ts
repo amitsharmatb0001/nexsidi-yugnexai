@@ -31,15 +31,34 @@ export interface Finding {
   file?:    string; // best-effort file path — lets Stage 5 fault-isolate to the responsible agent
 }
 
-export async function run(projectId: string, iteration: number, code: string): Promise<QAResult> {
-  const { content } = await agentChat(
-    "deepika",
-    [
-      { role: "system", content: QA_SYSTEM_PROMPT },
-      { role: "user", content: JSON.stringify({ projectId, iteration, code }) },
-    ],
-    process.env.NIM_API_KEY ?? "",
-  );
+// `deps` is injectable (defaults to the real agentChat) — matches this
+// codebase's established DI pattern (Saanvi/Arjun's A7 retry).
+export interface DeepikaDeps {
+  chat: typeof agentChat;
+}
+
+export async function run(
+  projectId: string,
+  iteration: number,
+  code: string,
+  deps: DeepikaDeps = { chat: agentChat },
+): Promise<QAResult> {
+  const messages = [
+    { role: "system" as const, content: QA_SYSTEM_PROMPT },
+    { role: "user" as const, content: JSON.stringify({ projectId, iteration, code }) },
+  ];
+  const apiKey = process.env.NIM_API_KEY ?? "";
+
+  // Found live in stress5timeout on a sibling QA agent (empty content, HTTP
+  // 200, finish_reason "stop") — one retry absorbs a one-off infra blip
+  // without masking a genuinely broken model, which fails the retry too.
+  const { content: first } = await deps.chat("deepika", messages, apiKey);
+  let content = first;
+  if (content.trim() === "") {
+    console.log("[deepika] first attempt returned empty content — retrying once");
+    const { content: second } = await deps.chat("deepika", messages, apiKey);
+    content = second;
+  }
 
   return { agent: "deepika", ...parseAndScoreFindings(content) };
 }
@@ -48,10 +67,21 @@ export async function run(projectId: string, iteration: number, code: string): P
 // fine" — it becomes a synthetic CRITICAL finding that fails the check.
 // Score is ALWAYS computed from the parsed findings, never trusted from a
 // `score` field the model might self-report.
+// Strips a wrapping ```json / ``` markdown code fence, if present — found in
+// stress-test 1 (F7): despite "Output ONLY JSON", the model's real output was
+// wrapped in fences, tripping the D25 default-FAIL path even though the
+// underlying JSON was well-formed. Returns the trimmed input unchanged when
+// no fence wrapper is present.
+function stripMarkdownFences(content: string): string {
+  const trimmed = content.trim();
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/);
+  return fenceMatch ? fenceMatch[1]! : trimmed;
+}
+
 export function parseAndScoreFindings(content: string): { score: number; passed: boolean; findings: Finding[] } {
   let findings: Finding[];
   try {
-    const parsed = JSON.parse(content) as { findings?: unknown[] } | unknown[];
+    const parsed = JSON.parse(stripMarkdownFences(content)) as { findings?: unknown[] } | unknown[];
     const raw = Array.isArray(parsed) ? parsed : (parsed.findings ?? []);
     if (!Array.isArray(raw)) throw new Error("findings is not an array");
     findings = raw.map((entry): Finding => {
@@ -95,8 +125,12 @@ export function parseAndScoreFindings(content: string): { score: number; passed:
   return { score, passed: score >= 85, findings };
 }
 
-const QA_SYSTEM_PROMPT = `You are Deepika, an adversarial performance QA engineer. Your job is to maximize error detection, NOT to confirm correctness and NOT to suggest fixes.
+// Exported for direct testing of the JSON-quoting fix (same bug found live
+// in Karan/Navya: unquoted keys in this example taught the model invalid
+// JS-object-literal syntax instead of JSON) and so run()'s retry logic can
+// be unit-tested.
+export const QA_SYSTEM_PROMPT = `You are Deepika, an adversarial performance QA engineer. Your job is to maximize error detection, NOT to confirm correctness and NOT to suggest fixes.
 Hunt specifically for: Big-O complexity blowups (nested loops over large collections, quadratic-or-worse algorithms), memory leaks (via allocation pattern analysis — unbounded caches, listeners never removed, closures retaining large objects), and N+1 query patterns or blocking synchronous calls on the hot path.
 Score = 100 - (CRITICAL×20) - (HIGH×10) - (MEDIUM×5) - (LOW×1). Pass threshold is 85 — this is computed by the caller, not by you.
-Output ONLY JSON: { findings: [{ severity: "CRITICAL"|"HIGH"|"MEDIUM"|"LOW", category: string, detail: string, file: string }] }
-If the code has no performance issues at all, output: { findings: [] }`;
+Output ONLY valid JSON with quoted keys, exactly this shape: {"findings": [{"severity": "CRITICAL"|"HIGH"|"MEDIUM"|"LOW", "category": string, "detail": string, "file": string}]}
+If the code has no performance issues at all, output: {"findings": []}`;

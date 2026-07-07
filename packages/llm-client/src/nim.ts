@@ -4,6 +4,22 @@ import { MODEL_RPM_LIMITS, NIM_CONTEXT_LIMITS, type ChatMessage, type ModelId } 
 
 const NIM_BASE_URL = process.env.NIM_BASE_URL ?? "https://integrate.api.nvidia.com/v1";
 
+// Full-system audit T2: unlike http.ts's execHttpRequest, this file had no
+// request timeout at all — a hung NIM connection stalled the whole pipeline
+// indefinitely. Same AbortController pattern as http.ts, for consistency.
+// Raised 120s -> 240s on 2026-07-04: stress4diag's log showed 3/3 aborts on
+// mistralai/mistral-medium-3.5-128b (then-newly-promoted primary) firing at
+// exactly the point request size grew (right after a multi-tool-call turn
+// added several tool_results to history) — not on the FIRST request of a
+// run. That pattern fits "slow-to-respond under free-tier load as context
+// grows" far better than "the model hung outright" (ping-glm.ts showed a
+// genuinely dead endpoint aborts on a trivial first request too, unlike
+// this). 120s was never measured against real NIM response-time
+// distribution — it was "add SOME timeout" (T2's original fix). Doubling it
+// directly targets the specific failure just observed, rather than guessing
+// at yet another model swap.
+const NIM_TIMEOUT_MS = 240_000;
+
 export interface NimResponse {
   id: string;
   choices: Array<{ message: { content: string } }>;
@@ -29,6 +45,9 @@ export async function nimChat(
   const contextLimit = NIM_CONTEXT_LIMITS[modelId] ?? 32768;
   const maxTokens = maxTokensOverride ?? Math.min(16384, Math.floor(contextLimit * 0.75));
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), NIM_TIMEOUT_MS);
+
   try {
     const res = await fetch(`${NIM_BASE_URL}/chat/completions`, {
       method: "POST",
@@ -36,7 +55,11 @@ export async function nimChat(
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ model: modelId, messages, max_tokens: maxTokens }),
+      // T6: low temperature reduces malformed JSON in tool arguments —
+      // not used here (nimChat has no tool arguments to corrupt), kept for
+      // parity/consistency with nimChatWithTools below.
+      body: JSON.stringify({ model: modelId, messages, max_tokens: maxTokens, temperature: 0.2 }),
+      signal: controller.signal,
     });
 
     if (!res.ok) {
@@ -47,10 +70,17 @@ export async function nimChat(
 
     const data = (await res.json()) as NimResponse;
     recordSuccess(circuitKey);
+    // T3+L10 (full-system audit): usage was silently discarded everywhere —
+    // a system whose pitch is cost-efficiency had no visibility into its
+    // own token spend. Logged at this single lowest-common call point
+    // rather than threaded through every caller's return type.
+    console.log(`[nim:${modelId}] usage: ${data.usage.prompt_tokens} in / ${data.usage.completion_tokens} out / ${data.usage.total_tokens} total`);
     return data;
   } catch (err) {
     recordFailure(circuitKey);
     throw err;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -99,7 +129,19 @@ export async function nimChatWithTools(
   await waitForToken(modelId, rpmLimit);
 
   const contextLimit = NIM_CONTEXT_LIMITS[modelId] ?? 32768;
-  const maxTokens = Math.min(8192, Math.floor(contextLimit * 0.75));
+  // Full-system audit T1: raised from a hardcoded 8192 — a complete
+  // multi-component page is 9-12K tokens of JSON-escaped write_file
+  // arguments, so 8192 truncated mid-JSON on every non-trivial file
+  // (confirmed root cause of the loop.ts sanitizeToolCalls death spiral).
+  // 16000 matches Claude's TOOL_CALL_MAX_TOKENS (claude.ts) for parity.
+  // Safe to raise now that loop.ts handles finish_reason==="length"
+  // gracefully instead of poisoning history — raising the cap alone,
+  // without that handling, would only have pushed truncation to bigger
+  // files instead of eliminating the failure mode.
+  const maxTokens = Math.min(16000, Math.floor(contextLimit * 0.75));
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), NIM_TIMEOUT_MS);
 
   try {
     const res = await fetch(`${NIM_BASE_URL}/chat/completions`, {
@@ -114,7 +156,12 @@ export async function nimChatWithTools(
         tools,
         tool_choice: "auto",
         max_tokens: maxTokens,
+        // T6: lower temperature reduces malformed JSON in tool call
+        // arguments — the server default (typically ~1.0) maximizes
+        // formatting variance exactly where correctness matters most.
+        temperature: 0.2,
       }),
+      signal: controller.signal,
     });
 
     if (!res.ok) {
@@ -125,9 +172,13 @@ export async function nimChatWithTools(
 
     const data = (await res.json()) as NimToolResponse;
     recordSuccess(circuitKey);
+    // T3+L10: see nimChat's identical comment above.
+    console.log(`[nim:${modelId}] usage: ${data.usage.prompt_tokens} in / ${data.usage.completion_tokens} out / ${data.usage.total_tokens} total`);
     return data;
   } catch (err) {
     recordFailure(circuitKey);
     throw err;
+  } finally {
+    clearTimeout(timer);
   }
 }

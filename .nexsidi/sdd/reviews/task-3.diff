@@ -1,0 +1,106 @@
+diff --git a/pipeline/orchestrator/gateway.test.ts b/pipeline/orchestrator/gateway.test.ts
+new file mode 100644
+index 0000000..b98c411
+--- /dev/null
++++ b/pipeline/orchestrator/gateway.test.ts
+@@ -0,0 +1,47 @@
++import { test, expect } from "bun:test";
++import { writeGatewayRequest, readGatewayDecision } from "./gateway.ts";
++import { mkdirSync, writeFileSync, rmSync } from "fs";
++import { join } from "path";
++
++const TEST_PROJECT = "test-gateway-proj";
++const BUILD_DIR = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
++
++test("readGatewayDecision returns null when no decision file exists yet", () => {
++  expect(readGatewayDecision(TEST_PROJECT, "02-gateway")).toBeNull();
++});
++
++test("readGatewayDecision parses a proceed decision", () => {
++  const dir = join(BUILD_DIR, TEST_PROJECT, "gateway");
++  mkdirSync(dir, { recursive: true });
++  writeFileSync(join(dir, "02-gateway.decision.json"), JSON.stringify({ decision: "proceed" }), "utf-8");
++  expect(readGatewayDecision(TEST_PROJECT, "02-gateway")).toEqual({ decision: "proceed" });
++  rmSync(join(BUILD_DIR, TEST_PROJECT), { recursive: true, force: true });
++});
++
++test("readGatewayDecision parses a review decision with feedback", () => {
++  const dir = join(BUILD_DIR, TEST_PROJECT, "gateway");
++  mkdirSync(dir, { recursive: true });
++  writeFileSync(join(dir, "02-gateway.decision.json"), JSON.stringify({ decision: "review", feedback: "change the color" }), "utf-8");
++  expect(readGatewayDecision(TEST_PROJECT, "02-gateway")).toEqual({ decision: "review", feedback: "change the color" });
++  rmSync(join(BUILD_DIR, TEST_PROJECT), { recursive: true, force: true });
++});
++
++test("writeGatewayRequest throws on a path-traversal projectId", () => {
++  expect(() => writeGatewayRequest("../../escaped-project", "02-gateway", "test summary")).toThrow();
++});
++
++test("readGatewayDecision throws on a path-traversal projectId", () => {
++  expect(() => readGatewayDecision(TEST_PROJECT + "/../escaped", "02-gateway")).toThrow();
++});
++
++test("readGatewayDecision throws a clear error on malformed decision JSON on disk", () => {
++  const dir = join(BUILD_DIR, TEST_PROJECT, "gateway");
++  mkdirSync(dir, { recursive: true });
++  writeFileSync(join(dir, "corrupt-gateway.decision.json"), "{ not valid json", "utf-8");
++
++  expect(() => readGatewayDecision(TEST_PROJECT, "corrupt-gateway")).toThrow(
++    /Gateway decision corrupt: test-gateway-proj\/corrupt-gateway/
++  );
++
++  rmSync(join(BUILD_DIR, TEST_PROJECT), { recursive: true, force: true });
++});
+diff --git a/pipeline/orchestrator/gateway.ts b/pipeline/orchestrator/gateway.ts
+new file mode 100644
+index 0000000..5e23a3c
+--- /dev/null
++++ b/pipeline/orchestrator/gateway.ts
+@@ -0,0 +1,47 @@
++import { mkdirSync, writeFileSync, readFileSync, existsSync } from "fs";
++import { join, dirname } from "path";
++import type { GatewayDecision } from "./types.ts";
++
++const INVALID_IDENTIFIER = /\.\.|\/|\\/;
++
++function assertValidIdentifier(name: string, label: "projectId" | "stage"): void {
++  if (!name || INVALID_IDENTIFIER.test(name)) {
++    throw new Error(
++      `Invalid ${label}: ${JSON.stringify(name)} — must not contain "..", "/", or "\\"`
++    );
++  }
++}
++
++function requestPath(projectId: string, stage: string): string {
++  assertValidIdentifier(projectId, "projectId");
++  assertValidIdentifier(stage, "stage");
++  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
++  return join(buildDir, projectId, "gateway", `${stage}.request.json`);
++}
++
++function decisionPath(projectId: string, stage: string): string {
++  assertValidIdentifier(projectId, "projectId");
++  assertValidIdentifier(stage, "stage");
++  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
++  return join(buildDir, projectId, "gateway", `${stage}.decision.json`);
++}
++
++export function writeGatewayRequest(projectId: string, stage: string, summary: string): void {
++  const path = requestPath(projectId, stage);
++  mkdirSync(dirname(path), { recursive: true });
++  writeFileSync(path, JSON.stringify({ summary, requestedAt: new Date().toISOString() }, null, 2), "utf-8");
++}
++
++export function readGatewayDecision(projectId: string, stage: string): GatewayDecision | null {
++  const path = decisionPath(projectId, stage);
++  if (!existsSync(path)) return null;
++  const raw = readFileSync(path, "utf-8");
++  let decision: GatewayDecision;
++  try {
++    decision = JSON.parse(raw) as GatewayDecision;
++  } catch (err) {
++    const message = err instanceof Error ? err.message : String(err);
++    throw new Error(`Gateway decision corrupt: ${projectId}/${stage} — ${message}`);
++  }
++  return decision;
++}

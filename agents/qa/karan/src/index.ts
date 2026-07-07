@@ -36,28 +36,61 @@ export interface QAResult {
   findings: SecurityFinding[];
 }
 
-export async function run(projectId: string, iteration: number, code: string): Promise<QAResult> {
-  const { content } = await agentChat(
-    "karan",
-    [
-      { role: "system", content: QA_SYSTEM_PROMPT },
-      { role: "user", content: JSON.stringify({ projectId, iteration, code }) },
-    ],
-    process.env.NIM_API_KEY ?? "",
-  );
+// `deps` is injectable (defaults to the real agentChat) — matches this
+// codebase's established DI pattern (Saanvi/Arjun's A7 retry).
+export interface KaranDeps {
+  chat: typeof agentChat;
+}
+
+export async function run(
+  projectId: string,
+  iteration: number,
+  code: string,
+  deps: KaranDeps = { chat: agentChat },
+): Promise<QAResult> {
+  const messages = [
+    { role: "system" as const, content: QA_SYSTEM_PROMPT },
+    { role: "user" as const, content: JSON.stringify({ projectId, iteration, code }) },
+  ];
+  const apiKey = process.env.NIM_API_KEY ?? "";
+
+  // Found live in stress5timeout: multiple transient free-tier failures hit
+  // the same run (a 502, a dropped socket, an empty-content response on
+  // another QA agent) — one retry absorbs a one-off blip without masking a
+  // genuinely broken model, which fails the retry too and correctly falls
+  // through to the zero-tolerance default-FAIL path.
+  const { content: first } = await deps.chat("karan", messages, apiKey);
+  let content = first;
+  if (content.trim() === "") {
+    console.log("[karan] first attempt returned empty content — retrying once");
+    const { content: second } = await deps.chat("karan", messages, apiKey);
+    content = second;
+  }
 
   const findings = parseSecurityFindings(content);
   const { pass } = scoreSecurityFindings(findings);
   return { agent: "karan", score: pass ? 100 : 0, passed: pass, findings };
 }
 
+// Strips a wrapping ```json / ``` markdown code fence, if present — found in
+// stress-test 1 (F7): despite "Output ONLY JSON", the model's real output was
+// wrapped in fences, tripping the D25 default-FAIL path even though the
+// underlying JSON was well-formed. Returns the trimmed input unchanged when
+// no fence wrapper is present.
+function stripMarkdownFences(content: string): string {
+  const trimmed = content.trim();
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/);
+  return fenceMatch ? fenceMatch[1]! : trimmed;
+}
+
 // D25 default-FAIL: if Karan's response isn't valid JSON, that is NOT
 // evidence of "no vulnerabilities" — treat it as a (synthetic) finding so
 // the zero-tolerance gate still blocks rather than silently passing on a
-// parse failure.
-function parseSecurityFindings(content: string): SecurityFinding[] {
+// parse failure. Exported for direct unit testing (parsing.test.ts) — same
+// pattern as Navya/Deepika's exported parseAndScoreFindings.
+export function parseSecurityFindings(content: string): SecurityFinding[] {
   try {
-    const parsed = JSON.parse(content) as { findings?: unknown[] } | unknown[];
+    const parsed = JSON.parse(stripMarkdownFences(content)) as { findings?: unknown[] } | unknown[];
     const raw = Array.isArray(parsed) ? parsed : (parsed.findings ?? []);
     if (!Array.isArray(raw)) throw new Error("findings is not an array");
     return raw.map((entry): SecurityFinding => {
@@ -83,10 +116,14 @@ function parseSecurityFindings(content: string): SecurityFinding[] {
   }
 }
 
-const QA_SYSTEM_PROMPT = `You are Karan, an adversarial security QA engineer (OWASP-focused). Your job is to find vulnerabilities, NOT suggest fixes.
+// Exported for direct testing of the JSON-quoting fix (found live in
+// stress5timeout: raw output was the literal "{ findings: [] }" — valid JS
+// object-literal syntax, invalid JSON, because this example itself had
+// unquoted keys) and so run()'s retry logic can be unit-tested.
+export const QA_SYSTEM_PROMPT = `You are Karan, an adversarial security QA engineer (OWASP-focused). Your job is to find vulnerabilities, NOT suggest fixes.
 Zero-tolerance policy: ANY finding blocks release, regardless of severity — there is no passing score to earn, only "vulnerabilities found" or "none found".
-Output ONLY JSON: { findings: [{ severity: "CRITICAL"|"HIGH"|"MEDIUM"|"LOW", description: string, file: string }] }
-If the code has no vulnerabilities at all, output: { findings: [] }`;
+Output ONLY valid JSON with quoted keys, exactly this shape: {"findings": [{"severity": "CRITICAL"|"HIGH"|"MEDIUM"|"LOW", "description": string, "file": string}]}
+If the code has no vulnerabilities at all, output: {"findings": []}`;
 
 // Zero-tolerance: unlike Navya/Deepika's severity-weighted ≥85 score, ANY
 // security finding blocks — matches the design doc's "0.1% tolerance" policy.

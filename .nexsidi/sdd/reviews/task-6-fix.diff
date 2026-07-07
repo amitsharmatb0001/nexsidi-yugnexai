@@ -1,0 +1,140 @@
+diff --git a/packages/agent-runtime/src/loop.test.ts b/packages/agent-runtime/src/loop.test.ts
+new file mode 100644
+index 0000000..19a7945
+--- /dev/null
++++ b/packages/agent-runtime/src/loop.test.ts
+@@ -0,0 +1,16 @@
++import { test, expect } from "bun:test";
++import { buildToolList } from "./loop.ts";
++
++test("buildToolList excludes web_search and screenshot by default", () => {
++  const tools = buildToolList({ agentName: "x", model: "moonshotai/kimi-k2.6", apiKey: "k", systemPrompt: "s", initialMessage: "m", sandboxDir: "/tmp" } as any);
++  const names = tools.map(t => t.function.name);
++  expect(names).not.toContain("web_search");
++  expect(names).not.toContain("screenshot");
++});
++
++test("buildToolList includes web_search and screenshot when enabled", () => {
++  const tools = buildToolList({ agentName: "x", model: "moonshotai/kimi-k2.6", apiKey: "k", systemPrompt: "s", initialMessage: "m", sandboxDir: "/tmp", enableWebSearch: true, enableScreenshot: true } as any);
++  const names = tools.map(t => t.function.name);
++  expect(names).toContain("web_search");
++  expect(names).toContain("screenshot");
++});
+diff --git a/packages/agent-runtime/src/loop.ts b/packages/agent-runtime/src/loop.ts
+index b350668..0323a21 100644
+--- a/packages/agent-runtime/src/loop.ts
++++ b/packages/agent-runtime/src/loop.ts
+@@ -7,6 +7,8 @@ import { execWriteFile, execReadFile, execListFiles, FILE_TOOL_DEFS } from "./to
+ import { execRunCommand, COMMAND_TOOL_DEF } from "./tools/command.ts";
+ import { execHttpRequest, HTTP_TOOL_DEF } from "./tools/http.ts";
+ import { execDockerCompose, DOCKER_TOOL_DEF } from "./tools/docker.ts";
++import { execWebSearch, WEB_SEARCH_TOOL_DEF } from "./tools/websearch.ts";
++import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
+ import type { ModelId } from "@nexsidi/llm-client";
+ 
+ const MAX_ITERATIONS = 40;
+@@ -20,6 +22,8 @@ export interface AgentRunConfig {
+   sandboxDir: string;         // all file ops scoped here
+   enableDockerTools?: boolean; // Riya only
+   enableHttpTools?: boolean;   // Shubham verification
++  enableWebSearch?: boolean;   // fact-checking / package verification
++  enableScreenshot?: boolean;  // visual QA
+ }
+ 
+ export interface AgentRunResult {
+@@ -47,14 +51,20 @@ const TASK_COMPLETE_TOOL: NimToolDef = {
+   },
+ };
+ 
+-export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> {
+-  const tools: NimToolDef[] = [
++export function buildToolList(config: AgentRunConfig): NimToolDef[] {
++  return [
+     ...FILE_TOOL_DEFS,
+     COMMAND_TOOL_DEF,
+     ...(config.enableHttpTools ? [HTTP_TOOL_DEF] : []),
+     ...(config.enableDockerTools ? [DOCKER_TOOL_DEF] : []),
++    ...(config.enableWebSearch ? [WEB_SEARCH_TOOL_DEF] : []),
++    ...(config.enableScreenshot ? [SCREENSHOT_TOOL_DEF] : []),
+     TASK_COMPLETE_TOOL,
+   ];
++}
++
++export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> {
++  const tools: NimToolDef[] = buildToolList(config);
+ 
+   const messages: NimMessage[] = [
+     { role: "system", content: config.systemPrompt },
+@@ -146,6 +156,14 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult>
+           result = execDockerCompose(config.sandboxDir, args as { action: "up" | "down" | "logs" | "ps"; service?: string; timeout_ms?: number });
+           break;
+         }
++        case "web_search": {
++          result = await execWebSearch(args as { query: string; timeout_ms?: number });
++          break;
++        }
++        case "screenshot": {
++          result = await execScreenshot(args as { url: string; outputPath: string });
++          break;
++        }
+         case "task_complete": {
+           const a = args as { summary: string; files_written: string[]; verification_passed: boolean };
+           console.log(`[${config.agentName}:agent] DONE after ${iterations} iterations. Verified: ${a.verification_passed}`);
+diff --git a/packages/agent-runtime/src/tools/websearch.ts b/packages/agent-runtime/src/tools/websearch.ts
+new file mode 100644
+index 0000000..c604dee
+--- /dev/null
++++ b/packages/agent-runtime/src/tools/websearch.ts
+@@ -0,0 +1,52 @@
++import type { NimToolDef } from "@nexsidi/llm-client";
++import type { ToolResult } from "./file.ts";
++
++export async function execWebSearch(args: { query: string; timeout_ms?: number }): Promise<ToolResult> {
++  if (!args.query.trim()) {
++    return { status: "error", summary: "web_search requires a non-empty query" };
++  }
++  const apiUrl = process.env.WEB_SEARCH_API_URL;
++  const apiKey = process.env.WEB_SEARCH_API_KEY;
++  if (!apiUrl || !apiKey) {
++    return {
++      status: "error",
++      summary: "web_search not configured — WEB_SEARCH_API_URL/KEY missing",
++      next_actions: ["Proceed without web_search for this task, note the assumption in your summary"],
++    };
++  }
++
++  const timeout = Math.min(args.timeout_ms ?? 10_000, 30_000);
++  const controller = new AbortController();
++  const timer = setTimeout(() => controller.abort(), timeout);
++
++  try {
++    const res = await fetch(apiUrl, {
++      method: "POST",
++      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
++      body: JSON.stringify({ query: args.query }),
++      signal: controller.signal,
++    });
++    clearTimeout(timer);
++    const text = await res.text();
++    return { status: res.ok ? "success" : "error", summary: `search: "${args.query}"`, output: text.slice(0, 3000) };
++  } catch (err) {
++    clearTimeout(timer);
++    return { status: "error", summary: `web_search failed: ${String(err)}` };
++  }
++}
++
++export const WEB_SEARCH_TOOL_DEF: NimToolDef = {
++  type: "function",
++  function: {
++    name: "web_search",
++    description: "Search the web to verify a fact, check if a package actually exists on npm, or research current best practices before committing to an approach. Use this instead of guessing from training data.",
++    parameters: {
++      type: "object",
++      properties: {
++        query: { type: "string", description: "The search query" },
++        timeout_ms: { type: "number", description: "Request timeout in ms (default 10000)" },
++      },
++      required: ["query"],
++    },
++  },
++};
