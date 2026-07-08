@@ -269,3 +269,64 @@ test("mixed shubham+pranav findings -> fixShubham runs for its own subset; the l
   expect(result.stuck).toBe(true);
   expect(qaCallCount).toBe(2);
 });
+
+// 2026-07-08: Patent Claim 2's instinct memory had a real DB table but
+// nothing ever wrote to it. recordInstincts is called BEFORE the fix (so a
+// mistake is recorded even if the fix itself doesn't fully resolve it), for
+// every agent that has findings this round.
+test("recordInstincts is called with each fixable agent's findings, before that agent's fix runs", async () => {
+  let qaCallCount = 0;
+  const recorded: Array<{ agentName: string; findings: string[] }> = [];
+  const callOrder: string[] = [];
+  const deps: QAFixDeps = {
+    runStage5: async () => {
+      qaCallCount++;
+      if (qaCallCount === 1) {
+        return {
+          pass: false,
+          findings: [
+            { file: "backend/src/index.ts", issue: "missing CSRF protection" },
+            { file: "frontend/components/TaskForm.tsx", issue: "missing input sanitization" },
+          ],
+        };
+      }
+      return passResult();
+    },
+    fixShubham: async () => {
+      callOrder.push("fixShubham");
+      return { success: true };
+    },
+    fixAanya: async () => {
+      callOrder.push("fixAanya");
+      return { success: true };
+    },
+    recordInstincts: async (agentName, findings) => {
+      callOrder.push(`recordInstincts:${agentName}`);
+      recorded.push({ agentName, findings });
+    },
+  };
+
+  await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(recorded).toEqual([
+    { agentName: "shubham", findings: ["backend/src/index.ts: missing CSRF protection"] },
+    { agentName: "aanya", findings: ["frontend/components/TaskForm.tsx: missing input sanitization"] },
+  ]);
+  expect(callOrder).toEqual(["recordInstincts:shubham", "fixShubham", "recordInstincts:aanya", "fixAanya"]);
+});
+
+test("omitting recordInstincts entirely does not throw — existing callers without memory keep working", async () => {
+  let qaCallCount = 0;
+  const deps: QAFixDeps = {
+    runStage5: async () => {
+      qaCallCount++;
+      return qaCallCount === 1 ? failResult(1, "shubham") : passResult();
+    },
+    fixShubham: async () => ({ success: true }),
+    fixAanya: async () => ({ success: true }),
+    // no recordInstincts
+  };
+
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+  expect(result.pass).toBe(true);
+});

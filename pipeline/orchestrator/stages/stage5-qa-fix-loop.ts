@@ -43,6 +43,13 @@ export interface QAFixDeps {
   runStage5: (projectId: string, stage4Result: Stage4Result) => Promise<Stage5Result>;
   fixShubham: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
   fixAanya: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
+  // 2026-07-08: Patent Claim 2's instinct memory had a real DB table but
+  // nothing ever wrote to it — every pipeline run started with total
+  // amnesia. Optional so existing DI tests (which don't care about memory)
+  // keep compiling unchanged; the real entry point (runQAFixLoop) wires the
+  // actual DB-backed recorder. Called BEFORE the fix, recording "this
+  // mistake happened" for the next run's generation prompt to see.
+  recordInstincts?: (agentName: string, findings: string[]) => Promise<void>;
 }
 
 function formatFinding(f: { file: string; issue: string }): string {
@@ -83,8 +90,16 @@ export async function runQAFixLoopWithDeps(
       return { ...result, iterations, stuck: true };
     }
 
-    if (shubhamFindings) await deps.fixShubham(plan, shubhamFindings.map(formatFinding));
-    if (aanyaFindings) await deps.fixAanya(plan, aanyaFindings.map(formatFinding));
+    if (shubhamFindings) {
+      const formatted = shubhamFindings.map(formatFinding);
+      await deps.recordInstincts?.("shubham", formatted);
+      await deps.fixShubham(plan, formatted);
+    }
+    if (aanyaFindings) {
+      const formatted = aanyaFindings.map(formatFinding);
+      await deps.recordInstincts?.("aanya", formatted);
+      await deps.fixAanya(plan, formatted);
+    }
 
     result = await deps.runStage5(projectId, stage4Result);
     iterations++;
@@ -124,6 +139,21 @@ export async function runQAFixLoop(
     fixAanya: async (p, findings) => {
       const r = await fixAanyaReal(p, findings);
       return { success: r.success };
+    },
+    // 2026-07-08: real instinct-memory write path (see packages/db/src/
+    // instincts.ts's header comment for why this exists). Each finding
+    // becomes its own instinct record — one QA round can surface several
+    // distinct mistakes, and collapsing them into one record would lose
+    // which specific pattern to warn about next time. Domain defaults to
+    // "security" — in practice the QA fix loop's findings predominantly
+    // come from Karan's zero-tolerance security gate (the most common
+    // blocker observed this session), not a claim that non-security
+    // findings never reach here.
+    recordInstincts: async (agentName, findings) => {
+      const { recordInstinct } = await import("@nexsidi/db");
+      for (const finding of findings) {
+        await recordInstinct(agentName, "security", finding.slice(0, 200), finding);
+      }
     },
   });
 }

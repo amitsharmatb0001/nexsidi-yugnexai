@@ -2,7 +2,7 @@
 // Uses tool-calling loop: write_file → run npm install → run next build → fix → repeat.
 // UI: @yugnex/nexui-react (NexSidi's own library) — NO Tailwind, NO shadcn/ui.
 
-import { runAgentEscalated } from "@nexsidi/agent-runtime";
+import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync, readFileSync, cpSync, existsSync } from "fs";
 import { join, resolve } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
@@ -10,6 +10,21 @@ import type { GeneratorResult } from "../../shubham/src/index.ts";
 
 export function getOutputDir(projectId: string): string {
   return join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId, "frontend");
+}
+
+// 2026-07-08: see agents/generators/shubham/src/index.ts's identical helper
+// for the full rationale (Patent Claim 2's instinct memory finally wired
+// up, read side). Fails safe: memory is an enrichment, not a hard
+// dependency.
+async function loadKnownMistakesPrefix(): Promise<string> {
+  try {
+    const { queryRecentInstincts, formatInstinctsForPrompt } = await import("@nexsidi/db");
+    const instincts = await queryRecentInstincts("security");
+    const formatted = formatInstinctsForPrompt(instincts);
+    return formatted ? `${formatted}\n\n` : "";
+  } catch {
+    return "";
+  }
 }
 
 // Location of the built nexui packages on this machine (dist output, ready to vendor)
@@ -43,14 +58,16 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
   // straight to a working model. runAgentEscalated (Task 15): the open-source
   // chain runs first; escalates to Sonnet 5 for a single retry only when the
   // whole chain genuinely fails. See packages/agent-runtime/src/claude-loop.ts.
-  const result = await runAgentEscalated({
+  const knownMistakesPrefix = await loadKnownMistakesPrefix();
+
+  const result = await resolveGeneratorRunner()({
     agentName: "aanya",
     model: "mistralai/mistral-medium-3.5-128b",
     // qwen3.5-122b: confirmed working under 80K+ token inputs in stress-3's
     // QA fallbacks — a genuinely different architecture for the second try.
     fallbackModels: ["qwen/qwen3.5-122b-a10b"],
     apiKey,
-    systemPrompt: buildAgentPrompt(mode),
+    systemPrompt: knownMistakesPrefix + buildAgentPrompt(mode),
     initialMessage: buildAgentTask(plan, mode),
     sandboxDir: outputDir,
     enableHttpTools: false,
@@ -88,7 +105,7 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
 
-  const result = await runAgentEscalated({
+  const result = await resolveGeneratorRunner()({
     agentName: "aanya",
     model: "mistralai/mistral-medium-3.5-128b",
     fallbackModels: ["qwen/qwen3.5-122b-a10b"],

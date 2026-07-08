@@ -1,5 +1,7 @@
 export { runAgent, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
 export { runAgentWithClaude, runAgentEscalated, type AgentEscalationDeps } from "./claude-loop.ts";
+export { runAgentWithGemini } from "./gemini-loop.ts";
+export { resolveGeneratorRunner, type GeneratorRunner } from "./generator-tier.ts";
 export { FILE_TOOL_DEFS, execWriteFile, execReadFile, execListFiles, execEditFile } from "./tools/file.ts";
 export { COMMAND_TOOL_DEF, execRunCommand } from "./tools/command.ts";
 export { HTTP_TOOL_DEF, execHttpRequest } from "./tools/http.ts";

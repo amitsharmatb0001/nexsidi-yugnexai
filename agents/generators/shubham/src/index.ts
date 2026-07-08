@@ -2,7 +2,7 @@
 // Uses tool-calling loop: write_file → run npm install → run tsc → fix → repeat.
 // No longer does one-shot LLM generation. Agent ACTS on real tool feedback.
 
-import { runAgentEscalated } from "@nexsidi/agent-runtime";
+import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
@@ -17,6 +17,25 @@ export interface GeneratorResult {
 
 export function getOutputDir(projectId: string): string {
   return join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId, "backend");
+}
+
+// 2026-07-08: Patent Claim 2's instinct memory had a real DB table but
+// nothing ever wrote to OR read from it — every run started with total
+// amnesia, so the same bug classes (e.g. the SQL injection this session
+// found in a dynamic UPDATE query) could resurface run after run. This is
+// the read side (packages/db/src/instincts.ts is the write side, wired
+// into stage5-qa-fix-loop.ts). Fails safe: memory is an enrichment, not a
+// hard dependency — if Postgres isn't reachable, generation proceeds
+// exactly as before this feature existed rather than blocking on it.
+async function loadKnownMistakesPrefix(): Promise<string> {
+  try {
+    const { queryRecentInstincts, formatInstinctsForPrompt } = await import("@nexsidi/db");
+    const instincts = await queryRecentInstincts("security");
+    const formatted = formatInstinctsForPrompt(instincts);
+    return formatted ? `${formatted}\n\n` : "";
+  } catch {
+    return "";
+  }
 }
 
 // ── Main entry ────────────────────────────────────────────────────────────────
@@ -38,14 +57,16 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
   // runAgentEscalated (Task 15): open-source chain first; Sonnet 5 single
   // retry only when the whole chain genuinely can't finish. See
   // packages/agent-runtime/src/claude-loop.ts.
-  const result = await runAgentEscalated({
+  const knownMistakesPrefix = await loadKnownMistakesPrefix();
+
+  const result = await resolveGeneratorRunner()({
     agentName: "shubham",
     model: "mistralai/mistral-medium-3.5-128b",
     // qwen3.5-122b: confirmed working under 80K+ token inputs in stress-3's
     // QA fallbacks — a genuinely different architecture for the second try.
     fallbackModels: ["qwen/qwen3.5-122b-a10b"],
     apiKey,
-    systemPrompt: SHUBHAM_AGENT_SYSTEM_PROMPT,
+    systemPrompt: knownMistakesPrefix + SHUBHAM_AGENT_SYSTEM_PROMPT,
     initialMessage: buildAgentTask(plan),
     sandboxDir: outputDir,
     enableHttpTools: false, // HTTP verification done by Riya after docker up
@@ -83,7 +104,7 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
 
-  const result = await runAgentEscalated({
+  const result = await resolveGeneratorRunner()({
     agentName: "shubham",
     model: "mistralai/mistral-medium-3.5-128b",
     fallbackModels: ["qwen/qwen3.5-122b-a10b"],
