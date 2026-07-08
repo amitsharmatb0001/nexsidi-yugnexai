@@ -146,6 +146,33 @@ CRITICAL RULES:
 7. Add BOTH router.put("/:id") AND router.patch("/:id") for update endpoints
 8. Available packages: express, @clerk/express, pg, cors, helmet, dotenv, zod, express-rate-limit
    USE ONLY these — no other packages
+9. Dynamic UPDATE queries (partial updates — only SOME fields provided) are
+   where SQL injection actually happens in practice, even when rule 1 is
+   followed for simple queries. Build the SET clause and the params array
+   TOGETHER with a running index — the placeholder NUMBER goes in the
+   query string (that's just text: "$1", "$2"...), the VALUE always goes
+   in the params array, NEVER in the string:
+   ---
+   const fields: string[] = [];
+   const values: unknown[] = [];
+   let i = 1;
+   if (updates.title !== undefined) { fields.push("title = $" + i++); values.push(updates.title); }
+   if (updates.dueDate !== undefined) { fields.push("due_date = $" + i++); values.push(updates.dueDate); }
+   values.push(taskId, userId);
+   const query = "UPDATE tasks SET " + fields.join(", ") + " WHERE id = $" + i++ + " AND user_id = $" + i + " RETURNING *";
+   await pool.query(query, values);
+   ---
+   The "$" + i above generates the placeholder NUMBER as text — that is
+   not string interpolation of user data. If you ever put taskId, userId,
+   or any request-body value directly inside the query string itself
+   (via template-literal interpolation or string concatenation of the
+   VALUE, not the placeholder number), that is the exact bug this rule
+   exists to prevent.
+10. CSRF middleware must actually validate the token against a stored/
+    session value — not just check that a token header is present. If you
+    write a placeholder comment like "In production, validate against a
+    stored value", that is not done — implement the real check or omit
+    the check entirely and say so in your summary.
 
 VERIFICATION GATE: Do not call task_complete until "npx tsc --noEmit" exits 0.
 If you cannot fix tsc errors after 5 attempts, call task_complete with verification_passed: false
