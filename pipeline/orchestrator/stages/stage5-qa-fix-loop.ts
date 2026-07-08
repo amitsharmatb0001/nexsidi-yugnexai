@@ -149,10 +149,22 @@ export async function runQAFixLoop(
     // come from Karan's zero-tolerance security gate (the most common
     // blocker observed this session), not a claim that non-security
     // findings never reach here.
+    //
+    // BUG FOUND LIVE 2026-07-08 (stress-gemini-primary run): this had no
+    // try/catch, unlike the read side (Shubham/Aanya's loadKnownMistakesPrefix)
+    // which does. Postgres isn't running in this dev environment —
+    // ECONNREFUSED here crashed the ENTIRE pipeline (unhandled rejection
+    // propagating out of the QA fix loop) even though the actual generation
+    // work (Gemini-primary) had already succeeded. Memory is an enrichment,
+    // not a hard dependency — must fail exactly as safely as the read side.
     recordInstincts: async (agentName, findings) => {
-      const { recordInstinct } = await import("@nexsidi/db");
-      for (const finding of findings) {
-        await recordInstinct(agentName, "security", finding.slice(0, 200), finding);
+      try {
+        const { recordInstinct } = await import("@nexsidi/db");
+        for (const finding of findings) {
+          await recordInstinct(agentName, "security", finding.slice(0, 200), finding);
+        }
+      } catch (err) {
+        console.log(`[qa-fix-loop] recordInstincts failed (non-fatal, memory is an enrichment): ${String(err)}`);
       }
     },
   });
