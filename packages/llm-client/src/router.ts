@@ -1,9 +1,25 @@
 import { nimChat } from "./nim.ts";
 import { ollamaChat } from "./ollama.ts";
+import { geminiChat } from "./gemini.ts";
 import { AGENT_MODELS, FALLBACK_CHAIN, type AgentName, type ChatMessage, type ModelId } from "./types.ts";
 import { getState } from "./circuit-breaker.ts";
 
 const OLLAMA_MODELS = new Set<ModelId>(["qwen2.5-coder:7b-instruct-q4_K_M"]);
+
+// 2026-07-08: root-caused why a Gemini-primary generation run still took
+// 6.5 hours despite generation finishing in minutes — Navya/Karan/Deepika's
+// QA reviews are ~80,000-input-token calls (the full generated codebase as
+// text) and were STILL routed through NIM's free/slow tier via agentChat's
+// fixed FALLBACK_CHAIN, completely unaffected by GENERATOR_TIER=gemini
+// (which only touches Shubham/Aanya's tool-calling loop). QA_TIER=gemini
+// routes these specific three agents through Gemini too — scoped to QA
+// only so non-QA agents (Saanvi, Arjun, ...) keep using their existing NIM
+// chains even when QA_TIER is set.
+const QA_AGENTS = new Set<AgentName>(["navya", "karan", "deepika"]);
+
+export function shouldUseGeminiForQA(agentName: AgentName): boolean {
+  return process.env.QA_TIER === "gemini" && QA_AGENTS.has(agentName);
+}
 
 // OLLAMA_ENABLED defaults to true locally; set to false on servers without a GPU.
 // When false, Ollama entries in the fallback chain are silently skipped and NIM handles them.
@@ -32,6 +48,11 @@ export async function agentChat(
   apiKey: string,
   opts?: { maxTokens?: number },
 ): Promise<{ content: string; modelUsed: ModelId }> {
+  if (shouldUseGeminiForQA(agentName)) {
+    const { content } = await geminiChat(messages, { maxTokens: opts?.maxTokens });
+    return { content, modelUsed: "gemini-3.5-flash" };
+  }
+
   const chain = FALLBACK_CHAIN[agentName];
   const errors: string[] = [];
 

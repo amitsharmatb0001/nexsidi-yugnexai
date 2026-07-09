@@ -38,7 +38,12 @@ export type ModelId =
   | "mistralai/mistral-nemotron"
   | "mistralai/mistral-medium-3.5-128b"
   | "qwen2.5-coder:7b-instruct-q4_K_M"
-  | "z-ai/glm-5.2";
+  | "z-ai/glm-5.2"
+  // 2026-07-08: QA_TIER=gemini routes Navya/Karan/Deepika through Gemini —
+  // see router.ts's shouldUseGeminiForQA. Not a NIM/Ollama model, but
+  // agentChat's return type (modelUsed: ModelId) needs a real member to
+  // report it accurately instead of lying about which model actually ran.
+  | "gemini-3.5-flash";
 
 // Per-agent primary model assignment (D4)
 // Roster history for aanya/shubham/navya/karan/deepika:
