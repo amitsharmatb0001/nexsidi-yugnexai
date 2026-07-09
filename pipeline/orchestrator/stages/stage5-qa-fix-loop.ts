@@ -36,7 +36,18 @@ export interface QAFixLoopResult extends Stage5Result {
   stuck: boolean;      // true if the loop exited via stuck-detection or an unfixable faultAgent, not a pass
 }
 
-const MAX_FIX_ITERATIONS = 3; // retest cycles after the initial QA pass
+// Raised from 3 -> 8, 2026-07-08: two consecutive live runs (stress-gemini-
+// primary, stress-gemini-primary2) showed DIFFERENT findings each retest
+// round (not repeats) — genuine progress every cycle — but both hit this
+// hard cap before reaching zero findings, never triggering stuck-detection.
+// The plan's own design intent (see the file header) says the cap is a
+// "backstop... not the expected exit path" with stuck-detection as the
+// normal exit — 3 was empirically too tight for that intent to hold on an
+// app with this much security surface area (auth, CRUD, CSRF, rate
+// limiting). Stuck-detection (below) still stops a genuinely non-
+// converging loop well before 8 rounds, so this doesn't remove the
+// backstop, just gives real progress more room to finish.
+const MAX_FIX_ITERATIONS = 8; // retest cycles after the initial QA pass
 const STUCK_THRESHOLD = 2; // consecutive no-improvement fix cycles before giving up
 
 export interface QAFixDeps {
