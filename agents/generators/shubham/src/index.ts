@@ -212,6 +212,23 @@ CRITICAL RULES:
     res.json(formatTask(result.rows[0]));
     ---
     Same pattern for DELETE: "DELETE FROM tasks WHERE id = $1 AND user_id = $2 RETURNING id", check rows.length === 0 for 404, no separate existence SELECT first.
+12. Validate EVERY value from req.params and req.body BEFORE using it —
+    an unvalidated value that reaches the DB driver or a Date constructor
+    throws an uncaught exception, returning a 500 instead of a proper 400.
+    Two specific cases that WILL be tested:
+    - Any :id route param used in a SQL query (task id, etc.) must match
+      a UUID shape before it reaches pool.query — reject early with 400 if
+      it does not match this pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ (case-insensitive).
+      Use a regex test against req.params.id and respond 400 with an error
+      body before the id ever reaches pool.query — an invalid UUID
+      reaching Postgres throws driver error 22P02, an uncaught 500, not a
+      clean 400.
+    - Any date string from req.body (e.g. dueDate) must be validated
+      before calling .toISOString() on it. new Date("not-a-date") is NOT
+      null and NOT undefined — it is an Invalid Date object, and calling
+      .toISOString() on it throws RangeError. Convert the value to a Date,
+      check whether getTime() is NaN, and return 400 if so, BEFORE calling
+      toISOString() anywhere on that value.
 
 VERIFICATION GATE: Do not call task_complete until "npx tsc --noEmit" exits 0.
 If you cannot fix tsc errors after 5 attempts, call task_complete with verification_passed: false
