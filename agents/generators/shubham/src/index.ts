@@ -194,6 +194,24 @@ CRITICAL RULES:
     write a placeholder comment like "In production, validate against a
     stored value", that is not done — implement the real check or omit
     the check entirely and say so in your summary.
+11. UPDATE/DELETE by id: do NOT run a separate SELECT to check the row
+    exists before the UPDATE/DELETE query. That's a check-then-act race
+    (the row can be deleted between your two queries — result.rows[0] is
+    then undefined and formatTask(result.rows[0]) throws) AND a wasted DB
+    round-trip. Do the existence check and the mutation in ONE query using
+    RETURNING, and branch on whether any row came back:
+    ---
+    const result = await pool.query(
+      "UPDATE tasks SET " + fields.join(", ") + " WHERE id = $" + i++ + " AND user_id = $" + i + " RETURNING *",
+      values,
+    );
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+    res.json(formatTask(result.rows[0]));
+    ---
+    Same pattern for DELETE: "DELETE FROM tasks WHERE id = $1 AND user_id = $2 RETURNING id", check rows.length === 0 for 404, no separate existence SELECT first.
 
 VERIFICATION GATE: Do not call task_complete until "npx tsc --noEmit" exits 0.
 If you cannot fix tsc errors after 5 attempts, call task_complete with verification_passed: false
