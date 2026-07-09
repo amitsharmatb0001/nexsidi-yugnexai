@@ -229,6 +229,16 @@ CRITICAL RULES:
       .toISOString() on it throws RangeError. Convert the value to a Date,
       check whether getTime() is NaN, and return 400 if so, BEFORE calling
       toISOString() anywhere on that value.
+13. requireAuth middleware: do NOT add an in-memory cache (Map, object,
+    etc.) of Clerk user lookups. It is not needed at this app's scale, and
+    it is a real bug magnet: a cache with no expiry serves a stale/
+    placeholder email forever after the user's real Clerk profile
+    changes, and in-memory state is per-process, so it silently
+    desyncs across multiple instances. Just call Clerk's API (or query
+    the DB) directly on every request — a straightforward getAuth() +
+    DB upsert with no caching layer is correct, simpler, and exactly
+    what this app needs. Do not add caching here unless the task
+    explicitly asks for it.
 
 VERIFICATION GATE: Do not call task_complete until "npx tsc --noEmit" exits 0.
 If you cannot fix tsc errors after 5 attempts, call task_complete with verification_passed: false
