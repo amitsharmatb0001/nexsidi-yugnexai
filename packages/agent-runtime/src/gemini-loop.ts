@@ -88,7 +88,18 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     // Push the full raw parts (not just extracted text) so functionCall
     // parts are preserved for the next turn, mirroring claude-loop.ts's
     // rawContent handling.
-    messages.push({ role: "model", content: response.rawParts });
+    //
+    // Real bug found live 2026-07-09 (stress-full-gemini3 run, right after
+    // the MAX_TOKENS fix above was added): a response can be truncated so
+    // severely that response.rawParts comes back completely empty ([]).
+    // Gemini's API requires every content entry in history to have at
+    // least one part — pushing an empty-parts "model" turn poisons EVERY
+    // subsequent request in this conversation (permanently, since it's
+    // never removed from history) with "400 Unable to submit request
+    // because it must include at least one parts field", which then
+    // exhausts retries and opens the circuit breaker. Fall back to a
+    // placeholder text part so the history entry is always valid.
+    messages.push({ role: "model", content: response.rawParts.length > 0 ? response.rawParts : [{ text: "(response truncated, no content)" }] });
 
     // Real bug found live 2026-07-09 (stress-full-gemini run): Gemini
     // returned a truncated response (15,996 output tokens, right at the
