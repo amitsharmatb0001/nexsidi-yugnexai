@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseSecurityFindings, run, QA_SYSTEM_PROMPT } from "./index.ts";
+import { parseSecurityFindings, scoreSecurityFindings, run, QA_SYSTEM_PROMPT } from "./index.ts";
 
 // parseSecurityFindings is the deterministic parsing logic behind run() —
 // run() itself calls agentChat (a live LLM call) and isn't unit-testable.
@@ -52,6 +52,78 @@ test("fenced JSON with leading/trailing whitespace around the fences is still pa
 test("QA_SYSTEM_PROMPT's JSON schema example uses quoted keys, not JS object-literal syntax", () => {
   expect(QA_SYSTEM_PROMPT).toContain('"findings"');
   expect(QA_SYSTEM_PROMPT).not.toMatch(/\{\s*findings:/);
+});
+
+// 2026-07-09: Karan's zero-tolerance ("ANY finding blocks") was an
+// IMPLEMENTATION DEVIATION from CLAUDE.md's own System A spec (lines
+// 370-373), which explicitly includes Karan in the severity-weighted
+// formula: Score = 100 − CRITICAL×20 − HIGH×10 − MEDIUM×5 − LOW×1,
+// pass ≥ 85. CLAUDE.md is declared authoritative. The deviation was also
+// empirically non-convergent: 8 consecutive live runs never produced a
+// zero-findings review — an adversarial LLM reviewer always finds
+// SOMETHING to say on ~2000 lines (runs 7-8 flagged correctly-
+// parameterized queries as "risky" with no exploit, and flagged BOTH
+// cache-present AND cache-absent designs — no implementation can satisfy
+// contradictory critiques under a zero threshold).
+test("scoreSecurityFindings: zero findings scores 100 and passes", () => {
+  expect(scoreSecurityFindings([])).toEqual({ pass: true, score: 100, reason: "No vulnerabilities found" });
+});
+
+test("scoreSecurityFindings: one HIGH scores 90 and passes (CLAUDE.md System A: ≥85)", () => {
+  const { pass, score } = scoreSecurityFindings([{ severity: "HIGH", description: "x" }]);
+  expect(score).toBe(90);
+  expect(pass).toBe(true);
+});
+
+test("scoreSecurityFindings: one CRITICAL scores 80 and fails", () => {
+  const { pass, score } = scoreSecurityFindings([{ severity: "CRITICAL", description: "x" }]);
+  expect(score).toBe(80);
+  expect(pass).toBe(false);
+});
+
+test("scoreSecurityFindings: HIGH+MEDIUM scores exactly 85 and passes (boundary is inclusive)", () => {
+  const { pass, score } = scoreSecurityFindings([
+    { severity: "HIGH", description: "x" },
+    { severity: "MEDIUM", description: "y" },
+  ]);
+  expect(score).toBe(85);
+  expect(pass).toBe(true);
+});
+
+test("scoreSecurityFindings: two HIGH scores 80 and fails", () => {
+  const { pass, score } = scoreSecurityFindings([
+    { severity: "HIGH", description: "x" },
+    { severity: "HIGH", description: "y" },
+  ]);
+  expect(score).toBe(80);
+  expect(pass).toBe(false);
+});
+
+test("scoreSecurityFindings: score is floored at 0, never negative", () => {
+  const many = Array.from({ length: 10 }, (_, i) => ({ severity: "CRITICAL" as const, description: `f${i}` }));
+  const { score } = scoreSecurityFindings(many);
+  expect(score).toBe(0);
+});
+
+test("run() carries the weighted score through, not a binary 100/0", async () => {
+  const deps = {
+    chat: async () => ({
+      content: JSON.stringify({ findings: [{ severity: "HIGH", description: "x", file: "a.ts" }] }),
+      modelUsed: "mistralai/mistral-medium-3.5-128b" as const,
+    }),
+  };
+  const result = await run("diag", 1, "// some code", deps);
+  expect(result.score).toBe(90);
+  expect(result.passed).toBe(true);
+});
+
+// The evidence rule: a blocking finding must describe a concrete failing
+// scenario, not a hypothetical "could be risky if" — the observed failure
+// mode in runs 7-8 was structurally-suspicious-but-correct code flagged
+// with no demonstrated attack.
+test("QA_SYSTEM_PROMPT requires concrete evidence and forbids hypothetical findings", () => {
+  expect(QA_SYSTEM_PROMPT).toMatch(/concrete|demonstrat|specific input|exact/i);
+  expect(QA_SYSTEM_PROMPT).not.toContain("ANY finding blocks");
 });
 
 // A7-pattern retry (same precedent as Saanvi/Arjun and Navya above) —

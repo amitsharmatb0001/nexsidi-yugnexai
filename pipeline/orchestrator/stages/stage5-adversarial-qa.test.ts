@@ -67,15 +67,19 @@ test("runStage5WithAgents surfaces Tier 3's own findings and pass/fail verdict",
   ]);
 });
 
-// ── 2. Karan has any finding -> fails regardless of Navya/Deepika scores ───
-test("runStage5WithAgents fails when Karan has any finding, even with perfect Navya/Deepika scores", async () => {
+// ── 2. Karan below 85 -> fails regardless of Navya/Deepika scores ──────────
+// 2026-07-09: was "any finding blocks" (zero-tolerance) — that was an
+// implementation deviation from CLAUDE.md System A's severity-weighted ≥85,
+// which explicitly includes Karan. A CRITICAL (100−20=80) still fails on
+// its own; a lone LOW (99) no longer vetoes the run.
+test("runStage5WithAgents fails when Karan scores below 85, even with perfect Navya/Deepika scores", async () => {
   let tier3Called = false;
   const agents = makeAgents({
     runKaran: async (): Promise<KaranResult> => ({
       agent: "karan",
-      score: 0,
+      score: 80,
       passed: false,
-      findings: [{ severity: "LOW", description: "verbose error message leaks stack trace", file: "backend/src/routes/tasks.routes.ts" }],
+      findings: [{ severity: "CRITICAL", description: "SQL injection via string-interpolated user input", file: "backend/src/routes/tasks.routes.ts" }],
     }),
     runTier3Review: async (): Promise<Tier3ReviewResult> => {
       tier3Called = true;
@@ -87,6 +91,23 @@ test("runStage5WithAgents fails when Karan has any finding, even with perfect Na
 
   expect(result.pass).toBe(false);
   expect(tier3Called).toBe(false); // short-circuits before Tier 3
+});
+
+test("runStage5WithAgents passes Karan's gate when findings are minor (severity-weighted 99 ≥ 85)", async () => {
+  const agents = makeAgents({
+    runKaran: async (): Promise<KaranResult> => ({
+      agent: "karan",
+      score: 99,
+      passed: true,
+      findings: [{ severity: "LOW", description: "verbose error message leaks stack trace", file: "backend/src/routes/tasks.routes.ts" }],
+    }),
+  });
+
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents);
+
+  // Karan's gate passes; overall pass depends on the other agents' defaults
+  // in makeAgents (clean), so the run passes.
+  expect(result.pass).toBe(true);
 });
 
 // ── 3. Navya or Deepika below 85 -> fails even if Karan is clean ───────────
@@ -142,7 +163,9 @@ test("a Karan finding on a frontend/ path routes faultAgent to aanya", async () 
       agent: "karan",
       score: 0,
       passed: false,
-      findings: [{ severity: "HIGH", description: "XSS via dangerouslySetInnerHTML", file: "frontend/app/dashboard/page.tsx" }],
+      // CRITICAL so Karan's ≥85 gate still fails (100−20=80) and the
+      // fault-routing path under test is actually exercised.
+      findings: [{ severity: "CRITICAL", description: "XSS via dangerouslySetInnerHTML", file: "frontend/app/dashboard/page.tsx" }],
     }),
   });
 
@@ -157,7 +180,8 @@ test("a Karan finding on a db/ path routes faultAgent to pranav", async () => {
       agent: "karan",
       score: 0,
       passed: false,
-      findings: [{ severity: "MEDIUM", description: "missing index causing full scan", file: "db/migrations/0001_tasks.sql" }],
+      // CRITICAL so Karan's ≥85 gate still fails and fault-routing is exercised.
+      findings: [{ severity: "CRITICAL", description: "unparameterized dynamic SQL in migration runner", file: "db/migrations/0001_tasks.sql" }],
     }),
   });
 

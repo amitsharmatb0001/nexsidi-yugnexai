@@ -94,10 +94,12 @@ export async function runStage5WithAgents(
     agents.runDeepika(projectId, stage4Result),
   ]);
 
-  // Karan: zero-tolerance (Task 9's scoreSecurityFindings, not reimplemented
-  // here). Navya/Deepika: use their OWN already-computed `passed` field
-  // (severity-weighted ≥85) directly — do not invent a second scorer for a
-  // convention that already exists on their result.
+  // Karan: severity-weighted ≥85 per CLAUDE.md System A (2026-07-09 —
+  // scoreSecurityFindings was zero-tolerance before that, a deviation from
+  // the spec; see its own comment for the convergence evidence). Navya/
+  // Deepika: use their OWN already-computed `passed` field (same ≥85
+  // formula) directly — do not invent a second scorer for a convention
+  // that already exists on their result.
   const security = scoreSecurityFindings(karanResult.findings);
   const allPass = security.pass && navyaResult.passed && deepikaResult.passed;
 
