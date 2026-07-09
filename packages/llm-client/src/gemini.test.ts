@@ -1,6 +1,8 @@
 import { test, expect } from "bun:test";
 import {
   geminiChat,
+  isRetryableGeminiStatus,
+  geminiRetryDelayMs,
   resolveGeminiModel,
   resolveGeminiLocation,
   translateNimToolToGeminiTool,
@@ -91,4 +93,28 @@ test("geminiChat rejects a missing GOOGLE_CLOUD_PROJECT before attempting any ne
     if (previous === undefined) delete process.env.GOOGLE_CLOUD_PROJECT;
     else process.env.GOOGLE_CLOUD_PROJECT = previous;
   }
+});
+
+// 2026-07-09: real bug found live (stress-full-gemini6 run) — a transient
+// 429 RESOURCE_EXHAUSTED from Deepika's one-shot QA call threw immediately
+// and crashed the ENTIRE pipeline, discarding all the generation work that
+// had already succeeded. The tool-calling loops (loop.ts/claude-loop.ts/
+// gemini-loop.ts) already retry transient failures with backoff; this
+// one-shot chat path (geminiChat/geminiChatWithTools/geminiWebSearch, used
+// by agentChat for Navya/Karan/Deepika) had none of that resilience.
+test("isRetryableGeminiStatus is true for 429 and 503, false for other statuses", () => {
+  expect(isRetryableGeminiStatus(429)).toBe(true);
+  expect(isRetryableGeminiStatus(503)).toBe(true);
+  expect(isRetryableGeminiStatus(400)).toBe(false);
+  expect(isRetryableGeminiStatus(404)).toBe(false);
+  expect(isRetryableGeminiStatus(500)).toBe(false);
+  expect(isRetryableGeminiStatus(200)).toBe(false);
+});
+
+test("geminiRetryDelayMs backs off exponentially by attempt number", () => {
+  const d0 = geminiRetryDelayMs(0);
+  const d1 = geminiRetryDelayMs(1);
+  const d2 = geminiRetryDelayMs(2);
+  expect(d1).toBeGreaterThan(d0);
+  expect(d2).toBeGreaterThan(d1);
 });

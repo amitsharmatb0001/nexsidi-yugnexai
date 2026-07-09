@@ -47,6 +47,41 @@ function circuitKeyFor(model: string): string {
   return `gemini:${model}`;
 }
 
+// 2026-07-09: real bug found live (stress-full-gemini6 run) — a transient
+// 429 RESOURCE_EXHAUSTED from a one-shot QA call (Deepika, via agentChat)
+// threw immediately and crashed the ENTIRE pipeline, discarding all the
+// generation work that had already succeeded. The tool-calling loops
+// (loop.ts/claude-loop.ts/gemini-loop.ts) already retry transient failures
+// with backoff; geminiChat/geminiChatWithTools/geminiWebSearch (the
+// one-shot path agentChat uses for Navya/Karan/Deepika) had none of that
+// resilience — this closes that gap.
+const GEMINI_MAX_RETRIES = 3;
+const GEMINI_RETRY_BASE_DELAY_MS = 5000;
+
+export function isRetryableGeminiStatus(status: number): boolean {
+  return status === 429 || status === 503;
+}
+
+// Exponential backoff: 5s, 10s, 20s for attempts 0, 1, 2.
+export function geminiRetryDelayMs(attempt: number): number {
+  return GEMINI_RETRY_BASE_DELAY_MS * 2 ** attempt;
+}
+
+// Shared by all three fetch call sites below — a 429/503 retries with
+// backoff up to GEMINI_MAX_RETRIES; any other status (including a 429/503
+// on the FINAL attempt) is returned as-is for the caller's existing
+// !res.ok handling to report normally.
+async function fetchGeminiWithRetry(url: string, init: RequestInit, logPrefix: string): Promise<Response> {
+  let res: Response;
+  for (let attempt = 0; ; attempt++) {
+    res = await fetch(url, init);
+    if (!isRetryableGeminiStatus(res.status) || attempt >= GEMINI_MAX_RETRIES) return res;
+    const delay = geminiRetryDelayMs(attempt);
+    console.log(`[${logPrefix}] ${res.status} — retrying in ${delay}ms (attempt ${attempt + 1}/${GEMINI_MAX_RETRIES})`);
+    await new Promise((r) => setTimeout(r, delay));
+  }
+}
+
 let cachedAuth: GoogleAuth | null = null;
 function getAuth(): GoogleAuth {
   if (!cachedAuth) {
@@ -186,12 +221,12 @@ export async function geminiChat(
 
   try {
     const token = await getAccessToken();
-    const res = await fetch(endpointFor(model, location, "generateContent"), {
+    const res = await fetchGeminiWithRetry(endpointFor(model, location, "generateContent"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
       signal: controller.signal,
-    });
+    }, "gemini:geminiChat");
 
     if (!res.ok) {
       const errBody = await res.text();
@@ -258,12 +293,12 @@ export async function geminiChatWithTools(
 
   try {
     const token = await getAccessToken();
-    const res = await fetch(endpointFor(model, location, "generateContent"), {
+    const res = await fetchGeminiWithRetry(endpointFor(model, location, "generateContent"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
       signal: controller.signal,
-    });
+    }, "gemini:geminiChatWithTools");
 
     if (!res.ok) {
       const errBody = await res.text();
@@ -330,12 +365,12 @@ export async function geminiWebSearch(query: string, opts?: { timeoutMs?: number
 
   try {
     const token = await getAccessToken();
-    const res = await fetch(endpointFor(model, location, "generateContent"), {
+    const res = await fetchGeminiWithRetry(endpointFor(model, location, "generateContent"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
       signal: controller.signal,
-    });
+    }, "gemini:geminiWebSearch");
 
     if (!res.ok) {
       const errBody = await res.text();
