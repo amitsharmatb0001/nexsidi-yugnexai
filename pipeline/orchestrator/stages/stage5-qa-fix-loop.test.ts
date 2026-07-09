@@ -191,7 +191,7 @@ test("never exceeds the max fix-iteration cap even if findings keep barely impro
   const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
 
   expect(result.pass).toBe(false);
-  expect(qaCallCount).toBeLessThanOrEqual(9); // 1 initial + MAX_FIX_ITERATIONS(8) retests, never more
+  expect(qaCallCount).toBe(6); // exactly 1 initial + MAX_FIX_ITERATIONS(5) retests, never more
 });
 
 // Real 2026-07-06 stress-test bug: a live run had findings spanning BOTH
