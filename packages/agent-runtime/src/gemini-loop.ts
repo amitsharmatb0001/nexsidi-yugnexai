@@ -90,6 +90,26 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     // rawContent handling.
     messages.push({ role: "model", content: response.rawParts });
 
+    // Real bug found live 2026-07-09 (stress-full-gemini run): Gemini
+    // returned a truncated response (15,996 output tokens, right at the
+    // 16,000-token cap in gemini.ts's geminiChatWithTools) with no tool
+    // calls and stopReason "MAX_TOKENS" — falling through to the
+    // toolCalls.length===0 branch below, which only recognizes "STOP"/null
+    // as done and silently `continue`s for anything else. With NO new
+    // guidance added to history, the model just resent the same truncated
+    // state every turn — burned 32 of 40 iterations doing nothing before
+    // hitting MAX_ITERATIONS. loop.ts's NIM path already handles this
+    // (finish_reason === "length") by telling the model to write in
+    // smaller pieces; this mirrors that fix for Gemini's MAX_TOKENS reason.
+    if (response.toolCalls.length === 0 && response.stopReason === "MAX_TOKENS") {
+      errors.push(`Output truncated (stopReason: MAX_TOKENS) on iteration ${iterations}`);
+      messages.push({
+        role: "user",
+        content: "Your previous response was cut off — it was too long. Write large files in smaller pieces (split one write_file into several), or shorten your reasoning before tool calls.",
+      });
+      continue;
+    }
+
     if (response.toolCalls.length === 0) {
       if (response.stopReason === "STOP" || response.stopReason === null) {
         console.log(`[${config.agentName}:gemini-agent] Model stopped without task_complete — treating as done`);
