@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { runQAFixLoopWithDeps, type QAFixDeps } from "./stage5-qa-fix-loop.ts";
+import { runQAFixLoopWithDeps, inferInstinctDomain, type QAFixDeps } from "./stage5-qa-fix-loop.ts";
 import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 
@@ -313,6 +313,27 @@ test("recordInstincts is called with each fixable agent's findings, before that 
     { agentName: "aanya", findings: ["frontend/components/TaskForm.tsx: missing input sanitization"] },
   ]);
   expect(callOrder).toEqual(["recordInstincts:shubham", "fixShubham", "recordInstincts:aanya", "fixAanya"]);
+});
+
+// 2026-07-12: real bug found live — every instinct ever recorded (105 rows,
+// direct DB query) was stored under domain="security" regardless of which QA
+// agent actually found it, because the real recordInstincts closure in
+// runQAFixLoop hardcoded the literal "security" instead of reading the
+// `[logic/...]`/`[security/...]`/`[performance/...]` prefix that
+// stage5-adversarial-qa.ts's karanFindingToFinding/navyaFindingToFinding/
+// deepikaFindingToFinding already attach to every finding's `issue` string.
+// This silently broke queryRecentInstincts("security")'s usefulness — a
+// Navya (logic) or Deepika (performance) mistake could never surface back
+// into loadKnownMistakesPrefix() because it was never distinguishable from a
+// real security finding once written.
+test("inferInstinctDomain reads the [logic/...]/[security/...]/[performance/...] prefix stage5-adversarial-qa.ts attaches to every finding", () => {
+  expect(inferInstinctDomain("[security/CRITICAL] csrf: no CSRF token on state-changing POST")).toBe("security");
+  expect(inferInstinctDomain("[logic/HIGH] null-ref: unchecked req.body.title")).toBe("architecture");
+  expect(inferInstinctDomain("[performance/MEDIUM] n+1: extra query on empty page")).toBe("performance");
+});
+
+test("inferInstinctDomain falls back to security for an unprefixed/unrecognized finding string", () => {
+  expect(inferInstinctDomain("some finding with no recognizable prefix")).toBe("security");
 });
 
 test("omitting recordInstincts entirely does not throw — existing callers without memory keep working", async () => {

@@ -221,6 +221,23 @@ test("runExploring() does NOT default-FAIL when the loop timed out but had no fa
   expect(result.score).toBe(100);
 });
 
+// 2026-07-12: real bug found live — Navya got stuck repeating an identical
+// read_file call 20 times. qa-loop.ts's detectStuckLoop now exits early with
+// a "Stuck: ..." error instead of grinding to the iteration cap — same
+// non-fatal treatment as "Max iterations", not a genuine harness failure.
+test("runExploring() does NOT default-FAIL on a detected stuck-loop exit (no fatal error)", async () => {
+  const deps = {
+    runAgent: async () => ({
+      findings: [],
+      iterations: 5,
+      errors: ["Stuck: navya repeated the identical tool call (read_file:{\"path\":\"backend/src/x.ts\"}) 3 turns in a row with no progress — stopped early instead of grinding to the 30-iteration cap."],
+    }),
+  };
+  const result = await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps);
+  expect(result.passed).toBe(true);
+  expect(result.score).toBe(100);
+});
+
 test("runExploring() default-FAILs when there is a fatal error in the loop", async () => {
   const deps = {
     runAgent: async () => ({ findings: [], iterations: 30, errors: ["Gemini call failed on iteration 5: network error"] }),

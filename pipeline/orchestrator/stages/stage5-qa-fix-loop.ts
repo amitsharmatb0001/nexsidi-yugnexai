@@ -30,6 +30,7 @@
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 import { groupFindingsByAgent, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import { runStage5, type Stage5Result } from "./stage5-adversarial-qa.ts";
+import type { InstinctDomain } from "@nexsidi/db";
 
 export interface QAFixLoopResult extends Stage5Result {
   iterations: number; // total QA passes run (initial + retests)
@@ -65,6 +66,24 @@ export interface QAFixDeps {
 
 function formatFinding(f: { file: string; issue: string }): string {
   return f.file ? `${f.file}: ${f.issue}` : f.issue;
+}
+
+// 2026-07-12: real bug found live (direct DB query: `SELECT domain,
+// count(*) FROM instincts` returned a single row, security|105) — every
+// instinct ever recorded was misfiled under domain="security" regardless
+// of which QA agent actually found it. stage5-adversarial-qa.ts's
+// karanFindingToFinding/navyaFindingToFinding/deepikaFindingToFinding
+// already prefix every finding's `issue` string with `[security/...]`,
+// `[logic/...]`, or `[performance/...]` — this reads that prefix instead
+// of ignoring it. "logic" maps to "architecture" (the closest fit in
+// InstinctDomain; there's no dedicated "logic" domain). Falls back to
+// "security" for a finding with no recognizable prefix rather than
+// throwing — memory is an enrichment, not a hard dependency.
+export function inferInstinctDomain(finding: string): InstinctDomain {
+  if (finding.startsWith("[security/")) return "security";
+  if (finding.startsWith("[performance/")) return "performance";
+  if (finding.startsWith("[logic/")) return "architecture";
+  return "security";
 }
 
 /**
@@ -155,11 +174,11 @@ export async function runQAFixLoop(
     // instincts.ts's header comment for why this exists). Each finding
     // becomes its own instinct record — one QA round can surface several
     // distinct mistakes, and collapsing them into one record would lose
-    // which specific pattern to warn about next time. Domain defaults to
-    // "security" — in practice the QA fix loop's findings predominantly
-    // come from Karan's zero-tolerance security gate (the most common
-    // blocker observed this session), not a claim that non-security
-    // findings never reach here.
+    // which specific pattern to warn about next time. Domain is inferred
+    // per-finding via inferInstinctDomain (see 2026-07-12 fix above) —
+    // previously hardcoded to "security" for every finding regardless of
+    // origin, which silently broke queryRecentInstincts("performance")/
+    // ("architecture") for Deepika/Navya mistakes forever.
     //
     // BUG FOUND LIVE 2026-07-08 (stress-gemini-primary run): this had no
     // try/catch, unlike the read side (Shubham/Aanya's loadKnownMistakesPrefix)
@@ -172,7 +191,7 @@ export async function runQAFixLoop(
       try {
         const { recordInstinct } = await import("@nexsidi/db");
         for (const finding of findings) {
-          await recordInstinct(agentName, "security", finding.slice(0, 200), finding);
+          await recordInstinct(agentName, inferInstinctDomain(finding), finding.slice(0, 200), finding);
         }
       } catch (err) {
         console.log(`[qa-fix-loop] recordInstincts failed (non-fatal, memory is an enrichment): ${String(err)}`);

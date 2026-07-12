@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listLabeledFiles, resolveLabeledFile, type LabeledDir } from "./qa-loop.ts";
+import { listLabeledFiles, resolveLabeledFile, detectStuckLoop, type LabeledDir } from "./qa-loop.ts";
 
 let root: string;
 let dirs: LabeledDir[];
@@ -70,4 +70,25 @@ test("resolveLabeledFile returns null for a path with no matching label prefix",
 
 test("resolveLabeledFile picks the correct dir when multiple labels are present", () => {
   expect(resolveLabeledFile(dirs, "frontend/app/page.tsx")).toBe(join(root, "frontend", "app", "page.tsx"));
+});
+
+// 2026-07-12: real bug found live — Navya called read_file on the identical
+// path 20 times in a row, burning the full 30-iteration budget before
+// falling through to a vague "Max iterations reached" message. detectStuckLoop
+// is the pure check the loop uses to exit early with a clear diagnostic.
+test("detectStuckLoop is false when fewer signatures than the threshold have accumulated", () => {
+  expect(detectStuckLoop(["read_file:a", "read_file:a"], 3)).toBe(false);
+});
+
+test("detectStuckLoop is true when the last N signatures are all identical", () => {
+  expect(detectStuckLoop(["list_files:{}", "read_file:a", "read_file:a", "read_file:a"], 3)).toBe(true);
+});
+
+test("detectStuckLoop is false when the last N signatures include any variation", () => {
+  expect(detectStuckLoop(["read_file:a", "read_file:b", "read_file:a"], 3)).toBe(false);
+});
+
+test("detectStuckLoop only looks at the trailing window, not the whole history", () => {
+  // 3 identical calls happened early, then the agent moved on — not currently stuck.
+  expect(detectStuckLoop(["read_file:a", "read_file:a", "read_file:a", "read_file:b", "read_file:c"], 3)).toBe(false);
 });

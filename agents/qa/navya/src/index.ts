@@ -103,7 +103,7 @@ export async function runExploring(
     dirs,
   });
 
-  const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings"));
+  const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings") && !e.includes("Stuck:"));
   if (result.findings.length === 0 && hasFatalError) {
     return {
       agent: "navya",

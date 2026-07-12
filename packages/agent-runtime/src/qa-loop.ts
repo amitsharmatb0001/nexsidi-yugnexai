@@ -86,6 +86,26 @@ function walkLabeled(root: string, dir: string, label: string, out: string[]): v
   }
 }
 
+// 2026-07-12: real bug found live (zero-intervention autonomous test) —
+// Navya called read_file on the IDENTICAL path 20 times in a row without
+// ever calling submit_findings, burning the full QA_MAX_ITERATIONS budget
+// (paid Gemini calls) before falling through to the generic "Max iterations
+// reached" path with no indication of WHAT the agent was actually stuck on.
+// Karan separately stopped mid-turn the same run. Both surfaced only as a
+// vague synthetic CRITICAL "review-incomplete" finding, which then triggered
+// unnecessary Shubham fix rounds against a harness problem, not a real code
+// defect. This is a pure, independently-testable check: 3 consecutive
+// identical tool-call signatures (same tool, same args) means the agent is
+// not making progress — same "3 consecutive rounds, no improvement" window
+// already used elsewhere in this codebase (stage5-qa-fix-loop.ts's
+// STUCK_THRESHOLD, CLAUDE.md's stuck-state guidance) — stop EARLY instead of
+// grinding to the full 30-iteration cap.
+export function detectStuckLoop(recentSignatures: readonly string[], threshold = 3): boolean {
+  if (recentSignatures.length < threshold) return false;
+  const last = recentSignatures.slice(-threshold);
+  return last.every((s) => s === last[0]);
+}
+
 export function resolveLabeledFile(dirs: LabeledDir[], labeledPath: string): string | null {
   for (const { label, path } of dirs) {
     const prefix = `${label}/`;
@@ -163,6 +183,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
 
   const readFiles = new Set<string>();
   const errors: string[] = [];
+  const recentCallSignatures: string[] = [];
   let iterations = 0;
   let totalFilesListed = 0;
 
@@ -190,6 +211,16 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
         return { findings: fallbackFindings, iterations, errors };
       }
       continue;
+    }
+
+    const turnSignature = response.toolCalls.map((c) => `${c.name}:${JSON.stringify(c.input)}`).join("|");
+    recentCallSignatures.push(turnSignature);
+    if (detectStuckLoop(recentCallSignatures)) {
+      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${QA_MAX_ITERATIONS}-iteration cap.`;
+      console.log(`[${config.agentName}:qa-loop] ${reason}`);
+      errors.push(reason);
+      const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles);
+      return { findings: fallbackFindings, iterations, errors };
     }
 
     const responseParts: GeminiPart[] = [];
