@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseAndScoreFindings, run, QA_SYSTEM_PROMPT } from "./index.ts";
+import { parseAndScoreFindings, run, runExploring, QA_SYSTEM_PROMPT } from "./index.ts";
 
 // parseAndScoreFindings is the deterministic parsing/scoring logic behind
 // run() — run() itself calls agentChat (a live LLM call) and isn't
@@ -158,4 +158,56 @@ test("run() returns the default-FAIL result (not a thrown error) when BOTH attem
   const deps = { chat: async () => ({ content: "", modelUsed: "mistralai/mistral-nemotron" as const }) };
   const result = await run("diag", 1, "// some code", deps);
   expect(result.passed).toBe(false);
+});
+
+// 2026-07-11: runExploring() — the tool-loop-based review (qa-loop.ts) that
+// replaces the one-shot text-dump. These test the scoring/error-handling
+// logic around the injected runAgent call, same DI pattern as run()'s
+// `chat` dep above — the real network loop is verified live, not mocked.
+test("runExploring() computes the severity-weighted score from the loop's findings", async () => {
+  const deps = {
+    runAgent: async () => ({
+      findings: [{ severity: "HIGH" as const, category: "n+1", detail: "extra query on empty page" }],
+      iterations: 3,
+      errors: [],
+    }),
+  };
+  const result = await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps);
+  expect(result.agent).toBe("deepika");
+  expect(result.score).toBe(90);
+  expect(result.passed).toBe(true);
+});
+
+test("runExploring() does NOT default-FAIL when the loop timed out but had no fatal errors", async () => {
+  const deps = {
+    runAgent: async () => ({
+      findings: [],
+      iterations: 30,
+      errors: ["Max iterations (30) reached without submit_findings"],
+    }),
+  };
+  const result = await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps);
+  expect(result.passed).toBe(true);
+  expect(result.score).toBe(100);
+});
+
+test("runExploring() default-FAILs when there is a fatal error in the loop", async () => {
+  const deps = {
+    runAgent: async () => ({
+      findings: [],
+      iterations: 30,
+      errors: ["Gemini call failed on iteration 5: network error"],
+    }),
+  };
+  const result = await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps);
+  expect(result.passed).toBe(false);
+  expect(result.score).toBe(0);
+  expect(result.findings[0]!.category).toBe("review-incomplete");
+});
+
+test("runExploring() treats a genuinely clean review (no findings, no errors) as a real pass", async () => {
+  const deps = { runAgent: async () => ({ findings: [], iterations: 5, errors: [] }) };
+  const result = await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps);
+  expect(result.passed).toBe(true);
+  expect(result.score).toBe(100);
 });

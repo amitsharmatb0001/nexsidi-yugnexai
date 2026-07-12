@@ -112,3 +112,15 @@ export const instincts = pgTable("instincts", {
   outcome:    text("outcome").notNull(), // mistake | success
   createdAt:  timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ─── Agent Conversations (Persistent State across Fix Iterations) ────────────
+export const agentConversations = pgTable("agent_conversations", {
+  id:         uuid("id").primaryKey().defaultRandom(),
+  projectId:  varchar("project_id", { length: 12 }).notNull(),
+  agentName:  text("agent_name").notNull(),
+  messages:   jsonb("messages").notNull().default([]),
+  createdAt:  timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt:  timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("agent_conv_project_idx").on(t.projectId),
+]);

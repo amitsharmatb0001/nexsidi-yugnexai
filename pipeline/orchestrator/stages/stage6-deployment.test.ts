@@ -31,7 +31,7 @@ test("runStage6 passes resolveFlags().deployTarget through to the deploy functio
   const deps: Stage6Deps = {
     deployFn: async (_projectId, deployTarget) => {
       seenTargets.push(deployTarget);
-      return { success: true, appUrl: "http://localhost:3200", githubRepo: null, errors: [] };
+      return { success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] };
     },
     liveRetestFn: async () => ({ pass: true, findings: [] }),
   };
@@ -48,7 +48,7 @@ test("runStage6 defaults to local deployTarget when no env override is set", asy
   const deps: Stage6Deps = {
     deployFn: async (_projectId, deployTarget) => {
       seenTargets.push(deployTarget);
-      return { success: true, appUrl: "http://localhost:3200", githubRepo: null, errors: [] };
+      return { success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] };
     },
     liveRetestFn: async () => ({ pass: true, findings: [] }),
   };
@@ -64,6 +64,7 @@ test("runStage6 fails fast and skips the live retest when deploy fails", async (
     deployFn: async () => ({
       success: false,
       appUrl: "http://localhost:3200",
+      backendUrl: "http://localhost:3300",
       githubRepo: null,
       errors: ["docker compose up failed: port conflict"],
     }),
@@ -85,6 +86,7 @@ test("runStage6 returns success + findings from the live retest when deploy succ
     deployFn: async () => ({
       success: true,
       appUrl: "http://localhost:3201",
+      backendUrl: "http://localhost:3301",
       githubRepo: "https://github.com/nexsidi-builds/nexsidi-test-proj",
       errors: [],
     }),
@@ -103,11 +105,37 @@ test("runStage6 returns success + findings from the live retest when deploy succ
   });
 });
 
+// 2026-07-11: real bug found live — Tier 3 only ever knew the frontend URL
+// and misfired an API check against it, producing a false "no API route"
+// finding on a split frontend/backend project. liveRetestFn now receives
+// Riya's actual backendUrl so it can point Tier 3 at the correct origin.
+test("runStage6 passes the deployed backendUrl through to liveRetestFn", async () => {
+  let seenBackendUrl: string | undefined;
+  const deps: Stage6Deps = {
+    deployFn: async () => ({
+      success: true,
+      appUrl: "http://localhost:3200",
+      backendUrl: "http://localhost:3300",
+      githubRepo: null,
+      errors: [],
+    }),
+    liveRetestFn: async (_pid, _appUrl, backendUrl) => {
+      seenBackendUrl = backendUrl;
+      return { pass: true, findings: [] };
+    },
+  };
+
+  await runStage6("test-proj", STAGE4_RESULT, deps);
+
+  expect(seenBackendUrl).toBe("http://localhost:3300");
+});
+
 test("runStage6 reports failed delivery when deploy succeeds but the live retest finds problems", async () => {
   const deps: Stage6Deps = {
     deployFn: async () => ({
       success: true,
       appUrl: "http://localhost:3202",
+      backendUrl: "http://localhost:3302",
       githubRepo: null,
       errors: [],
     }),
@@ -125,6 +153,7 @@ test("buildDeliverySummary never contains any internal agent name", () => {
   const deployResult: DeployResult = {
     success: true,
     appUrl: "http://localhost:3200",
+    backendUrl: "http://localhost:3300",
     githubRepo: "https://github.com/nexsidi-builds/nexsidi-test-proj",
     errors: [],
   };
@@ -140,6 +169,7 @@ test("buildDeliverySummary reports delivered only when both deploy and retest pa
   const deployResult: DeployResult = {
     success: true,
     appUrl: "http://localhost:3200",
+    backendUrl: "http://localhost:3300",
     githubRepo: null,
     errors: [],
   };

@@ -16,6 +16,7 @@
 // fault-isolate Navya findings to a specific agent instead of always
 // defaulting to "shubham" (see stage5-adversarial-qa.ts).
 import { agentChat } from "@nexsidi/llm-client";
+import { runQAAgent, type LabeledDir } from "../../../../packages/agent-runtime/src/qa-loop.ts";
 
 export interface QAResult {
   agent:    string;
@@ -58,15 +59,70 @@ export async function run(
   // pointing at shared-infra flakiness, not a code bug). One retry absorbs
   // a one-off blip without masking a genuinely broken model, which fails
   // the retry too and correctly falls through to the D25 default-FAIL path.
-  const { content: first } = await deps.chat("navya", messages, apiKey);
+  // 2026-07-11: real bug found live — the default 8000-token output cap
+  // (gemini.ts's geminiChat) truncated Navya's response mid-JSON on a
+  // full-codebase review with several findings, which then hit the D25
+  // default-FAIL path as a synthetic CRITICAL — the harness's own token
+  // limit masquerading as a generated-app defect.
+  const QA_MAX_TOKENS = 16000;
+  const { content: first } = await deps.chat("navya", messages, apiKey, { maxTokens: QA_MAX_TOKENS });
   let content = first;
   if (content.trim() === "") {
     console.log("[navya] first attempt returned empty content — retrying once");
-    const { content: second } = await deps.chat("navya", messages, apiKey);
+    const { content: second } = await deps.chat("navya", messages, apiKey, { maxTokens: QA_MAX_TOKENS });
     content = second;
   }
 
   return { agent: "navya", ...parseAndScoreFindings(content) };
+}
+
+// 2026-07-11: real bug found live (stress-fix2-1783753726) — run() reviews a
+// single dumped text blob of the ENTIRE codebase in one shot, with no way to
+// verify a claim before finalizing it. Root-caused: Navya cited a
+// `queryWhere` mutation that never happened in the actual code — verified by
+// hand, the finding didn't match the real file. Pattern-matching on "this
+// shape of code usually has this bug", not verified tracing, because the
+// one-shot call had no mechanism to check. runExploring() uses the
+// tool-calling loop (qa-loop.ts) instead — explore file by file via
+// list_files/read_file, then submit_findings, gated so a finding citing a
+// file never actually read is rejected. Preferred path; run() (text-dump)
+// kept as the tested fallback call shape.
+export interface NavyaExploringDeps {
+  runAgent: typeof runQAAgent;
+}
+
+export async function runExploring(
+  projectId: string,
+  dirs: LabeledDir[],
+  deps: NavyaExploringDeps = { runAgent: runQAAgent },
+): Promise<QAResult> {
+  const result = await deps.runAgent({
+    agentName: "navya",
+    systemPrompt: QA_SYSTEM_PROMPT,
+    reviewFocus: "logic errors (type inconsistencies, null/undefined references, algorithmic flaws, race conditions, unreachable code paths)",
+    dirs,
+  });
+
+  const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings"));
+  if (result.findings.length === 0 && hasFatalError) {
+    return {
+      agent: "navya",
+      score: 0,
+      passed: false,
+      findings: [
+        {
+          severity: "CRITICAL",
+          category: "review-incomplete",
+          detail: `Navya's review did not complete: ${result.errors.join("; ")}`,
+        },
+      ],
+    };
+  }
+
+  const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+  for (const f of result.findings) counts[f.severity]++;
+  const score = Math.max(0, 100 - counts.CRITICAL * 20 - counts.HIGH * 10 - counts.MEDIUM * 5 - counts.LOW * 1);
+  return { agent: "navya", score, passed: score >= 85, findings: result.findings };
 }
 
 // D25 default-FAIL: unparseable output is never treated as "everything's

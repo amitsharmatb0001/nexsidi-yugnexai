@@ -105,20 +105,42 @@ export async function runLiveRetestStub(projectId: string, appUrl: string): Prom
 async function runRealLiveRetest(
   projectId: string,
   appUrl: string,
+  backendUrl: string,
   stage4Result: Stage4Result,
 ): Promise<LiveRetestResult> {
   const { runStage5 } = await import("./stage5-adversarial-qa.ts");
 
+  // NOTE: an in-process `chromium.launch()` screenshot used to run here. Removed
+  // 2026-07-11 — it ran under Bun (the pipeline runtime), where Playwright hangs
+  // (root cause of the whole screenshot saga). Tilotma's Tier 3 review, invoked
+  // by runStage5 below, now drives the live app via the Node browser worker
+  // (packages/agent-runtime/src/browser) and captures its own screenshots.
+
   const previousUrl = process.env.TIER3_REVIEW_URL;
+  const previousBackendUrl = process.env.TIER3_REVIEW_BACKEND_URL;
   process.env.TIER3_REVIEW_URL = appUrl;
+  // 2026-07-11: real bug found live — Tier 3 only ever knew the frontend
+  // URL, so it tested API endpoints against it and reported a false
+  // "no API route" finding. This project's apps use a separate frontend/
+  // backend origin; point Tier 3 at Riya's actual backend URL too.
+  process.env.TIER3_REVIEW_BACKEND_URL = backendUrl;
   try {
-    const result: Stage5Result = await runStage5(projectId, stage4Result);
+    // includeTier3=true: this runs AFTER a real deploy, pointed at the
+    // actual live URL — the one place Tier 3 can legitimately run. See
+    // runStage5's own comment for why the pre-deployment gate defaults to
+    // false instead.
+    const result: Stage5Result = await runStage5(projectId, stage4Result, true);
     return { pass: result.pass, findings: result.findings };
   } finally {
     if (previousUrl === undefined) {
       delete process.env.TIER3_REVIEW_URL;
     } else {
       process.env.TIER3_REVIEW_URL = previousUrl;
+    }
+    if (previousBackendUrl === undefined) {
+      delete process.env.TIER3_REVIEW_BACKEND_URL;
+    } else {
+      process.env.TIER3_REVIEW_BACKEND_URL = previousBackendUrl;
     }
   }
 }
@@ -131,7 +153,7 @@ async function runRealLiveRetest(
 // of those tests rely on the default, they all pass their own `deps`.
 export interface Stage6Deps {
   deployFn: (projectId: string, deployTarget: "local" | "gcp") => Promise<DeployResult>;
-  liveRetestFn: (projectId: string, appUrl: string) => Promise<LiveRetestResult>;
+  liveRetestFn: (projectId: string, appUrl: string, backendUrl: string) => Promise<LiveRetestResult>;
 }
 
 export async function runStage6(
@@ -142,7 +164,7 @@ export async function runStage6(
   // live retest needs it to know which output directories to re-scan.
   deps: Stage6Deps = {
     deployFn: runRiya,
-    liveRetestFn: (pid, appUrl) => runRealLiveRetest(pid, appUrl, stage4Result),
+    liveRetestFn: (pid, appUrl, backendUrl) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result),
   },
 ): Promise<Stage6Result> {
   const flags = resolveFlags();
@@ -160,7 +182,7 @@ export async function runStage6(
     };
   }
 
-  const retest = await deps.liveRetestFn(projectId, deployResult.appUrl);
+  const retest = await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl);
 
   return {
     success: retest.pass,

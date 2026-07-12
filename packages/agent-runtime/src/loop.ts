@@ -9,6 +9,8 @@ import { execHttpRequest, HTTP_TOOL_DEF } from "./tools/http.ts";
 import { execDockerCompose, DOCKER_TOOL_DEF } from "./tools/docker.ts";
 import { execWebSearch, WEB_SEARCH_TOOL_DEF } from "./tools/websearch.ts";
 import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
+import { BrowserToolset, BROWSER_TOOL_DEFS, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
+import { execDbQuery, DB_QUERY_TOOL_DEF } from "./tools/db.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
 import { createStrikeCounter, buildFailureSignature, type StrikeCounter } from "./enforce/strikes.ts";
@@ -37,10 +39,17 @@ export interface AgentRunConfig {
   systemPrompt: string;
   initialMessage: string;
   sandboxDir: string;         // all file ops scoped here
+  projectId?: string;          // optional, for database history persistence
   enableDockerTools?: boolean; // Riya only
   enableHttpTools?: boolean;   // Shubham verification
   enableWebSearch?: boolean;   // fact-checking / package verification
   enableScreenshot?: boolean;  // visual QA
+  enableBrowser?: boolean;     // interactive live-app QA (navigate/click/fill/console-errors/computed-style) — Tilotma Tier 3
+  enableDbQuery?: boolean;     // read-only DB verification (data-round-trip checks) — Tilotma Tier 3
+  // 2026-07-12: per-role Gemini model. Generators set this to the pro thinking
+  // model (code quality); high-volume tool-driving agents (Tier 3, QA) leave
+  // it unset to use the cheap flash default. Only used by the Gemini loop.
+  geminiModel?: string;
 }
 
 export interface AgentRunResult {
@@ -140,6 +149,8 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
     ...(config.enableDockerTools ? [DOCKER_TOOL_DEF] : []),
     ...(config.enableWebSearch ? [WEB_SEARCH_TOOL_DEF] : []),
     ...(config.enableScreenshot ? [SCREENSHOT_TOOL_DEF] : []),
+    ...(config.enableBrowser ? BROWSER_TOOL_DEFS : []),
+    ...(config.enableDbQuery ? [DB_QUERY_TOOL_DEF] : []),
     TASK_COMPLETE_TOOL,
   ];
 }
@@ -154,10 +165,87 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   // this agent's own doctrine (if any) layered ahead of its basePrompt.
   const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt });
 
-  const messages: NimMessage[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: config.initialMessage },
-  ];
+  let messages: NimMessage[] = [];
+  let loadedFromDb = false;
+
+  if (config.projectId) {
+    try {
+      const { db } = await import("@nexsidi/db");
+      const { agentConversations } = await import("@nexsidi/db/schema");
+      const { eq, and } = await import("drizzle-orm");
+
+      const existing = await db
+        .select()
+        .from(agentConversations)
+        .where(
+          and(
+            eq(agentConversations.projectId, config.projectId),
+            eq(agentConversations.agentName, config.agentName)
+          )
+        )
+        .limit(1);
+
+      if (existing[0]) {
+        messages = existing[0].messages as NimMessage[];
+        const sysIdx = messages.findIndex((m) => m.role === "system");
+        if (sysIdx >= 0) {
+          messages[sysIdx] = { role: "system", content: systemPrompt };
+        }
+        messages.push({ role: "user", content: config.initialMessage });
+        loadedFromDb = true;
+        console.log(`[${config.agentName}:agent] Loaded existing conversation history (${messages.length} messages) from database`);
+      }
+    } catch (e) {
+      console.error(`[${config.agentName}:agent] Failed to load history:`, e);
+    }
+  }
+
+  if (!loadedFromDb) {
+    messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: config.initialMessage },
+    ];
+  }
+
+  const saveHistory = async () => {
+    if (config.projectId) {
+      try {
+        const { db } = await import("@nexsidi/db");
+        const { agentConversations } = await import("@nexsidi/db/schema");
+        const { eq, and } = await import("drizzle-orm");
+
+        const existing = await db
+          .select()
+          .from(agentConversations)
+          .where(
+            and(
+              eq(agentConversations.projectId, config.projectId),
+              eq(agentConversations.agentName, config.agentName)
+            )
+          )
+          .limit(1);
+
+        if (existing[0]) {
+          await db
+            .update(agentConversations)
+            .set({
+              messages,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentConversations.id, existing[0].id));
+        } else {
+          await db.insert(agentConversations).values({
+            projectId: config.projectId,
+            agentName: config.agentName,
+            messages,
+          });
+        }
+        console.log(`[${config.agentName}:agent] Saved conversation history (${messages.length} messages) to database`);
+      } catch (e) {
+        console.error(`[${config.agentName}:agent] Failed to save history:`, e);
+      }
+    }
+  };
 
   const filesWritten: string[] = [];
   const errors: string[] = [];
@@ -183,6 +271,11 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   console.log(`[${config.agentName}:agent] Starting — model: ${config.model}, maxIter: ${MAX_ITERATIONS}` +
     (modelChain.length > 1 ? `, fallbacks: ${modelChain.slice(1).join(", ")}` : ""));
 
+  // Interactive-browser QA session (Tilotma Tier 3). Lazily spawns a Node
+  // worker + Chromium on first browser tool call; the `finally` below closes
+  // it on every exit path (task_complete, stop, cap, or throw).
+  const browserToolset = config.enableBrowser ? new BrowserToolset() : null;
+  try {
   while (iterations < MAX_ITERATIONS) {
     const currentModel = modelChain[modelIdx] ?? config.model;
 
@@ -219,6 +312,15 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     if (!choice) {
       errors.push(`Empty response on iteration ${iterations}`);
       break;
+    }
+
+    if (choice.message.content) {
+      const thinkingMatch = choice.message.content.match(/<thinking>([\s\S]*?)<\/thinking>/);
+      if (thinkingMatch?.[1]) {
+        console.log(`[${config.agentName}:agent] Thinking:\n${thinkingMatch[1].trim()}`);
+      } else {
+        console.log(`[${config.agentName}:agent] Response:\n${choice.message.content.trim()}`);
+      }
     }
 
     // T1 fix: sanitize BEFORE pushing to `messages` — an unparseable
@@ -328,6 +430,10 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           result = await execScreenshot(args as { url: string; outputPath: string });
           break;
         }
+        case "db_query": {
+          result = await execDbQuery(args as { query: string });
+          break;
+        }
         case "task_complete": {
           const a = args as { summary: string; files_written: string[]; verification_passed: boolean };
           // Phase 5 Task 3: default-FAIL completion gate — rejected without
@@ -346,6 +452,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           if (!a.verification_passed) {
             errors.push("Agent completed without verification passing");
           }
+          await saveHistory();
           return {
             success: a.verification_passed,
             summary: a.summary,
@@ -356,7 +463,11 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           };
         }
         default: {
-          result = { status: "error", summary: `Unknown tool: ${toolName}` };
+          if (browserToolset && BROWSER_TOOL_NAMES.has(toolName)) {
+            result = await browserToolset.exec(toolName, args as Record<string, unknown>);
+          } else {
+            result = { status: "error", summary: `Unknown tool: ${toolName}` };
+          }
         }
       }
 
@@ -376,6 +487,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     }
   }
 
+  await saveHistory();
   return {
     success: false,
     summary: exhaustedThreeStrikes
@@ -388,4 +500,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     errors: exhaustedThreeStrikes ? errors : [...errors, "Max iterations exceeded"],
     escalationReason: exhaustedThreeStrikes ? "three_strikes" : "cannot_finish",
   };
+  } finally {
+    if (browserToolset) await browserToolset.close();
+  }
 }

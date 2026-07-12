@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseAndScoreFindings, run, QA_SYSTEM_PROMPT } from "./index.ts";
+import { parseAndScoreFindings, run, runExploring, QA_SYSTEM_PROMPT, type NavyaDeps } from "./index.ts";
 
 // parseAndScoreFindings is the deterministic parsing/scoring logic behind
 // run() — run() itself calls agentChat (a live LLM call) and isn't
@@ -172,4 +172,68 @@ test("run() returns the default-FAIL result (not a thrown error) when BOTH attem
   const result = await run("diag", 1, "// some code", deps);
   expect(result.passed).toBe(false);
   expect(result.findings[0]!.severity).toBe("CRITICAL");
+});
+
+// 2026-07-11: real bug found live (stress-fix2-1783753726, resume 2) — no
+// maxTokens override meant Gemini's default 8000-token output cap (see
+// gemini.ts's geminiChat) truncated Navya's response mid-JSON on a
+// full-codebase review with several findings. The truncated output then hit
+// the D25 default-FAIL path as a synthetic CRITICAL — not because the code
+// had a real bug, but because Navya's own response got cut off. A wider
+// budget prevents the QA harness's own token limit from masquerading as a
+// generated-app defect.
+test("run() requests a wide output budget so a full-codebase review isn't truncated mid-response", async () => {
+  let capturedOpts: { maxTokens?: number } | undefined;
+  const deps = {
+    chat: async (_agent: string, _messages: unknown, _apiKey: string, opts?: { maxTokens?: number }) => {
+      capturedOpts = opts;
+      return { content: JSON.stringify({ findings: [] }), modelUsed: "qwen/qwen3.5-122b-a10b" as const };
+    },
+  };
+  await run("diag", 1, "// some code", deps as unknown as NavyaDeps);
+  expect(capturedOpts?.maxTokens).toBeGreaterThanOrEqual(16000);
+});
+
+// 2026-07-11: runExploring() — the tool-loop-based review (qa-loop.ts) that
+// replaces the one-shot text-dump behind the same hallucinated-finding bug
+// above. Scoring/error-handling logic tested via the injected runAgent, same
+// DI pattern as run()'s `chat` dep — the real network loop is verified live.
+test("runExploring() computes the severity-weighted score from the loop's findings", async () => {
+  const deps = {
+    runAgent: async () => ({
+      findings: [{ severity: "CRITICAL" as const, category: "null-ref", detail: "unchecked req.body.title" }],
+      iterations: 4,
+      errors: [],
+    }),
+  };
+  const result = await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps);
+  expect(result.agent).toBe("navya");
+  expect(result.score).toBe(80);
+  expect(result.passed).toBe(false);
+});
+
+test("runExploring() does NOT default-FAIL when the loop timed out but had no fatal errors", async () => {
+  const deps = {
+    runAgent: async () => ({ findings: [], iterations: 30, errors: ["Max iterations (30) reached without submit_findings"] }),
+  };
+  const result = await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps);
+  expect(result.passed).toBe(true);
+  expect(result.score).toBe(100);
+});
+
+test("runExploring() default-FAILs when there is a fatal error in the loop", async () => {
+  const deps = {
+    runAgent: async () => ({ findings: [], iterations: 30, errors: ["Gemini call failed on iteration 5: network error"] }),
+  };
+  const result = await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps);
+  expect(result.passed).toBe(false);
+  expect(result.score).toBe(0);
+  expect(result.findings[0]!.category).toBe("review-incomplete");
+});
+
+test("runExploring() treats a genuinely clean review as a real pass", async () => {
+  const deps = { runAgent: async () => ({ findings: [], iterations: 6, errors: [] }) };
+  const result = await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps);
+  expect(result.passed).toBe(true);
+  expect(result.score).toBe(100);
 });

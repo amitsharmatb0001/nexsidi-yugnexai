@@ -16,6 +16,7 @@
 // fault-isolate Deepika findings to a specific agent instead of always
 // defaulting to "shubham" (see stage5-adversarial-qa.ts).
 import { agentChat } from "@nexsidi/llm-client";
+import { runQAAgent, type LabeledDir } from "../../../../packages/agent-runtime/src/qa-loop.ts";
 
 export interface QAResult {
   agent:    string;
@@ -52,15 +53,72 @@ export async function run(
   // Found live in stress5timeout on a sibling QA agent (empty content, HTTP
   // 200, finish_reason "stop") — one retry absorbs a one-off infra blip
   // without masking a genuinely broken model, which fails the retry too.
-  const { content: first } = await deps.chat("deepika", messages, apiKey);
+  // 2026-07-11: same fix as navya/src/index.ts — no maxTokens override left
+  // this at Gemini's default 8000-token output cap, which can truncate a
+  // full-codebase review mid-JSON and default-FAIL on the harness's own
+  // token limit rather than a real finding.
+  const QA_MAX_TOKENS = 16000;
+  const { content: first } = await deps.chat("deepika", messages, apiKey, { maxTokens: QA_MAX_TOKENS });
   let content = first;
   if (content.trim() === "") {
     console.log("[deepika] first attempt returned empty content — retrying once");
-    const { content: second } = await deps.chat("deepika", messages, apiKey);
+    const { content: second } = await deps.chat("deepika", messages, apiKey, { maxTokens: QA_MAX_TOKENS });
     content = second;
   }
 
   return { agent: "deepika", ...parseAndScoreFindings(content) };
+}
+
+// 2026-07-11: real bug found live (stress-fix2-1783753726) — run() reviews
+// a single dumped text blob of the ENTIRE codebase in one shot, with no way
+// to verify a claim before finalizing it. Root-caused: Deepika/Navya both
+// produced findings that didn't match the actual code (pattern-matching on
+// "this shape of code usually has this bug", not verified tracing).
+// runExploring() uses the tool-calling loop (qa-loop.ts) instead — explore
+// file by file via list_files/read_file, then submit_findings, gated so a
+// finding citing a file never actually read is rejected. This is the
+// preferred path; run() (text-dump) is kept for now as the tested fallback
+// call shape until stage5-adversarial-qa.ts's real entry point is confirmed
+// stable on the new path across a live run.
+export interface DeepikaExploringDeps {
+  runAgent: typeof runQAAgent;
+}
+
+export async function runExploring(
+  projectId: string,
+  dirs: LabeledDir[],
+  deps: DeepikaExploringDeps = { runAgent: runQAAgent },
+): Promise<QAResult> {
+  const result = await deps.runAgent({
+    agentName: "deepika",
+    systemPrompt: QA_SYSTEM_PROMPT,
+    reviewFocus: "performance issues (Big-O complexity blowups, memory leaks, N+1 query patterns, blocking synchronous calls on the hot path)",
+    dirs,
+  });
+
+  const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings"));
+  if (result.findings.length === 0 && hasFatalError) {
+    // D25 default-FAIL: the agent never successfully called submit_findings
+    // (gave up, hit the iteration cap) — categorically worse than "zero
+    // findings", so this is NOT the same as a clean pass.
+    return {
+      agent: "deepika",
+      score: 0,
+      passed: false,
+      findings: [
+        {
+          severity: "CRITICAL",
+          category: "review-incomplete",
+          detail: `Deepika's review did not complete: ${result.errors.join("; ")}`,
+        },
+      ],
+    };
+  }
+
+  const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+  for (const f of result.findings) counts[f.severity]++;
+  const score = Math.max(0, 100 - counts.CRITICAL * 20 - counts.HIGH * 10 - counts.MEDIUM * 5 - counts.LOW * 1);
+  return { agent: "deepika", score, passed: score >= 85, findings: result.findings };
 }
 
 // D25 default-FAIL: unparseable output is never treated as "everything's

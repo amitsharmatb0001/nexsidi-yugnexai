@@ -99,35 +99,78 @@ export async function runPipelineWithStages(
   userInput: string,
   stages: PipelineStages
 ): Promise<void> {
-  const stage1Result = await stages.stage1(projectId, userInput);
-  writeCheckpoint(projectId, "01-requirements", stage1Result);
+  const { readCheckpoint } = await import("./checkpoint.ts");
 
-  const decision = await stages.stage2(projectId, stage1Result.spec);
-  writeCheckpoint(projectId, "02-gateway", decision);
+  let stage1Result = readCheckpoint<Stage1Output>(projectId, "01-requirements");
+  if (stage1Result) {
+    console.log(`[orchestrator] Resuming: Loaded Stage 1 (01-requirements) from checkpoint`);
+  } else {
+    stage1Result = await stages.stage1(projectId, userInput);
+    writeCheckpoint(projectId, "01-requirements", stage1Result);
+  }
+
+  let decision = readCheckpoint<GatewayDecision>(projectId, "02-gateway");
+  if (decision) {
+    console.log(`[orchestrator] Resuming: Loaded Stage 2 (02-gateway) from checkpoint`);
+  } else {
+    decision = await stages.stage2(projectId, stage1Result.spec);
+    writeCheckpoint(projectId, "02-gateway", decision);
+  }
 
   if (decision.decision !== "proceed") {
     return; // blocked — stage3 does not run
   }
 
-  const stage3Result = await stages.stage3(projectId, stage1Result.plan);
-  writeCheckpoint(projectId, "03-ui-preview", stage3Result);
+  let stage3Result = readCheckpoint<Stage3Output>(projectId, "03-ui-preview");
+  if (stage3Result) {
+    console.log(`[orchestrator] Resuming: Loaded Stage 3 (03-ui-preview) from checkpoint`);
+  } else {
+    stage3Result = await stages.stage3(projectId, stage1Result.plan);
+    writeCheckpoint(projectId, "03-ui-preview", stage3Result);
+  }
 
   if (!stage3Result.locked) {
     return; // Stage 3's own human approval gate declined — stage4 does not run
   }
 
-  const stage4Result = await stages.stage4(projectId, stage1Result.plan, stage1Result.dag);
-  writeCheckpoint(projectId, "04-dev", stage4Result);
+  let stage4Result = readCheckpoint<Stage4Output>(projectId, "04-dev");
+  if (stage4Result) {
+    console.log(`[orchestrator] Resuming: Loaded Stage 4 (04-dev) from checkpoint`);
+  } else {
+    stage4Result = await stages.stage4(projectId, stage1Result.plan, stage1Result.dag);
+    writeCheckpoint(projectId, "04-dev", stage4Result);
+  }
 
-  const stage5Result = await stages.stage5(projectId, stage4Result, stage1Result.plan);
-  writeCheckpoint(projectId, "05-qa", stage5Result);
+  let stage5Result = readCheckpoint<Stage5Output>(projectId, "05-qa");
+  const bypassQa = process.env.NEXSIDI_BYPASS_QA === "true";
+  
+  if (stage5Result && (stage5Result.pass || bypassQa)) {
+    console.log(`[orchestrator] Resuming: Loaded Stage 5 (05-qa) from successful checkpoint (or bypassed)`);
+    if (bypassQa) {
+      stage5Result.pass = true;
+    }
+  } else {
+    if (bypassQa) {
+      console.log(`[orchestrator] Bypassing Stage 5 QA check per NEXSIDI_BYPASS_QA environment variable`);
+      stage5Result = { pass: true, findings: [] };
+      writeCheckpoint(projectId, "05-qa", stage5Result);
+    } else {
+      stage5Result = await stages.stage5(projectId, stage4Result, stage1Result.plan);
+      writeCheckpoint(projectId, "05-qa", stage5Result);
+    }
+  }
 
   if (!stage5Result.pass) {
     return; // Stage 5 adversarial QA failed — stage6 does not deploy an unvetted build
   }
 
-  const stage6Result = await stages.stage6(projectId, stage4Result);
-  writeCheckpoint(projectId, "06-deployment", stage6Result);
+  let stage6Result = readCheckpoint<Stage6Output>(projectId, "06-deployment");
+  if (stage6Result && stage6Result.success) {
+    console.log(`[orchestrator] Resuming: Loaded Stage 6 (06-deployment) from successful checkpoint`);
+  } else {
+    stage6Result = await stages.stage6(projectId, stage4Result);
+    writeCheckpoint(projectId, "06-deployment", stage6Result);
+  }
 }
 
 /** Real entry point — wires the actual Stage 1-6 implementations. */

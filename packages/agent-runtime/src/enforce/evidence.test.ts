@@ -82,13 +82,13 @@ afterEach(() => {
 
 test("execRunCommand records command_output evidence on success when given a ledger", () => {
   const ledger = createEvidenceLedger();
-  const result = execRunCommand(sandboxDir, { command: "pwd" }, ledger);
+  const result = execRunCommand(sandboxDir, { command: "node -e \"console.log('test')\"" }, ledger);
   expect(result.status).toBe("success");
   expect(ledger.hasFreshEvidence()).toBe(true);
   const records = ledger.consume();
   expect(records).toHaveLength(1);
   expect(records[0]!.kind).toBe("command_output");
-  expect(records[0]!.ref).toContain("pwd");
+  expect(records[0]!.ref).toContain("node");
 });
 
 test("execRunCommand records NO evidence when the command fails, even with a ledger", () => {
@@ -99,7 +99,7 @@ test("execRunCommand records NO evidence when the command fails, even with a led
 });
 
 test("execRunCommand works exactly as before when no ledger is passed (existing call sites unaffected)", () => {
-  const result = execRunCommand(sandboxDir, { command: "pwd" });
+  const result = execRunCommand(sandboxDir, { command: "node -e \"console.log('test')\"" });
   expect(result.status).toBe("success");
 });
 

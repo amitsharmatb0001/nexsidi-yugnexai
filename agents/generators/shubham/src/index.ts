@@ -3,7 +3,7 @@
 // No longer does one-shot LLM generation. Agent ACTS on real tool feedback.
 
 import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync, readdirSync, existsSync } from "fs";
 import { join } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 
@@ -17,6 +17,38 @@ export interface GeneratorResult {
 
 export function getOutputDir(projectId: string): string {
   return join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId, "backend");
+}
+
+// Scan src/routes/ for *.routes.ts files and generate src/routes/index.ts that
+// imports and mounts each one at "/<resource>" (e.g. tasks.routes.ts, whose
+// handlers use relative paths "/" and "/:id", mounts at "/tasks" so the full
+// path under the app's "/api/v1" prefix is /api/v1/tasks). Deterministic and
+// fail-safe. Exported for unit testing. If there are no route files, the empty
+// placeholder is left as-is.
+export function autoWireRoutes(backendDir: string): void {
+  const routesDir = join(backendDir, "src", "routes");
+  try {
+    if (!existsSync(routesDir)) return;
+    const routeFiles = readdirSync(routesDir)
+      .filter((f) => f.endsWith(".routes.ts"))
+      .sort();
+    if (routeFiles.length === 0) return;
+
+    const importLines: string[] = ['import { Router } from "express";'];
+    const mountLines: string[] = ["", "const router = Router();", ""];
+    for (const file of routeFiles) {
+      const resource = file.replace(/\.routes\.ts$/, "");          // "tasks"
+      const ident = resource.replace(/[^a-zA-Z0-9]/g, "_") + "Router"; // "tasksRouter"
+      importLines.push(`import ${ident} from "./${resource}.routes";`);
+      mountLines.push(`router.use("/${resource}", ${ident});`);
+    }
+    mountLines.push("", "export default router;", "");
+    const content = importLines.join("\n") + "\n" + mountLines.join("\n");
+    writeFileSync(join(routesDir, "index.ts"), content, "utf-8");
+    console.log(`[shubham] auto-wired ${routeFiles.length} route file(s) into routes/index.ts: ${routeFiles.join(", ")}`);
+  } catch (err) {
+    console.warn(`[shubham] autoWireRoutes skipped: ${String(err)}`);
+  }
 }
 
 // 2026-07-08: Patent Claim 2's instinct memory had a real DB table but
@@ -69,8 +101,21 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     systemPrompt: knownMistakesPrefix + SHUBHAM_AGENT_SYSTEM_PROMPT,
     initialMessage: buildAgentTask(plan),
     sandboxDir: outputDir,
-    enableHttpTools: false, // HTTP verification done by Riya after docker up
+    projectId: plan.projectId,
+    // 2026-07-12: pro (thinking) model for code quality; http + docker tools so
+    // Shubham self-verifies its own work like a real backend dev (boot a
+    // throwaway Postgres, apply migrations, start the server, curl health +
+    // auth-enforcement) before handing off.
+    geminiModel: process.env.GEMINI_GENERATION_MODEL,
+    enableHttpTools: true,
+    enableDockerTools: true,
   });
+
+  // Deterministically mount the *.routes.ts files into routes/index.ts (see
+  // autoWireRoutes) — a placeholder was left there and the never-implemented
+  // auto-wiring meant every generated API was dead. Runs after the agent has
+  // written its route files.
+  autoWireRoutes(outputDir);
 
   return {
     success: result.success,
@@ -112,8 +157,17 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     systemPrompt: SHUBHAM_AGENT_SYSTEM_PROMPT,
     initialMessage: buildFixTask(findings),
     sandboxDir: outputDir,
-    enableHttpTools: false,
+    projectId: plan.projectId,
+    geminiModel: process.env.GEMINI_GENERATION_MODEL,
+    enableHttpTools: true,
+    enableDockerTools: true,
   });
+
+  // Deterministically mount the *.routes.ts files into routes/index.ts (see
+  // autoWireRoutes) — a placeholder was left there and the never-implemented
+  // auto-wiring meant every generated API was dead. Runs after the agent has
+  // written its route files.
+  autoWireRoutes(outputDir);
 
   return {
     success: result.success,
@@ -240,9 +294,49 @@ CRITICAL RULES:
     what this app needs. Do not add caching here unless the task
     explicitly asks for it.
 
-VERIFICATION GATE: Do not call task_complete until "npx tsc --noEmit" exits 0.
-If you cannot fix tsc errors after 5 attempts, call task_complete with verification_passed: false
-and explain exactly what failed.
+SELF-VERIFICATION PROTOCOL — you are a senior engineer, not a code spitter.
+Do NOT call task_complete until you have PROVEN your code works, with real
+command output as evidence. Verify in this order and report what you actually ran:
+
+HARD GATE (must pass — these are reliable and required):
+  a) run_command "npm install" — exits 0.
+  b) run_command "npx tsc --noEmit" — exits 0 (fix every type error; do not
+     suppress with an any-cast or a ts-ignore comment).
+  c) run_command "npm run build" — exits 0.
+
+LIVE VERIFICATION (act like a real backend dev — do as much as the sandbox
+allows, report results either way; do NOT burn many attempts fighting the
+environment — if a step genuinely can't run here, say so and move on):
+  d) Stand up a throwaway Postgres (docker_compose up with a minimal
+     postgres-only compose you write, or reuse the project's) and apply the
+     schema/migrations against it. Confirm the tables you expect actually
+     exist. A migration that doesn't apply is a real bug you must find NOW.
+  e) Start the server pointed at that DB (background it — do NOT run a
+     blocking foreground server that never returns; e.g. append " &" or use a
+     start script that daemonizes, then poll) and:
+       - http_request GET /health → expect 200.
+       - http_request a PROTECTED route WITHOUT an auth token → expect 401/403
+         (proves the route is mounted AND auth is actually enforced — a route
+         that returns 200 or 500 unauthenticated is a security bug).
+  f) Tear the throwaway DB down (docker_compose down) when done.
+
+PRODUCTION SECURITY — this app may be hosted publicly on day 0; it must not be
+trivially hacked. Beyond the SQL/IDOR/validation rules above, ensure ALL of:
+  - helmet() enabled; CORS restricted to CORS_ORIGIN (never "*").
+  - express-rate-limit on auth-sensitive / write routes.
+  - EVERY mutating/protected route goes through requireAuth; no route is
+    accidentally public.
+  - Request bodies validated (zod or explicit checks) BEFORE use; reject
+    unexpected/oversized input with 400, never let it reach the DB/Date/etc.
+  - Errors return a generic message + correct status — NEVER leak stack traces,
+    SQL, or internal paths to the client. No secrets/keys hardcoded in source.
+  - No debug endpoints, no console.log of secrets, no permissive defaults.
+
+Call task_complete with verification_passed: true ONLY after the HARD GATE
+passes; include in your summary exactly what live verification (d-f) and
+security checks you completed and their results. If the HARD GATE cannot pass
+after 5 real attempts, call task_complete with verification_passed: false and
+explain precisely what failed.
 `;
 
 // Renames each endpoint's `path` field to `route` for the PROMPT TEXT ONLY —

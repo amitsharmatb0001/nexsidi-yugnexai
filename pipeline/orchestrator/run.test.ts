@@ -286,3 +286,89 @@ test("runPipelineWithStages threads stage1's dag into stage4 and stage4's result
 
   cleanup();
 });
+
+test("runPipelineWithStages resumes from checkpoints and skips already executed stages", async () => {
+  cleanup();
+  const calls: string[] = [];
+
+  const stages: any = {
+    stage1: async () => {
+      calls.push("stage1");
+      return { spec: { name: "test spec" }, plan: { appName: "test spec" }, dag: { tasks: [] } };
+    },
+    stage2: async (): Promise<GatewayDecision> => {
+      calls.push("stage2");
+      return { decision: "proceed" };
+    },
+    stage3: async () => {
+      calls.push("stage3");
+      return { locked: true, outputDir: "C:/tmp/out" };
+    },
+    stage4: async () => {
+      calls.push("stage4");
+      return STAGE4_STUB_RESULT;
+    },
+    stage5: async () => {
+      calls.push("stage5");
+      return { pass: true, findings: [] };
+    },
+    stage6: async () => {
+      calls.push("stage6");
+      return STAGE6_STUB_RESULT;
+    },
+  };
+
+  // Run first time but mock a failure at Stage 5
+  const originalStage5 = stages.stage5;
+  stages.stage5 = async () => {
+    calls.push("stage5-failed");
+    return { pass: false, findings: ["mock failure"] };
+  };
+
+  await runPipelineWithStages(TEST_PROJECT, "build me a task manager", stages);
+  expect(calls).toEqual(["stage1", "stage2", "stage3", "stage4", "stage5-failed"]);
+
+  // Run second time (resuming), restoring stage5 success
+  stages.stage5 = originalStage5;
+  const resumeCalls: string[] = [];
+  const resumingStages = {
+    stage1: async () => { resumeCalls.push("stage1"); return null as any; },
+    stage2: async () => { resumeCalls.push("stage2"); return null as any; },
+    stage3: async () => { resumeCalls.push("stage3"); return null as any; },
+    stage4: async () => { resumeCalls.push("stage4"); return null as any; },
+    stage5: async () => { resumeCalls.push("stage5"); return { pass: true, findings: [] }; },
+    stage6: async () => { resumeCalls.push("stage6"); return STAGE6_STUB_RESULT; },
+  };
+
+  await runPipelineWithStages(TEST_PROJECT, "build me a task manager", resumingStages);
+  // It should skip stages 1-4 because they are loaded from checkpoints!
+  // Stage 5 failed previously, so it must be run again. Stage 6 must run.
+  expect(resumeCalls).toEqual(["stage5", "stage6"]);
+
+  cleanup();
+});
+
+test("runPipelineWithStages bypasses stage5 when NEXSIDI_BYPASS_QA is true", async () => {
+  cleanup();
+  process.env.NEXSIDI_BYPASS_QA = "true";
+  const calls: string[] = [];
+
+  await runPipelineWithStages(TEST_PROJECT, "build me a task manager", {
+    stage1: async () => ({ spec: { name: "test spec" }, plan: { appName: "test spec" }, dag: { tasks: [] } }),
+    stage2: async (): Promise<GatewayDecision> => ({ decision: "proceed" }),
+    stage3: async () => ({ locked: true, outputDir: "C:/tmp/out" }),
+    stage4: async () => STAGE4_STUB_RESULT,
+    stage5: async () => {
+      calls.push("stage5"); // this should NOT be called because it is bypassed!
+      return { pass: false, findings: ["mock failure"] };
+    },
+    stage6: async () => {
+      calls.push("stage6");
+      return STAGE6_STUB_RESULT;
+    },
+  });
+
+  expect(calls).toEqual(["stage6"]); // stage5 bypassed, stage6 runs
+  delete process.env.NEXSIDI_BYPASS_QA;
+  cleanup();
+});

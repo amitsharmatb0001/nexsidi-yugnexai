@@ -70,7 +70,15 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     systemPrompt: knownMistakesPrefix + buildAgentPrompt(mode),
     initialMessage: buildAgentTask(plan, mode),
     sandboxDir: outputDir,
-    enableHttpTools: false,
+    projectId: plan.projectId,
+    // 2026-07-12: Aanya stays on the CHEAP flash model (default GEMINI_MODEL),
+    // NOT pro. Rationale (CLAUDE.md's parallel-agent rule): Shubham and Aanya
+    // run in PARALLEL — putting both on gemini-3.1-pro-preview would collide on
+    // pro's rate limit. Pro goes to the backend (Shubham: SQL/security/logic,
+    // where quality matters most); frontend is adequate on flash and this
+    // spreads the parallel load across both models to avoid 429s. http tools so
+    // Aanya still self-verifies (npm install + next build + typecheck). Live UI is Tier 3.
+    enableHttpTools: true,
   });
 
   return {
@@ -113,7 +121,9 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     systemPrompt: buildAgentPrompt("integrate"), // fix always happens post-integrate, per Stage 5's placement after Stage 4
     initialMessage: buildFixTask(findings),
     sandboxDir: outputDir,
-    enableHttpTools: false,
+    projectId: plan.projectId,
+    // flash (default) — see the rationale on Aanya's run() config above.
+    enableHttpTools: true,
   });
 
   return {

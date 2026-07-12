@@ -71,6 +71,13 @@ services:
     ports:
       - "8088:8080"
 
+  # NOTE: a Dockerized Chromium/CDP-proxy service used to live here (2026-07-11)
+  # as a workaround for chromium.launch() "crashing" on the host. Root-caused
+  # and removed the same day: the real problem was running Playwright under Bun
+  # (unsupported) — under Node, chromium.launch() works on the host with no
+  # container. Browser QA now runs in a Node subprocess (packages/agent-runtime/
+  # src/browser/worker.mjs); no Chrome container is needed.
+
 volumes:
   postgres_data:
   redis_data:

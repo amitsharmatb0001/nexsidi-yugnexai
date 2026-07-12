@@ -22,6 +22,7 @@
 // types locally in their own files — those are untouched by this change).
 // Retiring Karan's copy here is safe; nothing else depended on it.
 import { agentChat } from "@nexsidi/llm-client";
+import { runQAAgent, type LabeledDir, type Finding as QALoopFinding } from "../../../../packages/agent-runtime/src/qa-loop.ts";
 
 export interface SecurityFinding {
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
@@ -59,15 +60,63 @@ export async function run(
   // another QA agent) — one retry absorbs a one-off blip without masking a
   // genuinely broken model, which fails the retry too and correctly falls
   // through to the zero-tolerance default-FAIL path.
-  const { content: first } = await deps.chat("karan", messages, apiKey);
+  // 2026-07-11: same fix as navya/src/index.ts — no maxTokens override left
+  // this at Gemini's default 8000-token output cap, which can truncate a
+  // full-codebase review mid-JSON and default-FAIL on the harness's own
+  // token limit rather than a real finding.
+  const QA_MAX_TOKENS = 16000;
+  const { content: first } = await deps.chat("karan", messages, apiKey, { maxTokens: QA_MAX_TOKENS });
   let content = first;
   if (content.trim() === "") {
     console.log("[karan] first attempt returned empty content — retrying once");
-    const { content: second } = await deps.chat("karan", messages, apiKey);
+    const { content: second } = await deps.chat("karan", messages, apiKey, { maxTokens: QA_MAX_TOKENS });
     content = second;
   }
 
   const findings = parseSecurityFindings(content);
+  const { pass, score } = scoreSecurityFindings(findings);
+  return { agent: "karan", score, passed: pass, findings };
+}
+
+// 2026-07-11: same root cause as navya/src/index.ts's runExploring — run()
+// reviews a dumped text blob of the ENTIRE codebase in one shot, with no way
+// to verify a claim before finalizing it. runExploring() uses the
+// tool-calling loop (qa-loop.ts) instead — explore file by file via
+// list_files/read_file, then submit_findings, gated so a finding citing a
+// file never actually read is rejected. Preferred path; run() (text-dump)
+// kept as the tested fallback call shape.
+function qaLoopFindingToSecurityFinding(f: QALoopFinding): SecurityFinding {
+  return { severity: f.severity, description: `${f.category}: ${f.detail}`, file: f.file };
+}
+
+export interface KaranExploringDeps {
+  runAgent: typeof runQAAgent;
+}
+
+export async function runExploring(
+  projectId: string,
+  dirs: LabeledDir[],
+  deps: KaranExploringDeps = { runAgent: runQAAgent },
+): Promise<QAResult> {
+  const result = await deps.runAgent({
+    agentName: "karan",
+    systemPrompt: QA_SYSTEM_PROMPT,
+    reviewFocus: "security vulnerabilities (OWASP-style: injection, auth/authz gaps, unsafe deserialization, exposed secrets, CSRF, unvalidated input)",
+    dirs,
+  });
+
+  const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings"));
+  if (result.findings.length === 0 && hasFatalError) {
+    const findings: SecurityFinding[] = [
+      {
+        severity: "CRITICAL",
+        description: `Karan's review did not complete: ${result.errors.join("; ")}`,
+      },
+    ];
+    return { agent: "karan", score: 0, passed: false, findings };
+  }
+
+  const findings = result.findings.map(qaLoopFindingToSecurityFinding);
   const { pass, score } = scoreSecurityFindings(findings);
   return { agent: "karan", score, passed: pass, findings };
 }

@@ -17,6 +17,7 @@
     "@temporalio/worker": "^1.11.0",
     "@temporalio/workflow": "^1.11.0",
     "drizzle-orm": "^0.40.0",
-    "ioredis": "^5.4.1"
+    "ioredis": "^5.4.1",
+    "playwright": "1.61.1"
   }
 }

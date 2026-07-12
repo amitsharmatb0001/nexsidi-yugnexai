@@ -51,6 +51,57 @@ test("runStage5WithAgents calls Tier 3 review only when Navya, Karan, and Deepik
   expect(result.findings).toEqual([]);
 });
 
+// 2026-07-11: real bug found live — traced the full call graph and confirmed
+// Stage 5's Tier 3 review (Tilotma screenshotting the live app) was being run
+// as the PRE-DEPLOYMENT gate (stage5-qa-fix-loop.ts -> runStage5, called
+// before Riya/Stage 6 ever deploys anything). Tier 3 needs a live, reachable
+// app — nothing deploys one until Stage 6, which never runs because Stage 5
+// can't pass without Tier 3 passing first. A structural deadlock: Stage 5
+// could NEVER pass, no matter how many QA-fix-loop rounds ran. Stage 6's
+// runRealLiveRetest already correctly re-runs Stage 5 AFTER a real deploy —
+// that's the one place Tier 3 belongs. includeTier3=false makes Tier 3
+// skippable so the pre-deployment gate only checks Navya/Karan/Deepika.
+test("runStage5WithAgents skips Tier 3 review entirely when includeTier3 is false", async () => {
+  let tier3Called = false;
+  const agents = makeAgents({
+    runTier3Review: async (): Promise<Tier3ReviewResult> => {
+      tier3Called = true;
+      return { pass: true, findings: [] };
+    },
+  });
+
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents, false);
+
+  expect(tier3Called).toBe(false);
+  expect(result.pass).toBe(true);
+  expect(result.findings).toEqual([]);
+});
+
+test("runStage5WithAgents still fails on static QA even with includeTier3 false", async () => {
+  const agents = makeAgents({
+    runKaran: async () => ({
+      agent: "karan",
+      score: 0,
+      passed: false,
+      findings: [{ severity: "CRITICAL" as const, description: "SQL injection in tasks controller" }],
+    }),
+  });
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents, false);
+  expect(result.pass).toBe(false);
+});
+
+test("runStage5WithAgents defaults to including Tier 3 when the parameter is omitted (backward compatible)", async () => {
+  let tier3Called = false;
+  const agents = makeAgents({
+    runTier3Review: async (): Promise<Tier3ReviewResult> => {
+      tier3Called = true;
+      return { pass: true, findings: [] };
+    },
+  });
+  await runStage5WithAgents("test-proj", STAGE4_RESULT, agents);
+  expect(tier3Called).toBe(true);
+});
+
 test("runStage5WithAgents surfaces Tier 3's own findings and pass/fail verdict", async () => {
   const agents = makeAgents({
     runTier3Review: async (): Promise<Tier3ReviewResult> => ({

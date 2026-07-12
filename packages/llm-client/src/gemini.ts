@@ -11,7 +11,7 @@
 // google-auth-library supplying the ADC bearer token (the same credential
 // `gcloud auth application-default login` already set up for Claude-on-Vertex).
 import { GoogleAuth } from "google-auth-library";
-import { canRequest, recordFailure, recordSuccess } from "./circuit-breaker.ts";
+import { canRequest, recordFailure, recordSuccess, waitForCircuit } from "./circuit-breaker.ts";
 import { waitForToken } from "./token-bucket.ts";
 import type { ChatMessage } from "./types.ts";
 import type { NimToolDef } from "./nim.ts";
@@ -195,7 +195,14 @@ export async function geminiChat(
   const location = resolveGeminiLocation();
   const circuitKey = circuitKeyFor(model);
   if (!canRequest(circuitKey)) {
-    throw new Error(`[llm-client] Circuit breaker OPEN for ${model} — all retries exhausted`);
+    // 2026-07-11: don't fail the whole pipeline over a self-healing OPEN
+    // circuit — wait out the cooldown (bounded, see waitForCircuit) and let
+    // the HALF_OPEN probe below have a real shot before giving up.
+    console.log(`[llm-client] Circuit breaker OPEN for ${model} — waiting for cooldown before retry`);
+    await waitForCircuit(circuitKey);
+    if (!canRequest(circuitKey)) {
+      throw new Error(`[llm-client] Circuit breaker OPEN for ${model} — all retries exhausted`);
+    }
   }
 
   await waitForToken(model, GEMINI_RPM_LIMIT);
@@ -213,7 +220,7 @@ export async function geminiChat(
   const body: Record<string, unknown> = {
     contents,
     ...(systemParts.length > 0 ? { systemInstruction: { parts: [{ text: systemParts.join("\n\n") }] } } : {}),
-    generationConfig: { maxOutputTokens: opts?.maxTokens ?? 8000 },
+    generationConfig: { maxOutputTokens: opts?.maxTokens ?? Number(process.env.GEMINI_MAX_OUTPUT_TOKENS ?? 16000) },
   };
 
   const controller = new AbortController();
@@ -259,13 +266,25 @@ export async function geminiChat(
 export async function geminiChatWithTools(
   messages: GeminiMessage[],
   tools: GeminiToolDef[],
+  opts?: { model?: string },
 ): Promise<GeminiChatWithToolsResult> {
   projectIdOrThrow();
-  const model = resolveGeminiModel();
+  // 2026-07-12: per-role model routing. Two-model cost strategy — the pricey
+  // pro (thinking) model for code GENERATION, cheap flash for high-volume
+  // tool-driving (QA exploration, Tier 3 interactive review). Caller passes
+  // opts.model; falls back to GEMINI_MODEL (default flash).
+  const model = opts?.model ?? resolveGeminiModel();
   const location = resolveGeminiLocation();
   const circuitKey = circuitKeyFor(model);
   if (!canRequest(circuitKey)) {
-    throw new Error(`[llm-client] Circuit breaker OPEN for ${model} — all retries exhausted`);
+    // 2026-07-11: don't fail the whole pipeline over a self-healing OPEN
+    // circuit — wait out the cooldown (bounded, see waitForCircuit) and let
+    // the HALF_OPEN probe below have a real shot before giving up.
+    console.log(`[llm-client] Circuit breaker OPEN for ${model} — waiting for cooldown before retry`);
+    await waitForCircuit(circuitKey);
+    if (!canRequest(circuitKey)) {
+      throw new Error(`[llm-client] Circuit breaker OPEN for ${model} — all retries exhausted`);
+    }
   }
 
   await waitForToken(model, GEMINI_RPM_LIMIT);
@@ -285,7 +304,14 @@ export async function geminiChatWithTools(
     contents,
     ...(systemParts.length > 0 ? { systemInstruction: { parts: [{ text: systemParts.join("\n\n") }] } } : {}),
     tools: [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }],
-    generationConfig: { maxOutputTokens: 16000 },
+    // 2026-07-12: raised 16000 -> 32000 for gemini-3.1-pro-preview, a heavy
+    // THINKING model — it spends a large "thoughts" token budget internally
+    // (e.g. 327 thought tokens for a one-line function) that competes with the
+    // visible tool-call/code output. At 16k, thinking on a real file-write
+    // could starve the actual output and truncate (MAX_TOKENS) or come back
+    // empty. Higher cap only bills what's actually used. Overridable via
+    // GEMINI_MAX_OUTPUT_TOKENS.
+    generationConfig: { maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS ?? 32000) },
   };
 
   const controller = new AbortController();
@@ -349,7 +375,14 @@ export async function geminiWebSearch(query: string, opts?: { timeoutMs?: number
   const location = resolveGeminiLocation();
   const circuitKey = circuitKeyFor(model);
   if (!canRequest(circuitKey)) {
-    throw new Error(`[llm-client] Circuit breaker OPEN for ${model} — all retries exhausted`);
+    // 2026-07-11: don't fail the whole pipeline over a self-healing OPEN
+    // circuit — wait out the cooldown (bounded, see waitForCircuit) and let
+    // the HALF_OPEN probe below have a real shot before giving up.
+    console.log(`[llm-client] Circuit breaker OPEN for ${model} — waiting for cooldown before retry`);
+    await waitForCircuit(circuitKey);
+    if (!canRequest(circuitKey)) {
+      throw new Error(`[llm-client] Circuit breaker OPEN for ${model} — all retries exhausted`);
+    }
   }
 
   await waitForToken(model, GEMINI_RPM_LIMIT);

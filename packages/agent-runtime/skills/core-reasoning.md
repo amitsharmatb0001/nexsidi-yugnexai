@@ -9,6 +9,10 @@ them.
 
 ---
 
+## RULE 0 — Enclose Reasoning in <thinking> Tags
+
+All restatements, assumptions, plans, step-by-step reasoning, and self-checks must be enclosed within <thinking>...</thinking> tags. You may write conversational thoughts or analyze files inside the thinking block, but any tool calls or final output must be placed outside the block. If you do not output a <thinking> block, the system will reject your completion.
+
 ## RULE 1 — Restate Before You Start
 
 Before doing anything, write three lines:

@@ -81,12 +81,25 @@ function deepikaFindingToFinding(f: DeepikaFinding): Finding {
  * scoring for Karan, severity-weighted ≥85 scoring (already computed on
  * `.passed`) for Navya/Deepika. Any failure short-circuits straight to fault
  * isolation — Tier 3 never runs against output that hasn't cleared static
- * adversarial QA. All three passing hands off to Tilotma's Tier 3 review.
+ * adversarial QA. All three passing hands off to Tilotma's Tier 3 review —
+ * UNLESS `includeTier3` is false.
+ *
+ * 2026-07-11: real bug found live — traced the full call graph and confirmed
+ * Tier 3 (Tilotma screenshotting the live app) was running as part of the
+ * PRE-DEPLOYMENT gate (stage5-qa-fix-loop.ts calls runStage5 before Riya/
+ * Stage 6 ever deploys anything). Tier 3 needs a reachable app; nothing
+ * deploys one until Stage 6, which never runs because Stage 5 can't pass
+ * without Tier 3 passing first — a structural deadlock, not a flaky
+ * environment issue. Stage 6's runRealLiveRetest already correctly re-runs
+ * this AFTER a real deploy, pointed at the real URL — that's the only place
+ * Tier 3 belongs. `includeTier3` defaults to true for backward compat with
+ * that live-retest path; the pre-deployment gate explicitly passes false.
  */
 export async function runStage5WithAgents(
   projectId: string,
   stage4Result: Stage4Result,
   agents: Stage5Agents,
+  includeTier3 = true,
 ): Promise<Stage5Result> {
   const [navyaResult, karanResult, deepikaResult] = await Promise.all([
     agents.runNavya(projectId, stage4Result),
@@ -110,6 +123,10 @@ export async function runStage5WithAgents(
       ...deepikaResult.findings.map(deepikaFindingToFinding),
     ];
     return { pass: false, findings, faultAgent: identifyFaultAgent(findings) };
+  }
+
+  if (!includeTier3) {
+    return { pass: true, findings: [] };
   }
 
   const tier3 = await agents.runTier3Review(projectId, stage4Result);
@@ -190,18 +207,33 @@ function walkDir(root: string, dir: string, label: string, chunks: string[]): vo
   }
 }
 
-/** Real entry point — wires the actual Navya/Karan/Deepika/Tier3 calls. */
-export async function runStage5(projectId: string, stage4Result: Stage4Result): Promise<Stage5Result> {
-  const [{ run: runNavyaReal }, karanModule, { run: runDeepikaReal }, { runTier3Review: runTier3ReviewReal }] =
+/**
+ * Real entry point — wires the actual Navya/Karan/Deepika/Tier3 calls.
+ *
+ * 2026-07-11: switched from run()'s one-shot text-dump (collectCode) to
+ * runExploring()'s tool-calling loop (qa-loop.ts) — root-caused live
+ * (stress-fix2-1783753726) that a one-shot call over the ENTIRE dumped
+ * codebase produced a finding that didn't match the actual code (Navya
+ * cited a `queryWhere` mutation that never happened). runExploring() makes
+ * the agent read_file the specific file before it's allowed to cite it —
+ * see finding-evidence.ts.
+ *
+ * `includeTier3` defaults to false: this function is called as the
+ * PRE-DEPLOYMENT gate (stage5-qa-fix-loop.ts, up to 5x per run) where
+ * nothing has deployed the app yet — Tier 3 would always fail there, a
+ * structural deadlock (see runStage5WithAgents' comment). Stage 6's
+ * runRealLiveRetest explicitly passes true, since IT runs after a real
+ * deploy and points Tier 3 at the actual live URL.
+ */
+export async function runStage5(projectId: string, stage4Result: Stage4Result, includeTier3 = false): Promise<Stage5Result> {
+  const [{ runExploring: runNavyaReal }, karanModule, { runExploring: runDeepikaReal }, { runTier3Review: runTier3ReviewReal }] =
     await Promise.all([
       import("../../../agents/qa/navya/src/index.ts"),
       import("../../../agents/qa/karan/src/index.ts"),
       import("../../../agents/qa/deepika/src/index.ts"),
       import("../../../agents/tilotma/src/tier3-review.ts"),
     ]);
-  const runKaranReal = karanModule.run;
-
-  const iteration = 1; // Stage 5 runs QA once per Stage 4 handoff; Stage 6 owns the live-retest loop.
+  const runKaranReal = karanModule.runExploring;
 
   const labeledDirs = (s4: Stage4Result): LabeledDir[] => [
     { label: "backend", path: s4.backendOutputDir },
@@ -209,11 +241,11 @@ export async function runStage5(projectId: string, stage4Result: Stage4Result): 
   ];
 
   const agents: Stage5Agents = {
-    runNavya: (pid, s4) => runNavyaReal(pid, iteration, collectCode(labeledDirs(s4))),
-    runKaran: (pid, s4) => runKaranReal(pid, iteration, collectCode(labeledDirs(s4))),
-    runDeepika: (pid, s4) => runDeepikaReal(pid, iteration, collectCode(labeledDirs(s4))),
+    runNavya: (pid, s4) => runNavyaReal(pid, labeledDirs(s4)),
+    runKaran: (pid, s4) => runKaranReal(pid, labeledDirs(s4)),
+    runDeepika: (pid, s4) => runDeepikaReal(pid, labeledDirs(s4)),
     runTier3Review: (pid, s4) => runTier3ReviewReal(pid, s4.frontendOutputDir),
   };
 
-  return runStage5WithAgents(projectId, stage4Result, agents);
+  return runStage5WithAgents(projectId, stage4Result, agents, includeTier3);
 }

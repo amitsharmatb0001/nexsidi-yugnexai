@@ -200,9 +200,10 @@ Rules:
 - sharedTypes: full TypeScript — interfaces, enums, no imports needed (standalone).
 - Every endpoint must have auth=true unless it's a public health check.
 - Clerk JWT middleware handles auth — backend checks req.auth.userId from Clerk.
+- Since Clerk auth is used, any user_id column in database tables MUST be text() instead of uuid(), and MUST NOT use "references" because Clerk handles user records externally.
 - drizzleType values: uuid(), text(), varchar(n), integer(), boolean(),
   timestamp({ withTimezone: true }), date(), jsonb()
-- For all FK columns: add "references" field: "parent_table.id"
+- For all FK columns (other than user_id/Clerk columns): add "references" field: "parent_table.id"
 - independenceVerified must be true: shubham/aanya/pranav tasks must not depend on each other's
   in-progress files. They only share the contract defined in this BuildPlan.
 - DO NOT include tasks that are: "research", "review", "check" — only code-producing tasks.

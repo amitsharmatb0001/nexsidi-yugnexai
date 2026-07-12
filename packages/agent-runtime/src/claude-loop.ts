@@ -31,6 +31,8 @@ import { execHttpRequest } from "./tools/http.ts";
 import { execDockerCompose } from "./tools/docker.ts";
 import { execWebSearch } from "./tools/websearch.ts";
 import { execScreenshot } from "./tools/screenshot.ts";
+import { BrowserToolset, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
+import { execDbQuery } from "./tools/db.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
@@ -100,10 +102,87 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   // Phase 5 Task 6: same skills-at-runtime injection as loop.ts.
   const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt });
 
-  const messages: ClaudeMessage[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: config.initialMessage },
-  ];
+  let messages: ClaudeMessage[] = [];
+  let loadedFromDb = false;
+
+  if (config.projectId) {
+    try {
+      const { db } = await import("@nexsidi/db");
+      const { agentConversations } = await import("@nexsidi/db/schema");
+      const { eq, and } = await import("drizzle-orm");
+
+      const existing = await db
+        .select()
+        .from(agentConversations)
+        .where(
+          and(
+            eq(agentConversations.projectId, config.projectId),
+            eq(agentConversations.agentName, config.agentName)
+          )
+        )
+        .limit(1);
+
+      if (existing[0]) {
+        messages = existing[0].messages as ClaudeMessage[];
+        const sysIdx = messages.findIndex((m) => m.role === "system");
+        if (sysIdx >= 0) {
+          messages[sysIdx] = { role: "system", content: systemPrompt };
+        }
+        messages.push({ role: "user", content: config.initialMessage });
+        loadedFromDb = true;
+        console.log(`[${config.agentName}:claude-agent] Loaded existing conversation history (${messages.length} messages) from database`);
+      }
+    } catch (e) {
+      console.error(`[${config.agentName}:claude-agent] Failed to load history:`, e);
+    }
+  }
+
+  if (!loadedFromDb) {
+    messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: config.initialMessage },
+    ];
+  }
+
+  const saveHistory = async () => {
+    if (config.projectId) {
+      try {
+        const { db } = await import("@nexsidi/db");
+        const { agentConversations } = await import("@nexsidi/db/schema");
+        const { eq, and } = await import("drizzle-orm");
+
+        const existing = await db
+          .select()
+          .from(agentConversations)
+          .where(
+            and(
+              eq(agentConversations.projectId, config.projectId),
+              eq(agentConversations.agentName, config.agentName)
+            )
+          )
+          .limit(1);
+
+        if (existing[0]) {
+          await db
+            .update(agentConversations)
+            .set({
+              messages,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentConversations.id, existing[0].id));
+        } else {
+          await db.insert(agentConversations).values({
+            projectId: config.projectId,
+            agentName: config.agentName,
+            messages,
+          });
+        }
+        console.log(`[${config.agentName}:claude-agent] Saved conversation history (${messages.length} messages) to database`);
+      } catch (e) {
+        console.error(`[${config.agentName}:claude-agent] Failed to save history:`, e);
+      }
+    }
+  };
 
   const filesWritten: string[] = [];
   const errors: string[] = [];
@@ -112,6 +191,10 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
 
   console.log(`[${config.agentName}:claude-agent] Starting — model: claude-sonnet-5, maxIter: ${MAX_ITERATIONS}`);
 
+  // Interactive-browser QA session (Tilotma Tier 3) — same lifecycle as
+  // loop.ts: lazily spawned, closed in the finally on every exit path.
+  const browserToolset = config.enableBrowser ? new BrowserToolset() : null;
+  try {
   while (iterations < MAX_ITERATIONS) {
     iterations++;
     console.log(`[${config.agentName}:claude-agent] Iteration ${iterations}`);
@@ -129,6 +212,15 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
       // Try to continue — next iteration might succeed after a cooldown
       await new Promise((r) => setTimeout(r, 5000));
       continue;
+    }
+
+    if (response.content) {
+      const thinkingMatch = response.content.match(/<thinking>([\s\S]*?)<\/thinking>/);
+      if (thinkingMatch?.[1]) {
+        console.log(`[${config.agentName}:claude-agent] Thinking:\n${thinkingMatch[1].trim()}`);
+      } else {
+        console.log(`[${config.agentName}:claude-agent] Response:\n${response.content.trim()}`);
+      }
     }
 
     // Push the full raw content blocks (not just extracted text) so
@@ -221,6 +313,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           if (!a.verification_passed) {
             errors.push("Agent completed without verification passing");
           }
+          await saveHistory();
           return {
             success: a.verification_passed,
             summary: a.summary,
@@ -229,8 +322,16 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
             errors,
           };
         }
+        case "db_query": {
+          result = await execDbQuery(args as { query: string });
+          break;
+        }
         default: {
-          result = { status: "error", summary: `Unknown tool: ${toolName}` };
+          if (browserToolset && BROWSER_TOOL_NAMES.has(toolName)) {
+            result = await browserToolset.exec(toolName, args as Record<string, unknown>);
+          } else {
+            result = { status: "error", summary: `Unknown tool: ${toolName}` };
+          }
         }
       }
 
@@ -240,6 +341,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
     messages.push({ role: "user", content: toolResultBlocks });
   }
 
+  await saveHistory();
   return {
     success: false,
     summary: abortedOnUnrecoverableError
@@ -249,6 +351,9 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
     iterations,
     errors: abortedOnUnrecoverableError ? errors : [...errors, "Max iterations exceeded"],
   };
+  } finally {
+    if (browserToolset) await browserToolset.close();
+  }
 }
 
 // ── Escalation wrapper ──────────────────────────────────────────────────────
