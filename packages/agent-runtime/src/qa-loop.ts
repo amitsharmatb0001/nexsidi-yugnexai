@@ -22,6 +22,9 @@ import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { checkFindingsEvidence, checkReviewCoverage } from "./enforce/finding-evidence.ts";
+import { detectStuckLoop } from "./enforce/stuck-loop.ts";
+
+export { detectStuckLoop };
 
 export const QA_MAX_ITERATIONS = 30;
 
@@ -84,26 +87,6 @@ function walkLabeled(root: string, dir: string, label: string, out: string[]): v
       out.push(`${label}/${full.slice(root.length + 1).replace(/\\/g, "/")}`);
     }
   }
-}
-
-// 2026-07-12: real bug found live (zero-intervention autonomous test) —
-// Navya called read_file on the IDENTICAL path 20 times in a row without
-// ever calling submit_findings, burning the full QA_MAX_ITERATIONS budget
-// (paid Gemini calls) before falling through to the generic "Max iterations
-// reached" path with no indication of WHAT the agent was actually stuck on.
-// Karan separately stopped mid-turn the same run. Both surfaced only as a
-// vague synthetic CRITICAL "review-incomplete" finding, which then triggered
-// unnecessary Shubham fix rounds against a harness problem, not a real code
-// defect. This is a pure, independently-testable check: 3 consecutive
-// identical tool-call signatures (same tool, same args) means the agent is
-// not making progress — same "3 consecutive rounds, no improvement" window
-// already used elsewhere in this codebase (stage5-qa-fix-loop.ts's
-// STUCK_THRESHOLD, CLAUDE.md's stuck-state guidance) — stop EARLY instead of
-// grinding to the full 30-iteration cap.
-export function detectStuckLoop(recentSignatures: readonly string[], threshold = 3): boolean {
-  if (recentSignatures.length < threshold) return false;
-  const last = recentSignatures.slice(-threshold);
-  return last.every((s) => s === last[0]);
 }
 
 export function resolveLabeledFile(dirs: LabeledDir[], labeledPath: string): string | null {

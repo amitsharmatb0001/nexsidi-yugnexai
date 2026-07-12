@@ -14,6 +14,7 @@ import { execDbQuery, DB_QUERY_TOOL_DEF } from "./tools/db.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
 import { createStrikeCounter, buildFailureSignature, type StrikeCounter } from "./enforce/strikes.ts";
+import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import type { ToolResult } from "./tools/file.ts";
 import type { ModelId } from "@nexsidi/llm-client";
@@ -253,6 +254,14 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   // Phase 5 Task 4: mechanical 3-strike escalation — see enforce/strikes.ts.
   const strikeCounter = createStrikeCounter();
   let exhaustedThreeStrikes = false;
+  // 2026-07-12: real bug found live — evaluateCommandStrike only fires on a
+  // run_command call FAILING identically. It never catches a call that keeps
+  // SUCCEEDING without making progress (read_file on the same path,
+  // docker_compose logs on the same service) — that grinds silently to
+  // MAX_ITERATIONS with no diagnostic. Same detectStuckLoop used in
+  // qa-loop.ts (Navya/Karan/Deepika) and gemini-loop.ts, applied here too so
+  // the NIM path gets the same early exit.
+  const recentCallSignatures: string[] = [];
 
   const modelChain: ModelId[] = [config.model, ...(config.fallbackModels ?? [])];
   let modelIdx = 0;
@@ -364,6 +373,15 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         return { success: false, summary: choice.message.content ?? "no content", filesWritten, iterations, errors: [...errors, "Agent stopped without calling task_complete"], escalationReason: "cannot_finish" };
       }
       continue;
+    }
+
+    const turnSignature = sanitizedToolCalls.map((c) => `${c.function.name}:${c.function.arguments}`).join("|");
+    recentCallSignatures.push(turnSignature);
+    if (detectStuckLoop(recentCallSignatures)) {
+      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${MAX_ITERATIONS}-iteration cap.`;
+      console.log(`[${config.agentName}:agent] ${reason}`);
+      await saveHistory();
+      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish" };
     }
 
     // Execute all tool calls

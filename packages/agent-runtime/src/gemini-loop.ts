@@ -18,6 +18,7 @@ import {
 } from "@nexsidi/llm-client";
 import { runAgent, buildToolList, evaluateCommandStrike, MAX_ITERATIONS, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
 import { createStrikeCounter } from "./enforce/strikes.ts";
+import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { execWriteFile, execReadFile, execListFiles, execEditFile, execDeleteFile } from "./tools/file.ts";
 import { execRunCommand } from "./tools/command.ts";
 import { execHttpRequest } from "./tools/http.ts";
@@ -164,6 +165,14 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   // give up after several consecutive no-tool-call turns.
   let noToolCallStreak = 0;
   const MAX_NO_TOOL_CALL_TURNS = 3;
+  // 2026-07-12: real bug found live — the existing strike counter
+  // (evaluateCommandStrike, below) only fires on a run_command call FAILING
+  // identically. It never catches a call that keeps SUCCEEDING without
+  // making progress (read_file on the same path, docker_compose logs on the
+  // same service) — that grinds silently to MAX_ITERATIONS with no
+  // diagnostic. Same detectStuckLoop used in qa-loop.ts for Navya/Karan/
+  // Deepika, applied here so Shubham/Aanya/Riya get the same early exit.
+  const recentCallSignatures: string[] = [];
 
   console.log(`[${config.agentName}:gemini-agent] Starting — model: ${config.geminiModel ?? process.env.GEMINI_MODEL ?? "gemini-3.5-flash"}, maxIter: ${MAX_ITERATIONS}`);
 
@@ -258,6 +267,15 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       continue;
     }
     noToolCallStreak = 0; // a real tool call resets the streak
+
+    const turnSignature = response.toolCalls.map((c) => `${c.name}:${JSON.stringify(c.input)}`).join("|");
+    recentCallSignatures.push(turnSignature);
+    if (detectStuckLoop(recentCallSignatures)) {
+      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${MAX_ITERATIONS}-iteration cap.`;
+      console.log(`[${config.agentName}:gemini-agent] ${reason}`);
+      await saveHistory();
+      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish" };
+    }
 
     const responseParts: GeminiPart[] = [];
     for (const call of response.toolCalls) {
