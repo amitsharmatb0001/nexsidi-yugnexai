@@ -284,7 +284,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
 
       console.log(`[${config.agentName}:gemini-agent] Tool call: ${toolName}(${JSON.stringify(args).slice(0, 120)})`);
 
-      let result: Record<string, unknown>;
+      let result: Record<string, any>;
 
       switch (toolName) {
         case "write_file": {

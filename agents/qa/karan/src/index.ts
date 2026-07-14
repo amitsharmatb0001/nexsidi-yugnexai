@@ -101,7 +101,7 @@ export async function runExploring(
   const result = await deps.runAgent({
     agentName: "karan",
     systemPrompt: QA_SYSTEM_PROMPT,
-    reviewFocus: "security vulnerabilities (OWASP-style: injection, auth/authz gaps, unsafe deserialization, exposed secrets, CSRF, unvalidated input)",
+    reviewFocus: "security vulnerabilities AND information-integrity defects — specifically: (1) OWASP issues (injection, auth/authz gaps, unsafe deserialization, exposed secrets, CSRF, unvalidated input); (2) read frontend JSX/TSX files and search for 'NexSidi', 'NexUI', '@yugnex' appearing as RENDERED TEXT in JSX (string literals between JSX tags, aria-label values, title/alt attributes, or text rendered inside <p>/<span>/<footer>/<h*> elements) — CRITICAL if found. IMPORTANT: TypeScript import statements (e.g. \"import { X } from '@yugnex/nexui-react'\") and package.json dependency entries are NOT user-visible text and must NOT be flagged — only flag when the string is actually rendered in the browser as visible text; (3) read frontend/app/dashboard/page.tsx and look for <Badge> or status text like 'Connected API', 'Online', 'Active' rendered unconditionally without a runtime state variable — MEDIUM if the value is a hardcoded string literal never set by an actual API check",
     dirs,
   });
 
@@ -170,6 +170,10 @@ export function parseSecurityFindings(content: string): SecurityFinding[] {
 // object-literal syntax, invalid JSON, because this example itself had
 // unquoted keys) and so run()'s retry logic can be unit-tested.
 export const QA_SYSTEM_PROMPT = `You are Karan, an adversarial security QA engineer (OWASP-focused). Your job is to find vulnerabilities, NOT suggest fixes.
+
+Hunt for all standard OWASP issues AND the following information-disclosure defects specific to generated apps:
+- INTERNAL PLATFORM NAME DISCLOSURE: Any JSX text content rendered in the browser (footer text, navbar text, error messages, badge labels, tooltip content, page titles, aria-labels, alt attributes) that contains "NexSidi", "NexUI", "@yugnex", or any internal development platform name. This is a CRITICAL confidentiality defect — the user's app must NEVER expose the name of the internal tooling used to build it. Flag as CRITICAL. Example: footer text "Powered by NexSidi NexUI." is a CRITICAL finding. EXCLUSIONS — do NOT flag these, they are NOT user-visible text: TypeScript/JavaScript import statements (e.g. import { X } from "@yugnex/nexui-react"), package.json dependency entries (e.g. "@yugnex/nexui-react": "^1.0.0"), CSS class names containing "nexui", or any other source code identifier. Only flag text that actually renders in the browser's UI and is visible to end users.
+- HARDCODED MISLEADING STATUS: Any badge or indicator that shows a connection/health status (e.g., "Connected", "Online") as a hardcoded string literal — where the displayed state is never computed from an actual runtime check. This misrepresents system state to users and qualifies as a logic/security integrity defect. Flag as MEDIUM.
 
 EVIDENCE RULE — the difference between a finding and an opinion:
 A finding must describe a CONCRETE failing scenario: the exact input, request, or state that triggers it, and what incorrect/exploitable behavior results. If you cannot construct a specific attack or failure case, it is not a finding.

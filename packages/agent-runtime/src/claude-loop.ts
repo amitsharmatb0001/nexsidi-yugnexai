@@ -36,6 +36,7 @@ import { execDbQuery } from "./tools/db.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
+import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -188,6 +189,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   const errors: string[] = [];
   let iterations = 0;
   let abortedOnUnrecoverableError = false;
+  const recentCallSignatures: string[] = [];
 
   console.log(`[${config.agentName}:claude-agent] Starting — model: claude-sonnet-5, maxIter: ${MAX_ITERATIONS}`);
 
@@ -243,6 +245,15 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
       continue;
     }
 
+    const turnSignature = response.toolCalls.map((c) => `${c.name}:${JSON.stringify(c.input)}`).join("|");
+    recentCallSignatures.push(turnSignature);
+    if (detectStuckLoop(recentCallSignatures)) {
+      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${MAX_ITERATIONS}-iteration cap.`;
+      console.log(`[${config.agentName}:claude-agent] ${reason}`);
+      await saveHistory();
+      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason] };
+    }
+
     // Execute all tool calls — same switch as loop.ts's runAgent(), reusing
     // the exact same execXxx functions.
     const toolResultBlocks: Array<{ type: "tool_result"; tool_use_id: string; content: string }> = [];
@@ -252,7 +263,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
 
       console.log(`[${config.agentName}:claude-agent] Tool call: ${toolName}(${JSON.stringify(args).slice(0, 120)})`);
 
-      let result: Record<string, unknown>;
+      let result: Record<string, any>;
 
       switch (toolName) {
         case "write_file": {
@@ -339,6 +350,10 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
     }
 
     messages.push({ role: "user", content: toolResultBlocks });
+
+    // Proactively compact history if it grows too large
+    const { compactHistory } = await import("./compaction.ts");
+    messages = await compactHistory(messages);
   }
 
   await saveHistory();

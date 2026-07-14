@@ -44,7 +44,7 @@ export const projects = pgTable("projects", {
 // Append-only: no UPDATE except verified flag, no DELETE ever.
 export const contextChain = pgTable("context_chain", {
   id:          uuid("id").primaryKey().defaultRandom(),
-  projectId:   varchar("project_id", { length: 12 }).notNull(),
+  projectId:   varchar("project_id", { length: 64 }).notNull(),
   agentFrom:   text("agent_from").notNull(),
   agentTo:     text("agent_to").notNull(),
   contextHash: char("context_hash", { length: 64 }).notNull(),
@@ -60,7 +60,7 @@ export const contextChain = pgTable("context_chain", {
 // This table stores each agent's result separately to enforce that rule.
 export const qaResults = pgTable("qa_results", {
   id:          uuid("id").primaryKey().defaultRandom(),
-  projectId:   varchar("project_id", { length: 12 }).notNull(),
+  projectId:   varchar("project_id", { length: 64 }).notNull(),
   iteration:   integer("iteration").notNull(),
   agentName:   text("agent_name").notNull(), // navya | karan | deepika
   score:       integer("score").notNull(),
@@ -75,7 +75,7 @@ export const qaResults = pgTable("qa_results", {
 // ─── Stuck-state log (Fix #7: persistent counter for Temporal workflow) ───────
 export const stuckStateLog = pgTable("stuck_state_log", {
   id:            uuid("id").primaryKey().defaultRandom(),
-  projectId:     varchar("project_id", { length: 12 }).notNull(),
+  projectId:     varchar("project_id", { length: 64 }).notNull(),
   iteration:     integer("iteration").notNull(),
   minScore:      integer("min_score").notNull(),
   improvement:   integer("improvement").notNull(), // vs 3 iterations ago
@@ -88,7 +88,7 @@ export const stuckStateLog = pgTable("stuck_state_log", {
 // cipher = AES-256-GCM — full recovery for incident response
 export const promptAudit = pgTable("prompt_audit", {
   id:         uuid("id").primaryKey().defaultRandom(),
-  projectId:  varchar("project_id", { length: 12 }),
+  projectId:  varchar("project_id", { length: 64 }),
   agentName:  text("agent_name").notNull(),
   hash:       char("hash", { length: 64 }).notNull(),
   ciphertext: text("ciphertext").notNull(),
@@ -108,7 +108,7 @@ export const instincts = pgTable("instincts", {
   confidence: text("confidence").notNull(), // "0.3" | "0.5" | "0.7" | "0.9"
   domain:     text("domain").notNull(),
   scope:      text("scope").notNull().default("project"), // project | global
-  projectId:  varchar("project_id", { length: 12 }),
+  projectId:  varchar("project_id", { length: 64 }),
   outcome:    text("outcome").notNull(), // mistake | success
   createdAt:  timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -116,7 +116,7 @@ export const instincts = pgTable("instincts", {
 // ─── Agent Conversations (Persistent State across Fix Iterations) ────────────
 export const agentConversations = pgTable("agent_conversations", {
   id:         uuid("id").primaryKey().defaultRandom(),
-  projectId:  varchar("project_id", { length: 12 }).notNull(),
+  projectId:  varchar("project_id", { length: 64 }).notNull(),
   agentName:  text("agent_name").notNull(),
   messages:   jsonb("messages").notNull().default([]),
   createdAt:  timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

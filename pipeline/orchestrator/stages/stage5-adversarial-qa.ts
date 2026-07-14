@@ -107,6 +107,23 @@ export async function runStage5WithAgents(
     agents.runDeepika(projectId, stage4Result),
   ]);
 
+  try {
+    const { writeFileSync, mkdirSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+    const projectBuildDir = join(buildDir, projectId);
+    mkdirSync(projectBuildDir, { recursive: true });
+    const submissionsPath = join(projectBuildDir, "qa-submissions.json");
+    const submissions = [
+      { agentName: "navya", findings: navyaResult.findings },
+      { agentName: "karan", findings: karanResult.findings },
+      { agentName: "deepika", findings: deepikaResult.findings },
+    ];
+    writeFileSync(submissionsPath, JSON.stringify(submissions, null, 2), "utf-8");
+  } catch (err) {
+    console.error(`[stage5] Failed to save QA submissions: ${String(err)}`);
+  }
+
   // Karan: severity-weighted ≥85 per CLAUDE.md System A (2026-07-09 —
   // scoreSecurityFindings was zero-tolerance before that, a deviation from
   // the spec; see its own comment for the convergence evidence). Navya/

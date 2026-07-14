@@ -53,124 +53,250 @@ export interface PipelineStages {
   stage2: (projectId: string, spec: unknown) => Promise<GatewayDecision>;
   stage3: (projectId: string, plan: unknown) => Promise<Stage3Output>;
   stage4: (projectId: string, plan: unknown, dag: unknown) => Promise<Stage4Output>;
-  // `plan` added as a 3rd param (A6) — NOT 2nd, so existing 2-arg stubs
-  // (positionally expecting stage4Result second) keep working unchanged.
-  // runQAFixLoop (the real Stage 5 wiring below) needs `plan` to call
-  // Shubham/Aanya's fix() functions.
   stage5: (projectId: string, stage4Result: Stage4Output, plan: unknown) => Promise<Stage5Output>;
-  stage6: (projectId: string, stage4Result: Stage4Output) => Promise<Stage6Output>;
+  stage5_5?: (projectId: string, stage4Result: Stage4Output) => Promise<{ pass: boolean; reason?: string }>;
+  stage6: (projectId: string, stage4Result: Stage4Output, plan: unknown) => Promise<Stage6Output>;
 }
 
 /**
- * Runs the full 6-stage pipeline — Stage 1 (requirements) -> Stage 2
- * (approval gate) -> Stage 3 (UI preview + second approval gate) -> Stage 4
- * (multi-agent dev) -> Stage 5 (adversarial QA) -> Stage 6 (deploy) — using
- * injected stage implementations, checkpointing the result of each stage as
- * it completes. Two gates can stop the pipeline before it reaches Stage 6:
- *
- *   - Stage 2's decision is not "proceed" -> stops before Stage 3 runs.
- *   - Stage 3's own human approval gate resolves to `locked: false` -> stops
- *     before Stage 4 runs (nothing has been generated yet at that point, so
- *     there is nothing to roll back).
- *   - Stage 5's adversarial QA fails (`pass: false`) AND the fix loop (A6,
- *     see stage5-qa-fix-loop.ts) can't get it passing within its iteration
- *     budget -> stops before Stage 6 deploys an unvetted build. The real
- *     `stage5` implementation wired in `runPipeline()` below is
- *     `runQAFixLoop`, not the bare single-pass `runStage5` — on failure it
- *     routes findings to the fault-isolated agent (Shubham/Aanya only;
- *     Pranav has no agentic fix path yet), retests, and repeats up to a
- *     small cap or until stuck-detection fires. `PipelineStages.stage5`'s
- *     signature is unchanged (`Stage5Output` already covers `pass`/
- *     `findings`/`faultAgent`) — only which function gets passed for it
- *     changed, so `runPipelineWithStages` and its tests needed no changes.
- *
- * Stage 1 now runs Arjun (agents/arjun/src/index.ts) after Saanvi, so it
- * produces the locked `spec` (ProjectSpec), a real `plan` (BuildPlan), and a
- * `dag` (Dag). Stage 2 receives `spec` — it summarizes
- * spec.name/description/features for human review, fields BuildPlan does not
- * carry. Stage 3 and Stage 4 both receive `plan` — Aanya's and
- * Pranav's/Shubham's generators require the real BuildPlan shape
- * (apiContract, sharedTypes, dbSchema, ...). Stage 4 also receives `dag`.
- * See stage1-requirements.ts, stage3-ui-preview.ts, and
- * stage4-multi-agent-dev.ts for the full rationale.
+ * Runs the full 6-stage pipeline using an execution-pointer state machine.
+ * Classifies failures (INFRA, PROMPT_FAILURE, CODE_BUG) and implements rollback to previous stages after 3 consecutive failures.
  */
 export async function runPipelineWithStages(
   projectId: string,
   userInput: string,
   stages: PipelineStages
 ): Promise<void> {
-  const { readCheckpoint } = await import("./checkpoint.ts");
+  const { readCheckpoint, writeCheckpoint, deleteCheckpoint } = await import("./checkpoint.ts");
 
-  let stage1Result = readCheckpoint<Stage1Output>(projectId, "01-requirements");
-  if (stage1Result) {
-    console.log(`[orchestrator] Resuming: Loaded Stage 1 (01-requirements) from checkpoint`);
-  } else {
-    stage1Result = await stages.stage1(projectId, userInput);
-    writeCheckpoint(projectId, "01-requirements", stage1Result);
-  }
+  let stage1Result: Stage1Output | null = null;
+  let decision: GatewayDecision | null = null;
+  let stage3Result: Stage3Output | null = null;
+  let stage4Result: Stage4Output | null = null;
+  let stage5Result: Stage5Output | null = null;
+  let stage6Result: Stage6Output | null = null;
 
-  let decision = readCheckpoint<GatewayDecision>(projectId, "02-gateway");
-  if (decision) {
-    console.log(`[orchestrator] Resuming: Loaded Stage 2 (02-gateway) from checkpoint`);
-  } else {
-    decision = await stages.stage2(projectId, stage1Result.spec);
-    writeCheckpoint(projectId, "02-gateway", decision);
-  }
-
-  if (decision.decision !== "proceed") {
-    return; // blocked — stage3 does not run
-  }
-
-  let stage3Result = readCheckpoint<Stage3Output>(projectId, "03-ui-preview");
-  if (stage3Result) {
-    console.log(`[orchestrator] Resuming: Loaded Stage 3 (03-ui-preview) from checkpoint`);
-  } else {
-    stage3Result = await stages.stage3(projectId, stage1Result.plan);
-    writeCheckpoint(projectId, "03-ui-preview", stage3Result);
-  }
-
-  if (!stage3Result.locked) {
-    return; // Stage 3's own human approval gate declined — stage4 does not run
-  }
-
-  let stage4Result = readCheckpoint<Stage4Output>(projectId, "04-dev");
-  if (stage4Result) {
-    console.log(`[orchestrator] Resuming: Loaded Stage 4 (04-dev) from checkpoint`);
-  } else {
-    stage4Result = await stages.stage4(projectId, stage1Result.plan, stage1Result.dag);
-    writeCheckpoint(projectId, "04-dev", stage4Result);
-  }
-
-  let stage5Result = readCheckpoint<Stage5Output>(projectId, "05-qa");
-  const bypassQa = process.env.NEXSIDI_BYPASS_QA === "true";
-  
-  if (stage5Result && (stage5Result.pass || bypassQa)) {
-    console.log(`[orchestrator] Resuming: Loaded Stage 5 (05-qa) from successful checkpoint (or bypassed)`);
-    if (bypassQa) {
-      stage5Result.pass = true;
+  const stagesList = [
+    {
+      name: "01-requirements" as const,
+      run: async () => {
+        stage1Result = await stages.stage1(projectId, userInput);
+        writeCheckpoint(projectId, "01-requirements", stage1Result);
+      }
+    },
+    {
+      name: "02-gateway" as const,
+      run: async () => {
+        decision = await stages.stage2(projectId, stage1Result!.spec);
+        writeCheckpoint(projectId, "02-gateway", decision);
+      }
+    },
+    {
+      name: "03-ui-preview" as const,
+      run: async () => {
+        stage3Result = await stages.stage3(projectId, stage1Result!.plan);
+        writeCheckpoint(projectId, "03-ui-preview", stage3Result);
+      }
+    },
+    {
+      name: "04-dev" as const,
+      run: async () => {
+        stage4Result = await stages.stage4(projectId, stage1Result!.plan, stage1Result!.dag);
+        writeCheckpoint(projectId, "04-dev", stage4Result);
+      }
+    },
+    {
+      name: "05-qa" as const,
+      run: async () => {
+        const bypassQa = process.env.NEXSIDI_BYPASS_QA === "true";
+        if (bypassQa) {
+          console.log(`[orchestrator] Bypassing Stage 5 QA check per env var`);
+          stage5Result = { pass: true, findings: [] };
+        } else {
+          stage5Result = await stages.stage5(projectId, stage4Result!, stage1Result!.plan);
+        }
+        writeCheckpoint(projectId, "05-qa", stage5Result);
+      }
+    },
+    {
+      name: "05b-build-gate" as const,
+      run: async () => {
+        if (stages.stage5_5) {
+          const r = await stages.stage5_5(projectId, stage4Result!);
+          writeCheckpoint(projectId, "05b-build-gate", r);
+        }
+      }
+    },
+    {
+      name: "06-deployment" as const,
+      run: async () => {
+        stage6Result = await stages.stage6(projectId, stage4Result!, stage1Result!.plan);
+        writeCheckpoint(projectId, "06-deployment", stage6Result);
+      }
     }
-  } else {
-    if (bypassQa) {
-      console.log(`[orchestrator] Bypassing Stage 5 QA check per NEXSIDI_BYPASS_QA environment variable`);
-      stage5Result = { pass: true, findings: [] };
-      writeCheckpoint(projectId, "05-qa", stage5Result);
-    } else {
-      stage5Result = await stages.stage5(projectId, stage4Result, stage1Result.plan);
-      writeCheckpoint(projectId, "05-qa", stage5Result);
+  ];
+
+  const stageRetries: Record<string, number> = {};
+  let index = 0;
+
+  while (index < stagesList.length) {
+    const currentStage = stagesList[index]!;
+    
+    // Check if checkpoint exists
+    const hasCheckpoint = readCheckpoint<any>(projectId, currentStage.name);
+    if (hasCheckpoint) {
+      const isSuccessfulQA = currentStage.name === "05-qa" && (hasCheckpoint.pass || process.env.NEXSIDI_BYPASS_QA === "true");
+      const isSuccessfulBuildGate = currentStage.name === "05b-build-gate" && hasCheckpoint.pass;
+      const isSuccessfulDeploy = currentStage.name === "06-deployment" && hasCheckpoint.success;
+      
+      const shouldSkip = currentStage.name !== "05-qa" && 
+                         currentStage.name !== "05b-build-gate" && 
+                         currentStage.name !== "06-deployment" || 
+                         isSuccessfulQA || 
+                         isSuccessfulBuildGate || 
+                         isSuccessfulDeploy;
+
+      if (shouldSkip) {
+        console.log(`[orchestrator] Resuming: Loaded Stage ${currentStage.name} from checkpoint`);
+        if (currentStage.name === "01-requirements") stage1Result = hasCheckpoint;
+        if (currentStage.name === "02-gateway") decision = hasCheckpoint;
+        if (currentStage.name === "03-ui-preview") stage3Result = hasCheckpoint;
+        if (currentStage.name === "04-dev") stage4Result = hasCheckpoint;
+        if (currentStage.name === "05-qa") {
+          stage5Result = hasCheckpoint;
+          if (process.env.NEXSIDI_BYPASS_QA === "true") stage5Result!.pass = true;
+        }
+        if (currentStage.name === "06-deployment") stage6Result = hasCheckpoint;
+        
+        // Check gate conditions
+        if (currentStage.name === "02-gateway" && decision!.decision !== "proceed") return;
+        if (currentStage.name === "03-ui-preview" && !stage3Result!.locked) return;
+        if (currentStage.name === "05-qa" && !stage5Result!.pass && process.env.NEXSIDI_BYPASS_QA !== "true") return;
+        if (currentStage.name === "05b-build-gate" && !hasCheckpoint.pass) {
+          console.log(`[orchestrator] Loaded Stage 5.5 failed build gate - stopping`);
+          return;
+        }
+
+        index++;
+        continue;
+      }
+    }
+
+    try {
+      await currentStage.run();
+      
+      // Post-run validation and variable assignments
+      if (currentStage.name === "02-gateway" && decision!.decision !== "proceed") return;
+      if (currentStage.name === "03-ui-preview" && !stage3Result!.locked) return;
+      if (currentStage.name === "05-qa" && !stage5Result!.pass && process.env.NEXSIDI_BYPASS_QA !== "true") return;
+      if (currentStage.name === "05b-build-gate") {
+        const buildGateRes = readCheckpoint<any>(projectId, "05b-build-gate");
+        if (buildGateRes && !buildGateRes.pass) {
+          console.log(`[orchestrator] Stage 5.5 build gate FAILED — ${buildGateRes.reason ?? "TypeScript compilation error"}`);
+          return;
+        }
+      }
+      
+      index++;
+    } catch (err: any) {
+      const errMsg = err.message || String(err);
+      console.error(`[orchestrator] Error in stage ${currentStage.name}: ${errMsg}`);
+      
+      // Classify error
+      const isInfra = errMsg.includes("ECONNREFUSED") || 
+                      errMsg.includes("fetch failed") || 
+                      errMsg.includes("Docker") || 
+                      errMsg.includes("network") || 
+                      errMsg.includes("timeout") || 
+                      errMsg.includes("rate limit") || 
+                      errMsg.includes("overloaded");
+                      
+      const isPromptFailure = errMsg.includes("JSON") || 
+                              errMsg.includes("parse") || 
+                              errMsg.includes("could not be parsed") || 
+                              errMsg.includes("envelope mismatch") || 
+                              errMsg.includes("evidence") || 
+                              errMsg.includes("validation");
+      
+      stageRetries[currentStage.name] = (stageRetries[currentStage.name] || 0) + 1;
+      
+      if (stageRetries[currentStage.name] >= 3) {
+        console.warn(`[orchestrator] Stage ${currentStage.name} failed 3 times. Deleting checkpoint and rolling back...`);
+        deleteCheckpoint(projectId, currentStage.name);
+        
+        // Find previous checkpoint to roll back to
+        let prevIdx = index - 1;
+        while (prevIdx >= 0) {
+          const prevStage = stagesList[prevIdx]!;
+          deleteCheckpoint(projectId, prevStage.name);
+          stageRetries[prevStage.name] = 0;
+          prevIdx--;
+        }
+        
+        // Reset retries and point to start
+        stageRetries[currentStage.name] = 0;
+        index = 0; 
+        continue;
+      }
+      
+      if (isInfra) {
+        console.log(`[orchestrator] Infrastructure error detected. Sleeping 30s before retry...`);
+        await new Promise(resolve => setTimeout(resolve, 30000));
+      } else if (isPromptFailure) {
+        console.log(`[orchestrator] Prompt failure detected. Calling meta-supervisor inline...`);
+        try {
+          const { runMetaSupervisor } = await import("../meta-supervisor.ts");
+          await runMetaSupervisor(projectId);
+        } catch (supErr) {
+          console.error(`[orchestrator] inline meta-supervisor failed: ${String(supErr)}`);
+        }
+      }
     }
   }
+}
 
-  if (!stage5Result.pass) {
-    return; // Stage 5 adversarial QA failed — stage6 does not deploy an unvetted build
-  }
+// Stage 5.5 real implementation: runs `tsc --noEmit` against backend/ and
+// frontend/ in the project build directory.
+async function runTypescriptBuildGate(
+  projectId: string,
+): Promise<{ pass: boolean; reason?: string }> {
+  const { spawnSync } = await import("child_process");
+  const { existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const buildDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId);
 
-  let stage6Result = readCheckpoint<Stage6Output>(projectId, "06-deployment");
-  if (stage6Result && stage6Result.success) {
-    console.log(`[orchestrator] Resuming: Loaded Stage 6 (06-deployment) from successful checkpoint`);
-  } else {
-    stage6Result = await stages.stage6(projectId, stage4Result);
-    writeCheckpoint(projectId, "06-deployment", stage6Result);
+  for (const svc of ["backend", "frontend"] as const) {
+    const dir = join(buildDir, svc);
+    if (!existsSync(join(dir, "tsconfig.json"))) continue;
+
+    const localTscCmd = join(dir, "node_modules", ".bin", "tsc.cmd");
+    const localTscBash = join(dir, "node_modules", ".bin", "tsc");
+    const [cmd, args] = (() => {
+      if (process.platform === "win32" && existsSync(localTscCmd)) {
+        return [localTscCmd, ["--noEmit", "--skipLibCheck"]] as const;
+      } else if (existsSync(localTscBash)) {
+        return [localTscBash, ["--noEmit", "--skipLibCheck"]] as const;
+      } else {
+        return ["npx", ["tsc", "--noEmit", "--skipLibCheck"]] as const;
+      }
+    })();
+
+    const r = spawnSync(cmd, args, {
+      cwd: dir,
+      encoding: "utf-8",
+      timeout: 300_000,
+      shell: process.platform === "win32",
+    });
+
+    if (r.error) {
+      return { pass: false, reason: `${svc} TypeScript compilation could not start: ${r.error.message}` };
+    }
+    if (r.status !== 0) {
+      const output = (r.stderr || r.stdout || "").trim().slice(0, 3000);
+      return { pass: false, reason: `${svc} TypeScript compilation failed:\n${output}` };
+    }
   }
+  return { pass: true };
 }
 
 /** Real entry point — wires the actual Stage 1-6 implementations. */
@@ -187,22 +313,59 @@ export async function runPipeline(projectId: string, userInput: string): Promise
     import("./stages/stage2-gateway.ts"),
     import("./stages/stage3-ui-preview.ts"),
     import("./stages/stage4-multi-agent-dev.ts"),
-    // A6: the real Stage 5 wiring is the fix loop, not the bare single-pass
-    // runStage5 — see the doc comment above runPipelineWithStages.
     import("./stages/stage5-qa-fix-loop.ts"),
     import("./stages/stage6-deployment.ts"),
   ]);
 
-  await runPipelineWithStages(projectId, userInput, {
-    stage1: runStage1,
-    stage2: runStage2,
-    stage3: runStage3,
-    // runStage4's real signature takes the typed BuildPlan/Dag Arjun
-    // actually produces (not `unknown`) — cast at this single real-wiring
-    // boundary rather than loosening runStage4's own signature, same
-    // approach stage3-ui-preview.ts uses internally for its `plan` param.
-    stage4: (pid, plan, dag) => runStage4(pid, plan as BuildPlan, dag as Dag),
-    stage5: (pid, stage4Result, plan) => runQAFixLoop(pid, plan as BuildPlan, stage4Result),
-    stage6: runStage6,
-  });
+  const { appendFileSync, mkdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+
+  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const logDir = join(buildDir, projectId);
+  mkdirSync(logDir, { recursive: true });
+  const logFilePath = join(logDir, "run.log");
+
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const originalError = console.error;
+
+  console.log = (...args: any[]) => {
+    const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(" ");
+    appendFileSync(logFilePath, `[LOG] ${msg}\n`, "utf-8");
+    originalLog.apply(console, args);
+  };
+  console.warn = (...args: any[]) => {
+    const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(" ");
+    appendFileSync(logFilePath, `[WARN] ${msg}\n`, "utf-8");
+    originalWarn.apply(console, args);
+  };
+  console.error = (...args: any[]) => {
+    const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(" ");
+    appendFileSync(logFilePath, `[ERROR] ${msg}\n`, "utf-8");
+    originalError.apply(console, args);
+  };
+
+  try {
+    await runPipelineWithStages(projectId, userInput, {
+      stage1: runStage1,
+      stage2: runStage2,
+      stage3: runStage3,
+      stage4: (pid, plan, dag) => runStage4(pid, plan as BuildPlan, dag as Dag),
+      stage5: (pid, stage4Result, plan) => runQAFixLoop(pid, plan as BuildPlan, stage4Result),
+      stage5_5: (pid) => runTypescriptBuildGate(pid),
+      stage6: (pid, stage4Result, plan) => runStage6(pid, stage4Result, undefined, plan as BuildPlan),
+    });
+  } finally {
+    console.log = originalLog;
+    console.warn = originalWarn;
+    console.error = originalError;
+
+    // Run meta-supervisor after the pipeline completes
+    try {
+      const { runMetaSupervisor } = await import("../meta-supervisor.ts");
+      await runMetaSupervisor(projectId);
+    } catch (supErr) {
+      console.error(`[orchestrator] meta-supervisor execution failed: ${String(supErr)}`);
+    }
+  }
 }

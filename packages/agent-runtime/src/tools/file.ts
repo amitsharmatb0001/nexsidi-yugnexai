@@ -2,6 +2,8 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSy
 import { join, dirname, resolve } from "path";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { EvidenceLedger } from "../enforce/evidence.ts";
+import { rollbackWorkspaceTransaction } from "./git.ts";
+import { findSymbolInFile } from "../compaction.ts";
 
 export interface ToolResult {
   status: "success" | "error";
@@ -19,6 +21,21 @@ function guardPath(sandboxDir: string, relPath: string): string {
   return abs;
 }
 
+export function cleanComposeContent(filePath: string, content: string): string {
+  const filename = filePath.split(/[/\\]/).pop();
+  if (filename === "docker-compose.yml" || filename === "docker-compose.yaml") {
+    const cleaned = content
+      .split("\n")
+      .filter((line) => !/^\s*container_name\s*:\s*/.test(line))
+      .join("\n");
+    if (cleaned !== content) {
+      console.log(`[file] Sanitized container_name from ${filePath} to prevent naming conflicts.`);
+      return cleaned;
+    }
+  }
+  return content;
+}
+
 export function execWriteFile(sandboxDir: string, args: { path: string; content: string }): ToolResult {
   try {
     const abs = guardPath(sandboxDir, args.path);
@@ -29,7 +46,8 @@ export function execWriteFile(sandboxDir: string, args: { path: string; content:
     // TypeError taught the model nothing). Coercing here means the write
     // succeeds with reasonable content on the first attempt instead of
     // costing several more iterations to discover the fix.
-    const content = typeof args.content === "string" ? args.content : JSON.stringify(args.content, null, 2);
+    let content = typeof args.content === "string" ? args.content : JSON.stringify(args.content, null, 2);
+    content = cleanComposeContent(args.path, content);
     writeFileSync(abs, content, "utf-8");
     return {
       status: "success",
@@ -68,7 +86,8 @@ export function execEditFile(sandboxDir: string, args: { path: string; old_str: 
       return { status: "error", summary: `old_str matches ${matches} times in ${args.path} — must match exactly once`, next_actions: ["add more surrounding lines to old_str to make it unique"] };
     }
     const updated = content.replace(args.old_str, args.new_str);
-    writeFileSync(abs, updated, "utf-8");
+    const finalContent = cleanComposeContent(args.path, updated);
+    writeFileSync(abs, finalContent, "utf-8");
     return { status: "success", summary: `Replaced 1 match in ${args.path}` };
   } catch (err) {
     return { status: "error", summary: `edit_file failed: ${String(err)}`, next_actions: ["check path for traversal"] };
@@ -90,6 +109,38 @@ export function execDeleteFile(sandboxDir: string, args: { path: string }): Tool
     return { status: "success", summary: `Deleted ${args.path}` };
   } catch (err) {
     return { status: "error", summary: `delete_file failed: ${String(err)}`, next_actions: ["check path for traversal"] };
+  }
+}
+
+export function execRollbackWorkspace(sandboxDir: string): ToolResult {
+  try {
+    rollbackWorkspaceTransaction(sandboxDir);
+    return {
+      status: "success",
+      summary: "Successfully rolled back workspace to the last stable transaction checkpoint.",
+    };
+  } catch (err) {
+    return {
+      status: "error",
+      summary: `rollback_workspace failed: ${String(err)}`,
+    };
+  }
+}
+
+export function execQuerySymbol(sandboxDir: string, args: { path: string; symbol: string }): ToolResult {
+  try {
+    const abs = guardPath(sandboxDir, args.path);
+    const output = findSymbolInFile(abs, args.symbol);
+    return {
+      status: "success",
+      summary: `Queried symbol "${args.symbol}" in ${args.path}`,
+      output,
+    };
+  } catch (err) {
+    return {
+      status: "error",
+      summary: `query_symbol failed: ${String(err)}`,
+    };
   }
 }
 
@@ -214,6 +265,33 @@ export const FILE_TOOL_DEFS: NimToolDef[] = [
           recursive: { type: "boolean", description: "List files recursively (default false)" },
         },
         required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "rollback_workspace",
+      description: "Discard all changes made to files in the workspace since the last stable checkpoint. Use this when compilation is broken or tests are failing and you want to start fresh from a clean state.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "query_symbol",
+      description: "Find and read the exact implementation/declaration of a class, function, interface, or type in a file without loading the entire file content. Use this to save token context.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative path from project root" },
+          symbol: { type: "string", description: "The name of the class, function, interface, or type to locate" },
+        },
+        required: ["path", "symbol"],
       },
     },
   },

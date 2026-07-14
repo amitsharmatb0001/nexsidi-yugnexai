@@ -29,11 +29,13 @@
 import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { hashContext, signOutput, triggerRollback, verifyContext } from "@nexsidi/context-chain";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 import type { GeneratorResult } from "../../../agents/generators/shubham/src/index.ts";
 import { assertValidIdentifier } from "../checkpoint.ts";
 import type { Dag } from "../types.ts";
+import { extractBackendContract, saveContract } from "./contract-extractor.ts";
 
 export interface Stage4Result {
   backendOutputDir: string;
@@ -149,6 +151,103 @@ function signAndVerifyHandoff<T>(from: string, to: string, output: T, keys: KeyP
   return output;
 }
 
+export async function runActiveSmokeProbe(projectId: string, backendDir: string, frontendDir: string): Promise<void> {
+  console.log(`[smoke-probe] Starting active runtime smoke probe for backend and frontend (project: ${projectId})...`);
+
+  const killProcessTree = (proc: any) => {
+    if (process.platform === "win32") {
+      try {
+        spawn("taskkill", ["/F", "/T", "/PID", String(proc.pid)]);
+      } catch {}
+    } else {
+      try {
+        proc.kill("SIGKILL");
+      } catch {}
+    }
+  };
+
+  const getDeterministicPort = (projId: string, basePort: number): number => {
+    let hash = 0;
+    for (let i = 0; i < projId.length; i++) {
+      hash = projId.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    return basePort + Math.abs(hash % 100);
+  };
+
+  const startServer = (dir: string, port: number, name: string) => {
+    return new Promise<{ proc: any; errorMsg: string | null }>((resolve) => {
+      let resolved = false;
+      const cmd = process.platform === "win32" ? "npm.cmd" : "npm";
+      const proc = spawn(cmd, ["run", "dev"], {
+        cwd: dir,
+        env: { ...process.env, PORT: String(port) },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let stderrLogs = "";
+      proc.stderr?.on("data", (data: any) => {
+        stderrLogs += data.toString();
+      });
+
+      proc.on("error", (err: any) => {
+        if (!resolved) {
+          resolved = true;
+          resolve({ proc, errorMsg: `Failed to start ${name}: ${err.message}` });
+        }
+      });
+
+      proc.on("exit", (code: number) => {
+        if (!resolved && code !== null && code > 0) {
+          resolved = true;
+          resolve({ proc, errorMsg: `${name} server exited immediately with code ${code}. Error: ${stderrLogs}` });
+        }
+      });
+
+      setTimeout(async () => {
+        if (!resolved) {
+          resolved = true;
+          try {
+            const res = await fetch(`http://localhost:${port}/health`).catch(() =>
+              fetch(`http://localhost:${port}/`)
+            );
+            if (res.status >= 500) {
+              resolve({ proc, errorMsg: `${name} returned status ${res.status} on boot.` });
+            } else {
+              resolve({ proc, errorMsg: null });
+            }
+          } catch (err) {
+            resolve({
+              proc,
+              errorMsg: `Failed to hit ${name} on port ${port}. Is it running? Details: ${String(err)}. Stderr: ${stderrLogs}`,
+            });
+          }
+        }
+      }, 30000); // 30s — Next.js cold start takes 10-30s; 3s always fired before the server was ready
+    });
+  };
+
+  const backendPort = getDeterministicPort(projectId, 3100);
+  const frontendPort = getDeterministicPort(projectId, 3200);
+
+  const backend = await startServer(backendDir, backendPort, "Backend");
+  const frontend = await startServer(frontendDir, frontendPort, "Frontend");
+
+  try {
+    killProcessTree(backend.proc);
+  } catch {}
+  try {
+    killProcessTree(frontend.proc);
+  } catch {}
+
+  if (backend.errorMsg) {
+    throw new Error(`Active Smoke Probe failed on Backend: ${backend.errorMsg}`);
+  }
+  if (frontend.errorMsg) {
+    throw new Error(`Active Smoke Probe failed on Frontend: ${frontend.errorMsg}`);
+  }
+  console.log("[smoke-probe] Active smoke probe successfully completed. Both backend and frontend boot cleanly.");
+}
+
 /**
  * Runs Stage 4: DB schema + backend generation in parallel, then frontend
  * integration once the backend handoff is verified.
@@ -191,7 +290,17 @@ export async function runStage4(
   // contract, so it must not start until that output is confirmed unmodified.
   signAndVerifyHandoff("shubham", "aanya", shubhamResult, keys);
 
+  const contract = extractBackendContract(shubhamResult.outputDir);
+  saveContract(projectId, contract);
+
   const aanyaResult: GeneratorResult = await runAanya(plan, "integrate");
+
+  // Run active runtime smoke probe to verify compile routes actually boot cleanly
+  try {
+    await runActiveSmokeProbe(projectId, shubhamResult.outputDir, aanyaResult.outputDir);
+  } catch (err) {
+    console.warn(`[stage4] Smoke probe failed (non-fatal for initial stage verification): ${String(err)}`);
+  }
 
   return {
     backendOutputDir: shubhamResult.outputDir,

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { buildAgentPrompt, stripDevDependencies, buildClerkEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask } from "./index.ts";
+import { buildAgentPrompt, stripDevDependencies, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask } from "./index.ts";
 
 test("preview mode prompt instructs mock data, no real API calls", () => {
   const prompt = buildAgentPrompt("preview");
@@ -54,37 +54,10 @@ test("stripDevDependencies preserves formatting-independent JSON validity on mal
 // the NIM agent nor the Claude escalation (80 combined iterations) could
 // fix this — it's a scaffold/env-generation bug, not something editable
 // from inside the generated project.
-test("buildClerkEnvLocal reads NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY, not the unprefixed name", () => {
-  const original = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
-  const originalUnprefixed = process.env.CLERK_PUBLISHABLE_KEY;
-  try {
-    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_test_real_key_value";
-    delete process.env.CLERK_PUBLISHABLE_KEY;
-    const content = buildClerkEnvLocal("3001");
-    expect(content).toContain("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_real_key_value");
-  } finally {
-    if (original === undefined) delete process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
-    else process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = original;
-    if (originalUnprefixed === undefined) delete process.env.CLERK_PUBLISHABLE_KEY;
-    else process.env.CLERK_PUBLISHABLE_KEY = originalUnprefixed;
-  }
-});
-
-test("buildClerkEnvLocal falls back to an empty string (not the literal 'undefined') when the key is unset", () => {
-  const original = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
-  try {
-    delete process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
-    const content = buildClerkEnvLocal("3001");
-    expect(content).toContain("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=\n");
-  } finally {
-    if (original === undefined) delete process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
-    else process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = original;
-  }
-});
-
-test("buildClerkEnvLocal includes the backend port in NEXT_PUBLIC_API_URL", () => {
-  const content = buildClerkEnvLocal("4500");
-  expect(content).toContain("NEXT_PUBLIC_API_URL=http://localhost:4500");
+test("buildCustomEnvLocal includes the backend port in NEXT_PUBLIC_API_URL and JWT_SECRET", () => {
+  const content = buildCustomEnvLocal("4500");
+  expect(content).toContain("NEXT_PUBLIC_API_URL=http://localhost:4500/api/v1");
+  expect(content).toContain("JWT_SECRET=");
 });
 
 // Diagnosis 2026-07-04 (stress2/stress3 forensics): the scaffold tsconfig

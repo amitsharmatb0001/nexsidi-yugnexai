@@ -2,8 +2,15 @@
 // Replaces the one-shot agentChat() + parse pattern.
 // Agents run until they call task_complete or hit MAX_ITERATIONS.
 
+import { existsSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { MCPClient } from "./mcp/client.ts";
 import { nimChatWithTools, type NimToolDef, type NimMessage, type NimToolCall } from "@nexsidi/llm-client";
-import { execWriteFile, execReadFile, execListFiles, execEditFile, execDeleteFile, FILE_TOOL_DEFS } from "./tools/file.ts";
+import { execWriteFile, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol, FILE_TOOL_DEFS } from "./tools/file.ts";
+import { initWorkspaceTransaction, commitWorkspaceTransaction } from "./tools/git.ts";
+import { compactHistory, estimateTokenCount } from "./compaction.ts";
+import { SharedTokenBucket } from "./token-bucket.ts";
+import { BudgetTracker } from "./budget-tracker.ts";
 import { execRunCommand, COMMAND_TOOL_DEF } from "./tools/command.ts";
 import { execHttpRequest, HTTP_TOOL_DEF } from "./tools/http.ts";
 import { execDockerCompose, DOCKER_TOOL_DEF } from "./tools/docker.ts";
@@ -51,6 +58,7 @@ export interface AgentRunConfig {
   // model (code quality); high-volume tool-driving agents (Tier 3, QA) leave
   // it unset to use the cheap flash default. Only used by the Gemini loop.
   geminiModel?: string;
+  subagentDepth?: number; // 0 = top-level agent; 1 = inside a spawn_subagent call. Capped at 1.
 }
 
 export interface AgentRunResult {
@@ -85,6 +93,22 @@ export const TASK_COMPLETE_TOOL: NimToolDef = {
       required: ["summary", "files_written", "verification_passed"],
     },
   },
+};
+
+export const SPAWN_SUBAGENT_TOOL: NimToolDef = {
+  type: "function",
+  function: {
+    name: "spawn_subagent",
+    description: "Spawn a specialized subagent to perform a delegated subtask in the background (such as executing research, validating code segments, or running isolated test cases). This saves token budget and avoids context bloat.",
+    parameters: {
+      type: "object",
+      properties: {
+        subtask: { type: "string", description: "The clear instruction or task description for the subagent to achieve." },
+        agentName: { type: "string", description: "A specific name/role for the subagent, e.g. 'researcher' or 'tester'." }
+      },
+      required: ["subtask", "agentName"]
+    }
+  }
 };
 
 // Full-system audit T1/L1: replaces any tool_call whose `function.arguments`
@@ -153,11 +177,73 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
     ...(config.enableBrowser ? BROWSER_TOOL_DEFS : []),
     ...(config.enableDbQuery ? [DB_QUERY_TOOL_DEF] : []),
     TASK_COMPLETE_TOOL,
+    SPAWN_SUBAGENT_TOOL,
   ];
+}
+
+export function sanitizeModelChain(models: string[]): string[] {
+  const allowedPrefixes = ["google/", "mistralai/", "meta/", "qwen/", "nvidia/"];
+  const allowedExact = ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash"];
+
+  return models
+    .map((m) => {
+      if (m.startsWith("anthropic/") || m.includes("claude") || m.includes("vertex")) {
+        console.warn(`[model-routing] Replacing disallowed model "${m}" with "google/gemini-3.5-flash"`);
+        return "google/gemini-3.5-flash";
+      }
+      return m;
+    })
+    .filter((m) => {
+      const lower = m.toLowerCase();
+      const isAllowed =
+        allowedPrefixes.some((prefix) => lower.startsWith(prefix)) ||
+        allowedExact.some((exact) => lower.includes(exact));
+      if (!isAllowed) {
+        console.warn(`[model-routing] Dropping disallowed model "${m}"`);
+      }
+      return isAllowed;
+    });
 }
 
 export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> {
   const tools: NimToolDef[] = buildToolList(config);
+
+  const mcpClients: MCPClient[] = [];
+  const mcpToolsMap = new Map<string, MCPClient>();
+  try {
+    const mcpConfigPath = join(process.cwd(), "mcp-config.json");
+    if (existsSync(mcpConfigPath)) {
+      const configData = JSON.parse(readFileSync(mcpConfigPath, "utf-8"));
+      if (configData.mcpServers) {
+        for (const [name, serverDef] of Object.entries(configData.mcpServers) as [string, any][]) {
+          console.log(`[mcp] Spawning MCP Server "${name}": ${serverDef.command} ${serverDef.args.join(" ")}`);
+          const client = new MCPClient(serverDef.command, serverDef.args, serverDef.env);
+          await client.start();
+          mcpClients.push(client);
+
+          const toolsResult = await client.listTools();
+          for (const mcpTool of toolsResult.tools) {
+            tools.push({
+              type: "function",
+              function: {
+                name: mcpTool.name,
+                description: mcpTool.description,
+                parameters: mcpTool.inputSchema as any,
+              },
+            });
+            mcpToolsMap.set(mcpTool.name, client);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[mcp] Failed to load/initialize MCP tools:", err);
+  }
+
+  if (config.sandboxDir) {
+    initWorkspaceTransaction(config.sandboxDir);
+  }
+
   // Phase 5 Task 3: per-run ledger backing the completion gate — see
   // enforce/evidence.ts and enforce/completion-gate.ts.
   const ledger = createEvidenceLedger();
@@ -168,6 +254,11 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
   let messages: NimMessage[] = [];
   let loadedFromDb = false;
+
+  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const localHistoryPath = config.projectId
+    ? join(buildDir, config.projectId, `history-${config.agentName}.json`)
+    : null;
 
   if (config.projectId) {
     try {
@@ -197,7 +288,21 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         console.log(`[${config.agentName}:agent] Loaded existing conversation history (${messages.length} messages) from database`);
       }
     } catch (e) {
-      console.error(`[${config.agentName}:agent] Failed to load history:`, e);
+      console.error(`[${config.agentName}:agent] Failed to load history from DB, falling back to local file:`, e);
+      if (localHistoryPath && existsSync(localHistoryPath)) {
+        try {
+          messages = JSON.parse(readFileSync(localHistoryPath, "utf-8"));
+          const sysIdx = messages.findIndex((m) => m.role === "system");
+          if (sysIdx >= 0) {
+            messages[sysIdx] = { role: "system", content: systemPrompt };
+          }
+          messages.push({ role: "user", content: config.initialMessage });
+          loadedFromDb = true;
+          console.log(`[${config.agentName}:agent] Loaded existing conversation history (${messages.length} messages) from local backup file`);
+        } catch (fileErr) {
+          console.error(`[${config.agentName}:agent] Failed to load history from local backup file:`, fileErr);
+        }
+      }
     }
   }
 
@@ -209,6 +314,18 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   }
 
   const saveHistory = async () => {
+    // Proactively save to local file backup
+    if (localHistoryPath) {
+      try {
+        const { mkdirSync, writeFileSync } = await import("node:fs");
+        mkdirSync(dirname(localHistoryPath), { recursive: true });
+        writeFileSync(localHistoryPath, JSON.stringify(messages, null, 2), "utf-8");
+        console.log(`[${config.agentName}:agent] Saved conversation history backup to local file`);
+      } catch (fileErr) {
+        console.error(`[${config.agentName}:agent] Failed to save history backup to local file:`, fileErr);
+      }
+    }
+
     if (config.projectId) {
       try {
         const { db } = await import("@nexsidi/db");
@@ -243,7 +360,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         }
         console.log(`[${config.agentName}:agent] Saved conversation history (${messages.length} messages) to database`);
       } catch (e) {
-        console.error(`[${config.agentName}:agent] Failed to save history:`, e);
+        console.error(`[${config.agentName}:agent] Failed to save history to DB:`, e);
       }
     }
   };
@@ -263,7 +380,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   // the NIM path gets the same early exit.
   const recentCallSignatures: string[] = [];
 
-  const modelChain: ModelId[] = [config.model, ...(config.fallbackModels ?? [])];
+  const modelChain: ModelId[] = sanitizeModelChain([config.model, ...(config.fallbackModels ?? [])]) as ModelId[];
   let modelIdx = 0;
 
   // L3 (full-system audit): `iterations` now counts real model turns only.
@@ -280,6 +397,9 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   console.log(`[${config.agentName}:agent] Starting — model: ${config.model}, maxIter: ${MAX_ITERATIONS}` +
     (modelChain.length > 1 ? `, fallbacks: ${modelChain.slice(1).join(", ")}` : ""));
 
+  const budget = new BudgetTracker();
+  const bucket = new SharedTokenBucket();
+
   // Interactive-browser QA session (Tilotma Tier 3). Lazily spawns a Node
   // worker + Chromium on first browser tool call; the `finally` below closes
   // it on every exit path (task_complete, stop, cap, or throw).
@@ -290,7 +410,13 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
     let response;
     try {
+      const estimatedTokens = estimateTokenCount(messages);
+      await bucket.acquire(estimatedTokens);
+
       response = await nimChatWithTools(currentModel, messages, tools, config.apiKey);
+
+      const usage = (response as any).usage ?? { prompt_tokens: estimatedTokens, completion_tokens: 300 };
+      budget.recordRequest(usage.prompt_tokens, usage.completion_tokens);
     } catch (err) {
       errors.push(`NIM call failed (model: ${currentModel}): ${String(err)}`);
       if (modelIdx < modelChain.length - 1) {
@@ -399,12 +525,15 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
       console.log(`[${config.agentName}:agent] Tool call: ${toolName}(${JSON.stringify(args).slice(0, 120)})`);
 
-      let result: Record<string, unknown>;
+      let result: Record<string, any>;
 
       switch (toolName) {
         case "write_file": {
           const r = execWriteFile(config.sandboxDir, args as { path: string; content: string });
-          if (r.status === "success") filesWritten.push((args as { path: string }).path);
+          if (r.status === "success") {
+            filesWritten.push((args as { path: string }).path);
+            commitWorkspaceTransaction(config.sandboxDir, `Wrote ${(args as { path: string }).path}`);
+          }
           result = r;
           break;
         }
@@ -417,11 +546,19 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           break;
         }
         case "edit_file": {
-          result = execEditFile(config.sandboxDir, args as { path: string; old_str: string; new_str: string });
+          const r = execEditFile(config.sandboxDir, args as { path: string; old_str: string; new_str: string });
+          if (r.status === "success") {
+            commitWorkspaceTransaction(config.sandboxDir, `Edited ${(args as { path: string }).path}`);
+          }
+          result = r;
           break;
         }
         case "delete_file": {
-          result = execDeleteFile(config.sandboxDir, args as { path: string });
+          const r = execDeleteFile(config.sandboxDir, args as { path: string });
+          if (r.status === "success") {
+            commitWorkspaceTransaction(config.sandboxDir, `Deleted ${(args as { path: string }).path}`);
+          }
+          result = r;
           break;
         }
         case "run_command": {
@@ -450,6 +587,47 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         }
         case "db_query": {
           result = await execDbQuery(args as { query: string });
+          break;
+        }
+        case "rollback_workspace": {
+          result = execRollbackWorkspace(config.sandboxDir);
+          break;
+        }
+        case "query_symbol": {
+          result = execQuerySymbol(config.sandboxDir, args as { path: string; symbol: string });
+          break;
+        }
+        case "spawn_subagent": {
+          const a = args as { subtask: string; agentName: string };
+          if ((config.subagentDepth ?? 0) >= 1) {
+            result = { status: "error", summary: "Subagent depth limit reached — subagents cannot spawn further subagents." };
+            break;
+          }
+          console.log(`[${config.agentName}:agent] Spawning subagent "${a.agentName}" to run subtask: ${a.subtask}`);
+          try {
+            const subagentResult = await runAgent({
+              agentName: `${config.agentName}-${a.agentName}`,
+              model: currentModel,
+              apiKey: config.apiKey,
+              systemPrompt: `You are a specialized subagent named "${a.agentName}" helper spawned by "${config.agentName}". Complete the delegated subtask: "${a.subtask}"`,
+              initialMessage: a.subtask,
+              sandboxDir: config.sandboxDir,
+              projectId: config.projectId,
+              enableHttpTools: config.enableHttpTools,
+              enableDockerTools: config.enableDockerTools,
+              subagentDepth: (config.subagentDepth ?? 0) + 1,
+            });
+            result = {
+              status: subagentResult.success ? "success" : "error",
+              summary: `Subagent completed with success=${subagentResult.success}`,
+              output: subagentResult.summary,
+            };
+          } catch (err) {
+            result = {
+              status: "error",
+              summary: `Failed to spawn or run subagent: ${String(err)}`,
+            };
+          }
           break;
         }
         case "task_complete": {
@@ -481,7 +659,19 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           };
         }
         default: {
-          if (browserToolset && BROWSER_TOOL_NAMES.has(toolName)) {
+          const mcpClient = mcpToolsMap.get(toolName);
+          if (mcpClient) {
+            try {
+              const mcpResult = await mcpClient.callTool(toolName, args as Record<string, unknown>);
+              result = {
+                status: mcpResult.isError ? "error" : "success",
+                summary: `MCP tool ${toolName} executed`,
+                output: mcpResult.content.map((c) => c.text || "").join("\n"),
+              };
+            } catch (err) {
+              result = { status: "error", summary: `MCP tool execution failed: ${String(err)}` };
+            }
+          } else if (browserToolset && BROWSER_TOOL_NAMES.has(toolName)) {
             result = await browserToolset.exec(toolName, args as Record<string, unknown>);
           } else {
             result = { status: "error", summary: `Unknown tool: ${toolName}` };
@@ -493,6 +683,9 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     }
 
     messages.push(...toolResults);
+
+    // Proactively compact history if it grows too large
+    messages = await compactHistory(messages);
 
     // Phase 5 Task 4: the SAME command failed identically a 4th time after
     // already being told to pivot on strike 3 — stop retrying, let
@@ -520,5 +713,12 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   };
   } finally {
     if (browserToolset) await browserToolset.close();
+    for (const client of mcpClients) {
+      try {
+        await client.stop();
+      } catch (err) {
+        console.error("[mcp] Failed to stop MCP Client:", err);
+      }
+    }
   }
 }

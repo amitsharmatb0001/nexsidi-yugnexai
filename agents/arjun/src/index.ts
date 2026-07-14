@@ -167,7 +167,7 @@ Output a single JSON object matching this schema exactly. No markdown fences, no
         "name": "users",
         "columns": [
           { "name": "id",       "drizzleType": "uuid()",       "constraints": [".primaryKey()", ".default(sql\`gen_random_uuid()\`)"] },
-          { "name": "clerk_id", "drizzleType": "text()",       "constraints": [".notNull()", ".unique()"] },
+          { "name": "password_hash", "drizzleType": "text()",   "constraints": [".notNull()"] },
           { "name": "email",    "drizzleType": "text()",       "constraints": [".notNull()", ".unique()"] },
           { "name": "created_at", "drizzleType": "timestamp()", "constraints": [".notNull()", ".default(sql\`now()\`)"] }
         ],
@@ -198,12 +198,12 @@ Output a single JSON object matching this schema exactly. No markdown fences, no
 
 Rules:
 - sharedTypes: full TypeScript — interfaces, enums, no imports needed (standalone).
-- Every endpoint must have auth=true unless it's a public health check.
-- Clerk JWT middleware handles auth — backend checks req.auth.userId from Clerk.
-- Since Clerk auth is used, any user_id column in database tables MUST be text() instead of uuid(), and MUST NOT use "references" because Clerk handles user records externally.
+- Every endpoint must have auth=true unless it's a public health check, registration, or login endpoint.
+- Custom JWT auth middleware handles auth — backend checks req.userId (which is users.id).
+- We use a local users table for auth. Any user_id column in database tables should reference users.id (e.g. "users.id") and have a foreign key references constraint.
 - drizzleType values: uuid(), text(), varchar(n), integer(), boolean(),
   timestamp({ withTimezone: true }), date(), jsonb()
-- For all FK columns (other than user_id/Clerk columns): add "references" field: "parent_table.id"
+- For all FK columns: add "references" field: "parent_table.id" (e.g. "users.id")
 - independenceVerified must be true: shubham/aanya/pranav tasks must not depend on each other's
   in-progress files. They only share the contract defined in this BuildPlan.
 - DO NOT include tasks that are: "research", "review", "check" — only code-producing tasks.

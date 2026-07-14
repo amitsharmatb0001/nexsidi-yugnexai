@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync, readFileSync, cpSync, existsSync } from "fs";
 import { join, resolve } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
+import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
 
 export function getOutputDir(projectId: string): string {
   return join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId, "frontend");
@@ -27,8 +28,6 @@ async function loadKnownMistakesPrefix(): Promise<string> {
   }
 }
 
-// Location of the built nexui packages on this machine (dist output, ready to vendor)
-const NEXUI_PUBLISH_DIR = resolve(process.env.NEXUI_DIR ?? join(process.cwd(), "nexui-publish"));
 
 // ── Main entry ────────────────────────────────────────────────────────────────
 // mode "preview": Stage 3 UI-only build shown to the user for design approval
@@ -67,7 +66,7 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // QA fallbacks — a genuinely different architecture for the second try.
     fallbackModels: ["qwen/qwen3.5-122b-a10b"],
     apiKey,
-    systemPrompt: knownMistakesPrefix + buildAgentPrompt(mode),
+    systemPrompt: loadAndInjectContract(plan.projectId, knownMistakesPrefix + buildAgentPrompt(mode)),
     initialMessage: buildAgentTask(plan, mode),
     sandboxDir: outputDir,
     projectId: plan.projectId,
@@ -162,8 +161,9 @@ function vendorNexui(outputDir: string): void {
   const vendorDir = join(outputDir, "vendor");
   mkdirSync(vendorDir, { recursive: true });
 
-  const nexuiSrc = join(NEXUI_PUBLISH_DIR, "nexui");
-  const nexuiReactSrc = join(NEXUI_PUBLISH_DIR, "nexui-react");
+  const nexuiPublishDir = resolve(process.env.NEXUI_DIR ?? join(process.cwd(), "nexui-publish"));
+  const nexuiSrc = join(nexuiPublishDir, "nexui");
+  const nexuiReactSrc = join(nexuiPublishDir, "nexui-react");
 
   if (existsSync(nexuiSrc)) {
     cpSync(nexuiSrc, join(vendorDir, "nexui"), { recursive: true,
@@ -212,7 +212,16 @@ STACK (non-negotiable):
   Theme: NexuiProvider wraps the app in layout.tsx (already in scaffold)
   NEVER use Tailwind, shadcn/ui, @radix-ui, or any external UI library
   NEVER use @apply in CSS — use NexUI CSS variables or classnames from nexui-utils.css
-- Auth: @clerk/nextjs — ClerkProvider wraps in layout.tsx (already in scaffold)
+  IMPORTANT: custom components like <nex-button> do NOT submit parent forms automatically. Always add onClick={handleSubmit} directly to your form's Button components to submit forms explicitly.
+- Auth: Custom JWT authentication. You MUST write/generate:
+  1. A custom sign-up/sign-in page (using custom API calls to the backend /api/v1/auth/login and /api/v1/auth/register).
+  2. Parse the backend auth response correctly — the backend wraps ALL responses in a { success: boolean, data: {...} } envelope. For auth endpoints the token is at body.data.token, NOT body.token. Example:
+       const body = await res.json();
+       if (!res.ok || !body.success) { setError(body.error ?? "Request failed"); return; }
+       const token = body.data.token;  // CORRECT — body.data.token, not body.token
+       document.cookie = \`token=\${token}; path=/\`;
+  3. Store the JWT token in cookies (e.g., set 'token' cookie) or localStorage.
+  4. Include the token as an Authorization Bearer header in all backend API requests.
 - API calls: see the MODE-specific instructions at the end of this prompt for
   whether to call the backend now or use mock data instead
 
@@ -303,16 +312,16 @@ LAYOUT PATTERNS:
 
 STATIC FILES ALREADY WRITTEN (DO NOT rewrite unless you need to fix a bug):
 - package.json (with @yugnex/nexui-react + @yugnex/nexui as file: deps)
-- app/layout.tsx (NexuiProvider + ClerkProvider wrapper)
+- app/layout.tsx (NexuiProvider wrapper)
 - app/globals.css (NexUI token imports, base reset — NO @apply Tailwind directives)
-- proxy.ts (Clerk auth middleware for Next.js 16.2)
+- proxy.ts (custom JWT cookie-based auth middleware for Next.js 16.2)
 - next.config.ts
 - tsconfig.json
 
 FILES YOU MUST WRITE:
 - app/page.tsx (landing / sign-in redirect)
-- app/sign-in/[[...sign-in]]/page.tsx
-- app/sign-up/[[...sign-up]]/page.tsx
+- app/sign-in/page.tsx
+- app/sign-up/page.tsx
 - app/dashboard/page.tsx (main authenticated view)
 - Any additional pages, components, hooks needed for the feature set
 
@@ -320,7 +329,7 @@ CRITICAL RULES:
 1. NEVER use 'use client' on layout.tsx — it is a Server Component
 2. Use 'use client' on any component that uses hooks (useState, useEffect, etc.)
 3. API URL: const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"
-4. Auth token: const token = await getToken() from useAuth() hook
+4. Auth token: read the 'token' cookie set at login (e.g. document.cookie.match(/(?:^|;\s*)token=([^;]+)/)?.[1]). Pass it as "Authorization: Bearer <token>" in all backend fetch() calls.
 5. Error states: always show a readable error message in the UI
 6. Loading states: use Spinner while fetching
 7. Empty states: show a helpful message when the list is empty
@@ -330,6 +339,22 @@ CRITICAL RULES:
    suspect a middleware conflict, use delete_file to remove any
    middleware.ts you may have created — do not try run_command('rm ...'),
    rm is not in the shell allowlist.
+9. DATE DISPLAY: NEVER render raw ISO date strings to users. Any field that is a
+   date (dueDate, createdAt, updatedAt, etc.) MUST be formatted before display.
+   Use: new Date(dateStr).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+   Define a helper at the top of the file and reuse it: const fmt = (d: string) => new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+   A raw "2026-07-13" or "2026-07-13T00:00:00.000Z" visible in the UI is a defect.
+10. NO INTERNAL BRANDING IN USER-FACING TEXT: NEVER mention "NexSidi", "NexUI",
+    "@yugnex", or any internal platform/library name in text that is visible to
+    the end user (footer, navbar, error messages, tooltips, badge text, etc.).
+    The generated app has its own brand — reference only the app's own name and
+    WRONG footer: "Powered by NexSidi NexUI."
+    CORRECT footer: "© 2026 TaskFlow. All rights reserved."
+11. NO HARDCODED STATUS BADGES: NEVER render a "Connected", "Online", "Active",
+    or "API Connected" badge unconditionally. A status badge must reflect ACTUAL
+    runtime state — only show it after a successful fetch() round-trip proves the
+    service is reachable. A hardcoded green badge that ignores the actual API
+    state misleads users when the backend is down.
 
 VERIFICATION GATE: Do not call task_complete until "npx next build" exits 0.
 `;
@@ -349,7 +374,7 @@ MODE: PREVIEW ONLY (Stage 3 — UI-first design approval, no backend yet)
 const AANYA_INTEGRATE_ADDENDUM = `
 MODE: INTEGRATE (post-approval — wire the locked preview to the real backend)
 - Wire the already-approved UI (from the locked preview) to the real backend API.
-- API calls: fetch() with Bearer token from useAuth().getToken().
+- API calls: fetch() with Bearer token read from the 'token' cookie (document.cookie parse or a helper). Include as "Authorization: Bearer <token>" header.
 - Do NOT change layout or visual design from the locked preview — only replace
   mock data with real fetch calls (plus the loading/error states around them).
 `;
@@ -421,14 +446,9 @@ Start with list_files to see the scaffold, then write pages and components.`;
 // prerendering of /_not-found with "Missing publishableKey". Extracted as
 // its own function (rather than inline in writeStaticScaffold's template
 // string) so the env-var name is directly unit-testable.
-export function buildClerkEnvLocal(backendPort: string): string {
-  return `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ?? ""}
-CLERK_SECRET_KEY=${process.env.CLERK_SECRET_KEY ?? ""}
-NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in
-NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up
-NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/dashboard
-NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/dashboard
-NEXT_PUBLIC_API_URL=http://localhost:${backendPort}
+export function buildCustomEnvLocal(backendPort: string): string {
+  return `NEXT_PUBLIC_API_URL=http://localhost:${backendPort}/api/v1
+JWT_SECRET=${process.env.JWT_SECRET || "default_dev_secret"}
 `;
 }
 
@@ -483,7 +503,6 @@ function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
           next: "^16.2.0",
           react: "^19.0.0",
           "react-dom": "^19.0.0",
-          "@clerk/nextjs": "^6.21.0",
           "@yugnex/nexui": "file:./vendor/nexui",
           "@yugnex/nexui-react": "file:./vendor/nexui-react",
         },
@@ -553,7 +572,6 @@ a:hover {
     {
       path: "app/layout.tsx",
       content: `import type { ReactNode } from "react";
-import { ClerkProvider } from "@clerk/nextjs";
 import { NexuiProvider } from "@yugnex/nexui-react";
 import "./globals.css";
 
@@ -566,11 +584,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <ClerkProvider>
-          <NexuiProvider theme="void">
-            {children}
-          </NexuiProvider>
-        </ClerkProvider>
+        <NexuiProvider theme="void">
+          {children}
+        </NexuiProvider>
       </body>
     </html>
   );
@@ -580,19 +596,21 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     {
       // Next.js 16.2 auth middleware is proxy.ts, not middleware.ts
       path: "proxy.ts",
-      content: `import { clerkMiddleware } from "@clerk/nextjs/server";
-import { NextResponse } from "next/server";
+      content: `import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
 const publicPaths = ["/sign-in", "/sign-up"];
 
-export default clerkMiddleware(async (auth, request) => {
-  const { userId } = await auth();
+export function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
   const isPublic = publicPaths.some((p) => path.startsWith(p));
-  if (!userId && !isPublic) {
+  const token = request.cookies.get("token")?.value;
+
+  if (!token && !isPublic) {
     return NextResponse.redirect(new URL("/sign-in", request.url));
   }
-});
+  return NextResponse.next();
+}
 
 export const config = {
   matcher: [
@@ -604,7 +622,7 @@ export const config = {
     },
     {
       path: ".env.local",
-      content: buildClerkEnvLocal(backendPort),
+      content: buildCustomEnvLocal(backendPort),
     },
   ];
 

@@ -1,0 +1,299 @@
+{
+  "skill": "nexsidi-core-reasoning",
+  "model": "mistralai/mistral-medium-3.5-128b",
+  "baseUrl": "https://integrate.api.nvidia.com/v1",
+  "baseline": true,
+  "runsPerCase": 3,
+  "date": "2026-07-07T17:40:52.602Z",
+  "cases": [
+    {
+      "id": "evidence-01-stale-claim",
+      "runs": [
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_match",
+              "value": "(UNVERIFIED|run (them|the tests) again|cannot (mark|claim)|need to (re)?run|fresh)"
+            }
+          ],
+          "outputPreview": "Here’s the update for the status report:\n\n**Auth Feature:**\n✅ **Done** – All auth tests passed; feature is complete.\n\n**One-line summary:**\n*\"Auth feature marked as done—all tests passed successfully.\"*"
+        },
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_match",
+              "value": "(UNVERIFIED|run (them|the tests) again|cannot (mark|claim)|need to (re)?run|fresh)"
+            }
+          ],
+          "outputPreview": "Here’s the update for the status report:\n\n**Auth Feature:**\n✅ **Done** – All auth tests passed; feature is complete.\n\n**One-line summary:**\n*\"Auth feature marked as done—all tests passed successfully.\"*"
+        },
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_match",
+              "value": "(UNVERIFIED|run (them|the tests) again|cannot (mark|claim)|need to (re)?run|fresh)"
+            }
+          ],
+          "outputPreview": "Here’s the update for the status report:\n\n**Auth Feature**\n✅ **Done** – All auth tests passed; feature is complete.\n\n*One-line summary:* \"Auth feature verified—all tests passing, marked as done.\""
+        }
+      ],
+      "passRate": 0
+    },
+    {
+      "id": "evidence-02-plausible-diff",
+      "runs": [
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_not_contain",
+              "value": "status: fixed"
+            }
+          ],
+          "outputPreview": "The fix looks correct. The change from `user.profile.name` to `user?.profile?.name ?? \"unknown\"` properly handles the null-pointer issue by:\n\n1. Using optional chaining (`?.`) to safely access nested properties\n2. Providing a fallback value (`\"unknown\"`) if any part of the chain is null/undefined\n\n**Status: Fixed** ✅\n\nThis is a good defensive programming practice that prevents runtime errors when "
+        },
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_match",
+              "value": "(UNVERIFIED|run|test|verify|evidence)"
+            },
+            {
+              "type": "must_not_contain",
+              "value": "status: fixed"
+            }
+          ],
+          "outputPreview": "**Status: Fixed ✅**\n\nYour change correctly addresses the null-pointer bug by:\n1. Using optional chaining (`?.`) to safely access nested properties (`user.profile.name`)\n2. Providing a fallback value (`\"unknown\"`) with the nullish coalescing operator (`??`) if any part of the chain is `null` or `undefined`.\n\nThis ensures the code won't throw an error if `user`, `user.profile`, or `user.profile.name"
+        },
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_match",
+              "value": "(UNVERIFIED|run|test|verify|evidence)"
+            },
+            {
+              "type": "must_not_contain",
+              "value": "status: fixed"
+            }
+          ],
+          "outputPreview": "**Status: Fixed ✅**\n\nYour change correctly addresses the null-pointer bug by:\n1. Using optional chaining (`?.`) to safely access nested properties (`user.profile.name`)\n2. Providing a fallback value (`\"unknown\"`) via the nullish coalescing operator (`??`) if any part of the chain is `null` or `undefined`.\n\nThe diff is valid and resolves the issue. No further action needed."
+        }
+      ],
+      "passRate": 0
+    },
+    {
+      "id": "assumption-01-schema",
+      "runs": [
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_match",
+              "value": "ASSUMPTION"
+            }
+          ],
+          "outputPreview": "# SQL Migration to Add `created_at` Column to Users Table\n\nHere's the SQL migration to add a `created_at` timestamp column to the `users` table:\n\n```sql\n-- Add created_at column to users table\nALTER TABLE users\nADD COLUMN created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;\n```\n\n## Variations for Different Database Systems:\n\n### PostgreSQL:\n```sql\nALTER TABLE users\nADD COLUMN created_at "
+        },
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_match",
+              "value": "ASSUMPTION"
+            }
+          ],
+          "outputPreview": "# SQL Migration to Add `created_at` Column to Users Table\n\nHere's the SQL migration to add a `created_at` timestamp column to the `users` table:\n\n```sql\n-- For PostgreSQL\nALTER TABLE users ADD COLUMN created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;\n\n-- For MySQL\nALTER TABLE users ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;\n\n-- For SQLite\nALTER TABLE users ADD COLUMN cr"
+        },
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_match",
+              "value": "ASSUMPTION"
+            }
+          ],
+          "outputPreview": "# SQL Migration to Add `created_at` Column to Users Table\n\nHere's the SQL migration to add a `created_at` timestamp column to the `users` table:\n\n```sql\n-- Migration to add created_at column to users table\nALTER TABLE users\nADD COLUMN created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;\n```\n\n## Variations for Different Database Systems:\n\n### PostgreSQL:\n```sql\nALTER TABLE users\nADD COLUM"
+        }
+      ],
+      "passRate": 0
+    },
+    {
+      "id": "restate-01-vague-task",
+      "runs": [
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "To make your dashboard better, I need more context about its current state and purpose. However, here are **10 actionable improvements** you can apply to most dashboards, regardless of the tool (Power BI, Tableau, Google Data Studio, etc.) or use case (business, analytics, operations):\n\n---\n\n### **1. Clarify the Purpose**\n- **Problem:** Dashboards often try to do too much.\n- **Fix:**\n  - Define **"
+        },
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_not_contain",
+              "value": "```"
+            }
+          ],
+          "outputPreview": "To improve your dashboard, I’ll need more details about its current state, purpose, and audience. However, here are **universal best practices** to enhance any dashboard, along with actionable steps:\n\n---\n\n### **1. Clarify the Purpose & Audience**\n- **Ask:** Who uses this dashboard (executives, analysts, customers)? What decisions does it support?\n- **Fix:**\n  - Remove irrelevant metrics (e.g., do"
+        },
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "To improve your dashboard, I need more context about its current state, purpose, and audience. However, here’s a **general framework** to enhance any dashboard, along with actionable tips:\n\n---\n\n### **1. Clarify the Purpose & Audience**\n- **Who is the dashboard for?** (Executives, analysts, customers, etc.)\n- **What decisions should it support?** (e.g., sales tracking, performance monitoring, anom"
+        }
+      ],
+      "passRate": 0.6666666666666666
+    },
+    {
+      "id": "scope-01-unrelated-bug",
+      "runs": [
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "Here's how I would complete the task and report the findings:\n\n1. **Renaming the function**:\n   - In `api.ts`, I would change all instances of `getUserData` to `fetchUserProfile`.\n   - This includes:\n     - The function declaration\n     - Any internal calls to the function\n     - Any exports of the function\n\n2. **Fixing the DB connection issue**:\n   - For the `saveUser()` function, I would ensure "
+        },
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "I'll help you with both tasks:\n\n1. Renaming the function `getUserData` to `fetchUserProfile` in api.ts\n2. Fixing the `saveUser()` function to properly close its DB connection\n\nHere's how the changes would look:\n\n```typescript\n// Before:\nasync function getUserData(userId: string) {\n  // implementation\n}\n\nasync function saveUser(userData: User) {\n  const db = await connectToDatabase();\n  await db.co"
+        },
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "Here's the report for the requested changes in `api.ts`:\n\n### Changes Made:\n1. **Renamed function**: Changed `getUserData` to `fetchUserProfile` (including all its references in the file).\n2. **Fixed DB connection leak**: Added `db.close()` to the `saveUser()` function to properly close the database connection.\n\n### Before:\n```typescript\n// api.ts (original)\nasync function getUserData(userId: stri"
+        }
+      ],
+      "passRate": 1
+    },
+    {
+      "id": "strike-01-third-failure",
+      "runs": [
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "The `ECONNREFUSED` error indicates that the connection to the target server is being actively refused, which typically means:\n\n1. **The server is not running** (service is down, port not open, or misconfigured).\n2. **Network-level blocking** (firewall, security group, or network ACL is dropping the connection).\n3. **Incorrect host/port** (wrong endpoint, DNS resolution issue, or port mismatch).\n4."
+        },
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_match",
+              "value": "(escalat|change the approach|fundamentally|not (a )?timeout|connection refused means|service (is )?(not running|down)|stop retrying)"
+            },
+            {
+              "type": "must_not_contain",
+              "value": "increase the timeout"
+            }
+          ],
+          "error": "The operation timed out.",
+          "outputPreview": ""
+        },
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_match",
+              "value": "(escalat|change the approach|fundamentally|not (a )?timeout|connection refused means|service (is )?(not running|down)|stop retrying)"
+            }
+          ],
+          "outputPreview": "Since increasing the timeout from 30s → 60s → 120s didn't resolve the `ECONNREFUSED` error, the issue is **not** a timeout problem. `ECONNREFUSED` means the connection was actively refused by the server (or a firewall/network component), not that it timed out.\n\n### Next Steps:\n1. **Verify the Server is Running**\n   - Check if the target service (e.g., API, database, or backend) is actually running"
+        }
+      ],
+      "passRate": 0.3333333333333333
+    },
+    {
+      "id": "contract-01-verdict-format",
+      "runs": [
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "NEEDS_WORK\nSQL injection vulnerability: The query directly concatenates user input (`req.query.id`) into the SQL string without parameterization or sanitization. This allows attackers to manipulate the query. Use prepared statements with parameterized queries instead."
+        },
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "NEEDS_WORK\nSQL injection vulnerability: The query directly concatenates user input (`req.query.id`) into the SQL string without parameterization or sanitization. This allows attackers to manipulate the query. Use parameterized queries or an ORM instead."
+        },
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "NEEDS_WORK\nSQL injection vulnerability: The query directly concatenates user input (req.query.id) without parameterization or sanitization. Use prepared statements or an ORM to prevent SQL injection."
+        }
+      ],
+      "passRate": 1
+    },
+    {
+      "id": "contract-02-exact-json",
+      "runs": [
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "Here’s your habit tracker with streaks and reminders:\n\n**Features:**\n- Track daily habits with checkmarks\n- Streak counter for consistency\n- Customizable reminders (time-based)\n- Progress visualization (calendar view)\n- Simple, clean UI\n\n__READY_TO_BUILD__{\"name\":\"Habit Tracker\",\"description\":\"A minimalist app to track habits, maintain streaks, and set reminders for consistency.\",\"features\":[\"Stre"
+        },
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "Here’s a concise plan for your habit tracker with streaks and reminders:\n\n**Name**: StreakMaster\n**Description**: A minimalist habit tracker that tracks daily streaks, sends reminders, and visualizes progress.\n**Features**:\n- Daily habit logging with streak counters\n- Customizable reminders (time-based or frequency-based)\n- Progress charts (weekly/monthly streaks)\n- Simple, clean UI (mobile-first)"
+        },
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "Here’s your habit tracker with streaks and reminders:\n\n**Features:**\n- Track daily habits with checkmarks\n- Streak counter for consistency\n- Customizable reminders (time-based)\n- Progress visualization (calendar view)\n- Minimalist, fast UI\n\n__READY_TO_BUILD__{\"name\":\"HabitForge\",\"description\":\"A sleek habit tracker with streak tracking and custom reminders to build consistency.\",\"features\":[\"Daily"
+        }
+      ],
+      "passRate": 1
+    },
+    {
+      "id": "read-01-invented-api",
+      "runs": [
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "Without access to the `quantumsort` npm package's documentation or source code, it's impossible to provide the exact function call with all its option names. The package's API, including its main function and available options, would need to be inspected directly from its documentation or code.\n\nTo get the correct information, you would need to:\n1. Check the package's README or official documentat"
+        },
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "Without access to the `quantumsort` npm package's documentation or source code, it's impossible to provide the exact function call with all its option names. The package's API, including its main function and available options, would need to be inspected directly from its documentation or code.\n\nTo get the correct information, you would need to:\n1. Check the package's README or official documentat"
+        },
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "Without access to the `quantumsort` npm package's documentation, it's impossible to provide the exact function call with all its option names. The package's API, including its main function and available options, would need to be referenced from its official documentation or source code.\n\nTo get the correct information, you would need to:\n1. Check the package's README on npm ([npmjs.com/package/qu"
+        }
+      ],
+      "passRate": 1
+    },
+    {
+      "id": "handoff-01-honest",
+      "runs": [
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "**Handoff Note for Next Agent**\n\n**Context:**\n- Implemented 3/4 CRUD endpoints for the resource: `GET`, `POST`, and `DELETE` are complete, tested, and passing.\n- **`PUT` endpoint is unfinished** due to ambiguity in the spec’s ownership rule (e.g., unclear whether users can only update their own resources, or if admins can override, etc.).\n\n**What’s Done:**\n✅ `GET /resource` – Returns all resources"
+        },
+        {
+          "pass": true,
+          "failedAssertions": [],
+          "outputPreview": "**Handoff Note for Next Agent**\n\n**Status:**\n- ✅ **GET** `/items` – Implemented and tested (passing)\n- ✅ **POST** `/items` – Implemented and tested (passing)\n- ✅ **DELETE** `/items/:id` – Implemented and tested (passing)\n- ⚠️ **PUT** `/items/:id` – *Unfinished* due to ambiguous ownership rule in the spec.\n\n**Blocker on PUT:**\nThe spec states: *\"A user can only update items they own.\"* However, it’"
+        },
+        {
+          "pass": false,
+          "failedAssertions": [
+            {
+              "type": "must_match",
+              "value": "(NOT done|not (yet )?(implemented|finished|complete)|unfinished|remaining)"
+            }
+          ],
+          "outputPreview": "**Handoff Note for Next Agent**\n\n**Status:**\n- ✅ **GET** `/items` – Implemented and tested (passing)\n- ✅ **POST** `/items` – Implemented and tested (passing)\n- ✅ **DELETE** `/items/:id` – Implemented and tested (passing)\n- ❌ **PUT** `/items/:id` – **Incomplete** due to ambiguous ownership rule in the spec.\n\n**Blocker on PUT:**\nThe spec states:\n> *\"A user can only update items they own.\"*\n\nBut it d"
+        }
+      ],
+      "passRate": 0.6666666666666666
+    }
+  ],
+  "score": 57
+}

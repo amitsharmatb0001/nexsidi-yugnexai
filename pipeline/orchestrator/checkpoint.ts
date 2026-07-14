@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, rmSync } from "fs";
 import { join, dirname } from "path";
 import type { PipelineCheckpoint } from "./types.ts";
 
@@ -49,3 +49,11 @@ export function readCheckpoint<T>(projectId: string, stage: string): T | null {
   }
   return envelope.data;
 }
+
+export function deleteCheckpoint(projectId: string, stage: string): void {
+  const path = checkpointPath(projectId, stage);
+  if (existsSync(path)) {
+    rmSync(path, { force: true });
+  }
+}
+

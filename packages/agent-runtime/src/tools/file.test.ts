@@ -114,3 +114,23 @@ test("delete_file blocks path traversal outside the sandbox", () => {
   const result = execDeleteFile(sandboxDir, { path: "../../etc/passwd" });
   expect(result.status).toBe("error");
 });
+
+test("cleanComposeContent strips container_name from docker-compose.yml", () => {
+  const composeYaml = `
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    container_name: my-special-postgres
+    ports:
+      - "5432:5432"
+  `;
+  const result = execWriteFile(sandboxDir, { path: "docker-compose.yml", content: composeYaml });
+  expect(result.status).toBe("success");
+
+  const written = readFileSync(join(sandboxDir, "docker-compose.yml"), "utf-8");
+  expect(written).not.toContain("container_name:");
+  expect(written).toContain("image: postgres:15");
+  expect(written).toContain("ports:");
+});
+

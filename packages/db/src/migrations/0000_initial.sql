@@ -41,7 +41,7 @@ CREATE INDEX IF NOT EXISTS idx_projects_clerk_id ON projects (clerk_id);
 -- Context chain (Patent Claims 1/3/7) — append-only
 CREATE TABLE IF NOT EXISTS context_chain (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id    VARCHAR(12) NOT NULL,
+  project_id    VARCHAR(64) NOT NULL,
   agent_from    TEXT NOT NULL,
   agent_to      TEXT NOT NULL,
   context_hash  CHAR(64) NOT NULL,
@@ -54,7 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_ctx_chain_project ON context_chain (project_id);
 -- QA results (Fix #8: per-agent row)
 CREATE TABLE IF NOT EXISTS qa_results (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id  VARCHAR(12) NOT NULL,
+  project_id  VARCHAR(64) NOT NULL,
   iteration   INTEGER NOT NULL,
   agent_name  TEXT NOT NULL,
   score       INTEGER NOT NULL,
@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS idx_qa_project_iter ON qa_results (project_id, iterat
 -- Stuck-state log (Fix #7)
 CREATE TABLE IF NOT EXISTS stuck_state_log (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id  VARCHAR(12) NOT NULL,
+  project_id  VARCHAR(64) NOT NULL,
   iteration   INTEGER NOT NULL,
   min_score   INTEGER NOT NULL,
   improvement INTEGER NOT NULL,
@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS stuck_state_log (
 -- Prompt audit (Nice-to-have #13)
 CREATE TABLE IF NOT EXISTS prompt_audit (
   id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id  VARCHAR(12),
+  project_id  VARCHAR(64),
   agent_name  TEXT NOT NULL,
   hash        CHAR(64) NOT NULL,
   ciphertext  TEXT NOT NULL,
@@ -97,10 +97,21 @@ CREATE TABLE IF NOT EXISTS instincts (
   confidence  TEXT NOT NULL,
   domain      TEXT NOT NULL,
   scope       TEXT NOT NULL DEFAULT 'project',
-  project_id  VARCHAR(12),
+  project_id  VARCHAR(64),
   outcome     TEXT NOT NULL,
   created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
+
+-- Agent conversations (persistent state across fix iterations)
+CREATE TABLE IF NOT EXISTS agent_conversations (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id  VARCHAR(64) NOT NULL,
+  agent_name  TEXT NOT NULL,
+  messages    JSONB NOT NULL DEFAULT '[]',
+  created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS agent_conv_project_idx ON agent_conversations (project_id);
 
 -- Seed: agent roster (Phase 1 agents only — matches CLAUDE.md)
 INSERT INTO agents (name, model, role, phase) VALUES

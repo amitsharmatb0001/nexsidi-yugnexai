@@ -18,6 +18,7 @@ import { resolveFlags } from "../flags.ts";
 import { run as runRiya, type DeployResult } from "../../../agents/riya/src/index.ts";
 import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
+import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
 // never appear in anything that could be user-facing. buildDeliverySummary()
@@ -48,6 +49,9 @@ export interface Stage6Result {
   appUrl: string;
   findings?: unknown;
   deliverySummary: DeliverySummary;
+  // true when consecutive deploy attempts produced identical errors — the
+  // pipeline is stuck and retrying won't help (same pattern as Stage 5).
+  stuck?: boolean;
 }
 
 export interface DeliverySummary {
@@ -151,38 +155,250 @@ async function runRealLiveRetest(
 // stage owns (flag plumbing, fail-fast on deploy failure, delivery summary
 // shape) are what stage6-deployment.test.ts covers via injected stubs — none
 // of those tests rely on the default, they all pass their own `deps`.
+//
+// `dbCheckFn` is optional in the interface — existing tests that pass a
+// `deps` without it get `undefined`, and the runStage6 body treats that as
+// "skip the pre-flight, caller is responsible" (the production default wires
+// in the real check; test stubs don't need a real DB to exist).
 export interface Stage6Deps {
   deployFn: (projectId: string, deployTarget: "local" | "gcp") => Promise<DeployResult>;
   liveRetestFn: (projectId: string, appUrl: string, backendUrl: string) => Promise<LiveRetestResult>;
+  dbCheckFn?: () => Promise<boolean>;
+  fixShubham?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
+  fixAanya?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
+}
+
+// Pre-flight: verify NexSidi's own pipeline DB is reachable before spending
+// agent-loop time on a deploy that will fail at the last step (persisting
+// status) when the DB is down. Real bug found live (stress-pro): the entire
+// Riya agent loop ran to completion, migration-and-verify passed, round-trip
+// passed, then the status UPDATE threw ECONNREFUSED — all that work wasted.
+async function checkNexsidiDbReachable(): Promise<boolean> {
+  try {
+    const { db } = await import("@nexsidi/db");
+    const { sql } = await import("drizzle-orm");
+    await (db as { execute: (q: unknown) => Promise<unknown> }).execute(sql`SELECT 1`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// MAX_DEPLOY_ATTEMPTS: try deploy up to 2 times. On a second identical
+// failure the loop exits early (stuck) rather than burning more tokens.
+// Mirrors Stage 5's stuck-detection at the orchestrator level. 2 is the
+// right ceiling: Riya's agent loop already retries internally (up to
+// MAX_ITERATIONS); a second Stage-6-level attempt is a genuine re-try with a
+// fresh context, not just noise. A third would almost certainly be stuck too.
+const MAX_DEPLOY_ATTEMPTS = 2;
+const MAX_LIVE_FIX_ATTEMPTS = 3;
+const LIVE_STUCK_THRESHOLD = 2;
+
+function isStage6Deps(value: BuildPlan | Stage6Deps | undefined): value is Stage6Deps {
+  return typeof value === "object" && value !== null && "deployFn" in value;
+}
+
+function splitLiveFindings(findings: unknown): { shubham: string[]; aanya: string[] } {
+  const groups = { shubham: [] as string[], aanya: [] as string[] };
+  if (!Array.isArray(findings)) return groups;
+  for (const finding of findings as Array<{ file?: string; issue?: string; detail?: string }>) {
+    const text = finding.issue ?? finding.detail ?? "";
+    const formatted = finding.file ? `${finding.file}: ${text}` : text;
+    if (finding.file?.startsWith("frontend/")) groups.aanya.push(formatted);
+    if (finding.file?.startsWith("backend/")) groups.shubham.push(formatted);
+  }
+  return groups;
 }
 
 export async function runStage6(
   projectId: string,
   stage4Result: Stage4Result,
-  // Default constructed per-call (not a module-level constant) so
-  // liveRetestFn can close over this call's own `stage4Result` — the real
-  // live retest needs it to know which output directories to re-scan.
-  deps: Stage6Deps = {
-    deployFn: runRiya,
-    liveRetestFn: (pid, appUrl, backendUrl) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result),
-  },
+  depsOrPlan?: Stage6Deps | BuildPlan,
+  planOrUndefined?: BuildPlan,
 ): Promise<Stage6Result> {
   const flags = resolveFlags();
 
-  const deployResult = await deps.deployFn(projectId, flags.deployTarget);
+  let deps: Stage6Deps;
+  let plan: BuildPlan | undefined = undefined;
 
-  if (!deployResult.success) {
-    // Fail fast — do not spend time re-running QA against a deploy that
-    // didn't come up healthy in the first place.
-    return {
-      success: false,
-      appUrl: deployResult.appUrl,
-      findings: { deployErrors: deployResult.errors },
-      deliverySummary: buildDeliverySummary(deployResult, { pass: false, findings: null }),
+  if (depsOrPlan && "deployFn" in (depsOrPlan as any)) {
+    deps = depsOrPlan as Stage6Deps;
+    if (planOrUndefined) plan = planOrUndefined;
+  } else {
+    if (depsOrPlan) plan = depsOrPlan as BuildPlan;
+    deps = {
+      deployFn: runRiya,
+      liveRetestFn: (pid, appUrl, backendUrl) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result),
+      dbCheckFn: checkNexsidiDbReachable,
     };
   }
 
-  const retest = await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl);
+  // Pre-flight check
+  const dbReachable = deps.dbCheckFn ? await deps.dbCheckFn() : true;
+  if (!dbReachable) {
+    const msg = "NexSidi pipeline database is not reachable — start the DB before running Stage 6";
+    console.warn(`[stage6] Pre-flight FAILED: ${msg}`);
+    const emptyDeploy: DeployResult = {
+      success: false,
+      appUrl: "",
+      backendUrl: "",
+      githubRepo: null,
+      errors: [msg],
+    };
+    return {
+      success: false,
+      appUrl: "",
+      findings: { deployErrors: [msg] },
+      deliverySummary: buildDeliverySummary(emptyDeploy, { pass: false, findings: null }),
+    };
+  }
+
+  let deployResult!: DeployResult;
+  let prevErrorSignature = "";
+  let stuck = false;
+
+  for (let attempt = 1; attempt <= MAX_DEPLOY_ATTEMPTS; attempt++) {
+    deployResult = await deps.deployFn(projectId, flags.deployTarget);
+
+    if (deployResult.success) break;
+
+    const errorSignature = [...deployResult.errors].sort().join("\0");
+    if (attempt > 1 && prevErrorSignature === errorSignature && errorSignature !== "") {
+      stuck = true;
+      console.log(
+        `[stage6] Stuck: deploy attempt ${attempt} has the identical error list as attempt ${attempt - 1} — stopping rather than retrying`,
+      );
+      break;
+    }
+    prevErrorSignature = errorSignature;
+
+    if (attempt < MAX_DEPLOY_ATTEMPTS) {
+      console.log(
+        `[stage6] Deploy attempt ${attempt} failed — retrying (${MAX_DEPLOY_ATTEMPTS - attempt} left): ${deployResult.errors.join("; ").slice(0, 200)}`,
+      );
+    }
+  }
+
+  if (!deployResult.success) {
+    return {
+      success: false,
+      appUrl: deployResult.appUrl,
+      findings: { deployErrors: deployResult.errors, ...(stuck ? { stuck: true } : {}) },
+      deliverySummary: buildDeliverySummary(deployResult, { pass: false, findings: null }),
+      ...(stuck ? { stuck: true } : {}),
+    };
+  }
+
+  const fixShubhamReal = deps.fixShubham ?? (async (p, f) => {
+    const { runFix } = await import("../../../agents/generators/shubham/src/index.ts");
+    return runFix(p, f);
+  });
+  const fixAanyaReal = deps.fixAanya ?? (async (p, f) => {
+    const { runFix } = await import("../../../agents/generators/aanya/src/index.ts");
+    return runFix(p, f);
+  });
+
+  let retest = await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl);
+  let prevFindingsSig = "";
+  let fixAttempt = 0;
+
+  while (!retest.pass && fixAttempt < MAX_LIVE_FIX_ATTEMPTS) {
+    fixAttempt++;
+    console.log(`[stage6] Live retest failed (attempt ${fixAttempt} of ${MAX_LIVE_FIX_ATTEMPTS}) — starting agentic fix loop`);
+
+    const findingsSig = Array.isArray(retest.findings) 
+      ? [...retest.findings].map(f => `${f.file}:${f.issue || f.detail}`).sort().join("\0")
+      : String(retest.findings);
+
+    if (fixAttempt > 1 && findingsSig === prevFindingsSig) {
+      console.log(`[stage6] Stuck loop detected: findings signature did not change on attempt ${fixAttempt}`);
+      break;
+    }
+    prevFindingsSig = findingsSig;
+
+    // Log instinct mismatch if clean QA review missed CRITICAL findings
+    try {
+      const { readFileSync, existsSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const { buildMismatchObservations, appendInstinctObservations } = await import("../../../packages/agent-runtime/src/instinct-observer.ts");
+      
+      const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+      const submissionsPath = join(buildDir, projectId, "qa-submissions.json");
+      if (existsSync(submissionsPath)) {
+        const submissions = JSON.parse(readFileSync(submissionsPath, "utf-8"));
+        const laterFindings = Array.isArray(retest.findings) ? retest.findings : [];
+        const observations = buildMismatchObservations(submissions, laterFindings);
+        if (observations.length > 0) {
+          for (const obs of observations) {
+            console.log(`[instinct-mismatch] agent ${obs.agentName} submitted 0 findings but later stage found CRITICAL: ${obs.missedFinding}`);
+          }
+          appendInstinctObservations(observations);
+        }
+      }
+    } catch (obsErr) {
+      console.error(`[stage6] Failed to record instinct observations: ${String(obsErr)}`);
+    }
+
+    const { shubham: shubhamFindings, aanya: aanyaFindings } = splitLiveFindings(retest.findings);
+
+    if (plan) {
+      const fixPromises: Promise<any>[] = [];
+      if (shubhamFindings.length > 0) {
+        console.log(`[stage6] Routing ${shubhamFindings.length} findings to Shubham`);
+        fixPromises.push(fixShubhamReal(plan, shubhamFindings));
+      }
+      if (aanyaFindings.length > 0) {
+        console.log(`[stage6] Routing ${aanyaFindings.length} findings to Aanya`);
+        fixPromises.push(fixAanyaReal(plan, aanyaFindings));
+      }
+
+      if (fixPromises.length > 0) {
+        await Promise.all(fixPromises);
+        console.log(`[stage6] Agent fixes completed — redeploying app via Riya`);
+
+        let redeployResult = await deps.deployFn(projectId, flags.deployTarget);
+        if (!redeployResult.success) {
+          console.error(`[stage6] Redeployment failed: ${redeployResult.errors.join("; ")}`);
+          deployResult = redeployResult;
+          break;
+        }
+        deployResult = redeployResult;
+
+        retest = await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl);
+      } else {
+        console.log(`[stage6] No frontend/backend specific findings to route — exiting fix loop`);
+        break;
+      }
+    } else {
+      console.warn(`[stage6] No BuildPlan provided — cannot invoke agent fixes. Exiting fix loop.`);
+      break;
+    }
+  }
+
+  // Also log instinct mismatches on final test result if it fails
+  if (!retest.pass) {
+    try {
+      const { readFileSync, existsSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const { buildMismatchObservations, appendInstinctObservations } = await import("../../../packages/agent-runtime/src/instinct-observer.ts");
+      
+      const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+      const submissionsPath = join(buildDir, projectId, "qa-submissions.json");
+      if (existsSync(submissionsPath)) {
+        const submissions = JSON.parse(readFileSync(submissionsPath, "utf-8"));
+        const laterFindings = Array.isArray(retest.findings) ? retest.findings : [];
+        const observations = buildMismatchObservations(submissions, laterFindings);
+        if (observations.length > 0) {
+          for (const obs of observations) {
+            console.log(`[instinct-mismatch] agent ${obs.agentName} submitted 0 findings but later stage found CRITICAL: ${obs.missedFinding}`);
+          }
+          appendInstinctObservations(observations);
+        }
+      }
+    } catch (obsErr) {
+      console.error(`[stage6] Failed to record final instinct observations: ${String(obsErr)}`);
+    }
+  }
 
   return {
     success: retest.pass,

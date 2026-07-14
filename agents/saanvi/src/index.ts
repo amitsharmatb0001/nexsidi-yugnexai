@@ -94,7 +94,7 @@ export async function run(
     description: String(raw.description ?? ""),
     appType: "web",
     features: Array.isArray(raw.features) ? raw.features : [],
-    auth: { provider: "clerk", features: ["sign-in", "sign-up"] },
+    auth: { provider: "custom", features: ["sign-in", "sign-up"] },
     apiEndpoints: Array.isArray(raw.apiEndpoints) ? raw.apiEndpoints : [],
     dbTables: Array.isArray(raw.dbTables) ? raw.dbTables : [],
     successCriteria: Array.isArray(raw.successCriteria) ? raw.successCriteria : [],
@@ -171,8 +171,8 @@ Rules:
   updated_at (timestamptz, nullable: false, default: now()).
 - Every user-owned table MUST have user_id (uuid, nullable: false, references users.id).
   Exception: the users table itself.
-- Include a "users" table: id (uuid PK), clerk_id (text, unique, NOT NULL), email (text, unique, NOT NULL).
-- Auth: Clerk handles sign-in/sign-up — do NOT design custom auth tables or JWT logic.
+- Include a "users" table: id (uuid PK), password_hash (text, NOT NULL), email (text, unique, NOT NULL).
+- Auth: Custom JWT authentication — design local user registration, login, and JWT middleware.
 - Be AMBITIOUS: include all features the user mentioned. Do not simplify or cut corners.
 - successCriteria must be measurable user-facing statements.
 `;

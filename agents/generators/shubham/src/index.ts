@@ -194,19 +194,23 @@ Your workflow:
 
 STACK (non-negotiable):
 - Express 4.x / TypeScript / Node 22 / commonjs
-- Auth: @clerk/express — getAuth(req) returns ONLY { userId, sessionId }
-  NEVER access .email on auth result. No email property exists.
+- Auth: Custom JWT authentication. You MUST write:
+  1. A User database table containing email (text, unique), password_hash (text).
+  2. A registration endpoint (POST /api/v1/auth/register) that hashes passwords using bcryptjs (salt rounds = 10) and saves the user.
+  3. A login endpoint (POST /api/v1/auth/login) that verifies passwords using bcryptjs and returns a signed JWT token (expires in 24h, signed with process.env.JWT_SECRET || "default_dev_secret").
+  4. An auth middleware (src/middleware/auth.ts) that reads the Authorization header (Bearer <token>), verifies it using jsonwebtoken, and sets req.userId.
 - DB: PostgreSQL via "pg" Pool with parameterized queries ($1, $2)
 - Security: helmet() + cors with CORS_ORIGIN env var
 
 STATIC FILES ALREADY WRITTEN (DO NOT write these):
 - package.json, tsconfig.json, Dockerfile
-- src/index.ts (entry point with helmet, cors, clerkMiddleware, route mounting)
+- src/index.ts (entry point with helmet, cors, route mounting)
 - src/routes/index.ts (auto-generated after you write route files)
 - src/types/requests.ts (CreateTaskRequest, UpdateTaskRequest)
 
 FILES YOU MUST WRITE:
-- src/middleware/clerk-auth.ts (requireAuth middleware)
+- src/middleware/auth.ts (custom JWT verification middleware)
+- src/routes/auth.routes.ts and src/controllers/auth.ts (registration/login endpoints)
 - src/routes/{resource}.routes.ts (one file per resource)
 - src/controllers/{resource}.ts (business logic per resource)
 - src/db/pool.ts (PostgreSQL Pool instance)
@@ -219,7 +223,7 @@ CRITICAL RULES:
 5. Timestamps: use SQL DEFAULT now() — not app code
 6. dueDate: always string | null (ISO 8601) — NEVER Date object
 7. Add BOTH router.put("/:id") AND router.patch("/:id") for update endpoints
-8. Available packages: express, @clerk/express, pg, cors, helmet, dotenv, zod, express-rate-limit
+8. Available packages: express, jsonwebtoken, bcryptjs, pg, cors, helmet, dotenv, zod, express-rate-limit
    USE ONLY these — no other packages
 9. Dynamic UPDATE queries (partial updates — only SOME fields provided) are
    where SQL injection actually happens in practice, even when rule 1 is
@@ -398,7 +402,8 @@ function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
         },
         dependencies: {
           express: "^4.21.2",
-          "@clerk/express": "^2.3.0",
+          jsonwebtoken: "^9.0.2",
+          bcryptjs: "^2.4.3",
           cors: "^2.8.5",
           helmet: "^8.0.0",
           dotenv: "^16.5.0",
@@ -412,6 +417,8 @@ function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
           "@types/cors": "^2.8.17",
           "@types/pg": "^8.11.11",
           "@types/node": "^22.0.0",
+          "@types/jsonwebtoken": "^9.0.8",
+          "@types/bcryptjs": "^2.4.6",
           "ts-node-dev": "^2.0.0",
         },
       }, null, 2),
@@ -453,7 +460,6 @@ CMD ["node", "dist/index.js"]
 import express from "express";
 import helmet from "helmet";
 import cors from "cors";
-import { clerkMiddleware } from "@clerk/express";
 import routes from "./routes/index";
 
 const app = express();
@@ -462,7 +468,6 @@ const port = Number(process.env.PORT) || ${port};
 app.use(express.json());
 app.use(helmet());
 app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:3000", credentials: true }));
-app.use(clerkMiddleware());
 app.use("/api/v1", routes);
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 

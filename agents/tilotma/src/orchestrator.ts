@@ -38,7 +38,7 @@ export async function orchestrate(input: OrchestrateInput, redis: Redis): Promis
 
   // Agentic loop — one round per tool-call batch until the model stops calling tools
   for (let round = 0; round < 50; round++) {
-    const model = modelChain[modelIdx % modelChain.length];
+    const model = modelChain[modelIdx % modelChain.length]!;
 
     let response;
     try {

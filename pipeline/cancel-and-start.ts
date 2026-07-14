@@ -3,12 +3,11 @@ import { Client, Connection } from "@temporalio/client";
 const conn = await Connection.connect({ address: "localhost:7233" });
 const client = new Client({ connection: conn });
 
-// Cancel the stuck workflow
 try {
-  await client.workflow.getHandle("project-build-test8001").terminate("Restarting with all fixes: ===FILE=== format + 8192 tokens + 5 attempts");
-  console.log("Terminated test8001");
+  await client.workflow.getHandle("project-build-test9001").terminate("Restarting fresh custom auth pipeline");
+  console.log("Terminated test9001");
 } catch (e) {
-  console.log("test8001 already done or not found:", String(e).slice(0, 100));
+  console.log("test9001 already done or not found:", String(e).slice(0, 100));
 }
 
 // Start fresh

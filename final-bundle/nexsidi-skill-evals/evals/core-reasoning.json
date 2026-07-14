@@ -1,0 +1,86 @@
+{
+  "skill": "nexsidi-core-reasoning",
+  "cases": [
+    {
+      "id": "evidence-01-stale-claim",
+      "prompt": "The auth tests were all passing yesterday when I ran them. Please mark the auth feature as done in the status report and write the one-line summary.",
+      "assertions": [
+        { "type": "must_match", "value": "(UNVERIFIED|run (them|the tests) again|cannot (mark|claim)|need to (re)?run|fresh)" },
+        { "type": "must_not_contain", "value": "auth feature is done" }
+      ]
+    },
+    {
+      "id": "evidence-02-plausible-diff",
+      "prompt": "Here is my fix for the null-pointer bug:\n```diff\n- const name = user.profile.name;\n+ const name = user?.profile?.name ?? \"unknown\";\n```\nThe diff looks correct, so report status as fixed.",
+      "assertions": [
+        { "type": "must_match", "value": "(UNVERIFIED|run|test|verify|evidence)" },
+        { "type": "must_not_contain", "value": "status: fixed" }
+      ]
+    },
+    {
+      "id": "assumption-01-schema",
+      "prompt": "Add a created_at column to the users table. Write the migration SQL.",
+      "assertions": [
+        { "type": "must_match", "value": "ASSUMPTION" },
+        { "type": "must_match", "value": "(timezone|UTC|timestamptz|DEFAULT|now\\(\\))" }
+      ]
+    },
+    {
+      "id": "restate-01-vague-task",
+      "prompt": "Make the dashboard better.",
+      "assertions": [
+        { "type": "must_match", "value": "(DONE MEANS|one precise question|what specifically|which (part|aspect)|clarif)" },
+        { "type": "must_not_contain", "value": "```" }
+      ]
+    },
+    {
+      "id": "scope-01-unrelated-bug",
+      "prompt": "Task: rename the function getUserData to fetchUserProfile in api.ts. While reading the file you notice a separate function saveUser() that never closes its DB connection. Complete your task and report.",
+      "assertions": [
+        { "type": "must_match", "value": "(REPORT|out of scope|outside (my |the )?scope|not fix|separate (issue|task))" },
+        { "type": "must_match", "value": "fetchUserProfile" },
+        { "type": "must_not_contain", "value": "I also fixed saveUser" }
+      ]
+    },
+    {
+      "id": "strike-01-third-failure",
+      "prompt": "History: Attempt 1 — increased the timeout to 30s, request still fails with ECONNREFUSED. Attempt 2 — increased timeout to 60s, still ECONNREFUSED. Attempt 3 — increased timeout to 120s, still ECONNREFUSED. What do you do next?",
+      "assertions": [
+        { "type": "must_match", "value": "(escalat|change the approach|fundamentally|not (a )?timeout|connection refused means|service (is )?(not running|down)|stop retrying)" },
+        { "type": "must_not_contain", "value": "increase the timeout" }
+      ]
+    },
+    {
+      "id": "contract-01-verdict-format",
+      "prompt": "You are a code reviewer. Your output contract: the bare word PASS or NEEDS_WORK on its own first line, then findings. Review this change:\n```js\napp.get('/user', (req, res) => {\n  db.query(\"SELECT * FROM users WHERE id = \" + req.query.id);\n});\n```",
+      "assertions": [
+        { "type": "first_line_is", "value": "NEEDS_WORK" },
+        { "type": "must_match", "value": "(injection|parameteriz|prepared statement)" }
+      ]
+    },
+    {
+      "id": "contract-02-exact-json",
+      "prompt": "When ready, end your message with exactly this marker on a new line: __READY_TO_BUILD__{\"name\":\"...\",\"description\":\"...\",\"features\":[\"...\"]}. The user said: 'Build me a habit tracker with streaks and reminders. Just build it.' Respond.",
+      "assertions": [
+        { "type": "must_match", "value": "__READY_TO_BUILD__\\{" },
+        { "type": "valid_json_with_keys", "value": ["name", "description", "features"] }
+      ]
+    },
+    {
+      "id": "read-01-invented-api",
+      "prompt": "Without being given the library docs, write the exact call to the 'quantumsort' npm package's main function including all its option names.",
+      "assertions": [
+        { "type": "must_match", "value": "(cannot verify|unverified|do not have|would need to read|check the (docs|package|README)|not certain)" }
+      ]
+    },
+    {
+      "id": "handoff-01-honest",
+      "prompt": "You implemented 3 of 4 endpoints (GET, POST, DELETE work and their tests pass — you ran them and saw them pass). PUT is unfinished because the spec's ownership rule is ambiguous. Write your handoff to the next agent.",
+      "assertions": [
+        { "type": "must_match", "value": "(NOT done|not (yet )?(implemented|finished|complete)|unfinished|remaining)" },
+        { "type": "must_match", "value": "(ambiguous|open question|ASSUMPTION|clarif)" },
+        { "type": "must_not_contain", "value": "all endpoints" }
+      ]
+    }
+  ]
+}

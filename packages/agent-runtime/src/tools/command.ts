@@ -21,14 +21,15 @@ function validateCommand(command: string): string | null {
   if (!command.trim()) return "Empty command";
   // Block compound operators that bypass allowlist
   if (/&&|\|\||;/.test(command)) return "Compound commands are not allowed — call run_command once per command";
-  const [cmd, ...rest] = command.trim().split(/\s+/);
-  if (!ALLOWED_COMMANDS.has(cmd)) return `Command '${cmd}' is not in the allowlist`;
+  const rest = command.trim().split(/\s+/);
+  const cmd = rest[0];
+  if (!cmd || !ALLOWED_COMMANDS.has(cmd)) return `Command '${cmd || ""}' is not in the allowlist`;
   if (cmd === "pkill") {
-    const target = rest.find(a => !a.startsWith("-"));
+    const target = rest.slice(1).find(a => !a.startsWith("-"));
     if (target && !PKILL_ALLOWED_TARGETS.has(target)) return `pkill target '${target}' not allowed`;
   }
   if (cmd === "chmod") {
-    const mode = rest[0];
+    const mode = rest[1];
     if (mode && !/^[ugoa]*\+x$/.test(mode)) return `chmod mode '${mode}' not allowed — only +x variants permitted`;
   }
   return null;
@@ -57,7 +58,11 @@ export function execRunCommand(
   ledger?: EvidenceLedger,
 ): ToolResult {
   const parts = args.command.trim().split(/\s+/);
-  const [cmd, ...cmdArgs] = parts;
+  const cmd = parts[0];
+  if (!cmd) {
+    return { status: "error", summary: "Empty command" };
+  }
+  const cmdArgs = parts.slice(1);
 
   const validationError = validateCommand(args.command);
   if (validationError) {
