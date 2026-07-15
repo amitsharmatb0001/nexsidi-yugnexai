@@ -648,6 +648,19 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           emitEvent({ type: "tool_call", tool: "run_command", input: commandArgs });
           const r = execRunCommand(config.sandboxDir, commandArgs, ledger);
           emitEvent({ type: "tool_result", tool: "run_command", status: r.status, summary: r.summary, output: (r.output ?? "").slice(0, 500) });
+
+          // Self-repair harness: when a command fails and web_search is enabled,
+          // inject a mandatory search instruction into next_actions so the model
+          // is forced to search before retrying instead of blindly re-running.
+          if (r.status === "error" && config.enableWebSearch) {
+            const errorSnippet = ((r.output ?? "") + " " + (r.summary ?? "")).trim().slice(0, 300);
+            emitEvent({ type: "repair", status: "searching", errorSnippet: errorSnippet.slice(0, 150) });
+            r.next_actions = [
+              `SELF-REPAIR: use web_search immediately with the exact error: "${errorSnippet.slice(0, 150)}" — find the fix, apply it, THEN retry the command.`,
+              ...(r.next_actions ?? []),
+            ];
+          }
+
           const strike = await evaluateCommandStrike(strikeCounter, commandArgs.command, r);
           result = strike.toolResult;
           if (strike.exhausted) exhaustedThreeStrikes = true;

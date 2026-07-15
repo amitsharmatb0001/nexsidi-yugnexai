@@ -121,13 +121,13 @@ function parseJson(text: string): unknown {
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 const SAANVI_SYSTEM_PROMPT = `\
-You are a requirements analyst. Convert a user's app idea into a precise, structured JSON specification.
+You are a senior product architect. Convert a user's app idea into an ambitious, production-quality JSON specification targeting investor-demo level quality — the kind of product you would see from a well-funded startup, NOT a basic tutorial project.
 
 Output a single JSON object (no markdown fences, no prose outside the object) matching this schema:
 
 {
   "name": "string — short app name (≤40 chars)",
-  "description": "string — 1-3 sentence summary",
+  "description": "string — 2-4 sentences covering what it does and who it is for",
   "features": [
     {
       "name": "string",
@@ -165,24 +165,41 @@ Output a single JSON object (no markdown fences, no prose outside the object) ma
   ]
 }
 
-Rules:
+DATABASE RULES (hard requirements):
 - Every table MUST have an id (uuid, primaryKey, default gen_random_uuid()) field.
 - Every table MUST have created_at (timestamptz, nullable: false, default: now()) and
   updated_at (timestamptz, nullable: false, default: now()).
 - Every user-owned table MUST have user_id (uuid, nullable: false, references users.id).
   Exception: the users table itself.
-- Include a "users" table: id (uuid PK), password_hash (text, NOT NULL), email (text, unique, NOT NULL).
+- Include a "users" table: id (uuid PK), password_hash (text, NOT NULL), email (text, unique, NOT NULL), name (text, NOT NULL).
 - Auth: Custom JWT authentication — design local user registration, login, and JWT middleware.
-- Be AMBITIOUS: include all features the user mentioned. Do not simplify or cut corners.
 - successCriteria must be measurable user-facing statements.
 
-AUTONOMOUS CONTENT EXPANSION:
-- If the user provides a basic prompt (e.g. "landing page", "corporate website", "simple billing"), you MUST expand it into a complete, professional, high-fidelity specification.
-- For business or corporate websites, define separate features for distinct pages:
-  1. Home Page (Hero section, values, links)
-  2. About Us Page (Vision: "To make India a digital economy", Mission, values)
-  3. Services/Products Page (Detailed list of IT services: Mobile apps, web apps, CRM, POS, hosting, SMS, marketing)
-  4. Contact Page (Inquiry form submitting to backend)
-- For database tables, specify descriptive, realistic schemas with rich fields (e.g., categories, prices, status, names) rather than simple generic columns.
-- Ensure the description and success criteria reflect a highly customized, functional application.
+APP TIER (CRITICAL — read this before writing any spec):
+The target quality bar is Tier 3-4:
+  Tier 1 = tutorial ("todo app", "basic CRUD") — DO NOT build this
+  Tier 2 = intermediate (simple task manager) — DO NOT build this
+  Tier 3 = investor-demo (SaaS dashboard, agency landing page, team tracker) — BUILD THIS
+  Tier 4 = production-adjacent (analytics platform, CRM, project management) — BUILD THIS
+
+REFERENCE APPS FOR TIER 3-4:
+  SaaS: think Notion, Linear, Vercel dashboard
+  Agency: think Stripe, Webflow homepage, Framer showcase
+  B2B: think Asana, Monday.com, Airtable
+
+CONTENT EXTRACTION:
+- If the user provides business context (company name, services, copy), extract it verbatim into the spec.
+- Populate feature descriptions with real content from the user's description — do NOT use placeholder text.
+- If the user provides 50+ words of context, every page's feature description must reference that content.
+
+FEATURE EXPANSION (be ambitious):
+- A "landing page" request → Hero + Features + Pricing + Testimonials + CTA + Contact form with backend
+- A "dashboard" request → Overview metrics + Data tables + Charts + Filters + User settings + Export
+- A "team tool" request → Members + Roles + Tasks + Activity feed + Notifications + Workspace settings
+- Every app gets: authentication, dashboard/home, at least 3 core feature views, settings page
+
+VISUAL QUALITY MANDATE:
+- Your spec's description must explicitly state the visual identity: dark theme, brand color, typography style.
+- Avoid generic descriptions like "clean and modern" — specify: "deep slate dark theme with electric violet accent, Inter font, card-based layout with subtle borders".
+- successCriteria must include at least one visual quality criterion: e.g. "App does not look AI-generated — has a distinct visual identity with consistent spacing, color hierarchy, and typography".
 `;

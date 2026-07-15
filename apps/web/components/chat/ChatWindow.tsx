@@ -1,7 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { nanoid } from "nanoid";
+
+interface AttachedFile {
+  name: string;
+  type: string;
+  content: string; // text content or data: URI for images
+  size: number;
+}
 
 interface Message {
   role: "user" | "assistant";
@@ -32,8 +39,11 @@ export function ChatWindow() {
   const [streaming, setStreaming]   = useState(false);
   const [build, setBuild]           = useState<BuildStatus | null>(null);
   const [sessionId]                 = useState(getSessionId);
+  const [attachments, setAttachments] = useState<AttachedFile[]>([]);
+  const [dragging, setDragging]     = useState(false);
   const bottomRef                   = useRef<HTMLDivElement>(null);
   const inputRef                    = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef                = useRef<HTMLInputElement>(null);
 
   // Load existing session on mount
   useEffect(() => {
@@ -51,13 +61,61 @@ export function ChatWindow() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Read a File into an AttachedFile record
+  const readFile = useCallback((file: File): Promise<AttachedFile> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      const isText = file.type.startsWith("text/") || /\.(txt|md|json|ts|tsx|js|jsx|css|html|xml|yaml|yml|csv|py|rb|go|rs|sh|env|toml|ini)$/i.test(file.name);
+      const isImage = file.type.startsWith("image/");
+
+      reader.onload = (e) => {
+        resolve({
+          name: file.name,
+          type: file.type || "application/octet-stream",
+          content: String(e.target?.result ?? ""),
+          size: file.size,
+        });
+      };
+
+      if (isText) reader.readAsText(file);
+      else if (isImage) reader.readAsDataURL(file);
+      else reader.readAsDataURL(file);
+    });
+  }, []);
+
+  const handleFiles = useCallback(async (files: FileList | File[]) => {
+    const arr = Array.from(files).slice(0, 5); // max 5 files
+    const read = await Promise.all(arr.map(readFile));
+    setAttachments((prev) => [...prev, ...read].slice(0, 5));
+  }, [readFile]);
+
+  const removeAttachment = (name: string) => {
+    setAttachments((prev) => prev.filter((a) => a.name !== name));
+  };
+
+  // Build the message text — inline file content as context
+  function buildMessageWithAttachments(text: string, files: AttachedFile[]): string {
+    if (files.length === 0) return text;
+    const fileContext = files.map((f) => {
+      if (f.type.startsWith("image/")) {
+        return `[Attached image: ${f.name}]`;
+      }
+      const preview = f.content.length > 8000 ? f.content.slice(0, 8000) + "\n...(truncated)" : f.content;
+      return `--- Attached file: ${f.name} ---\n${preview}\n--- End of ${f.name} ---`;
+    }).join("\n\n");
+    return `${text}\n\n${fileContext}`;
+  }
+
   async function send() {
     const text = input.trim();
-    if (!text || streaming) return;
+    if (!text && attachments.length === 0) return;
+    if (streaming) return;
 
-    const userMsg: Message = { role: "user", content: text, ts: Date.now() };
+    const fullMessage = buildMessageWithAttachments(text || "(see attached files)", attachments);
+    const userMsg: Message = { role: "user", content: fullMessage, ts: Date.now() };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
+    setAttachments([]);
     setStreaming(true);
 
     // Placeholder for the assistant reply
@@ -68,7 +126,7 @@ export function ChatWindow() {
       const res = await fetch(`${API}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, sessionId }),
+        body: JSON.stringify({ message: fullMessage, sessionId }),
       });
 
       if (!res.body) throw new Error("No response body");
@@ -144,6 +202,12 @@ export function ChatWindow() {
     }
   }
 
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragging(false);
+    if (e.dataTransfer.files.length) void handleFiles(e.dataTransfer.files);
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Message list */}
@@ -191,14 +255,59 @@ export function ChatWindow() {
       </div>
 
       {/* Input area */}
-      <div className="border-t border-gray-800 px-4 py-4">
-        <div className="flex items-end gap-3 max-w-3xl mx-auto">
+      <div
+        className={`border-t px-4 py-4 transition-colors ${dragging ? "border-indigo-500 bg-indigo-950/30" : "border-gray-800"}`}
+        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={handleDrop}
+      >
+        {/* Hidden file input */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="*/*"
+          className="hidden"
+          onChange={(e) => { if (e.target.files) void handleFiles(e.target.files); e.target.value = ""; }}
+        />
+
+        {/* Attachment chips */}
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2 max-w-3xl mx-auto">
+            {attachments.map((f) => (
+              <div key={f.name} className="flex items-center gap-1 px-3 py-1 bg-gray-800 border border-gray-700 rounded-full text-xs text-gray-300">
+                <span>{f.type.startsWith("image/") ? "🖼" : "📄"}</span>
+                <span className="max-w-[160px] truncate">{f.name}</span>
+                <span className="text-gray-500">({Math.round(f.size / 1024)}KB)</span>
+                <button onClick={() => removeAttachment(f.name)} className="ml-1 text-gray-500 hover:text-gray-200 transition">×</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {dragging && (
+          <div className="flex items-center justify-center py-3 mb-2 border-2 border-dashed border-indigo-500 rounded-xl text-indigo-400 text-sm max-w-3xl mx-auto">
+            Drop files here to attach
+          </div>
+        )}
+
+        <div className="flex items-end gap-2 max-w-3xl mx-auto">
+          {/* Attach button */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={streaming}
+            title="Attach files (text, images, code)"
+            className="shrink-0 w-10 h-10 flex items-center justify-center rounded-xl bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-200 disabled:opacity-40 transition text-lg"
+          >
+            📎
+          </button>
+
           <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKey}
-            placeholder="Describe what you want to build..."
+            placeholder={attachments.length > 0 ? "Add a message or just send the files..." : "Describe what you want to build..."}
             rows={1}
             disabled={streaming}
             className="flex-1 resize-none bg-gray-800 text-gray-100 placeholder-gray-500 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 max-h-40 overflow-y-auto"
@@ -206,13 +315,13 @@ export function ChatWindow() {
           />
           <button
             onClick={() => void send()}
-            disabled={streaming || !input.trim()}
+            disabled={streaming || (!input.trim() && attachments.length === 0)}
             className="px-5 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition shrink-0"
           >
             {streaming ? "..." : "Send"}
           </button>
         </div>
-        <p className="text-center text-xs text-gray-600 mt-2">Enter to send · Shift+Enter for new line</p>
+        <p className="text-center text-xs text-gray-600 mt-2">Enter to send · Shift+Enter for new line · Drag &amp; drop files to attach</p>
       </div>
     </div>
   );

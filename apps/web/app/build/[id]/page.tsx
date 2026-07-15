@@ -57,15 +57,16 @@ type TerminalEntry =
 
 // Per-tool display config
 const TOOL_META: Record<string, { icon: string; color: string; label: string }> = {
-  write_file:   { icon: "📝", color: "#3FB950", label: "Write File" },
-  edit_file:    { icon: "✏️",  color: "#79C0FF", label: "Edit File"  },
-  read_file:    { icon: "📖", color: "#8B949E", label: "Read File"  },
-  run_command:  { icon: "▶️",  color: "#D2A8FF", label: "Run Command"},
-  web_search:   { icon: "🔍", color: "#FFA657", label: "Web Search" },
-  screenshot:   { icon: "📸", color: "#FF7B72", label: "Screenshot" },
-  http_request: { icon: "🌐", color: "#79C0FF", label: "HTTP"       },
-  docker_compose:{ icon:"🐳", color: "#1F6FEB", label: "Docker"     },
-  db_query:     { icon: "🗄️",  color: "#FFBD2E", label: "DB Query"  },
+  write_file:   { icon: "📝", color: "#3FB950", label: "Write File"  },
+  edit_file:    { icon: "✏️",  color: "#79C0FF", label: "Edit File"   },
+  read_file:    { icon: "📖", color: "#8B949E", label: "Read File"   },
+  run_command:  { icon: "▶️",  color: "#D2A8FF", label: "Run Command" },
+  web_search:   { icon: "🔍", color: "#FFA657", label: "Web Search"  },
+  screenshot:   { icon: "📸", color: "#FF7B72", label: "Screenshot"  },
+  http_request: { icon: "🌐", color: "#79C0FF", label: "HTTP"        },
+  docker_compose:{ icon:"🐳", color: "#1F6FEB", label: "Docker"      },
+  db_query:     { icon: "🗄️",  color: "#FFBD2E", label: "DB Query"   },
+  repair:       { icon: "🔧", color: "#FFA657", label: "Self-Repair" },
 };
 
 function eventSummary(ev: ToolEvent): string {
@@ -82,6 +83,28 @@ function eventSummary(ev: ToolEvent): string {
 }
 
 function ActionCard({ ev }: { ev: ToolEvent }) {
+  // repair events don't have a tool field — handle them as their own type
+  if (ev.type === "repair") {
+    return (
+      <div style={{ display: "flex", alignItems: "flex-start", gap: "8px", padding: "4px 0",
+                    background: "rgba(255,166,87,0.08)", borderLeft: "2px solid #FFA657",
+                    paddingLeft: "10px", margin: "2px 0" }}>
+        <span style={{ fontSize: "13px", flexShrink: 0, lineHeight: 1.4 }}>🔧</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ fontSize: "10px", fontWeight: 700, color: "#FFA657", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            Self-Repair · Searching web for fix
+          </span>
+          {ev.errorSnippet && (
+            <div style={{ fontSize: "10px", color: "#8B949E", marginTop: "1px", fontFamily: "monospace",
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {String(ev.errorSnippet).slice(0, 100)}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   const meta = TOOL_META[ev.tool] ?? { icon: "⚙️", color: "#8B949E", label: ev.tool };
   const isCall   = ev.type === "tool_call";
   const isResult = ev.type === "tool_result";

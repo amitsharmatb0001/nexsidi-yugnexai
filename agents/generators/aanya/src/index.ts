@@ -441,10 +441,27 @@ ${apiSection}
 SHARED TYPES (use these exact field names in your TypeScript interfaces):
 ${plan.sharedTypes ?? ""}
 
-USER STORY:
-A user should be able to sign up, log in, and then use all the core features.
-The app should look polished and professional using NexSidi UI components.
-No AI-generated "purple gradients over white cards" — use the dark void theme.
+QUALITY BAR — INVESTOR DEMO TIER (read before writing any component):
+This is NOT a tutorial or basic CRUD app. The quality bar is Tier 3-4:
+  a Stripe landing page, a Linear dashboard, a Vercel analytics panel.
+Do NOT produce: purple gradients on white cards, generic hero sections, stock shadcn layouts.
+DO produce: a distinct visual identity — consistent dark theme using NexUI's void palette,
+  a brand color hierarchy (primary action, secondary text, muted borders), deliberate
+  typography scale, cards with real content and purposeful spacing.
+
+APP-SPECIFIC VISUAL IDENTITY from the spec description:
+${plan.appDescription}
+Implement this identity in every component — if the spec says "electric violet accent", every
+primary Button uses that color. If the spec says "card-based layout", every data section uses
+Panel/Card components with consistent padding. No generic defaults.
+
+CONTENT RULE — NO PLACEHOLDER TEXT:
+Every page must show real content from the project spec, NOT "Lorem ipsum" or "Coming soon".
+User-facing copy must match what this specific app actually does.
+
+USER FLOW:
+A user signs up → logs in → sees a dashboard with real metrics/content → uses the core features
+→ can manage their account. All transitions are smooth with Spinner during loading states.
 
 PLANNED FRONTEND FILES AND PAGES (you MUST implement these pages and files as planned):
 ${taskDetails}
