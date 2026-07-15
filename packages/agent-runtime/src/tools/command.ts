@@ -48,6 +48,15 @@ export function truncateOutput(text: string, headChars: number, tailChars: numbe
   return `${head}\n...[truncated ${text.length - headChars - tailChars} chars]...\n${tail}`;
 }
 
+export function resolveCommandExecutable(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return platform === "win32" && ["npm", "npx", "tsc", "next"].includes(command)
+    ? `${command}.cmd`
+    : command;
+}
+
 // Phase 5 Task 2: ledger is optional so existing call sites (loop.ts,
 // claude-loop.ts, gemini-loop.ts, and every pre-existing test) keep
 // compiling and passing unchanged. Only a SUCCESSFUL run is evidence — a
@@ -76,7 +85,7 @@ export function execRunCommand(
   const timeout = Math.min(args.timeout_ms ?? 120_000, 300_000);
 
   try {
-    const result = spawnSync(cmd, cmdArgs, {
+    const result = spawnSync(resolveCommandExecutable(cmd), cmdArgs, {
       cwd,
       encoding: "utf-8",
       timeout,

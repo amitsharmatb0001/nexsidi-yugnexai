@@ -39,3 +39,28 @@ test("any evidence kind satisfies the gate — file_read counts same as command_
   ledger.record("file_read", "src/index.ts");
   expect(checkCompletion(ledger, CLAIM)).toEqual({ allowed: true });
 });
+
+test("rejects completion when the model says verification did not pass", () => {
+  const ledger = createEvidenceLedger();
+  ledger.record("command_output", "npx tsc --noEmit -> exited 0");
+
+  const result = checkCompletion(ledger, { ...CLAIM, verificationPassed: false });
+  expect(result.allowed).toBe(false);
+  if (!result.allowed) expect(result.reason).toContain("verification_passed must be true");
+});
+
+test("rejects unrelated successful commands when an exact verification command is required", () => {
+  const ledger = createEvidenceLedger();
+  ledger.record("command_output", "node -v -> exited 0");
+
+  const result = checkCompletion(ledger, CLAIM, ["npx tsc --noEmit"]);
+  expect(result.allowed).toBe(false);
+  if (!result.allowed) expect(result.reason).toContain("npx tsc --noEmit");
+});
+
+test("allows a required verification command with additional safe arguments", () => {
+  const ledger = createEvidenceLedger();
+  ledger.record("command_output", "npx tsc --noEmit --pretty false -> exited 0");
+
+  expect(checkCompletion(ledger, CLAIM, ["npx tsc --noEmit"])).toEqual({ allowed: true });
+});

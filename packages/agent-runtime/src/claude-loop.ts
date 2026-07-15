@@ -313,7 +313,11 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           // Phase 5 Task 3: same default-FAIL completion gate as loop.ts —
           // rejection falls through to the normal tool-result path (no
           // early return) so it counts toward MAX_ITERATIONS.
-          const check = checkCompletion(ledger, { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed });
+          const check = checkCompletion(
+            ledger,
+            { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed },
+            config.requiredVerificationCommands,
+          );
           if (!check.allowed) {
             console.log(`[${config.agentName}:claude-agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);
             result = { status: "error", summary: check.reason };

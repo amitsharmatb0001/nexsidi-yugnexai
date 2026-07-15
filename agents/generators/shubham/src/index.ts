@@ -109,6 +109,7 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     geminiModel: process.env.GEMINI_GENERATION_MODEL,
     enableHttpTools: true,
     enableDockerTools: true,
+    requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see
@@ -161,6 +162,7 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     geminiModel: process.env.GEMINI_GENERATION_MODEL,
     enableHttpTools: true,
     enableDockerTools: true,
+    requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see

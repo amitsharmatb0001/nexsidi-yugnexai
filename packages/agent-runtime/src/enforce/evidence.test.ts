@@ -66,6 +66,15 @@ test("all three evidence kinds are accepted", () => {
   expect(ledger.consume()).toHaveLength(3);
 });
 
+test("recognizes only the required successful verification command", () => {
+  const ledger = createEvidenceLedger();
+  ledger.record("command_output", "node -v -> exited 0");
+  ledger.record("command_output", "npx tsc --noEmit --pretty false -> exited 0");
+
+  expect(ledger.hasSuccessfulCommand("npx tsc --noEmit")).toBe(true);
+  expect(ledger.hasSuccessfulCommand("npm run build")).toBe(false);
+});
+
 // ── Task 2: tool executor integration ───────────────────────────────────────
 // Executors accept an OPTIONAL ledger param — existing call sites and tests
 // (loop.ts, claude-loop.ts, gemini-loop.ts, and every existing tool test)

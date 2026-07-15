@@ -19,17 +19,26 @@ export const agents = pgTable("agents", {
 // ─── Users ────────────────────────────────────────────────────────────────────
 export const users = pgTable("users", {
   id:        uuid("id").primaryKey().defaultRandom(),
-  clerkId:   text("clerk_id").notNull().unique(),
   email:     text("email").notNull(),
+  passwordHash: text("password_hash"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const sessions = pgTable("sessions", {
+  id:        uuid("id").primaryKey().defaultRandom(),
+  userId:    uuid("user_id").notNull(),
+  tokenHash: char("token_hash", { length: 64 }).notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("sessions_user_idx").on(t.userId)]);
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 // id = first 12 chars of SHA-256 of (sessionId + projectName)
 // clerkId = Clerk user ID (text) — stored directly, no UUID FK for Phase 1
 export const projects = pgTable("projects", {
   id:         varchar("id", { length: 12 }).primaryKey(),
-  clerkId:    text("clerk_id").notNull(),             // Clerk user ID (user_xxx)
+  userId:     uuid("user_id").notNull(),
   name:       text("name").notNull(),
   spec:       jsonb("spec"),
   status:     text("status").notNull().default("pending"),

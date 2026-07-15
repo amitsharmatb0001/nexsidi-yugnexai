@@ -78,6 +78,7 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // spreads the parallel load across both models to avoid 429s. http tools so
     // Aanya still self-verifies (npm install + next build + typecheck). Live UI is Tier 3.
     enableHttpTools: true,
+    requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
   });
 
   return {
@@ -123,6 +124,7 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     projectId: plan.projectId,
     // flash (default) — see the rationale on Aanya's run() config above.
     enableHttpTools: true,
+    requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
   });
 
   return {
@@ -447,7 +449,7 @@ Start with list_files to see the scaffold, then write pages and components.`;
 // its own function (rather than inline in writeStaticScaffold's template
 // string) so the env-var name is directly unit-testable.
 export function buildCustomEnvLocal(backendPort: string): string {
-  return `NEXT_PUBLIC_API_URL=http://localhost:${backendPort}/api/v1
+  return `NEXT_PUBLIC_API_URL=http://localhost:${backendPort}
 JWT_SECRET=${process.env.JWT_SECRET || "default_dev_secret"}
 `;
 }

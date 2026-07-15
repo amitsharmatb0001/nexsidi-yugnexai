@@ -14,11 +14,30 @@ export interface CompletionClaim {
 
 export type CompletionCheck = { allowed: true } | { allowed: false; reason: string };
 
-export function checkCompletion(ledger: EvidenceLedger, _claim: CompletionClaim): CompletionCheck {
+export function checkCompletion(
+  ledger: EvidenceLedger,
+  claim: CompletionClaim,
+  requiredVerificationCommands: string[] = [],
+): CompletionCheck {
+  if (!claim.verificationPassed) {
+    return {
+      allowed: false,
+      reason: "Completion rejected: verification_passed must be true after the required checks succeed.",
+    };
+  }
   if (!ledger.hasFreshEvidence()) {
     return {
       allowed: false,
       reason: "Completion rejected: no verification evidence this run. Run your check, read its output, then call task_complete.",
+    };
+  }
+  const missingCommands = requiredVerificationCommands.filter(
+    (command) => !ledger.hasSuccessfulCommand(command),
+  );
+  if (missingCommands.length > 0) {
+    return {
+      allowed: false,
+      reason: `Completion rejected: required verification command(s) did not exit 0 this run: ${missingCommands.join(", ")}`,
     };
   }
   return { allowed: true };

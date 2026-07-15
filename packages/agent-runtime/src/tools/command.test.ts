@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { truncateOutput, execRunCommand } from "./command.ts";
+import { truncateOutput, execRunCommand, resolveCommandExecutable } from "./command.ts";
 
 // Full-system audit TO1: execRunCommand used to keep the HEAD of long
 // command output (stdout.slice(0, 6000)). Real build tool errors (npm
@@ -62,4 +62,10 @@ test("execRunCommand actually runs npm-family commands on this platform (not ENO
   } finally {
     rmSync(sandboxDir, { recursive: true, force: true });
   }
+});
+
+test("uses Windows command shims without changing the recorded command", () => {
+  expect(resolveCommandExecutable("npm", "win32")).toBe("npm.cmd");
+  expect(resolveCommandExecutable("npx", "win32")).toBe("npx.cmd");
+  expect(resolveCommandExecutable("npm", "linux")).toBe("npm");
 });

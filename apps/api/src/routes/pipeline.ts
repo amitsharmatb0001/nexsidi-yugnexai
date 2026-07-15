@@ -53,7 +53,7 @@ pipelineRouter.post("/start", async (c) => {
   // Persist project to DB (clerkId = Clerk user ID, stored as text for Phase 1)
   await db.insert(projects).values({
     id:        projectId,
-    clerkId:   userId,
+    userId,
     name:      `Project ${projectId.slice(0, 8)}`,
     status:    "building",
     createdAt: new Date(),

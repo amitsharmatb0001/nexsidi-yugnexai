@@ -4,12 +4,12 @@
 
 import { run as runSaanviAgent }  from "../../agents/saanvi/src/index.ts";
 import { run as runArjunAgent, getBuildDir }   from "../../agents/arjun/src/index.ts";
-import { run as runShubhamAgent } from "../../agents/generators/shubham/src/index.ts";
-import { run as runAanyaAgent }   from "../../agents/generators/aanya/src/index.ts";
+import { run as runShubhamAgent, runFix as runShubhamFix } from "../../agents/generators/shubham/src/index.ts";
+import { run as runAanyaAgent, runFix as runAanyaFix }   from "../../agents/generators/aanya/src/index.ts";
 import { run as runPranavAgent }  from "../../agents/generators/pranav/src/index.ts";
 import { run as runRiyaAgent }    from "../../agents/riya/src/index.ts";
 import { agentChat }               from "@nexsidi/llm-client";
-import { db, qaResults, stuckStateLog } from "@nexsidi/db";
+import { db, projects, qaResults, stuckStateLog } from "@nexsidi/db";
 import { eq, and } from "drizzle-orm";
 import { Context }                 from "@temporalio/activity";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from "fs";
@@ -92,6 +92,29 @@ export async function runPranav(projectId: string): Promise<void> {
 
 // ── TypeScript compile gate — runs BEFORE QA scoring ────────────────────────
 // Fails fast if tsc can't compile — saves QA time on uncompilable code.
+export function resolveNodeCommand(
+  command: "npm" | "npx",
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return platform === "win32" ? `${command}.cmd` : command;
+}
+
+export function describeCommandFailure(result: {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string | null;
+  stderr: string | null;
+  error?: Error;
+}): string {
+  const detail = [result.error?.message, result.stderr, result.stdout]
+    .map((value) => value?.trim())
+    .find((value): value is string => Boolean(value));
+
+  if (detail) return detail.slice(0, 500);
+  if (result.signal) return `terminated by signal ${result.signal}`;
+  return `exited with status ${result.status ?? "unknown"}`;
+}
+
 export async function runCompileCheck(projectId: string): Promise<{ pass: boolean; errors: string }> {
   const buildDir = getBuildDir(projectId);
   const backendDir = join(buildDir, "backend");
@@ -102,16 +125,16 @@ export async function runCompileCheck(projectId: string): Promise<{ pass: boolea
     if (!existsSync(join(dir, "tsconfig.json"))) continue;
     // Install deps first so tsc can resolve imports and catch type errors.
     // --ignore-scripts prevents postinstall hooks that may fail in CI-like environments.
-    const install = spawnSync("npm", ["install", "--ignore-scripts", "--prefer-offline"], {
+    const install = spawnSync(resolveNodeCommand("npm"), ["install", "--ignore-scripts", "--prefer-offline"], {
       cwd: dir, encoding: "utf-8", timeout: 120_000,
       env: { ...process.env, NPM_CONFIG_FUND: "false", NPM_CONFIG_AUDIT: "false" },
     });
     if (install.status !== 0) {
-      results.push(`${label}: npm install failed\n${(install.stderr ?? "").slice(0, 500)}`);
+      results.push(`${label}: npm install failed\n${describeCommandFailure(install)}`);
       continue;
     }
     try {
-      const tsc = spawnSync("npx", ["tsc", "--noEmit", "--pretty", "false"], {
+      const tsc = spawnSync(resolveNodeCommand("npx"), ["tsc", "--noEmit", "--pretty", "false"], {
         cwd: dir, encoding: "utf-8", timeout: 60_000,
         env: { ...process.env, FORCE_COLOR: "0" },
       });
@@ -136,6 +159,15 @@ export async function runCompileCheck(projectId: string): Promise<{ pass: boolea
 
 // ── Live execution check — starts backend in Docker, hits /api/v1/* ─────────
 // Expects HTTP 401 (Unauthorized) — not a crash. 401 proves server started and Clerk is wired.
+export function buildLiveCheckEnv(
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  return [
+    "-e", "DATABASE_URL=postgresql://u:p@127.0.0.1:5432/d",
+    "-e", `JWT_SECRET=${env.JWT_SECRET ?? "nexsidi_live_check_secret"}`,
+  ];
+}
+
 export async function runLiveCheck(projectId: string): Promise<{ pass: boolean; detail: string }> {
   const buildDir = getBuildDir(projectId);
   const tag = `nexsidi-live-${projectId}`.toLowerCase();
@@ -156,8 +188,7 @@ export async function runLiveCheck(projectId: string): Promise<{ pass: boolean; 
     // Start container (no postgres needed for compile/start check — just test it boots)
     const run = spawnSync("docker", [
       "run", "--rm", "-d", "-p", "19001:3001",
-      "-e", `DATABASE_URL=postgresql://u:p@127.0.0.1:5432/d`,
-      "-e", `CLERK_SECRET_KEY=${process.env.CLERK_SECRET_KEY ?? "sk_test_placeholder"}`,
+      ...buildLiveCheckEnv(),
       "--name", tag, tag,
     ], { encoding: "utf-8", timeout: 15_000 });
     const containerId = run.stdout?.trim() ?? "";
@@ -180,7 +211,7 @@ export async function runLiveCheck(projectId: string): Promise<{ pass: boolean; 
         pass = true;
         detail = `Server responded HTTP ${code} ✓`;
       } else {
-        detail = `Server responded HTTP ${code} — expected 401 (Clerk) or 404`;
+        detail = `Server responded HTTP ${code} — expected 401, 200, or 404`;
       }
     } finally {
       // Always clean up container
@@ -316,7 +347,35 @@ Score = 100 − (CRITICAL×10) − (HIGH×5) − (MEDIUM×2) − (LOW×1). Minim
 Output ONLY JSON: {"score":number,"findings":[{"severity":"CRITICAL|HIGH|MEDIUM|LOW","description":"..."}]}`;
 }
 
-// ── Code fix: re-run generators with QA findings + build error attached ──────
+// ── Code fix: target only the generator that owns the failing code ───────────
+export type RepairTarget = "backend" | "frontend";
+
+export function selectRepairTargets(reason: string): RepairTarget[] {
+  if (!reason.startsWith("compile_error")) return ["backend", "frontend"];
+
+  const detail = reason.replace(/^compile_error:\s*/, "");
+  const backendFailed = /(?:^|\n)backend:/m.test(detail);
+  const frontendFailed = /(?:^|\n)frontend:/m.test(detail);
+
+  if (backendFailed && !frontendFailed) return ["backend"];
+  if (frontendFailed && !backendFailed) return ["frontend"];
+  return ["backend", "frontend"];
+}
+
+interface RepairRunners {
+  backend: (plan: BuildPlan, findings: string[]) => Promise<unknown>;
+  frontend: (plan: BuildPlan, findings: string[]) => Promise<unknown>;
+}
+
+export async function runSelectedRepairs(
+  targets: RepairTarget[],
+  plan: BuildPlan,
+  findings: string[],
+  runners: RepairRunners = { backend: runShubhamFix, frontend: runAanyaFix },
+): Promise<void> {
+  await Promise.all(targets.map((target) => runners[target](plan, findings)));
+}
+
 export async function runCodeFix(projectId: string, iteration: number, reason: string): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
@@ -329,35 +388,31 @@ export async function runCodeFix(projectId: string, iteration: number, reason: s
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       .where(and(eq(qaResults.projectId, projectId), eq(qaResults.iteration, iteration))!);
 
-    const summary = findings
+    const qaFindings = findings
       .flatMap((r) =>
         (r.findings as Array<{ severity: string; description: string }>).map(
           (f) => `[${r.agent.toUpperCase()}] ${f.severity}: ${f.description}`,
         ),
-      )
-      .join("\n");
+      );
 
     // Include the build/run reason so the LLM knows the EXACT error to fix.
     // Without this, after a live_check_fail the LLM only sees QA findings (which passed)
     // and doesn't know about the TypeScript syntax error that broke the Docker build.
-    const buildError = reason.startsWith("live_check_fail") || reason.startsWith("compile_error")
-      ? `\nBUILD ERROR (fix this first):\n${reason.replace(/^(live_check_fail|compile_error):\s*/, "").slice(0, 800)}\n`
-      : "";
-    const qaContext  = summary ? `\nQA FINDINGS:\n${summary}` : "";
-    const fixContext = `\nFIX ITERATION ${iteration}:${buildError}${qaContext}`;
-
     const plan = getPlan(projectId);
-    const patchedPlan: BuildPlan = {
-      ...plan,
-      shubhamTasks: plan.shubhamTasks.map((t) => ({ ...t, description: t.description + fixContext })),
-      aanyaTasks:   plan.aanyaTasks.map(  (t) => ({ ...t, description: t.description + fixContext })),
-    };
+    const buildFinding = reason.startsWith("live_check_fail") || reason.startsWith("compile_error")
+      ? [`BUILD ERROR (fix this first):\n${reason.replace(/^(live_check_fail|compile_error):\s*/, "").slice(0, 8_000)}`]
+      : [];
+    const repairFindings = [
+      `Fix iteration ${iteration}.`,
+      ...buildFinding,
+      ...qaFindings,
+    ];
+    const targets = selectRepairTargets(reason);
+    console.log(`[activity:code-fix] repair targets=${targets.join(",")}`);
 
-    // Skip Pranav — DB schema doesn't change between QA iterations.
-    await Promise.all([
-      runShubhamAgent(patchedPlan),
-      runAanyaAgent(patchedPlan, "integrate"),
-    ]);
+    // The schema generator is intentionally excluded: compile and QA repairs
+    // operate on the existing frontend/backend trees.
+    await runSelectedRepairs(targets, plan, repairFindings);
   } finally {
     clearInterval(hb);
   }
@@ -394,6 +449,24 @@ export async function escalateTilotma(
 ): Promise<void> {
   console.error(`[activity:escalate] project=${projectId} reason=${reason}`, state);
   // Phase 2: Tilotma asks user ONE specific question with concrete options via Maya SSE
+}
+
+export type ProjectStatusWriter = (projectId: string, status: "failed") => Promise<void>;
+
+const writeProjectStatus: ProjectStatusWriter = async (projectId, status) => {
+  await db
+    .update(projects)
+    .set({ status, updatedAt: new Date() })
+    .where(eq(projects.id, projectId));
+};
+
+export async function markProjectFailed(
+  projectId: string,
+  reason: string,
+  writeStatus: ProjectStatusWriter = writeProjectStatus,
+): Promise<void> {
+  console.error(`[activity:project-failed] project=${projectId} reason=${reason}`);
+  await writeStatus(projectId, "failed");
 }
 
 // ── Delivery: Riya runs docker-compose + archives to GitHub ──────────────────

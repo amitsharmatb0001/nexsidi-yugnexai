@@ -49,7 +49,7 @@ export const ProjectSpecSchema = z.object({
   description: z.string(),
   appType: z.literal("web"),
   features: z.array(FeatureSchema),
-  auth: z.object({ provider: z.literal("clerk"), features: z.array(z.enum(["sign-in", "sign-up"])) }),
+  auth: z.object({ provider: z.literal("custom"), features: z.array(z.enum(["sign-in", "sign-up"])) }),
   apiEndpoints: z.array(ApiEndpointSchema),
   dbTables: z.array(DbTableSchema),
   successCriteria: z.array(z.string()),

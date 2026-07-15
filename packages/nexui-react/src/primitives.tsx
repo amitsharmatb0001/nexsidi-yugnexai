@@ -14,6 +14,7 @@ import React, {
   useRef,
   type ReactNode,
 } from "react";
+import { syncBooleanAttribute } from "./boolean-attributes";
 
 // ─── JSX type augmentation so nex-* tags work in TSX ──────────────────────
 declare global {
@@ -244,6 +245,9 @@ export const Switch = forwardRef<HTMLElement, NexSwitchProps>(
     const elRef = useRef<HTMLElement>(null);
     useImperativeHandle(ref, () => elRef.current!);
     useEffect(() => {
+      syncBooleanAttribute(elRef.current, "checked", checked);
+    }, [checked]);
+    useEffect(() => {
       const el = elRef.current;
       if (!el || !onChange) return;
       const h = (e: Event) => onChange((e as CustomEvent).detail.checked);
@@ -253,7 +257,6 @@ export const Switch = forwardRef<HTMLElement, NexSwitchProps>(
     return (
       <nex-switch
         ref={elRef as any}
-        checked={checked ? "" : undefined}
         {...props}
       />
     );
@@ -277,6 +280,10 @@ export const Checkbox = forwardRef<HTMLElement, NexCheckboxProps>(
     const elRef = useRef<HTMLElement>(null);
     useImperativeHandle(ref, () => elRef.current!);
     useEffect(() => {
+      syncBooleanAttribute(elRef.current, "checked", checked);
+      syncBooleanAttribute(elRef.current, "indeterminate", indeterminate);
+    }, [checked, indeterminate]);
+    useEffect(() => {
       const el = elRef.current;
       if (!el || !onChange) return;
       const h = (e: Event) => onChange((e as CustomEvent).detail.checked);
@@ -286,8 +293,6 @@ export const Checkbox = forwardRef<HTMLElement, NexCheckboxProps>(
     return (
       <nex-checkbox
         ref={elRef as any}
-        checked={checked ? "" : undefined}
-        indeterminate={indeterminate ? "" : undefined}
         {...props}
       />
     );

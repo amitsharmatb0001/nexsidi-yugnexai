@@ -26,7 +26,7 @@ projectsRouter.get("/", async (c) => {
       updatedAt:  projects.updatedAt,
     })
     .from(projects)
-    .where(eq(projects.clerkId, userId))
+    .where(eq(projects.userId, userId))
     .orderBy(desc(projects.createdAt));
 
   return c.json({ projects: rows });
@@ -49,7 +49,7 @@ projectsRouter.get("/:id", async (c) => {
       updatedAt:  projects.updatedAt,
     })
     .from(projects)
-    .where(and(eq(projects.id, projectId), eq(projects.clerkId, userId)))
+    .where(and(eq(projects.id, projectId), eq(projects.userId, userId)))
     .limit(1);
 
   if (!row) return c.json({ error: "not_found" }, 404);

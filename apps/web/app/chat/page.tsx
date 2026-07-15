@@ -1,13 +1,8 @@
-import { auth } from "@clerk/nextjs/server";
-import { redirect } from "next/navigation";
 import { ChatWindow } from "@/components/chat/ChatWindow";
 
 export const metadata = { title: "NexSidi — Build" };
 
 export default async function ChatPage() {
-  const { userId } = await auth();
-  if (!userId) redirect("/");
-
   return (
     <div className="flex flex-col h-screen bg-gray-950">
       {/* Minimal header */}

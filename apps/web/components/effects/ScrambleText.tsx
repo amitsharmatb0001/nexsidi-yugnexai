@@ -22,19 +22,16 @@ export default function ScrambleText({
   className,
   tag: Tag = "span",
 }: ScrambleTextProps) {
-  const [display, setDisplay] = useState(() =>
-    // Start fully scrambled
-    text
-      .split("")
-      .map((ch) => (ch === " " || ch === "\n" ? ch : CHARS[Math.floor(Math.random() * CHARS.length)]))
-      .join(""),
-  );
+  // The first render must be identical on the server and browser. Random
+  // characters are introduced only after hydration in the effect below.
+  const [display, setDisplay] = useState(text);
   const frameRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     startRef.current = setTimeout(() => {
+      setDisplay(text.split("").map((ch) => (ch === " " || ch === "\n" ? ch : CHARS[Math.floor(Math.random() * CHARS.length)])).join(""));
       const len = text.length;
 
       timerRef.current = setInterval(() => {

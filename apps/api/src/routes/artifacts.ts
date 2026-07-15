@@ -100,7 +100,7 @@ async function assertOwns(projectId: string, userId: string): Promise<boolean> {
   const [row] = await db
     .select({ id: projects.id })
     .from(projects)
-    .where(and(eq(projects.id, projectId), eq(projects.clerkId, userId)))
+    .where(and(eq(projects.id, projectId), eq(projects.userId, userId)))
     .limit(1);
   return !!row;
 }

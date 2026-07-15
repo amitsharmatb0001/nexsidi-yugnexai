@@ -8,6 +8,7 @@ import { chatRouter } from "./routes/chat.ts";
 import { pipelineRouter } from "./routes/pipeline.ts";
 import { projectsRouter } from "./routes/projects.ts";
 import { artifactsRouter } from "./routes/artifacts.ts";
+import { authRouter } from "./routes/auth.ts";
 import { authMiddleware } from "./middleware/auth.ts";
 
 export const app = new Hono();
@@ -17,9 +18,10 @@ app.use("*", cors({ origin: process.env.WEB_URL ?? "http://localhost:3000", cred
 
 // Public routes
 app.route("/health", healthRouter);
-app.route("/webhooks", webhooksRouter);  // Clerk user sync + CVE feeds
+app.route("/webhooks", webhooksRouter);
 app.route("/ws", wsRouter);              // Agent health WebSocket (internal — dev only)
 
+app.route("/api/auth", authRouter);
 // Protected routes
 // Note: pipeline status SSE and result GET are exempt — EventSource cannot send auth
 // headers, and projectIds are unguessable 12-char hex strings (security by obscurity sufficient).

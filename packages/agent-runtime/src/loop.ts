@@ -58,6 +58,10 @@ export interface AgentRunConfig {
   // model (code quality); high-volume tool-driving agents (Tier 3, QA) leave
   // it unset to use the cheap flash default. Only used by the Gemini loop.
   geminiModel?: string;
+  // When set, task_complete is mechanically rejected until every listed
+  // command has exited 0 during this exact run. Unrelated successful tools
+  // such as `node -v` cannot satisfy a generator's compile gate.
+  requiredVerificationCommands?: string[];
   subagentDepth?: number; // 0 = top-level agent; 1 = inside a spawn_subagent call. Capped at 1.
 }
 
@@ -637,7 +641,11 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           // Rejection falls through to the normal tool-result path below
           // (result assigned, no early return) so it counts toward
           // MAX_ITERATIONS — a model spamming task_complete still terminates.
-          const check = checkCompletion(ledger, { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed });
+          const check = checkCompletion(
+            ledger,
+            { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed },
+            config.requiredVerificationCommands,
+          );
           if (!check.allowed) {
             console.log(`[${config.agentName}:agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);
             result = { status: "error", summary: check.reason };

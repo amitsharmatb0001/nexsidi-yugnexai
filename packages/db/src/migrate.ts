@@ -3,7 +3,7 @@
 // Uses postgres.js directly so it can run outside Drizzle's migration system.
 
 import postgres from "postgres";
-import { readFileSync } from "fs";
+import { readdirSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -18,12 +18,13 @@ if (!url) {
 const sql = postgres(url, { max: 1 });
 
 try {
-  const migrationSql = readFileSync(
-    join(__dirname, "migrations/0000_initial.sql"),
-    "utf-8",
-  );
-  await sql.unsafe(migrationSql);
-  console.log("[migrate] 0000_initial.sql applied successfully");
+  const migrations = readdirSync(join(__dirname, "migrations"))
+    .filter((file) => file.endsWith(".sql"))
+    .sort();
+  for (const migration of migrations) {
+    await sql.unsafe(readFileSync(join(__dirname, "migrations", migration), "utf-8"));
+    console.log(`[migrate] ${migration} applied successfully`);
+  }
 } catch (err) {
   console.error("[migrate] failed:", err);
   process.exit(1);

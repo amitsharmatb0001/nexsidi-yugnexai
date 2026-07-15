@@ -9,6 +9,7 @@ import {
   defineQuery,
   setHandler,
   sleep,
+  patched,
 } from "@temporalio/workflow";
 import type * as activities from "../activities/index.ts";
 
@@ -45,6 +46,12 @@ export interface PipelineState {
 }
 
 export const getPipelineState = defineQuery<PipelineState>("getPipelineState");
+
+const MAX_POST_QA_COMPILE_FAILURES = 3;
+
+export function shouldStopCompileRepair(failures: number, maximum: number): boolean {
+  return failures >= maximum;
+}
 
 // ─── Workflow ──────────────────────────────────────────────────────────────
 // userRequest is passed from Maya → Temporal, then forwarded to the Saanvi activity.
@@ -93,6 +100,7 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   // ── QA Loop ─────────────────────────────────────────────────────────────
   state.stage = "qa";
   let specMismatchCount = 0;
+  let postQaCompileFailures = 0;
   while (true) {
     state.iteration += 1;
 
@@ -152,6 +160,18 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     // Runs npm install so tsc can resolve all imports properly.
     const postQaCompile = await act.runCompileCheck(projectId);
     if (!postQaCompile.pass) {
+      postQaCompileFailures += 1;
+      if (
+        patched("post-qa-compile-repair-limit-v1") &&
+        shouldStopCompileRepair(postQaCompileFailures, MAX_POST_QA_COMPILE_FAILURES)
+      ) {
+        state.stage = "error";
+        if (patched("persist-project-failure-v1")) {
+          await act.markProjectFailed(projectId, "compile_repair_limit");
+        }
+        await act.escalateTilotma(projectId, "compile_repair_limit", state);
+        return;
+      }
       await genAct.runCodeFix(projectId, state.iteration, `compile_error:\n${postQaCompile.errors}`);
       continue;
     }

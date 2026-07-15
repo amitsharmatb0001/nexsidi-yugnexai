@@ -16,6 +16,7 @@ export interface EvidenceRecord {
 export interface EvidenceLedger {
   record(kind: EvidenceKind, ref: string): void;
   hasFreshEvidence(): boolean;
+  hasSuccessfulCommand(command: string): boolean;
   consume(): EvidenceRecord[];
 }
 
@@ -28,6 +29,17 @@ export function createEvidenceLedger(): EvidenceLedger {
     },
     hasFreshEvidence() {
       return records.length > 0;
+    },
+    hasSuccessfulCommand(command) {
+      const required = command.trim().replace(/\s+/g, " ");
+      return records.some((record) => {
+        if (record.kind !== "command_output") return false;
+        const ref = record.ref.trim().replace(/\s+/g, " ");
+        return (
+          ref === `${required} -> exited 0` ||
+          (ref.startsWith(`${required} `) && ref.endsWith(" -> exited 0"))
+        );
+      });
     },
     consume() {
       const current = records;

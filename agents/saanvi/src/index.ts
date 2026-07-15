@@ -42,7 +42,7 @@ export interface ProjectSpec {
   description: string;
   appType: "web";
   features: Feature[];
-  auth: { provider: "clerk"; features: Array<"sign-in" | "sign-up"> };
+  auth: { provider: "custom"; features: Array<"sign-in" | "sign-up"> };
   apiEndpoints: ApiEndpoint[];
   dbTables: DbTable[];
   successCriteria: string[];

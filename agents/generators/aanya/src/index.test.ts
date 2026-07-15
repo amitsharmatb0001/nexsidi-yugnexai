@@ -54,9 +54,10 @@ test("stripDevDependencies preserves formatting-independent JSON validity on mal
 // the NIM agent nor the Claude escalation (80 combined iterations) could
 // fix this — it's a scaffold/env-generation bug, not something editable
 // from inside the generated project.
-test("buildCustomEnvLocal includes the backend port in NEXT_PUBLIC_API_URL and JWT_SECRET", () => {
+test("buildCustomEnvLocal emits the backend origin once and leaves route prefixes to the app", () => {
   const content = buildCustomEnvLocal("4500");
-  expect(content).toContain("NEXT_PUBLIC_API_URL=http://localhost:4500/api/v1");
+  expect(content).toContain("NEXT_PUBLIC_API_URL=http://localhost:4500\n");
+  expect(content).not.toContain("localhost:4500/api/v1");
   expect(content).toContain("JWT_SECRET=");
 });
 
