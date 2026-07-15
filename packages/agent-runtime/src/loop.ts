@@ -142,11 +142,32 @@ export function sanitizeToolCalls(toolCalls: NimToolCall[]): { sanitized: NimToo
 // through untouched. On the 3rd identical failure it injects a forced-pivot
 // instruction into next_actions; on the 4th it reports exhausted so the
 // caller can terminate the run.
-export function evaluateCommandStrike(
+async function diagnoseError(command: string, output: string): Promise<string> {
+  const lines = output.split("\n");
+  const errorLine = lines.find(l => l.includes("error TS") || l.includes("Error:") || l.includes("Cannot find module") || l.includes("Module not found")) 
+    || lines.find(l => l.trim().startsWith("Err"))
+    || lines[0] 
+    || "";
+    
+  if (!errorLine.trim()) return "";
+  
+  try {
+    const query = `how to resolve compiler error: ${errorLine.trim().slice(0, 150)}`;
+    const searchResult = await execWebSearch({ query, timeout_ms: 10000 });
+    if (searchResult.status === "success" && searchResult.output) {
+      return `\n\n[DIAGNOSTIC ENGINE SEARCH FINDINGS]\nPossible resolution suggestions from web search:\n${searchResult.output.slice(0, 800)}\n`;
+    }
+  } catch (err) {
+    // fall through
+  }
+  return "";
+}
+
+export async function evaluateCommandStrike(
   counter: StrikeCounter,
   command: string,
   toolResult: ToolResult,
-): { toolResult: ToolResult; exhausted: boolean } {
+): Promise<{ toolResult: ToolResult; exhausted: boolean }> {
   if (toolResult.status !== "error") return { toolResult, exhausted: false };
 
   const signature = buildFailureSignature(command, toolResult.output ?? toolResult.summary);
@@ -154,20 +175,27 @@ export function evaluateCommandStrike(
 
   if (strike.exhausted) return { toolResult, exhausted: true };
 
-  if (strike.strikes === 3) {
-    return {
-      toolResult: {
-        ...toolResult,
-        next_actions: [
-          ...(toolResult.next_actions ?? []),
-          "This approach failed 3 times with the same error. Do not retry it. Change approach fundamentally or call escalate.",
-        ],
-      },
-      exhausted: false,
-    };
+  let diagAdvice = "";
+  if (strike.strikes >= 2) {
+    diagAdvice = await diagnoseError(command, toolResult.output ?? toolResult.summary ?? "");
   }
 
-  return { toolResult, exhausted: false };
+  const nextActions = [...(toolResult.next_actions ?? [])];
+  if (strike.strikes === 3) {
+    nextActions.push("This approach failed 3 times with the same error. Do not retry it. Change approach fundamentally or call escalate.");
+  }
+  if (diagAdvice) {
+    nextActions.push("Review the DIAGNOSTIC ENGINE SEARCH FINDINGS added to the output to fix this failure.");
+  }
+
+  return {
+    toolResult: {
+      ...toolResult,
+      output: (toolResult.output ?? "") + diagAdvice,
+      next_actions: nextActions,
+    },
+    exhausted: false,
+  };
 }
 
 export function buildToolList(config: AgentRunConfig): NimToolDef[] {
@@ -210,6 +238,46 @@ export function sanitizeModelChain(models: string[]): string[] {
 }
 
 export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> {
+  const originalLog = console.log;
+  const originalError = console.error;
+  // emitEvent: writes a structured JSON event to events.jsonl so the UI can
+  // render rich tool-call cards (file edits, commands, web searches, etc.)
+  // alongside the raw log text — same pattern as Claude Code's sidebar.
+  const emitEvent = (event: Record<string, unknown>) => {
+    if (!config.projectId) return;
+    try {
+      const logDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", config.projectId!, "logs");
+      const { mkdirSync, appendFileSync } = require("fs");
+      mkdirSync(logDir, { recursive: true });
+      appendFileSync(
+        join(logDir, "events.jsonl"),
+        JSON.stringify({ ts: Date.now(), agent: config.agentName, ...event }) + "\n",
+        "utf-8",
+      );
+    } catch {}
+  };
+
+  if (config.projectId) {
+    const logToFile = (msg: string) => {
+      try {
+        const logDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", config.projectId!, "logs");
+        const { mkdirSync, appendFileSync } = require("fs");
+        mkdirSync(logDir, { recursive: true });
+        appendFileSync(join(logDir, "pipeline.log"), `${new Date().toISOString()} [${config.agentName}] ${msg}\n`, "utf-8");
+      } catch {}
+    };
+    console.log = (...args: any[]) => {
+      const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(" ");
+      logToFile(msg);
+      originalLog(...args);
+    };
+    console.error = (...args: any[]) => {
+      const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(" ");
+      logToFile(`[ERROR] ${msg}`);
+      originalError(...args);
+    };
+  }
+
   const tools: NimToolDef[] = buildToolList(config);
 
   const mcpClients: MCPClient[] = [];
@@ -533,16 +601,21 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
       switch (toolName) {
         case "write_file": {
-          const r = execWriteFile(config.sandboxDir, args as { path: string; content: string });
+          const writeArgs = args as { path: string; content: string };
+          emitEvent({ type: "tool_call", tool: "write_file", input: { path: writeArgs.path, bytes: writeArgs.content.length } });
+          const r = execWriteFile(config.sandboxDir, writeArgs);
           if (r.status === "success") {
-            filesWritten.push((args as { path: string }).path);
-            commitWorkspaceTransaction(config.sandboxDir, `Wrote ${(args as { path: string }).path}`);
+            filesWritten.push(writeArgs.path);
+            commitWorkspaceTransaction(config.sandboxDir, `Wrote ${writeArgs.path}`);
+            emitEvent({ type: "tool_result", tool: "write_file", status: "success", path: writeArgs.path });
           }
           result = r;
           break;
         }
         case "read_file": {
-          result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number }, ledger);
+          const readArgs = args as { path: string; offset?: number; limit?: number };
+          emitEvent({ type: "tool_call", tool: "read_file", input: { path: readArgs.path } });
+          result = execReadFile(config.sandboxDir, readArgs, ledger);
           break;
         }
         case "list_files": {
@@ -550,43 +623,62 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           break;
         }
         case "edit_file": {
-          const r = execEditFile(config.sandboxDir, args as { path: string; old_str: string; new_str: string });
+          const editArgs = args as { path: string; old_str: string; new_str: string };
+          emitEvent({ type: "tool_call", tool: "edit_file", input: { path: editArgs.path } });
+          const r = execEditFile(config.sandboxDir, editArgs);
           if (r.status === "success") {
-            commitWorkspaceTransaction(config.sandboxDir, `Edited ${(args as { path: string }).path}`);
+            commitWorkspaceTransaction(config.sandboxDir, `Edited ${editArgs.path}`);
+            emitEvent({ type: "tool_result", tool: "edit_file", status: "success", path: editArgs.path });
           }
           result = r;
           break;
         }
         case "delete_file": {
-          const r = execDeleteFile(config.sandboxDir, args as { path: string });
+          const delArgs = args as { path: string };
+          emitEvent({ type: "tool_call", tool: "delete_file", input: { path: delArgs.path } });
+          const r = execDeleteFile(config.sandboxDir, delArgs);
           if (r.status === "success") {
-            commitWorkspaceTransaction(config.sandboxDir, `Deleted ${(args as { path: string }).path}`);
+            commitWorkspaceTransaction(config.sandboxDir, `Deleted ${delArgs.path}`);
           }
           result = r;
           break;
         }
         case "run_command": {
           const commandArgs = args as { command: string; timeout_ms?: number };
+          emitEvent({ type: "tool_call", tool: "run_command", input: commandArgs });
           const r = execRunCommand(config.sandboxDir, commandArgs, ledger);
-          const strike = evaluateCommandStrike(strikeCounter, commandArgs.command, r);
+          emitEvent({ type: "tool_result", tool: "run_command", status: r.status, summary: r.summary, output: (r.output ?? "").slice(0, 500) });
+          const strike = await evaluateCommandStrike(strikeCounter, commandArgs.command, r);
           result = strike.toolResult;
           if (strike.exhausted) exhaustedThreeStrikes = true;
           break;
         }
         case "http_request": {
-          result = await execHttpRequest(args as { method: string; url: string; headers?: Record<string, string>; body?: string; timeout_ms?: number }, ledger);
+          const httpArgs = args as { method: string; url: string; headers?: Record<string, string>; body?: string; timeout_ms?: number };
+          emitEvent({ type: "tool_call", tool: "http_request", input: { method: httpArgs.method, url: httpArgs.url } });
+          result = await execHttpRequest(httpArgs, ledger);
+          emitEvent({ type: "tool_result", tool: "http_request", status: result.status, summary: result.summary });
           break;
         }
         case "docker_compose": {
-          result = execDockerCompose(config.sandboxDir, args as { action: "up" | "down" | "logs" | "ps"; service?: string; timeout_ms?: number });
+          const dockerArgs = args as { action: "up" | "down" | "logs" | "ps"; service?: string; timeout_ms?: number };
+          emitEvent({ type: "tool_call", tool: "docker_compose", input: dockerArgs });
+          result = execDockerCompose(config.sandboxDir, dockerArgs);
+          emitEvent({ type: "tool_result", tool: "docker_compose", status: result.status, summary: result.summary });
           break;
         }
         case "web_search": {
-          result = await execWebSearch(args as { query: string; timeout_ms?: number });
+          const searchArgs = args as { query: string; timeout_ms?: number };
+          emitEvent({ type: "tool_call", tool: "web_search", input: { query: searchArgs.query } });
+          result = await execWebSearch(searchArgs);
+          emitEvent({ type: "tool_result", tool: "web_search", status: result.status, summary: result.summary });
           break;
         }
         case "screenshot": {
-          result = await execScreenshot(args as { url: string; outputPath: string });
+          const ssArgs = args as { url: string; outputPath: string };
+          emitEvent({ type: "tool_call", tool: "screenshot", input: ssArgs });
+          result = await execScreenshot(ssArgs);
+          emitEvent({ type: "tool_result", tool: "screenshot", status: result.status, summary: result.summary, outputPath: ssArgs.outputPath });
           break;
         }
         case "db_query": {
@@ -720,6 +812,8 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     escalationReason: exhaustedThreeStrikes ? "three_strikes" : "cannot_finish",
   };
   } finally {
+    console.log = originalLog;
+    console.error = originalError;
     if (browserToolset) await browserToolset.close();
     for (const client of mcpClients) {
       try {

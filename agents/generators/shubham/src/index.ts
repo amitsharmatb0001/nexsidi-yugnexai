@@ -109,6 +109,10 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     geminiModel: process.env.GEMINI_GENERATION_MODEL,
     enableHttpTools: true,
     enableDockerTools: true,
+    enableWebSearch: true,
+    enableScreenshot: true,
+    enableBrowser: true,
+    enableDbQuery: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
   });
 
@@ -162,6 +166,10 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     geminiModel: process.env.GEMINI_GENERATION_MODEL,
     enableHttpTools: true,
     enableDockerTools: true,
+    enableWebSearch: true,
+    enableScreenshot: true,
+    enableBrowser: true,
+    enableDbQuery: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
   });
 

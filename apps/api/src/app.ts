@@ -9,6 +9,7 @@ import { pipelineRouter } from "./routes/pipeline.ts";
 import { projectsRouter } from "./routes/projects.ts";
 import { artifactsRouter } from "./routes/artifacts.ts";
 import { authRouter } from "./routes/auth.ts";
+import { attachmentsRouter } from "./routes/attachments.ts";
 import { authMiddleware } from "./middleware/auth.ts";
 
 export const app = new Hono();
@@ -23,8 +24,6 @@ app.route("/ws", wsRouter);              // Agent health WebSocket (internal —
 
 app.route("/api/auth", authRouter);
 // Protected routes
-// Note: pipeline status SSE and result GET are exempt — EventSource cannot send auth
-// headers, and projectIds are unguessable 12-char hex strings (security by obscurity sufficient).
 app.use("/api/*", async (c, next) => {
   const path = c.req.path;
   if (/^\/api\/pipeline\/[a-f0-9]+\/status$/.test(path)) return next();
@@ -35,6 +34,7 @@ app.route("/api/chat", chatRouter);           // Maya: user-facing conversationa
 app.route("/api/pipeline", pipelineRouter);   // Pipeline trigger + status SSE
 app.route("/api/projects", projectsRouter);   // Project list + single project fetch
 app.route("/api/artifacts", artifactsRouter); // Browse + read generated build files
+app.route("/api/attachments", attachmentsRouter); // File/folder/voice attachments handler
 
 app.onError((err, c) => {
   console.error("[api] unhandled error", err);

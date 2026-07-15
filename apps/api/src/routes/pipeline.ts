@@ -8,7 +8,21 @@
 
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { startProjectBuild, getPipelineStatus, isWorkflowRunning } from "../utils/temporal.ts";
+import { startProjectBuild, getPipelineStatus, isWorkflowRunning, sendWorkflowSignal } from "../utils/temporal.ts";
+import { db, projects } from "@nexsidi/db";
+import { eq } from "drizzle-orm";
+import Redis from "ioredis";
+// Pipeline routes — trigger builds and stream status to the browser.
+//
+// POST /api/pipeline/start  — starts a project build workflow (called by chat route)
+// GET  /api/pipeline/:projectId/status — SSE stream of pipeline stage updates
+//
+// Security Layer 7: all SSE events go through translateEvent() deny-by-default filter.
+// Only whitelisted stage labels reach the browser — never agent names, scores, or errors.
+
+import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
+import { startProjectBuild, getPipelineStatus, isWorkflowRunning, sendWorkflowSignal } from "../utils/temporal.ts";
 import { db, projects } from "@nexsidi/db";
 import { eq } from "drizzle-orm";
 import Redis from "ioredis";
@@ -19,15 +33,17 @@ export const pipelineRouter = new Hono<Env>();
 
 // ── Layer 7: deny-by-default stage translator ─────────────────────────────────
 const USER_STAGE_MESSAGES: Record<string, string> = {
-  spec:       "Getting started on your app...",
-  decompose:  "Planning out the build...",
-  generate:   "Writing your code. This usually takes 2-4 minutes.",
-  qa:         "Running quality checks...",
-  qa_fix:     "Improving the code based on quality checks...",
-  live_test:  "Testing the live app...",
-  deliver:    "Almost done — packaging everything up.",
-  done:       "Your app is ready!",
-  error:      "Something went wrong. We're on it.",
+  spec:                 "Getting started on your app...",
+  decompose:            "Planning out the build...",
+  await_spec_approval:  "Plan ready! Please approve the plan on the dashboard to start code generation.",
+  generate:             "Writing your code. This usually takes 2-4 minutes.",
+  qa:                   "Running quality checks...",
+  qa_fix:               "Improving the code based on quality checks...",
+  live_test:            "Testing the live app...",
+  await_deploy_approval:"Verification complete! Please approve the build to deliver the app.",
+  deliver:              "Almost done — packaging everything up.",
+  done:                 "Your app is ready!",
+  error:                "Something went wrong. We're on it.",
 };
 
 function translateStage(stage: string): { stage: string; message: string } | null {
@@ -137,4 +153,26 @@ pipelineRouter.get("/:projectId", async (c) => {
     appUrl:     project.appUrl    ?? null,
     githubRepo: project.githubRepo ?? null,
   });
+});
+
+// ── POST /api/pipeline/:projectId/approve-spec ────────────────────────────────
+pipelineRouter.post("/:projectId/approve-spec", async (c) => {
+  const projectId = c.req.param("projectId");
+  try {
+    await sendWorkflowSignal(projectId, "approveSpecSignal", true);
+    return c.json({ success: true, message: "Spec approved. Code generation started." });
+  } catch (err) {
+    return c.json({ error: "Failed to signal workflow" }, 500);
+  }
+});
+
+// ── POST /api/pipeline/:projectId/approve-deploy ──────────────────────────────
+pipelineRouter.post("/:projectId/approve-deploy", async (c) => {
+  const projectId = c.req.param("projectId");
+  try {
+    await sendWorkflowSignal(projectId, "approveDeploySignal", true);
+    return c.json({ success: true, message: "Deployment approved. Delivery starting." });
+  } catch (err) {
+    return c.json({ error: "Failed to signal workflow" }, 500);
+  }
 });

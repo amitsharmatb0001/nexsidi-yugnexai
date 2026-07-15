@@ -78,6 +78,9 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // spreads the parallel load across both models to avoid 429s. http tools so
     // Aanya still self-verifies (npm install + next build + typecheck). Live UI is Tier 3.
     enableHttpTools: true,
+    enableWebSearch: true,
+    enableScreenshot: true,
+    enableBrowser: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
   });
 
@@ -124,6 +127,9 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     projectId: plan.projectId,
     // flash (default) — see the rationale on Aanya's run() config above.
     enableHttpTools: true,
+    enableWebSearch: true,
+    enableScreenshot: true,
+    enableBrowser: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
   });
 
@@ -321,11 +327,10 @@ STATIC FILES ALREADY WRITTEN (DO NOT rewrite unless you need to fix a bug):
 - tsconfig.json
 
 FILES YOU MUST WRITE:
+You MUST create all pages, routes, and components listed in the "PLANNED FRONTEND FILES AND PAGES" section of your task description. Typically this includes:
 - app/page.tsx (landing / sign-in redirect)
-- app/sign-in/page.tsx
-- app/sign-up/page.tsx
-- app/dashboard/page.tsx (main authenticated view)
-- Any additional pages, components, hooks needed for the feature set
+- Dedicated routing files for each planned page (e.g., app/about/page.tsx, app/services/page.tsx, app/contact/page.tsx, app/dashboard/page.tsx)
+- Do NOT consolidate separate public pages (about, services, contact) into dashboard tabs unless the plan explicitly requests it. Create separate dedicated file routes for them.
 
 CRITICAL RULES:
 1. NEVER use 'use client' on layout.tsx — it is a Server Component
@@ -418,6 +423,10 @@ ${contractJson}`
     : `BACKEND API (running at ${backendUrl}):
 ${contractJson}`;
 
+  const taskDetails = (plan.aanyaTasks || []).map((t, idx) => {
+    return `Task ${idx + 1}: ${t.description}\nFiles to write:\n${t.outputFiles.map(f => `- ${f}`).join("\n")}`;
+  }).join("\n\n");
+
   return `${goal}
 
 PROJECT: ${plan.appName ?? "web app"}
@@ -436,6 +445,9 @@ USER STORY:
 A user should be able to sign up, log in, and then use all the core features.
 The app should look polished and professional using NexSidi UI components.
 No AI-generated "purple gradients over white cards" — use the dark void theme.
+
+PLANNED FRONTEND FILES AND PAGES (you MUST implement these pages and files as planned):
+${taskDetails}
 
 Start with list_files to see the scaffold, then write pages and components.`;
 }

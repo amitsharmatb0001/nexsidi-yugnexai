@@ -92,6 +92,29 @@ export function isUnrecoverableClaudeError(err: unknown): boolean {
 }
 
 export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentRunResult> {
+  const originalLog = console.log;
+  const originalError = console.error;
+  if (config.projectId) {
+    const logToFile = (msg: string) => {
+      try {
+        const logDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", config.projectId!, "logs");
+        const { mkdirSync, appendFileSync } = require("fs");
+        mkdirSync(logDir, { recursive: true });
+        appendFileSync(join(logDir, "pipeline.log"), `${new Date().toISOString()} [${config.agentName}:claude] ${msg}\n`, "utf-8");
+      } catch {}
+    };
+    console.log = (...args: any[]) => {
+      const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(" ");
+      logToFile(msg);
+      originalLog(...args);
+    };
+    console.error = (...args: any[]) => {
+      const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(" ");
+      logToFile(`[ERROR] ${msg}`);
+      originalError(...args);
+    };
+  }
+
   const claudeApiKey = process.env.ANTHROPIC_API_KEY ?? "";
 
   const nimTools = buildToolList(config);
@@ -371,6 +394,8 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
     errors: abortedOnUnrecoverableError ? errors : [...errors, "Max iterations exceeded"],
   };
   } finally {
+    console.log = originalLog;
+    console.error = originalError;
     if (browserToolset) await browserToolset.close();
   }
 }

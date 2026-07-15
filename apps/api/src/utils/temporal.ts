@@ -56,3 +56,20 @@ export async function isWorkflowRunning(projectId: string): Promise<boolean> {
     return false;
   }
 }
+
+// Send signal to active workflow
+export async function sendWorkflowSignal(
+  projectId: string,
+  signalName: string,
+  approved: boolean,
+): Promise<void> {
+  const client = await getClient();
+  const workflowId = `project-build-${projectId}`;
+  try {
+    const handle = client.workflow.getHandle(workflowId);
+    await handle.signal(signalName, approved);
+  } catch (err) {
+    console.error(`Failed to send signal ${signalName} to ${projectId}:`, err);
+    throw err;
+  }
+}

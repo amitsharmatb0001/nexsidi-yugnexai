@@ -22,15 +22,47 @@ import type { BuildPlan }   from "../../agents/arjun/src/index.ts";
 const specCache = new Map<string, ProjectSpec>();
 const planCache = new Map<string, BuildPlan>();
 
+function getAttachmentsContext(projectId: string): string {
+  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const attachmentsDir = join(buildDir, projectId, "attachments");
+  if (!existsSync(attachmentsDir)) return "";
+
+  try {
+    const files = readdirSync(attachmentsDir);
+    if (files.length === 0) return "";
+
+    let context = "\n\n=== USER UPLOADED ATTACHMENTS ===\n";
+    for (const file of files) {
+      const filePath = join(attachmentsDir, file);
+      const stat = statSync(filePath);
+      if (stat.isFile()) {
+        context += `File: ${file} (${stat.size} bytes)\n`;
+        const isText = /\.(txt|json|md|ts|js|tsx|jsx|html|css|csv|xml|yaml|yml)$/i.test(file);
+        if (isText && stat.size < 200000) {
+          const content = readFileSync(filePath, "utf-8");
+          context += `Content:\n\"\"\"\n${content}\n\"\"\"\n\n`;
+        } else {
+          context += `[Non-text or large binary file: content not printed]\n\n`;
+        }
+      }
+    }
+    return context;
+  } catch (err) {
+    console.warn("Failed to read attachments context:", err);
+    return "";
+  }
+}
+
 // ── Stage 1: Requirements → locked ProjectSpec ─────────────────────────────────
 export async function runSaanvi(projectId: string, userRequest?: string): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
-    // Persist the user request to disk so re-run picks it up after worker restart
     if (userRequest) writeCacheFile(projectId, "user-request.txt", userRequest);
     const req  = userRequest ?? readUserRequest(projectId);
-    const spec = await runSaanviAgent(projectId, req);
+    const attachmentsContext = getAttachmentsContext(projectId);
+    const enrichedReq = req + attachmentsContext;
+    const spec = await runSaanviAgent(projectId, enrichedReq);
     specCache.set(projectId, spec);
     writeCacheFile(projectId, "spec.json", JSON.stringify(spec, null, 2));
     console.log(`[activity:saanvi] spec locked for ${projectId} — ${spec.features.length} features`);
@@ -47,6 +79,7 @@ export async function runArjun(projectId: string): Promise<void> {
     const spec = specCache.get(projectId) ?? readCacheFile<ProjectSpec>(projectId, "spec.json");
     const plan = await runArjunAgent(spec);
     planCache.set(projectId, plan);
+    writeCacheFile(projectId, "build-plan.json", JSON.stringify(plan, null, 2));
     console.log(`[activity:arjun] plan ready — ${plan.apiContract.endpoints.length} endpoints, ${plan.dbSchema.tables.length} tables`);
   } finally {
     clearInterval(hb);
@@ -600,4 +633,17 @@ function parseJson<T>(text: string): T | null {
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
+}
+
+export async function checkPlanNeeds(projectId: string): Promise<{ shubham: boolean; pranav: boolean }> {
+  try {
+    const plan = getPlan(projectId);
+    return {
+      shubham: Array.isArray(plan.shubhamTasks) && plan.shubhamTasks.length > 0,
+      pranav: Array.isArray(plan.pranavTasks) && plan.pranavTasks.length > 0,
+    };
+  } catch (err) {
+    console.warn("Failed to check plan needs, defaulting to true:", err);
+    return { shubham: true, pranav: true };
+  }
 }

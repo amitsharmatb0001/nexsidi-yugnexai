@@ -7,9 +7,11 @@
 import {
   proxyActivities,
   defineQuery,
+  defineSignal,
   setHandler,
   sleep,
   patched,
+  condition,
 } from "@temporalio/workflow";
 import type * as activities from "../activities/index.ts";
 
@@ -33,6 +35,9 @@ const deployAct = proxyActivities<typeof activities>({
   startToCloseTimeout: "15 minutes",
   retry: { maximumAttempts: 2 },
 });
+
+export const approveSpecSignal = defineSignal<[boolean]>("approveSpecSignal");
+export const approveDeploySignal = defineSignal<[boolean]>("approveDeploySignal");
 
 // ─── Pipeline State ────────────────────────────────────────────────────────
 export interface PipelineState {
@@ -67,6 +72,16 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   };
   setHandler(getPipelineState, () => ({ ...state }));
 
+  let specApproved = false;
+  setHandler(approveSpecSignal, (approved) => {
+    specApproved = approved;
+  });
+
+  let deployApproved = false;
+  setHandler(approveDeploySignal, (approved) => {
+    deployApproved = approved;
+  });
+
   // ── Stage 1: Spec ───────────────────────────────────────────────────────
   state.stage = "spec";
   await act.runSaanvi(projectId, userRequest);
@@ -75,13 +90,21 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   state.stage = "decompose";
   await act.runArjun(projectId);
 
+  // GATE 1: Spec/Plan Approval
+  state.stage = "await_spec_approval";
+  await condition(() => specApproved);
+
   // ── Stage 3: Parallel code generation ───────────────────────────────────
   state.stage = "generate";
-  await Promise.all([
-    genAct.runShubham(projectId),
-    genAct.runAanya(projectId),
-    genAct.runPranav(projectId),
-  ]);
+  const needs = await act.checkPlanNeeds(projectId);
+  const genPromises: Promise<void>[] = [genAct.runAanya(projectId)];
+  if (needs.shubham) {
+    genPromises.push(genAct.runShubham(projectId));
+  }
+  if (needs.pranav) {
+    genPromises.push(genAct.runPranav(projectId));
+  }
+  await Promise.all(genPromises);
 
   // ── Stage 3b: TypeScript compile gate (before QA — fail fast) ────────────
   state.stage = "compile_check";
@@ -184,6 +207,10 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     state.stage = "qa";
     await genAct.runCodeFix(projectId, state.iteration, `live_check_fail: ${live.detail}`);
   }
+
+  // GATE 2: Deployment/Rollout Approval
+  state.stage = "await_deploy_approval";
+  await condition(() => deployApproved);
 
   // ── Stage 4: Delivery ───────────────────────────────────────────────────
   state.stage = "deliver";

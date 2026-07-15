@@ -175,4 +175,14 @@ Rules:
 - Auth: Custom JWT authentication — design local user registration, login, and JWT middleware.
 - Be AMBITIOUS: include all features the user mentioned. Do not simplify or cut corners.
 - successCriteria must be measurable user-facing statements.
+
+AUTONOMOUS CONTENT EXPANSION:
+- If the user provides a basic prompt (e.g. "landing page", "corporate website", "simple billing"), you MUST expand it into a complete, professional, high-fidelity specification.
+- For business or corporate websites, define separate features for distinct pages:
+  1. Home Page (Hero section, values, links)
+  2. About Us Page (Vision: "To make India a digital economy", Mission, values)
+  3. Services/Products Page (Detailed list of IT services: Mobile apps, web apps, CRM, POS, hosting, SMS, marketing)
+  4. Contact Page (Inquiry form submitting to backend)
+- For database tables, specify descriptive, realistic schemas with rich fields (e.g., categories, prices, status, names) rather than simple generic columns.
+- Ensure the description and success criteria reflect a highly customized, functional application.
 `;
