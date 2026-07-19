@@ -90,3 +90,17 @@ test("hash matches JSON persistence when an array item is undefined", () => {
 
   expect(computeSpecHash(withUndefined)).toBe(computeSpecHash(persisted));
 });
+
+test("hash matches JSON persistence when an array contains a sparse slot", () => {
+  const references = new Array<string>(2);
+  references[1] = "kept";
+  const withSparseSlot = {
+    ...draft,
+    design: { ...draft.design, references },
+  };
+  const persisted = JSON.parse(
+    JSON.stringify(withSparseSlot),
+  ) as typeof withSparseSlot;
+
+  expect(computeSpecHash(withSparseSlot)).toBe(computeSpecHash(persisted));
+});

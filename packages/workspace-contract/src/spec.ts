@@ -13,7 +13,11 @@ function canonical(value: unknown, isRoot = false): string {
   if (value === undefined) return "null";
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) {
-    return `[${value.map((item) => canonical(item)).join(",")}]`;
+    const items: string[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      items.push(canonical(value[index]));
+    }
+    return `[${items.join(",")}]`;
   }
 
   const record = value as Record<string, unknown>;
