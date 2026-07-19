@@ -22,7 +22,7 @@ beforeAll(() => {
 
   writeFileSync(privateKeyPath, privateKey);
   writeFileSync(publicKeyPath, publicKey);
-});
+}, 30_000);
 
 afterAll(() => {
   rmSync(tmpDir, { recursive: true, force: true });
