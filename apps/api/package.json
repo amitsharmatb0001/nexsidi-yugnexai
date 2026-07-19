@@ -14,6 +14,7 @@
     "@nexsidi/db": "workspace:*",
     "@nexsidi/llm-client": "workspace:*",
     "@nexsidi/prompt-audit": "workspace:*",
+    "@nexsidi/workspace-contract": "workspace:*",
     "@temporalio/client": "^1.11.0",
     "drizzle-orm": "^0.40.0",
     "hono": "^4.7.0",

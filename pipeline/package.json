@@ -12,6 +12,7 @@
     "@nexsidi/context-chain": "workspace:*",
     "@nexsidi/db": "workspace:*",
     "@nexsidi/llm-client": "workspace:*",
+    "@nexsidi/workspace-contract": "workspace:*",
     "@temporalio/activity": "^1.11.0",
     "@temporalio/client": "^1.11.0",
     "@temporalio/worker": "^1.11.0",

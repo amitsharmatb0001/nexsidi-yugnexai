@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@nexsidi/workspace-contract": "workspace:*",
     "@yugnex/nexui": "^2.0.0",
     "@yugnex/nexui-react": "^2.0.0",
     "nanoid": "^5.0.0",

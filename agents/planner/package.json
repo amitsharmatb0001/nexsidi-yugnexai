@@ -1,0 +1,14 @@
+{
+  "name": "@nexsidi/agent-planner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nexsidi/llm-client": "workspace:*",
+    "@nexsidi/workspace-contract": "workspace:*",
+    "ioredis": "^5.11.1"
+  }
+}

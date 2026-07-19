@@ -1,6 +1,7 @@
+import { sql } from "drizzle-orm";
 import {
-  boolean, char, index, integer, jsonb, pgTable,
-  text, timestamp, uuid, varchar,
+  bigserial, boolean, char, check, index, integer, jsonb, pgTable,
+  text, timestamp, uniqueIndex, uuid, varchar,
 } from "drizzle-orm/pg-core";
 
 // ─── Fix #6: Agent Registry ───────────────────────────────────────────────────
@@ -132,4 +133,97 @@ export const agentConversations = pgTable("agent_conversations", {
   updatedAt:  timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("agent_conv_project_idx").on(t.projectId),
+]);
+
+export const workspaceMessages = pgTable("workspace_messages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: varchar("workspace_id", { length: 12 }).notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  role: text("role").notNull(),
+  content: text("content").notNull(),
+  clientMessageId: varchar("client_message_id", { length: 96 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  check("workspace_messages_role_check", sql`${t.role} IN ('user', 'assistant')`),
+  uniqueIndex("workspace_messages_workspace_id_client_message_id_key")
+    .on(t.workspaceId, t.clientMessageId),
+]);
+
+export const workspaceTurns = pgTable("workspace_turns", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: varchar("workspace_id", { length: 12 }).notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  idempotencyKey: varchar("idempotency_key", { length: 96 }).notNull(),
+  status: text("status").notNull(),
+  userMessageId: uuid("user_message_id").notNull()
+    .references(() => workspaceMessages.id),
+  assistantMessageId: uuid("assistant_message_id")
+    .references(() => workspaceMessages.id),
+  errorCode: text("error_code"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  check(
+    "workspace_turns_status_check",
+    sql`${t.status} IN ('processing', 'completed', 'failed')`,
+  ),
+  uniqueIndex("workspace_turns_workspace_id_idempotency_key_key")
+    .on(t.workspaceId, t.idempotencyKey),
+]);
+
+export const workspaceSpecs = pgTable("workspace_specs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: varchar("workspace_id", { length: 12 }).notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
+  hash: char("hash", { length: 64 }).notNull(),
+  status: text("status").notNull(),
+  body: jsonb("body").notNull(),
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
+  approvedBy: uuid("approved_by").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  check(
+    "workspace_specs_status_check",
+    sql`${t.status} IN ('draft', 'approved', 'superseded')`,
+  ),
+  uniqueIndex("workspace_specs_workspace_id_version_key").on(t.workspaceId, t.version),
+  uniqueIndex("workspace_one_approved_spec")
+    .on(t.workspaceId)
+    .where(sql`${t.status} = 'approved'`),
+]);
+
+export const buildRuns = pgTable("build_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workspaceId: varchar("workspace_id", { length: 12 }).notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  specId: uuid("spec_id").notNull().references(() => workspaceSpecs.id),
+  specVersion: integer("spec_version").notNull(),
+  specHash: char("spec_hash", { length: 64 }).notNull(),
+  idempotencyKey: varchar("idempotency_key", { length: 96 }).notNull(),
+  workflowId: text("workflow_id"),
+  status: text("status").notNull().default("queued"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("build_runs_workspace_id_idempotency_key_key")
+    .on(t.workspaceId, t.idempotencyKey),
+]);
+
+export const workspaceEvents = pgTable("workspace_events", {
+  cursor: bigserial("cursor", { mode: "number" }).primaryKey(),
+  id: uuid("id").notNull().defaultRandom(),
+  workspaceId: varchar("workspace_id", { length: 12 }).notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  runId: uuid("run_id").references(() => buildRuns.id),
+  category: text("category").notNull(),
+  status: text("status").notNull(),
+  summary: text("summary").notNull(),
+  safePath: text("safe_path"),
+  elapsedMs: integer("elapsed_ms"),
+  evidenceId: text("evidence_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("workspace_events_id_key").on(t.id),
+  index("workspace_events_resume_idx").on(t.workspaceId, t.cursor),
 ]);
