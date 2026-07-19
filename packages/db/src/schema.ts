@@ -137,8 +137,7 @@ export const agentConversations = pgTable("agent_conversations", {
 
 export const workspaceMessages = pgTable("workspace_messages", {
   id: uuid("id").primaryKey().defaultRandom(),
-  workspaceId: varchar("workspace_id", { length: 12 }).notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
+  workspaceId: varchar("workspace_id", { length: 12 }).notNull(),
   role: text("role").notNull(),
   content: text("content").notNull(),
   clientMessageId: varchar("client_message_id", { length: 96 }).notNull(),
@@ -148,12 +147,16 @@ export const workspaceMessages = pgTable("workspace_messages", {
   unique("workspace_messages_workspace_id_client_message_id_key")
     .on(t.workspaceId, t.clientMessageId),
   unique("workspace_messages_workspace_id_id_key").on(t.workspaceId, t.id),
+  foreignKey({
+    name: "workspace_messages_workspace_id_fkey",
+    columns: [t.workspaceId],
+    foreignColumns: [projects.id],
+  }).onDelete("cascade"),
 ]);
 
 export const workspaceTurns = pgTable("workspace_turns", {
   id: uuid("id").primaryKey().defaultRandom(),
-  workspaceId: varchar("workspace_id", { length: 12 }).notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
+  workspaceId: varchar("workspace_id", { length: 12 }).notNull(),
   idempotencyKey: varchar("idempotency_key", { length: 96 }).notNull(),
   status: text("status").notNull(),
   userMessageId: uuid("user_message_id").notNull(),
@@ -178,18 +181,22 @@ export const workspaceTurns = pgTable("workspace_turns", {
     columns: [t.workspaceId, t.assistantMessageId],
     foreignColumns: [workspaceMessages.workspaceId, workspaceMessages.id],
   }).onDelete("no action"),
+  foreignKey({
+    name: "workspace_turns_workspace_id_fkey",
+    columns: [t.workspaceId],
+    foreignColumns: [projects.id],
+  }).onDelete("cascade"),
 ]);
 
 export const workspaceSpecs = pgTable("workspace_specs", {
   id: uuid("id").primaryKey().defaultRandom(),
-  workspaceId: varchar("workspace_id", { length: 12 }).notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
+  workspaceId: varchar("workspace_id", { length: 12 }).notNull(),
   version: integer("version").notNull(),
   hash: char("hash", { length: 64 }).notNull(),
   status: text("status").notNull(),
   body: jsonb("body").notNull(),
   approvedAt: timestamp("approved_at", { withTimezone: true }),
-  approvedBy: uuid("approved_by").references(() => users.id),
+  approvedBy: uuid("approved_by"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   check(
@@ -201,12 +208,21 @@ export const workspaceSpecs = pgTable("workspace_specs", {
   uniqueIndex("workspace_one_approved_spec")
     .on(t.workspaceId)
     .where(sql`${t.status} = 'approved'`),
+  foreignKey({
+    name: "workspace_specs_workspace_id_fkey",
+    columns: [t.workspaceId],
+    foreignColumns: [projects.id],
+  }).onDelete("cascade"),
+  foreignKey({
+    name: "workspace_specs_approved_by_fkey",
+    columns: [t.approvedBy],
+    foreignColumns: [users.id],
+  }).onDelete("no action"),
 ]);
 
 export const buildRuns = pgTable("build_runs", {
   id: uuid("id").primaryKey().defaultRandom(),
-  workspaceId: varchar("workspace_id", { length: 12 }).notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
+  workspaceId: varchar("workspace_id", { length: 12 }).notNull(),
   specId: uuid("spec_id").notNull(),
   specVersion: integer("spec_version").notNull(),
   specHash: char("spec_hash", { length: 64 }).notNull(),
@@ -224,13 +240,17 @@ export const buildRuns = pgTable("build_runs", {
     columns: [t.workspaceId, t.specId],
     foreignColumns: [workspaceSpecs.workspaceId, workspaceSpecs.id],
   }).onDelete("no action"),
+  foreignKey({
+    name: "build_runs_workspace_id_fkey",
+    columns: [t.workspaceId],
+    foreignColumns: [projects.id],
+  }).onDelete("cascade"),
 ]);
 
 export const workspaceEvents = pgTable("workspace_events", {
   cursor: bigserial("cursor", { mode: "number" }).primaryKey(),
   id: uuid("id").notNull().defaultRandom(),
-  workspaceId: varchar("workspace_id", { length: 12 }).notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
+  workspaceId: varchar("workspace_id", { length: 12 }).notNull(),
   runId: uuid("run_id"),
   category: text("category").notNull(),
   status: text("status").notNull(),
@@ -247,4 +267,9 @@ export const workspaceEvents = pgTable("workspace_events", {
     columns: [t.workspaceId, t.runId],
     foreignColumns: [buildRuns.workspaceId, buildRuns.id],
   }).onDelete("no action"),
+  foreignKey({
+    name: "workspace_events_workspace_id_fkey",
+    columns: [t.workspaceId],
+    foreignColumns: [projects.id],
+  }).onDelete("cascade"),
 ]);

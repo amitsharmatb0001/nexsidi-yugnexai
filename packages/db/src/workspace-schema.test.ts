@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { getTableName } from "drizzle-orm";
+import { getTableName, type SQL } from "drizzle-orm";
 import { getTableConfig, PgDialect } from "drizzle-orm/pg-core";
 import {
   buildRuns,
@@ -24,6 +24,44 @@ function columns(table: Parameters<typeof getTableConfig>[0]) {
     column.hasDefault,
     column.primary,
   ]);
+}
+
+function defaults(table: Parameters<typeof getTableConfig>[0]) {
+  return getTableConfig(table).columns
+    .filter((column) => column.hasDefault)
+    .map((column) => {
+      let sql: string;
+      if (column.default === undefined) {
+        sql = `<implicit:${column.getSQLType()}>`;
+      } else if (typeof column.default === "string") {
+        sql = `'${column.default.replaceAll("'", "''")}'`;
+      } else if (
+        typeof column.default === "object"
+        && column.default !== null
+        && "getSQL" in column.default
+      ) {
+        sql = dialect.sqlToQuery(column.default as SQL).sql;
+      } else {
+        sql = String(column.default);
+      }
+      return [column.name, column.getSQLType(), sql];
+    });
+}
+
+function normalizeSql(value: string) {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/\s*([(),])\s*/g, "$1")
+    .trim();
+}
+
+function createTableBlock(tableName: string) {
+  const marker = `CREATE TABLE IF NOT EXISTS ${tableName} (`;
+  const start = migrationSql.indexOf(marker);
+  if (start < 0) throw new Error(`missing CREATE TABLE block: ${tableName}`);
+  const end = migrationSql.indexOf("\n);", start);
+  if (end < 0) throw new Error(`unterminated CREATE TABLE block: ${tableName}`);
+  return normalizeSql(migrationSql.slice(start, end + 3));
 }
 
 function checks(table: Parameters<typeof getTableConfig>[0]) {
@@ -213,6 +251,33 @@ test("defines the exact durable workspace columns, types, nullability, and defau
   expect(buildStatus?.default).toBe("queued");
 });
 
+test("normalizes every Drizzle UUID, timestamp, status, and serial default", () => {
+  expect(defaults(workspaceMessages)).toEqual([
+    ["id", "uuid", "gen_random_uuid()"],
+    ["created_at", "timestamp with time zone", "now()"],
+  ]);
+  expect(defaults(workspaceTurns)).toEqual([
+    ["id", "uuid", "gen_random_uuid()"],
+    ["created_at", "timestamp with time zone", "now()"],
+    ["updated_at", "timestamp with time zone", "now()"],
+  ]);
+  expect(defaults(workspaceSpecs)).toEqual([
+    ["id", "uuid", "gen_random_uuid()"],
+    ["created_at", "timestamp with time zone", "now()"],
+  ]);
+  expect(defaults(buildRuns)).toEqual([
+    ["id", "uuid", "gen_random_uuid()"],
+    ["status", "text", "'queued'"],
+    ["created_at", "timestamp with time zone", "now()"],
+    ["updated_at", "timestamp with time zone", "now()"],
+  ]);
+  expect(defaults(workspaceEvents)).toEqual([
+    ["cursor", "bigserial", "<implicit:bigserial>"],
+    ["id", "uuid", "gen_random_uuid()"],
+    ["created_at", "timestamp with time zone", "now()"],
+  ]);
+});
+
 test("defines named role and status checks", () => {
   expect(checks(workspaceMessages)).toEqual([{
     name: "workspace_messages_role_check",
@@ -228,13 +293,13 @@ test("defines named role and status checks", () => {
   }]);
 });
 
-test("cascades workspace ownership and preserves optional child references", () => {
+test("uses exact catalog FK names and actions for project ownership and approval", () => {
   for (const [table, name] of [
-    [workspaceMessages, "workspace_messages_workspace_id_projects_id_fk"],
-    [workspaceTurns, "workspace_turns_workspace_id_projects_id_fk"],
-    [workspaceSpecs, "workspace_specs_workspace_id_projects_id_fk"],
-    [buildRuns, "build_runs_workspace_id_projects_id_fk"],
-    [workspaceEvents, "workspace_events_workspace_id_projects_id_fk"],
+    [workspaceMessages, "workspace_messages_workspace_id_fkey"],
+    [workspaceTurns, "workspace_turns_workspace_id_fkey"],
+    [workspaceSpecs, "workspace_specs_workspace_id_fkey"],
+    [buildRuns, "build_runs_workspace_id_fkey"],
+    [workspaceEvents, "workspace_events_workspace_id_fkey"],
   ] as const) {
     expect(foreignKeys(table)).toContainEqual({
       name,
@@ -244,6 +309,16 @@ test("cascades workspace ownership and preserves optional child references", () 
       onDelete: "cascade",
     });
   }
+  expect(foreignKeys(workspaceSpecs)).toContainEqual({
+    name: "workspace_specs_approved_by_fkey",
+    columns: ["approved_by"],
+    foreignTable: "users",
+    foreignColumns: ["id"],
+    onDelete: "no action",
+  });
+});
+
+test("preserves optional assistant and run references", () => {
   expect(workspaceTurns.assistantMessageId.notNull).toBe(false);
   expect(workspaceEvents.runId.notNull).toBe(false);
 });
@@ -313,7 +388,14 @@ test("migration creates named unique constraints and same-workspace foreign keys
   expect(migrationSql).toContain(
     "FOREIGN KEY (workspace_id, run_id) REFERENCES build_runs(workspace_id, id)",
   );
-  expect(migrationSql.match(/REFERENCES projects\(id\) ON DELETE CASCADE/g)).toHaveLength(5);
+  const createTableSql = [
+    "workspace_messages",
+    "workspace_turns",
+    "workspace_specs",
+    "build_runs",
+    "workspace_events",
+  ].map(createTableBlock).join("\n");
+  expect(createTableSql.match(/REFERENCES projects\(id\)ON DELETE CASCADE/g)).toHaveLength(5);
   expect(migrationSql).toContain("status text NOT NULL DEFAULT 'queued'");
   expect(migrationSql).toContain(
     "CREATE UNIQUE INDEX IF NOT EXISTS workspace_one_approved_spec ON workspace_specs(workspace_id) WHERE status = 'approved'",
@@ -338,4 +420,112 @@ test("migration safely upgrades an already-applied 0002 without destructive data
   expect(migrationSql).toContain("DROP CONSTRAINT IF EXISTS build_runs_spec_id_fkey");
   expect(migrationSql).toContain("DROP CONSTRAINT IF EXISTS workspace_events_run_id_fkey");
   expect(migrationSql).not.toMatch(/\b(?:DROP\s+TABLE|TRUNCATE|DELETE\s+FROM)\b/i);
+});
+
+test("migration CREATE TABLE blocks exactly match the durable DDL contract", () => {
+  const expected = {
+    workspace_messages: `
+      CREATE TABLE IF NOT EXISTS workspace_messages (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        workspace_id varchar(12) NOT NULL,
+        role text NOT NULL,
+        content text NOT NULL,
+        client_message_id varchar(96) NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT workspace_messages_role_check CHECK (role IN ('user','assistant')),
+        CONSTRAINT workspace_messages_workspace_id_client_message_id_key UNIQUE (workspace_id, client_message_id),
+        CONSTRAINT workspace_messages_workspace_id_id_key UNIQUE (workspace_id, id),
+        CONSTRAINT workspace_messages_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+    `,
+    workspace_turns: `
+      CREATE TABLE IF NOT EXISTS workspace_turns (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        workspace_id varchar(12) NOT NULL,
+        idempotency_key varchar(96) NOT NULL,
+        status text NOT NULL,
+        user_message_id uuid NOT NULL,
+        assistant_message_id uuid,
+        error_code text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT workspace_turns_status_check CHECK (status IN ('processing','completed','failed')),
+        CONSTRAINT workspace_turns_workspace_id_idempotency_key_key UNIQUE (workspace_id, idempotency_key),
+        CONSTRAINT workspace_turns_user_message_workspace_fk FOREIGN KEY (workspace_id, user_message_id) REFERENCES workspace_messages(workspace_id, id),
+        CONSTRAINT workspace_turns_assistant_message_workspace_fk FOREIGN KEY (workspace_id, assistant_message_id) REFERENCES workspace_messages(workspace_id, id),
+        CONSTRAINT workspace_turns_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+    `,
+    workspace_specs: `
+      CREATE TABLE IF NOT EXISTS workspace_specs (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        workspace_id varchar(12) NOT NULL,
+        version integer NOT NULL,
+        hash char(64) NOT NULL,
+        status text NOT NULL,
+        body jsonb NOT NULL,
+        approved_at timestamptz,
+        approved_by uuid,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT workspace_specs_status_check CHECK (status IN ('draft','approved','superseded')),
+        CONSTRAINT workspace_specs_workspace_id_version_key UNIQUE (workspace_id, version),
+        CONSTRAINT workspace_specs_workspace_id_id_key UNIQUE (workspace_id, id),
+        CONSTRAINT workspace_specs_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES projects(id) ON DELETE CASCADE,
+        CONSTRAINT workspace_specs_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES users(id)
+      );
+    `,
+    build_runs: `
+      CREATE TABLE IF NOT EXISTS build_runs (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        workspace_id varchar(12) NOT NULL,
+        spec_id uuid NOT NULL,
+        spec_version integer NOT NULL,
+        spec_hash char(64) NOT NULL,
+        idempotency_key varchar(96) NOT NULL,
+        workflow_id text,
+        status text NOT NULL DEFAULT 'queued',
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT build_runs_workspace_id_idempotency_key_key UNIQUE (workspace_id, idempotency_key),
+        CONSTRAINT build_runs_workspace_id_id_key UNIQUE (workspace_id, id),
+        CONSTRAINT build_runs_spec_workspace_fk FOREIGN KEY (workspace_id, spec_id) REFERENCES workspace_specs(workspace_id, id),
+        CONSTRAINT build_runs_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+    `,
+    workspace_events: `
+      CREATE TABLE IF NOT EXISTS workspace_events (
+        cursor bigserial PRIMARY KEY,
+        id uuid NOT NULL DEFAULT gen_random_uuid(),
+        workspace_id varchar(12) NOT NULL,
+        run_id uuid,
+        category text NOT NULL,
+        status text NOT NULL,
+        summary text NOT NULL,
+        safe_path text,
+        elapsed_ms integer,
+        evidence_id text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT workspace_events_id_key UNIQUE (id),
+        CONSTRAINT workspace_events_run_workspace_fk FOREIGN KEY (workspace_id, run_id) REFERENCES build_runs(workspace_id, id),
+        CONSTRAINT workspace_events_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+    `,
+  };
+
+  for (const [tableName, ddl] of Object.entries(expected)) {
+    expect(createTableBlock(tableName)).toBe(normalizeSql(ddl));
+  }
+});
+
+test("migration aligns alternate Drizzle FK names without duplicating constraints", () => {
+  for (const [alternate, preserved] of [
+    ["workspace_messages_workspace_id_projects_id_fk", "workspace_messages_workspace_id_fkey"],
+    ["workspace_turns_workspace_id_projects_id_fk", "workspace_turns_workspace_id_fkey"],
+    ["workspace_specs_workspace_id_projects_id_fk", "workspace_specs_workspace_id_fkey"],
+    ["workspace_specs_approved_by_users_id_fk", "workspace_specs_approved_by_fkey"],
+    ["build_runs_workspace_id_projects_id_fk", "build_runs_workspace_id_fkey"],
+    ["workspace_events_workspace_id_projects_id_fk", "workspace_events_workspace_id_fkey"],
+  ]) {
+    expect(migrationSql).toContain(`RENAME CONSTRAINT ${alternate} TO ${preserved}`);
+  }
 });
