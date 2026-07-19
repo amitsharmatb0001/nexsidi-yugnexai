@@ -63,24 +63,47 @@ const PUBLIC: Record<
   },
 };
 
+function toSafeWorkspacePath(path: string): string | undefined {
+  const normalized = path.replaceAll("\\", "/");
+  const workspacePrefix = "/workspace/";
+  const hasWorkspacePrefix = normalized.startsWith(workspacePrefix);
+
+  if (
+    /^[a-z]:/i.test(normalized) ||
+    normalized.startsWith("//") ||
+    (normalized.startsWith("/") && !hasWorkspacePrefix)
+  ) {
+    return undefined;
+  }
+
+  const candidate = hasWorkspacePrefix
+    ? normalized.slice(workspacePrefix.length)
+    : normalized;
+  const segments = candidate.split("/");
+  if (segments.some((segment) => segment === "..")) return undefined;
+
+  const relative = segments
+    .filter((segment) => segment !== "" && segment !== ".")
+    .join("/");
+  if (!relative || /^[a-z]:/i.test(relative)) return undefined;
+  return relative;
+}
+
 export function toPublicActivityEvent(
   input: InternalActivityEvent,
 ): PublicActivityEvent | null {
   const safe = PUBLIC[input.type];
   if (!safe) return null;
+  const safePath = input.safePath
+    ? toSafeWorkspacePath(input.safePath)
+    : undefined;
 
   return {
     id: input.id,
     workspaceId: input.workspaceId,
     runId: input.runId,
     ...safe,
-    ...(input.safePath
-      ? {
-          safePath: input.safePath
-            .replaceAll("\\", "/")
-            .replace(/^.*?\/workspace\//, ""),
-        }
-      : {}),
+    ...(safePath ? { safePath } : {}),
     ...(input.elapsedMs !== undefined ? { elapsedMs: input.elapsedMs } : {}),
     ...(input.evidenceId ? { evidenceId: input.evidenceId } : {}),
     createdAt: input.createdAt,

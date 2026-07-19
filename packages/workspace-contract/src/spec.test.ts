@@ -38,3 +38,55 @@ test("rejects an approved record whose hash no longer matches", () => {
   } as WorkspaceSpec;
   expect(() => assertApprovedSpec(spec)).toThrow("approved_spec_hash_mismatch");
 });
+
+test("nested assumption status changes the hash and invalidates approval", () => {
+  const withAssumption = {
+    ...draft,
+    assumptions: [
+      {
+        id: "assumption-1",
+        key: "hosting",
+        value: "Local deployment",
+        status: "proposed" as const,
+      },
+    ],
+  };
+  const approved = {
+    ...withAssumption,
+    status: "approved",
+    hash: computeSpecHash(withAssumption),
+    createdAt: "2026-07-19T00:00:00.000Z",
+    approvedAt: "2026-07-19T00:01:00.000Z",
+    approvedBy: "user-1",
+  } as WorkspaceSpec;
+  const mutated = {
+    ...approved,
+    assumptions: [{ ...approved.assumptions[0]!, status: "approved" as const }],
+  };
+
+  expect(() => assertApprovedSpec(approved)).not.toThrow();
+  expect(computeSpecHash(mutated)).not.toBe(approved.hash);
+  expect(() => assertApprovedSpec(mutated)).toThrow(
+    "approved_spec_hash_mismatch",
+  );
+});
+
+test("hash matches JSON persistence when an object property is undefined", () => {
+  const withUndefined = {
+    ...draft,
+    design: { ...draft.design, colors: undefined },
+  };
+  const persisted = JSON.parse(JSON.stringify(withUndefined)) as typeof draft;
+
+  expect(computeSpecHash(withUndefined)).toBe(computeSpecHash(persisted));
+});
+
+test("hash matches JSON persistence when an array item is undefined", () => {
+  const withUndefined = {
+    ...draft,
+    design: { ...draft.design, references: ["kept", undefined] },
+  } as unknown as Omit<WorkspaceSpec, "hash" | "createdAt">;
+  const persisted = JSON.parse(JSON.stringify(withUndefined)) as typeof withUndefined;
+
+  expect(computeSpecHash(withUndefined)).toBe(computeSpecHash(persisted));
+});

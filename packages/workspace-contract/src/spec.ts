@@ -1,20 +1,25 @@
 import { createHash } from "crypto";
 import type { WorkspaceSpec } from "./types.ts";
 
-function canonical(value: unknown): string {
+const ROOT_METADATA = new Set([
+  "hash",
+  "status",
+  "createdAt",
+  "approvedAt",
+  "approvedBy",
+]);
+
+function canonical(value: unknown, isRoot = false): string {
+  if (value === undefined) return "null";
   if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonical(item)).join(",")}]`;
+  }
 
   const record = value as Record<string, unknown>;
-  const metadata = new Set([
-    "hash",
-    "status",
-    "createdAt",
-    "approvedAt",
-    "approvedBy",
-  ]);
   return `{${Object.keys(record)
-    .filter((key) => !metadata.has(key))
+    .filter((key) => !isRoot || !ROOT_METADATA.has(key))
+    .filter((key) => record[key] !== undefined)
     .sort()
     .map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`)
     .join(",")}}`;
@@ -25,7 +30,7 @@ export function computeSpecHash(
     | Omit<WorkspaceSpec, "hash">
     | Omit<WorkspaceSpec, "hash" | "createdAt">,
 ): string {
-  return createHash("sha256").update(canonical(spec)).digest("hex");
+  return createHash("sha256").update(canonical(spec, true)).digest("hex");
 }
 
 export function assertApprovedSpec(spec: WorkspaceSpec): void {
