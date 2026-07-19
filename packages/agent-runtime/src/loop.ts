@@ -167,6 +167,7 @@ export async function evaluateCommandStrike(
   counter: StrikeCounter,
   command: string,
   toolResult: ToolResult,
+  diagnose: (command: string, output: string) => Promise<string> = diagnoseError,
 ): Promise<{ toolResult: ToolResult; exhausted: boolean }> {
   if (toolResult.status !== "error") return { toolResult, exhausted: false };
 
@@ -177,7 +178,7 @@ export async function evaluateCommandStrike(
 
   let diagAdvice = "";
   if (strike.strikes >= 2) {
-    diagAdvice = await diagnoseError(command, toolResult.output ?? toolResult.summary ?? "");
+    diagAdvice = await diagnose(command, toolResult.output ?? toolResult.summary ?? "");
   }
 
   const nextActions = [...(toolResult.next_actions ?? [])];
@@ -186,6 +187,10 @@ export async function evaluateCommandStrike(
   }
   if (diagAdvice) {
     nextActions.push("Review the DIAGNOSTIC ENGINE SEARCH FINDINGS added to the output to fix this failure.");
+  }
+
+  if (!diagAdvice && nextActions.length === 0) {
+    return { toolResult, exhausted: false };
   }
 
   return {

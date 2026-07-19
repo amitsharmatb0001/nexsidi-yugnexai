@@ -9,7 +9,9 @@ test("preview mode prompt instructs mock data, no real API calls", () => {
 
 test("integrate mode prompt instructs real API wiring", () => {
   const prompt = buildAgentPrompt("integrate");
-  expect(prompt).toContain("Bearer token from useAuth().getToken()");
+  expect(prompt).toContain("read the 'token' cookie");
+  expect(prompt).toContain('"Authorization: Bearer <token>"');
+  expect(prompt).not.toContain("useAuth().getToken()");
 });
 
 // Full-system audit E1: vendored NexUI packages declare devDependencies

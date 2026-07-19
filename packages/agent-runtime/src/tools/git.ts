@@ -1,9 +1,18 @@
 import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
+export function normalizeGitOutput(output: string | Buffer): string {
+  return (typeof output === "string" ? output : output.toString("utf-8")).trim();
+}
+
 export function execGit(cwd: string, args: string): string {
   try {
-    return execSync(`git ${args}`, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] }).trim();
+    const output = execSync(`git ${args}`, {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "ignore"],
+    }) as unknown as string | Buffer;
+    return normalizeGitOutput(output);
   } catch (err) {
     throw new Error(`Git command failed: git ${args}. Reason: ${String(err)}`);
   }

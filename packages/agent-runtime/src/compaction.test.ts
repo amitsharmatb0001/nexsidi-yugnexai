@@ -1,19 +1,15 @@
-import { test, expect, mock } from "bun:test";
+import { test, expect } from "bun:test";
 import { estimateTokenCount, compactHistory, findSymbolInFile } from "./compaction.ts";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 let mockChatCalled = false;
 
-// Mock the chat client
-mock.module("@nexsidi/llm-client", () => {
-  return {
-    geminiChat: async (messages: any[]) => {
-      mockChatCalled = true;
-      return { content: "TRIGGER: modified files\nACTION: completed summary" };
-    },
-  };
-});
+const mockChat = async () => {
+  mockChatCalled = true;
+  return { content: "TRIGGER: modified files\nACTION: completed summary" };
+};
 
 test("token estimation", () => {
   const messages = [
@@ -30,7 +26,7 @@ test("compactHistory no-op under 30K tokens", async () => {
     { role: "system", content: "small" },
     { role: "user", content: "msg" },
   ];
-  const result = await compactHistory(messages);
+  const result = await compactHistory(messages, mockChat);
   expect(result).toBe(messages);
   expect(mockChatCalled).toBe(false);
 });
@@ -50,7 +46,7 @@ test("compactHistory triggers summarization over 30K tokens", async () => {
     { role: "assistant", content: "final thought" },
   ];
 
-  const result = await compactHistory(messages);
+  const result = await compactHistory(messages, mockChat);
   expect(mockChatCalled).toBe(true);
   expect(result.length).toBe(7); // system + initial + summarized + 4 trailing
   expect(result[2].content).toContain("completed summary");
@@ -66,7 +62,8 @@ test("findSymbolInFile finds class definition", () => {
       }
     }
   `;
-  const tempFile = join(__dirname, "temp-code.ts");
+  const tempDir = mkdtempSync(join(tmpdir(), "nexsidi-compaction-test-"));
+  const tempFile = join(tempDir, "temp-code.ts");
   writeFileSync(tempFile, code, "utf-8");
 
   try {
@@ -74,8 +71,6 @@ test("findSymbolInFile finds class definition", () => {
     expect(result).toContain("export class TaskController");
     expect(result).toContain("async execute()");
   } finally {
-    try {
-      unlinkSync(tempFile);
-    } catch {}
+    rmSync(tempDir, { recursive: true, force: true });
   }
 });

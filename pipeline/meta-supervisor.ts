@@ -1,10 +1,29 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { geminiChat } from "@nexsidi/llm-client";
 
-export async function runMetaSupervisor(projectId: string): Promise<void> {
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+export interface MetaSupervisorDeps {
+  buildDir?: string;
+  repositoryRoot?: string;
+  chat?: typeof geminiChat;
+  commitAgent?: (agentFilePath: string, agentName: string) => void | Promise<void>;
+}
+
+function commitAgentWithGit(agentFilePath: string, agentName: string): void {
+  execFileSync("git", ["add", "--", agentFilePath], { stdio: "inherit" });
+  execFileSync(
+    "git",
+    ["commit", "-m", `chore(qa-rules): meta-supervisor optimized system prompt for ${agentName} to address missed finding`],
+    { stdio: "inherit" },
+  );
+}
+
+export async function runMetaSupervisor(projectId: string, deps: MetaSupervisorDeps = {}): Promise<void> {
+  const buildDir = deps.buildDir ?? process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const repositoryRoot = deps.repositoryRoot ?? process.cwd();
+  const chat = deps.chat ?? geminiChat;
+  const commitAgent = deps.commitAgent ?? commitAgentWithGit;
   const logPath = join(buildDir, projectId, "run.log");
   if (!existsSync(logPath)) {
     console.log(`[meta-supervisor] No run log found at ${logPath}`);
@@ -30,7 +49,7 @@ export async function runMetaSupervisor(projectId: string): Promise<void> {
   console.log(`[meta-supervisor] Found ${mismatches.length} mismatches to process`);
 
   for (const { agentName, missedFinding } of mismatches) {
-    const agentFilePath = join(process.cwd(), "agents", "qa", agentName, "src", "index.ts");
+    const agentFilePath = join(repositoryRoot, "agents", "qa", agentName, "src", "index.ts");
     if (!existsSync(agentFilePath)) {
       console.warn(`[meta-supervisor] Agent file does not exist: ${agentFilePath}`);
       continue;
@@ -75,7 +94,7 @@ Output ONLY a valid JSON object matching this exact schema, with no markdown cod
 
     try {
       console.log(`[meta-supervisor] Invoking LLM to optimize prompt for ${agentName} to address: "${missedFinding}"`);
-      const response = await geminiChat([{ role: "user", content: llmPrompt }]);
+      const response = await chat([{ role: "user", content: llmPrompt }]);
       let text = response.content.trim();
       
       // Strip markdown code fences if LLM wrapped it
@@ -102,8 +121,7 @@ Output ONLY a valid JSON object matching this exact schema, with no markdown cod
 
         // Git commit
         try {
-          execSync(`git add ${agentFilePath}`, { stdio: "inherit" });
-          execSync(`git commit -m "chore(qa-rules): meta-supervisor optimized system prompt for ${agentName} to address missed finding"`, { stdio: "inherit" });
+          await commitAgent(agentFilePath, agentName);
           console.log(`[meta-supervisor] Git committed changes for ${agentName}`);
         } catch (gitErr) {
           console.error(`[meta-supervisor] Git commit failed: ${String(gitErr)}`);

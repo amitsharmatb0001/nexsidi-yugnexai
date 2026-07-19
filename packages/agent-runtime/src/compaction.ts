@@ -1,6 +1,15 @@
 import { readFileSync, existsSync } from "node:fs";
 import type { NimMessage } from "@nexsidi/llm-client";
 
+export type CompactionChat = (
+  messages: Array<{ role: "user"; content: string }>,
+) => Promise<{ content: string }>;
+
+async function chatWithGemini(messages: Array<{ role: "user"; content: string }>): Promise<{ content: string }> {
+  const { geminiChat } = await import("@nexsidi/llm-client");
+  return geminiChat(messages);
+}
+
 export function estimateTokenCount(messages: { role: string; content?: string | null }[]): number {
   let totalChars = 0;
   for (const m of messages) {
@@ -9,7 +18,10 @@ export function estimateTokenCount(messages: { role: string; content?: string | 
   return Math.round(totalChars / 4);
 }
 
-export async function compactHistory(messages: NimMessage[]): Promise<NimMessage[]> {
+export async function compactHistory(
+  messages: NimMessage[],
+  chat: CompactionChat = chatWithGemini,
+): Promise<NimMessage[]> {
   const tokens = estimateTokenCount(messages);
   if (tokens < 30000) return messages; // No compaction needed
 
@@ -28,7 +40,6 @@ export async function compactHistory(messages: NimMessage[]): Promise<NimMessage
   const middleMessages = messages.slice(2, messages.length - trailingCount);
 
   try {
-    const { geminiChat } = await import("@nexsidi/llm-client");
     const middleSerialized = JSON.stringify(middleMessages.map((m) => ({ role: m.role, content: m.content })));
     const prompt = `\
 You are a context compaction utility.
@@ -42,7 +53,7 @@ Keep it concise, actionable, and under 1000 words. Do NOT include raw compiler s
 RAW HISTORY TO SUMMARIZE:
 ${middleSerialized}`;
 
-    const chatResponse = await geminiChat([
+    const chatResponse = await chat([
       { role: "user", content: prompt }
     ]);
     const summary = chatResponse.content;

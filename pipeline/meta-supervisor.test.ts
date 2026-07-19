@@ -1,62 +1,60 @@
-import { expect, test, mock, spyOn } from "bun:test";
-import { writeFileSync, readFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
+import { expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMetaSupervisor } from "./meta-supervisor.ts";
 
-test("meta-supervisor parses logs, invokes LLM, and patches file", async () => {
-  const projectId = "test-project-999";
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
-  const projectBuildDir = join(buildDir, projectId);
-  
-  mkdirSync(projectBuildDir, { recursive: true });
-  
-  const logPath = join(projectBuildDir, "run.log");
-  writeFileSync(
-    logPath,
-    `Some logs here...\n[instinct-mismatch] agent navya submitted 0 findings but later stage found CRITICAL: Task modal fails to submit with button clicks\nMore logs...`,
-    "utf-8"
-  );
+test("meta-supervisor patches and commits only files under the injected repository root", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "nexsidi-meta-supervisor-test-"));
+  const projectId = `test-project-${Date.now()}`;
+  const buildDir = join(tempRoot, "builds");
+  const repositoryRoot = join(tempRoot, "repository");
+  const logPath = join(buildDir, projectId, "run.log");
+  const agentFile = join(repositoryRoot, "agents", "qa", "navya", "src", "index.ts");
+  const previousBuildDir = process.env.BUILD_DIR;
+  const committed: Array<{ agentFilePath: string; agentName: string }> = [];
+  let chatCalls = 0;
 
-  // Setup mock agent file
-  const agentDir = join(process.cwd(), "agents", "qa", "navya", "src");
-  mkdirSync(agentDir, { recursive: true });
-  const agentFile = join(agentDir, "index.ts");
-  
-  const originalAgentContent = `
-export const QA_SYSTEM_PROMPT = \`You are Navya...\`;
-const config = {
-  reviewFocus: "logic errors",
-};
-`;
-  writeFileSync(agentFile, originalAgentContent, "utf-8");
+  try {
+    process.env.BUILD_DIR = join(tempRoot, "unused-builds");
+    mkdirSync(join(buildDir, projectId), { recursive: true });
+    mkdirSync(join(repositoryRoot, "agents", "qa", "navya", "src"), { recursive: true });
+    writeFileSync(
+      logPath,
+      "Some logs here...\n[instinct-mismatch] agent navya submitted 0 findings but later stage found CRITICAL: Task modal fails to submit with button clicks\nMore logs...",
+      "utf-8",
+    );
+    writeFileSync(
+      agentFile,
+      'export const QA_SYSTEM_PROMPT = `You are Navya...`;\nconst config = {\n  reviewFocus: "logic errors",\n};\n',
+      "utf-8",
+    );
 
-  // Mock geminiChat call
-  mock.module("@nexsidi/llm-client", () => {
-    return {
-      geminiChat: async () => {
+    await runMetaSupervisor(projectId, {
+      buildDir,
+      repositoryRoot,
+      chat: async () => {
+        chatCalls++;
         return {
           content: JSON.stringify({
             reviewFocus: "logic errors AND task submission validation",
-            QA_SYSTEM_PROMPT: "You are Navya, optimized prompt..."
-          })
+            QA_SYSTEM_PROMPT: "You are Navya, optimized prompt...",
+          }),
         };
-      }
-    };
-  });
+      },
+      commitAgent: async (agentFilePath, agentName) => {
+        committed.push({ agentFilePath, agentName });
+      },
+    });
 
-  // Spy on git commands to avoid executing real git commands in tests
-  const childProcess = await import("node:child_process");
-  const execSyncSpy = spyOn(childProcess, "execSync").mockImplementation(() => Buffer.from("mocked execSync"));
-
-  await runMetaSupervisor(projectId);
-
-  // Assertions
-  const updatedContent = readFileSync(agentFile, "utf-8");
-  expect(updatedContent).toContain("logic errors AND task submission validation");
-  expect(updatedContent).toContain("You are Navya, optimized prompt...");
-  expect(execSyncSpy).toHaveBeenCalled();
-
-  // Cleanup
-  rmSync(logPath, { force: true });
-  writeFileSync(agentFile, originalAgentContent, "utf-8");
+    const updatedContent = readFileSync(agentFile, "utf-8");
+    expect(updatedContent).toContain("logic errors AND task submission validation");
+    expect(updatedContent).toContain("You are Navya, optimized prompt...");
+    expect(chatCalls).toBe(1);
+    expect(committed).toEqual([{ agentFilePath: agentFile, agentName: "navya" }]);
+  } finally {
+    if (previousBuildDir === undefined) delete process.env.BUILD_DIR;
+    else process.env.BUILD_DIR = previousBuildDir;
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });

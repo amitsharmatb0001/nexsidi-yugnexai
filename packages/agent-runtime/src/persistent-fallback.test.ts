@@ -1,12 +1,25 @@
 import { test, expect, mock } from "bun:test";
 import { runAgent } from "./loop.ts";
-import { writeFileSync, unlinkSync, existsSync, readFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Mock @nexsidi/db to throw database errors
-mock.module("@nexsidi/db", () => {
-  throw new Error("Postgres database connection timed out!");
-});
+// Construct the module successfully, then fail at the operation boundary that
+// runAgent is expected to recover from. Throwing in the factory poisons Bun's
+// shared module loader before runtime fallback can execute.
+mock.module("@nexsidi/db", () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: () => {
+            throw new Error("Postgres database connection timed out!");
+          },
+        }),
+      }),
+    }),
+  },
+}));
 
 let turn = 0;
 
@@ -66,10 +79,12 @@ mock.module("@nexsidi/llm-client", () => {
 });
 
 test("persistent file fallback works when database throws", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "nexsidi-persistent-fallback-test-"));
+  const previousBuildDir = process.env.BUILD_DIR;
+  process.env.BUILD_DIR = tempRoot;
   const projectId = "test-db-fail-proj";
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
-  const localFile = join(buildDir, projectId, "history-shubham.json");
-  const sandboxDir = join(buildDir, projectId, "sandbox");
+  const localFile = join(tempRoot, projectId, "history-shubham.json");
+  const sandboxDir = join(tempRoot, projectId, "sandbox");
 
   // Pre-seed local history file
   const preSeedHistory = [
@@ -99,11 +114,8 @@ test("persistent file fallback works when database throws", async () => {
     const content = JSON.parse(readFileSync(localFile, "utf-8"));
     expect(content.length).toBeGreaterThan(2);
   } finally {
-    try {
-      unlinkSync(localFile);
-    } catch {}
-    try {
-      rmSync(sandboxDir, { recursive: true, force: true });
-    } catch {}
+    if (previousBuildDir === undefined) delete process.env.BUILD_DIR;
+    else process.env.BUILD_DIR = previousBuildDir;
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 });

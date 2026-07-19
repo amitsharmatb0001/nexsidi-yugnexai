@@ -1,6 +1,7 @@
 import { test, expect, mock } from "bun:test";
 import { runAgent } from "./loop.ts";
-import { writeFileSync, unlinkSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 let parentTurn = 0;
@@ -141,8 +142,8 @@ test("dynamic subagent spawning and execution", async () => {
   parentTurn = 0;
   subagentTurn = 0;
 
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
-  const sandboxDir = join(buildDir, "test-subagent-proj", "sandbox");
+  const tempRoot = mkdtempSync(join(tmpdir(), "nexsidi-subagent-test-"));
+  const sandboxDir = join(tempRoot, "sandbox");
   mkdirSync(sandboxDir, { recursive: true });
   writeFileSync(join(sandboxDir, "a.txt"), "some test code", "utf-8");
 
@@ -154,7 +155,6 @@ test("dynamic subagent spawning and execution", async () => {
       systemPrompt: "prompt",
       initialMessage: "start",
       sandboxDir,
-      projectId: "test-subagent-proj",
     });
 
     expect(result.success).toBe(true);
@@ -162,8 +162,6 @@ test("dynamic subagent spawning and execution", async () => {
     expect(parentTurn).toBe(3);
     expect(subagentTurn).toBe(2);
   } finally {
-    try {
-      rmSync(sandboxDir, { recursive: true, force: true });
-    } catch {}
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 });

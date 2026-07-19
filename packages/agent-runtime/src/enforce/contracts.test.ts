@@ -15,7 +15,7 @@ const VALID_SPEC = {
   description: "A task manager",
   appType: "web",
   features: [{ name: "tasks", description: "manage tasks", userStories: ["as a user I can add a task"] }],
-  auth: { provider: "clerk", features: ["sign-in", "sign-up"] },
+  auth: { provider: "custom", features: ["sign-in", "sign-up"] },
   apiEndpoints: [],
   dbTables: [],
   successCriteria: ["user can sign up"],

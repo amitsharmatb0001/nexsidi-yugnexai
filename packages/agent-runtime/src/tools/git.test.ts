@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initWorkspaceTransaction, commitWorkspaceTransaction, rollbackWorkspaceTransaction } from "./git.ts";
+import { initWorkspaceTransaction, commitWorkspaceTransaction, rollbackWorkspaceTransaction, normalizeGitOutput } from "./git.ts";
 
 let sandboxDir: string;
 beforeEach(() => {
@@ -10,6 +10,10 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(sandboxDir, { recursive: true, force: true });
+});
+
+test("normalizes Bun Buffer-like execSync output to a trimmed string", () => {
+  expect(normalizeGitOutput(Buffer.from("true\r\n"))).toBe("true");
 });
 
 test("git workspace transactions", () => {

@@ -1,51 +1,61 @@
-import { expect, test, mock, spyOn } from "bun:test";
-import { writeFileSync, readFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
+import { expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { runInstinctCron } from "./instinct-cron.ts";
 
-test("instinct-cron selects recurring mismatches and patches skill file", async () => {
-  const obsDir = join(homedir(), ".local", "share", "nexsidi-instincts");
-  mkdirSync(obsDir, { recursive: true });
-  const obsPath = join(obsDir, "observations.jsonl");
+test("instinct-cron selects recurring mismatches and patches only the injected skill root", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "nexsidi-instinct-cron-test-"));
+  const observationsPath = join(tempRoot, "observations", "observations.jsonl");
+  const skillsDir = join(tempRoot, "skills");
+  const skillFile = join(skillsDir, "navya.md");
+  const originalEnv = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+  };
+  const committed: Array<{ skillPath: string; agentName: string }> = [];
+  let chatCalls = 0;
 
-  // Create two identical observations to trigger occurrences >= 2
-  const obsLines = [
-    JSON.stringify({ agentName: "navya", missedFinding: "Null pointer exception on sign-in", createdAt: new Date().toISOString() }),
-    JSON.stringify({ agentName: "navya", missedFinding: "Null pointer exception on sign-in", createdAt: new Date().toISOString() }),
-  ];
-  writeFileSync(obsPath, obsLines.join("\n") + "\n", "utf-8");
+  try {
+    process.env.HOME = join(tempRoot, "unused-home");
+    process.env.USERPROFILE = process.env.HOME;
+    process.env.XDG_DATA_HOME = join(tempRoot, "unused-data");
 
-  // Setup mock skill file
-  const skillDir = join(process.cwd(), "packages", "agent-runtime", "skills");
-  mkdirSync(skillDir, { recursive: true });
-  const skillFile = join(skillDir, "navya.md");
-  const originalSkillContent = `# Navya Rules\n\n## Rules\n- Rule 1`;
-  writeFileSync(skillFile, originalSkillContent, "utf-8");
+    mkdirSync(join(tempRoot, "observations"), { recursive: true });
+    mkdirSync(skillsDir, { recursive: true });
+    writeFileSync(
+      observationsPath,
+      [
+        JSON.stringify({ agentName: "navya", missedFinding: "Null pointer exception on sign-in", createdAt: new Date().toISOString() }),
+        JSON.stringify({ agentName: "navya", missedFinding: "Null pointer exception on sign-in", createdAt: new Date().toISOString() }),
+      ].join("\n") + "\n",
+      "utf-8",
+    );
+    writeFileSync(skillFile, "# Navya Rules\n\n## Rules\n- Rule 1", "utf-8");
 
-  // Mock geminiChat call
-  mock.module("@nexsidi/llm-client", () => {
-    return {
-      geminiChat: async () => {
+    await runInstinctCron({
+      observationsPath,
+      skillsDir,
+      chat: async () => {
+        chatCalls++;
         return {
-          content: `# Navya Rules\n\n## Rules\n- Rule 1\n- Rule 2 (Prevent Null pointer exception on sign-in)`
+          content: "# Navya Rules\n\n## Rules\n- Rule 1\n- Rule 2 (Prevent Null pointer exception on sign-in)",
         };
-      }
-    };
-  });
+      },
+      commitSkill: async (skillPath, agentName) => {
+        committed.push({ skillPath, agentName });
+      },
+    });
 
-  // Spy on git commands
-  const childProcess = await import("node:child_process");
-  const execSyncSpy = spyOn(childProcess, "execSync").mockImplementation(() => Buffer.from("mocked execSync"));
-
-  await runInstinctCron();
-
-  // Assertions
-  const updatedContent = readFileSync(skillFile, "utf-8");
-  expect(updatedContent).toContain("Prevent Null pointer exception on sign-in");
-  expect(execSyncSpy).toHaveBeenCalled();
-
-  // Cleanup
-  rmSync(obsPath, { force: true });
-  writeFileSync(skillFile, originalSkillContent, "utf-8");
+    expect(readFileSync(skillFile, "utf-8")).toContain("Prevent Null pointer exception on sign-in");
+    expect(chatCalls).toBe(1);
+    expect(committed).toEqual([{ skillPath: skillFile, agentName: "navya" }]);
+  } finally {
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });

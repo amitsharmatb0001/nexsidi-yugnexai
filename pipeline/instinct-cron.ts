@@ -1,12 +1,31 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { selectRecurringInstructionUpdates, type InstinctObservation } from "../packages/agent-runtime/src/instinct-observer.ts";
 import { geminiChat } from "@nexsidi/llm-client";
 
-export async function runInstinctCron(): Promise<void> {
-  const obsPath = join(homedir(), ".local", "share", "nexsidi-instincts", "observations.jsonl");
+export interface InstinctCronDeps {
+  observationsPath?: string;
+  skillsDir?: string;
+  chat?: typeof geminiChat;
+  commitSkill?: (skillPath: string, agentName: string) => void | Promise<void>;
+}
+
+function commitSkillWithGit(skillPath: string, agentName: string): void {
+  execFileSync("git", ["add", "--", skillPath], { stdio: "inherit" });
+  execFileSync(
+    "git",
+    ["commit", "-m", `chore(instinct-cron): update instruction file for ${agentName} to prevent recurring missed findings`],
+    { stdio: "inherit" },
+  );
+}
+
+export async function runInstinctCron(deps: InstinctCronDeps = {}): Promise<void> {
+  const obsPath = deps.observationsPath ?? join(homedir(), ".local", "share", "nexsidi-instincts", "observations.jsonl");
+  const skillsDir = deps.skillsDir ?? join(process.cwd(), "packages", "agent-runtime", "skills");
+  const chat = deps.chat ?? geminiChat;
+  const commitSkill = deps.commitSkill ?? commitSkillWithGit;
   if (!existsSync(obsPath)) {
     console.log(`[instinct-cron] No observations file found at ${obsPath}`);
     return;
@@ -27,7 +46,7 @@ export async function runInstinctCron(): Promise<void> {
 
   for (const update of recurringUpdates) {
     const { agentName, missedFinding, occurrences } = update;
-    const skillPath = join(process.cwd(), "packages", "agent-runtime", "skills", `${agentName}.md`);
+    const skillPath = join(skillsDir, `${agentName}.md`);
     if (!existsSync(skillPath)) {
       console.warn(`[instinct-cron] Skill file does not exist: ${skillPath}`);
       continue;
@@ -49,7 +68,7 @@ Update this instruction file to add a specific rule in the Rules section instruc
 
     try {
       console.log(`[instinct-cron] Requesting LLM instruction update for ${agentName} (missed ${occurrences} times)`);
-      const response = await geminiChat([{ role: "user", content: prompt }]);
+      const response = await chat([{ role: "user", content: prompt }]);
       let updatedContent = response.content.trim();
 
       // Strip markdown code fences if LLM wrapped it
@@ -64,8 +83,7 @@ Update this instruction file to add a specific rule in the Rules section instruc
 
         // Git commit
         try {
-          execSync(`git add ${skillPath}`, { stdio: "inherit" });
-          execSync(`git commit -m "chore(instinct-cron): update instruction file for ${agentName} to prevent recurring missed findings"`, { stdio: "inherit" });
+          await commitSkill(skillPath, agentName);
           console.log(`[instinct-cron] Git committed skill changes for ${agentName}`);
         } catch (gitErr) {
           console.error(`[instinct-cron] Git commit failed: ${String(gitErr)}`);
@@ -78,7 +96,7 @@ Update this instruction file to add a specific rule in the Rules section instruc
 }
 
 // Self-execute if run directly
-if (import.meta.main || (process.argv[1] && process.argv[1].includes("instinct-cron"))) {
+if (import.meta.main) {
   runInstinctCron().catch(err => {
     console.error("[instinct-cron] Failed running script:", err);
   });
