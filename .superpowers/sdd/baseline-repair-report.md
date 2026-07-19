@@ -4,7 +4,7 @@
 
 DONE
 
-Implementation commit: `822ce43` (`test: repair isolated Bun baseline`)
+Implementation commits: `822ce43` (`test: repair isolated Bun baseline`) and `52be708` (`test: allow deterministic RSA setup`).
 
 ## Root causes and repairs
 
@@ -45,6 +45,7 @@ Implementation commit: `822ce43` (`test: repair isolated Bun baseline`)
 - `subagent.test.ts` no longer uses a shared build/history directory or requests database-backed history; its entire workspace lives under a unique temporary root.
 - `compaction.test.ts` no longer writes `temp-code.ts` into the repository and no longer leaks a package-level module mock.
 - `bunfig.toml` enables fresh test-file globals so remaining Bun mocks cannot make suite results order-dependent.
+- `packages/context-chain/src/verify.test.ts` gives 2048-bit RSA key generation a 30-second setup budget instead of Bun's default 5-second hook timeout, preventing CPU-contention flakes under isolated full-suite concurrency.
 
 ## Files changed
 
@@ -60,6 +61,7 @@ Implementation commit: `822ce43` (`test: repair isolated Bun baseline`)
 - `packages/agent-runtime/src/subagent.test.ts`
 - `packages/agent-runtime/src/tools/git.test.ts`
 - `packages/agent-runtime/src/tools/git.ts`
+- `packages/context-chain/src/verify.test.ts`
 - `pipeline/instinct-cron.test.ts`
 - `pipeline/instinct-cron.ts`
 - `pipeline/meta-supervisor.test.ts`
