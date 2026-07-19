@@ -995,7 +995,8 @@ export function upsertMessage(messages: WorkspaceMessage[], incoming: WorkspaceM
 - SSE `assistant_message` calls `upsertMessage()`; `done` never appends text.
 - Render `snapshot.activeSpec` in the existing right panel.
 - Accept calls `POST /api/workspaces/:id/specs/:specId/approve` with `{ expectedHash }` and an idempotency key; remove `sendChatMessage("build it")`.
-- Reload the snapshot after approval and begin event/status watching from the returned run ID.
+- Remove the page's `/ws/pipeline/:projectId` and `/ws/screenshots/:projectId` connections, `wsRef`, and raw-log append path.
+- Reload the snapshot after approval, then resume authenticated `GET /api/workspaces/:id/events?after=<eventCursor>` SSE and owner-only pipeline status from the returned run ID.
 
 - [ ] **Step 5: Run tests, typecheck, and production build**
 
