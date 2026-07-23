@@ -116,6 +116,7 @@ function endpointFor(model: string, location: string, method: "generateContent")
 
 export type GeminiPart =
   | { text: string }
+  | { thought: true; text?: string; signature?: string }  // Gemini 3.x thought parts — preserve verbatim
   | { functionCall: { name: string; args: Record<string, unknown> } }
   | { functionResponse: { name: string; response: Record<string, unknown> } };
 
@@ -146,6 +147,7 @@ export interface GeminiChatWithToolsResult {
   // Raw response parts — callers building a multi-turn tool loop push this
   // back as the next "model" turn verbatim, mirroring claude.ts's rawContent.
   rawParts: GeminiPart[];
+  promptTokens?: number;  // from usageMetadata — used for compaction threshold check
 }
 
 // Lets the EXISTING NIM-shaped tool defs (packages/agent-runtime/src/tools/*.ts)
@@ -164,7 +166,7 @@ export function translateNimToolToGeminiTool(tool: NimToolDef): GeminiToolDef {
 
 export function partsToText(parts: GeminiPart[]): string {
   return parts
-    .filter((p): p is { text: string } => "text" in p)
+    .filter((p): p is { text: string } => "text" in p && !("thought" in p))
     .map((p) => p.text)
     .join("\n");
 }
@@ -354,6 +356,7 @@ export async function geminiChatWithTools(
       toolCalls: partsToToolCalls(parts),
       stopReason: candidate?.finishReason ?? null,
       rawParts: parts,
+      promptTokens: data.usageMetadata?.promptTokenCount,
     };
   } catch (err) {
     recordFailure(circuitKey);

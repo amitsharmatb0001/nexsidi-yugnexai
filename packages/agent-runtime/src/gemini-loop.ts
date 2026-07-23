@@ -33,6 +33,9 @@ import { assembleSystemPrompt } from "./prompt-assembly.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
+const GEMINI_CONTEXT_LIMIT = 900_000;      // Gemini 3.x 1M context, 900K safe cap
+const COMPACT_AT_FRACTION = 0.80;
+
 // Same category of error as claude-loop.ts's isUnrecoverableClaudeError —
 // auth/permission failures on Gemini will repeat identically on every retry
 // within the same run, so the loop should abort early instead of burning the
@@ -277,6 +280,25 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish" };
     }
 
+    // 80% context compaction: if prompt tokens > 720K (80% of 900K safe cap),
+    // drop old history to prevent hitting the context limit on the next call.
+    const promptTokens = response.promptTokens ?? 0;
+    if (promptTokens > GEMINI_CONTEXT_LIMIT * COMPACT_AT_FRACTION) {
+      console.log(`[${config.agentName}:gemini-agent] Context at ${promptTokens} tokens (>${Math.round(COMPACT_AT_FRACTION * 100)}% of ${GEMINI_CONTEXT_LIMIT}) — compacting history`);
+      const sys = messages.filter((m) => m.role === "system");
+      const nonSys = messages.filter((m) => m.role !== "system");
+      const recentTurns = nonSys.slice(-6); // last 3 pairs (user+model)
+      const droppedCount = nonSys.length - recentTurns.length;
+      if (droppedCount > 0) {
+        const summaryMsg: GeminiMessage = {
+          role: "user",
+          content: `[CONTEXT COMPACTED: ${droppedCount} earlier messages dropped to stay within context limit. Continue from current state.]`,
+        };
+        messages = [...sys, summaryMsg, ...recentTurns];
+        console.log(`[${config.agentName}:gemini-agent] Compacted: dropped ${droppedCount} messages, kept ${recentTurns.length} recent turns`);
+      }
+    }
+
     const responseParts: GeminiPart[] = [];
     for (const call of response.toolCalls) {
       const toolName = call.name;
@@ -311,8 +333,8 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
         case "run_command": {
           const commandArgs = args as { command: string; timeout_ms?: number };
-          const r = execRunCommand(config.sandboxDir, commandArgs, ledger);
-          const strike = evaluateCommandStrike(strikeCounter, commandArgs.command, r);
+          const r = await execRunCommand(config.sandboxDir, commandArgs, ledger);
+          const strike = await evaluateCommandStrike(strikeCounter, commandArgs.command, r);
           result = strike.toolResult;
           if (strike.exhausted) exhaustedThreeStrikes = true;
           break;
