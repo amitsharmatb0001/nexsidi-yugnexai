@@ -184,14 +184,14 @@ function describeError(err: unknown): string {
 
 export async function geminiChat(
   messages: ChatMessage[],
-  opts?: { maxTokens?: number },
+  opts?: { maxTokens?: number; model?: string; thinkingBudget?: number },
 ): Promise<{ content: string }> {
   // Validated before any network activity (circuit breaker, token bucket, or
   // the ADC auth call itself) so a missing-project error is immediate and
   // deterministic instead of surfacing only after a live round-trip to
   // Google's OAuth token endpoint — see gemini.test.ts's regression test.
   projectIdOrThrow();
-  const model = resolveGeminiModel();
+  const model = opts?.model ?? resolveGeminiModel();
   const location = resolveGeminiLocation();
   const circuitKey = circuitKeyFor(model);
   if (!canRequest(circuitKey)) {
@@ -222,6 +222,11 @@ export async function geminiChat(
     ...(systemParts.length > 0 ? { systemInstruction: { parts: [{ text: systemParts.join("\n\n") }] } } : {}),
     generationConfig: { maxOutputTokens: opts?.maxTokens ?? Number(process.env.GEMINI_MAX_OUTPUT_TOKENS ?? 16000) },
   };
+  if (opts?.thinkingBudget !== undefined) {
+    (body.generationConfig as Record<string, unknown>).thinkingConfig = {
+      thinkingBudget: opts.thinkingBudget,
+    };
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);

@@ -77,8 +77,69 @@ export async function agentChat(
     }
   }
 
+  // Last-resort: Gemini when all NIM models are unreachable (network outage, rate limits)
+  try {
+    console.log(`[agentChat:${agentName}] NIM fully exhausted — using Gemini last-resort`);
+    const { content } = await geminiChat(messages, { maxTokens: opts?.maxTokens });
+    return { content, modelUsed: "gemini-3.5-flash" };
+  } catch (geminiErr) {
+    errors.push(`gemini-3.5-flash: ${String(geminiErr)}`);
+  }
+
   const primary = AGENT_MODELS[agentName];
   throw new Error(
     `[llm-client] All fallbacks exhausted for ${agentName} (primary: ${primary})\n${errors.join("\n")}`,
+  );
+}
+
+// ── Tiered Gemini pool routing with zero-wait 429 switching ──────────────────
+//
+// Three tiers: "qa" (unlimited thinking — thinking_level:HIGH),
+// "generation" (medium thinking), "user" (minimal thinking, cheapest).
+// On ANY failure (429, network error, etc.) → immediately try next model in
+// pool with NO sleep/backoff. NIM is not involved.
+
+type GeminiTier = "qa" | "generation" | "user";
+
+const TIER_POOLS: Record<GeminiTier, string[]> = {
+  qa:         ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"],
+  generation: ["gemini-3.6-flash", "gemini-3.5-flash"],
+  user:       ["gemini-2.5-flash-lite", "gemini-3.5-flash"],
+};
+
+const TIER_THINKING_BUDGET: Record<GeminiTier, number> = {
+  qa:         -1,    // unlimited — thinking_level:HIGH
+  generation: 8192,  // medium thinking
+  user:       1024,  // minimal thinking, cheapest
+};
+
+export async function routeWithFallback(
+  tier: GeminiTier,
+  messages: ChatMessage[],
+  opts?: { maxTokens?: number },
+): Promise<{ content: string; modelUsed: string }> {
+  const pool = TIER_POOLS[tier];
+  const thinkingBudget = TIER_THINKING_BUDGET[tier];
+  const errors: string[] = [];
+
+  for (const model of pool) {
+    try {
+      const { content } = await geminiChat(messages, {
+        model,
+        maxTokens: opts?.maxTokens,
+        thinkingBudget,
+      });
+      if (model !== pool[0]) {
+        console.log(`[routeWithFallback:${tier}] used fallback model ${model} (pool[0]=${pool[0]} failed)`);
+      }
+      return { content, modelUsed: model };
+    } catch (err) {
+      errors.push(`${model}: ${String(err)}`);
+      // Zero-wait: immediately try next model, no sleep/backoff
+    }
+  }
+
+  throw new Error(
+    `[llm-client] routeWithFallback(${tier}) — all pool models exhausted:\n${errors.join("\n")}`,
   );
 }

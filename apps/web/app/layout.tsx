@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import "./globals.css";
 import "@yugnex/nexui/nexui-utils.css";
 import { NexuiProvider } from "@yugnex/nexui-react/provider";
 import { ToastProvider, Toaster } from "@yugnex/nexui-react/toast";

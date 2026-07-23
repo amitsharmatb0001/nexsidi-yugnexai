@@ -6,13 +6,14 @@ export type AgentName =
 
 // Models confirmed working on this NIM account (tested 2026-06-28):
 //   kimi-k2.6            ✅ fast
-//   qwen3.5-122b         ✅ fast, large
 //   qwen3-next-80b       ✅ fast
 //   mistral-large-3      ✅ fast
 // Timed out / unavailable on this account:
-//   deepseek-v4-pro      ❌ timeout
+//   deepseek-v4-pro      ❌ timeout (as of 2026-06-28; re-verify before promoting)
 //   minimax-m3           ❌ 404
 //   mistral-nemotron     ❌ timeout
+// Removed 2026-07-20 (HTTP 410 Gone from NIM):
+//   qwen/qwen3.5-122b-a10b ❌ 410 — endpoint removed. Replaced with qwen3-next-80b.
 // Confirmed working 2026-07-03 (scripts/ping-nim.ts):
 //   z-ai/glm-5.2         ✅ fast THAT DAY — DEMOTED 2026-07-04: scripts/
 //                           ping-glm.ts probed 5 request shapes (tiny chat,
@@ -33,7 +34,7 @@ export type AgentName =
 // / ping-glm.ts before trusting any entry in this comment block.
 export type ModelId =
   | "moonshotai/kimi-k2.6"
-  | "qwen/qwen3.5-122b-a10b"
+  | "qwen/qwen3-next-80b-a3b-instruct"
   | "qwen/qwen3-next-80b-a3b-instruct"
   | "mistralai/mistral-nemotron"
   | "mistralai/mistral-medium-3.5-128b"
@@ -43,7 +44,13 @@ export type ModelId =
   // see router.ts's shouldUseGeminiForQA. Not a NIM/Ollama model, but
   // agentChat's return type (modelUsed: ModelId) needs a real member to
   // report it accurately instead of lying about which model actually ran.
-  | "gemini-3.5-flash";
+  | "gemini-3.5-flash"
+  // 2026-07-23: Gemini tier pool models for routeWithFallback() —
+  // qa tier (unlimited thinking), generation tier (medium thinking),
+  // user tier (minimal thinking / cheapest).
+  | "gemini-3.1-pro-preview"
+  | "gemini-3.6-flash"
+  | "gemini-2.5-flash-lite";
 
 // Per-agent primary model assignment (D4)
 // Roster history for aanya/shubham/navya/karan/deepika:
@@ -57,13 +64,13 @@ export type ModelId =
 // Deepika's 85K-token review. QA trio kept on 3 DIFFERENT primaries per D4's
 // parallel-dispatch rate-limit rule (they run simultaneously).
 export const AGENT_MODELS: Record<AgentName, ModelId> = {
-  tilotma: "qwen/qwen3.5-122b-a10b",
+  tilotma: "qwen/qwen3-next-80b-a3b-instruct",
   aanya:   "mistralai/mistral-medium-3.5-128b",
   shubham: "mistralai/mistral-medium-3.5-128b",
-  saanvi:  "qwen/qwen3.5-122b-a10b",
+  saanvi:  "qwen/qwen3-next-80b-a3b-instruct",
   deepika: "mistralai/mistral-nemotron",
   arjun:   "mistralai/mistral-nemotron",
-  navya:   "qwen/qwen3.5-122b-a10b",
+  navya:   "qwen/qwen3-next-80b-a3b-instruct",
   karan:   "mistralai/mistral-medium-3.5-128b",
   vanya:   "qwen2.5-coder:7b-instruct-q4_K_M",
   pranav:  "qwen2.5-coder:7b-instruct-q4_K_M",
@@ -77,7 +84,7 @@ export const AGENT_MODELS: Record<AgentName, ModelId> = {
 // The NIM client round-robins keys, so the shared bucket refills at 4× rate.
 export const MODEL_RPM_LIMITS: Record<string, number> = {
   "moonshotai/kimi-k2.6":                160,
-  "qwen/qwen3.5-122b-a10b":              160,
+  "qwen/qwen3-next-80b-a3b-instruct":              160,
   "qwen/qwen3-next-80b-a3b-instruct":    160,
   "mistralai/mistral-nemotron":          160,
   "mistralai/mistral-medium-3.5-128b":   160,
@@ -92,7 +99,7 @@ export const NIM_CONTEXT_LIMITS: Record<string, number> = {
   // maximum context length is 262144 tokens" (2026-07-04). The prior 32768
   // entry was never measured for this model; it was a guessed default that
   // happened to also match several genuinely-32K models in this table.
-  "qwen/qwen3.5-122b-a10b":              262144,
+  "qwen/qwen3-next-80b-a3b-instruct":              262144,
   "qwen/qwen3-next-80b-a3b-instruct":    32768,
   "mistralai/mistral-nemotron":          32768,
   "mistralai/mistral-medium-3.5-128b":   131072,
@@ -104,11 +111,11 @@ const NIM_FALLBACK: ModelId[] = [
   "moonshotai/kimi-k2.6",
   "mistralai/mistral-nemotron",
   "mistralai/mistral-medium-3.5-128b",
-  "qwen/qwen3.5-122b-a10b",
+  "qwen/qwen3-next-80b-a3b-instruct",
 ];
 
 export const FALLBACK_CHAIN: Record<AgentName, ModelId[]> = {
-  tilotma: ["qwen/qwen3.5-122b-a10b",             "moonshotai/kimi-k2.6",           "mistralai/mistral-nemotron",        "mistralai/mistral-medium-3.5-128b"],
+  tilotma: ["qwen/qwen3-next-80b-a3b-instruct",             "moonshotai/kimi-k2.6",           "mistralai/mistral-nemotron",        "mistralai/mistral-medium-3.5-128b"],
   // aanya/shubham/navya/karan/deepika: glm-5.2 removed from ALL chains
   // (2026-07-04) after scripts/ping-glm.ts proved its endpoint hangs past
   // the 120s timeout on every request shape — as a fallback it would cost a
@@ -117,18 +124,18 @@ export const FALLBACK_CHAIN: Record<AgentName, ModelId[]> = {
   // Replacements are the models that DID the work in stress-2/3 run logs
   // (see AGENT_MODELS comment above). QA trio primaries kept distinct per
   // D4's parallel-dispatch rule.
-  aanya:   ["mistralai/mistral-medium-3.5-128b",  "qwen/qwen3.5-122b-a10b",         "qwen2.5-coder:7b-instruct-q4_K_M"],
-  shubham: ["mistralai/mistral-medium-3.5-128b",  "qwen/qwen3.5-122b-a10b",         "qwen2.5-coder:7b-instruct-q4_K_M"],
-  saanvi:  ["qwen/qwen3.5-122b-a10b",             "moonshotai/kimi-k2.6",           "mistralai/mistral-nemotron",        "mistralai/mistral-medium-3.5-128b"],
-  deepika: ["mistralai/mistral-nemotron",          "qwen/qwen3.5-122b-a10b",         "mistralai/mistral-medium-3.5-128b"],
-  arjun:   ["mistralai/mistral-nemotron",          "moonshotai/kimi-k2.6",           "qwen/qwen3.5-122b-a10b",            "mistralai/mistral-medium-3.5-128b"],
-  navya:   ["qwen/qwen3.5-122b-a10b",             "mistralai/mistral-nemotron",     "mistralai/mistral-medium-3.5-128b"],
-  karan:   ["mistralai/mistral-medium-3.5-128b",  "mistralai/mistral-nemotron",     "qwen/qwen3.5-122b-a10b"],
+  aanya:   ["mistralai/mistral-medium-3.5-128b",  "qwen/qwen3-next-80b-a3b-instruct",         "qwen2.5-coder:7b-instruct-q4_K_M"],
+  shubham: ["mistralai/mistral-medium-3.5-128b",  "qwen/qwen3-next-80b-a3b-instruct",         "qwen2.5-coder:7b-instruct-q4_K_M"],
+  saanvi:  ["qwen/qwen3-next-80b-a3b-instruct",             "moonshotai/kimi-k2.6",           "mistralai/mistral-nemotron",        "mistralai/mistral-medium-3.5-128b"],
+  deepika: ["mistralai/mistral-nemotron",          "qwen/qwen3-next-80b-a3b-instruct",         "mistralai/mistral-medium-3.5-128b"],
+  arjun:   ["mistralai/mistral-nemotron",          "moonshotai/kimi-k2.6",           "qwen/qwen3-next-80b-a3b-instruct",            "mistralai/mistral-medium-3.5-128b"],
+  navya:   ["qwen/qwen3-next-80b-a3b-instruct",             "mistralai/mistral-nemotron",     "mistralai/mistral-medium-3.5-128b"],
+  karan:   ["mistralai/mistral-medium-3.5-128b",  "mistralai/mistral-nemotron",     "qwen/qwen3-next-80b-a3b-instruct"],
   vanya:   ["qwen2.5-coder:7b-instruct-q4_K_M",  ...NIM_FALLBACK],
   pranav:  ["qwen2.5-coder:7b-instruct-q4_K_M",  ...NIM_FALLBACK],
   aarav:   ["qwen2.5-coder:7b-instruct-q4_K_M",  ...NIM_FALLBACK],
   riya:    ["qwen2.5-coder:7b-instruct-q4_K_M",  ...NIM_FALLBACK],
-  neha:    ["mistralai/mistral-nemotron",          "moonshotai/kimi-k2.6",           "qwen/qwen3.5-122b-a10b",            "mistralai/mistral-medium-3.5-128b"],
+  neha:    ["mistralai/mistral-nemotron",          "moonshotai/kimi-k2.6",           "qwen/qwen3-next-80b-a3b-instruct",            "mistralai/mistral-medium-3.5-128b"],
 };
 
 export interface ChatMessage {
