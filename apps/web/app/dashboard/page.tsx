@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { Button } from "@yugnex/nexui-react";
 import s from "./dashboard.module.css";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
@@ -17,12 +18,12 @@ interface Project {
 }
 
 const EXAMPLES = [
-  "Task manager with due dates and labels",
-  "Invoice generator with PDF export",
-  "Team standup tracker",
-  "Personal budget app",
-  "Customer feedback board",
-  "Habit tracker with streaks",
+  "Company website for my IT services startup with services, about, and contact pages",
+  "SaaS dashboard for a project management tool with team roles and task tracking",
+  "E-commerce storefront with product catalog, cart, and checkout",
+  "Client portal for a consulting firm — clients log in to view deliverables",
+  "Internal tool for tracking sales leads with pipeline stages and notes",
+  "Restaurant website with menu, reservations, and location pages",
 ];
 
 function relativeTime(iso: string): string {
@@ -58,20 +59,12 @@ export default function DashboardPage() {
     setError(null);
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/pipeline/start`, {
-        method:      "POST",
-        credentials: "include",
-        headers:     { "Content-Type": "application/json" },
-        body:        JSON.stringify({ userRequest: req }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
-      }
-      const { projectId } = (await res.json()) as { projectId: string };
-      router.push(`/build/${projectId}`);
+      // Generate a session ID that will also serve as the project ID
+      const sessionId = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+      // Navigate to the build page — it will send the first message on load
+      router.push(`/build/${sessionId}?q=${encodeURIComponent(req)}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to start build");
+      setError(e instanceof Error ? e.message : "Failed to start");
       setLoading(false);
     }
   }, [request, loading, router]);
@@ -120,29 +113,19 @@ export default function DashboardPage() {
               value={request}
               onChange={e => setRequest(e.target.value)}
               onKeyDown={handleKey}
-              placeholder="e.g. Build me a task manager with sign-up, due dates, and the ability to check tasks off"
+              placeholder="e.g. Build a website for NexTech, my IT services startup — pages for Vision, Mission, Services (cloud, cybersecurity, software dev), and Contact"
               rows={3}
               disabled={loading}
             />
-            <button
-              className={s.buildBtn}
+            <Button
+              variant="primary"
+              size="md"
               onClick={startBuild}
               disabled={!request.trim() || loading}
+              loading={loading}
             >
-              {loading ? (
-                <>
-                  <span className={s.buildBtnSpin}>
-                    <i className="nxi nxi-refresh" style={{ fontSize: 14 }} />
-                  </span>
-                  Building…
-                </>
-              ) : (
-                <>
-                  Build
-                  <i className="nxi nxi-arrow-r" style={{ fontSize: 14 }} />
-                </>
-              )}
-            </button>
+              {loading ? "Building…" : "Build"}
+            </Button>
           </div>
 
           <div className={s.examples}>
