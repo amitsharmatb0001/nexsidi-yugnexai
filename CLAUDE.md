@@ -177,7 +177,7 @@ Docs: Kavya, Ria, Dev, Pooja. Business: Manan (CFO), Shriya, Radhika.
 ### NexSidi's Own Platform
 ```
 API:           TypeScript + Bun + Hono (port 8080)
-Frontend:      Next.js 16.2 + TypeScript + Tailwind + shadcn/ui
+Frontend:      Next.js 16.2 + TypeScript + @yugnex/nexui + @yugnex/nexui-react
                ⚠️  NOT Next.js 14 — it is EOL since October 2025
                ⚠️  NOT Next.js 15 — 16 is current stable (June 2026)
 Database:      PostgreSQL 16 + Drizzle ORM + pgvector
@@ -579,35 +579,51 @@ conversation at month 9-10, D50=rebuild from verified sources (this session).
 
 ---
 
-## SPRINT 1 — FIRST REAL DELIVERY
+## SPRINT 1 — NEXTECH COMPANY WEBSITE
 
-**Goal:** Working app the user opens in Chrome at http://localhost:3000
+⚠️ The Task Manager demo is RETIRED — it has been delivered 5-7 times already.
+⚠️ DO NOT build a Task Manager again under any circumstances.
 
-**Input:** "Build me a task manager — sign up, add tasks with due dates, check them off"
+**Goal:** NexTech company website — a real business showcase that can be shown to
+investors, clients, and partners.
+
+**Input:** "Build a professional company website for NexTech — we provide mobile app
+development, web app development, custom software, CRM, POS, bulk SMS, email
+marketing, domain & hosting, and digital marketing services. Company name: NexTech.
+Pages needed: Home, About Us, Vision, Mission, Services, Products, Contact.
+Our vision is to make India a digital economy. Include a contact form and sign in/out."
 
 **Active agents (Phase 1 only):**
 Tilotma → Saanvi → Arjun → [Shubham + Aanya + Pranav parallel] → Navya/Karan/Deepika → Riya
 
 **Deliverables:**
 ```
-✓ http://localhost:3000 — opens in Chrome, works
-✓ GitHub repo with full source
-✓ Sign up / Login (Clerk)
-✓ Add task with title + due date
-✓ Mark task complete
-✓ Data persists in local PostgreSQL container
+✓ http://localhost:3200 — opens in Chrome, works
+✓ Home page — hero section, services overview, CTA
+✓ Services page — all 9 services with descriptions
+✓ About Us page — company story, team, values
+✓ Vision & Mission pages
+✓ Products page — software products NexTech offers
+✓ Contact page — form with name, email, message, phone
+✓ Sign in / Sign up — JWT auth
+✓ Responsive design — looks great on mobile and desktop
+✓ Professional, NOT AI-generated slop — real design identity
 ✓ docker-compose.yml — one command starts everything
 ```
 
 **Generated app stack for this project:**
-- Frontend: Next.js 16.2 + Tailwind + shadcn/ui → port 3000
-- Backend: Express + TypeScript → port 3001
-- Database: PostgreSQL 16 container → port 5432
-- Auth: Clerk (cloud-hosted, works locally)
+- Frontend: Next.js 16.2 + Tailwind + shadcn/ui → port 3200
+- Backend: Express + TypeScript → port 3300
+- Database: PostgreSQL 16 container → port 5435
+- Auth: Custom JWT (no Clerk dependency)
+
+**Design direction:**
+Professional B2B tech company. Dark navy/midnight blue primary. Clean typography.
+No purple gradients. No generic stock-photo hero. Real design decisions.
 
 **Definition of done:**
-User can sign up, create 3 tasks, check 2 off, refresh the browser,
-and see the data persisted. App looks clean (not AI-generated slop).
+All pages render. Contact form submits. Sign up/login works. Data persists.
+Looks like a real company website, not an AI template.
 
 ---
 
@@ -618,6 +634,7 @@ and see the data persisted. App looks clean (not AI-generated slop).
 ⛔ NEVER skip nexsidi-testing (write tests BEFORE implementation)
 ⛔ NEVER claim done without nexsidi-verification (run the command, show output)
 ⛔ NEVER use Next.js 14 or 15 (EOL / outdated — use 16.2)
+⛔ NEVER use Tailwind or shadcn/ui in NexSidi's own platform (apps/web) — use @yugnex/nexui-react
 ⛔ NEVER use Vercel or Railway for local delivery (Docker Compose only)
 ⛔ NEVER use Supabase locally (use local PostgreSQL 16 container)
 ⛔ NEVER expose agent names, architecture, or internal details externally
