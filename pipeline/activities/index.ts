@@ -3,7 +3,7 @@
 // All TODO stubs are now replaced with real agent calls.
 
 import { run as runSaanviAgent }  from "../../agents/saanvi/src/index.ts";
-import { run as runArjunAgent, getBuildDir }   from "../../agents/arjun/src/index.ts";
+import { run as runArjunAgent, getBuildDir, pathToNextjsFile } from "../../agents/arjun/src/index.ts";
 import { run as runShubhamAgent, runFix as runShubhamFix } from "../../agents/generators/shubham/src/index.ts";
 import { run as runAanyaAgent, runFix as runAanyaFix }   from "../../agents/generators/aanya/src/index.ts";
 import { run as runPranavAgent }  from "../../agents/generators/pranav/src/index.ts";
@@ -12,7 +12,7 @@ import { agentChat }               from "@nexsidi/llm-client";
 import { db, projects, qaResults, stuckStateLog } from "@nexsidi/db";
 import { eq, and } from "drizzle-orm";
 import { Context }                 from "@temporalio/activity";
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from "fs";
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import { execSync, spawnSync } from "child_process";
 import type { ProjectSpec } from "../../agents/saanvi/src/index.ts";
@@ -53,6 +53,17 @@ function getAttachmentsContext(projectId: string): string {
   }
 }
 
+// ── Planner fast path: check if build-plan.json was pre-generated ───────────────
+export async function checkBuildPlanExists(projectId: string): Promise<boolean> {
+  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const planPath = join(buildDir, projectId, "build-plan.json");
+  for (let i = 0; i < 10; i++) {
+    if (existsSync(planPath)) return true;
+    await new Promise(res => setTimeout(res, 200));
+  }
+  return false;
+}
+
 // ── Stage 1: Requirements → locked ProjectSpec ─────────────────────────────────
 export async function runSaanvi(projectId: string, userRequest?: string): Promise<void> {
   const ctx = Context.current();
@@ -77,13 +88,47 @@ export async function runArjun(projectId: string): Promise<void> {
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
     const spec = specCache.get(projectId) ?? readCacheFile<ProjectSpec>(projectId, "spec.json");
-    const plan = await runArjunAgent(spec);
+
+    // Read the planner's locked page list before it gets overwritten.
+    // The planner writes build-plan.json with pages[] + authType; Arjun's job is to
+    // ANNOTATE that list, not invent a new one. Detected by presence of pages[] without
+    // shubhamTasks (Arjun's marker).
+    const plannerPlan = readPlannerSimplePlan(projectId);
+    // Stamp nextjsFile in TypeScript (deterministic) so Arjun copies it verbatim,
+    // never derives it from the URL path (where the LLM consistently gets it wrong).
+    const lockedPages = plannerPlan?.pages.map(p => ({
+      ...p,
+      nextjsFile: pathToNextjsFile(p.path),
+    }));
+    const plan = await runArjunAgent(spec, { chat: agentChat }, lockedPages, plannerPlan?.authType);
+
     planCache.set(projectId, plan);
     writeCacheFile(projectId, "build-plan.json", JSON.stringify(plan, null, 2));
     console.log(`[activity:arjun] plan ready — ${plan.apiContract.endpoints.length} endpoints, ${plan.dbSchema.tables.length} tables`);
   } finally {
     clearInterval(hb);
   }
+}
+
+interface PlannerSimplePlan {
+  pages: Array<{ name: string; path: string; description: string }>;
+  authType: "none" | "jwt";
+}
+
+function readPlannerSimplePlan(projectId: string): PlannerSimplePlan | null {
+  const p = join(process.env.BUILD_DIR ?? "/tmp/nexsidi-builds", projectId, "build-plan.json");
+  if (!existsSync(p)) return null;
+  try {
+    const data = JSON.parse(readFileSync(p, "utf-8")) as Record<string, unknown>;
+    // Planner's plan has pages[] + authType but NOT shubhamTasks (Arjun adds those)
+    if (Array.isArray(data.pages) && !data.shubhamTasks) {
+      return {
+        pages: data.pages as PlannerSimplePlan["pages"],
+        authType: (data.authType === "jwt" ? "jwt" : "none") as "none" | "jwt",
+      };
+    }
+    return null;
+  } catch { return null; }
 }
 
 // ── Stage 3a–c: code generators (run in parallel from workflow) ───────────────
@@ -148,34 +193,63 @@ export function describeCommandFailure(result: {
   return `exited with status ${result.status ?? "unknown"}`;
 }
 
-export async function runCompileCheck(projectId: string): Promise<{ pass: boolean; errors: string }> {
+export async function runCompileCheck(
+  projectId: string,
+): Promise<{ pass: boolean; errors: string; timedOut: boolean }> {
   const buildDir = getBuildDir(projectId);
   const backendDir = join(buildDir, "backend");
   const frontendDir = join(buildDir, "frontend");
   const results: string[] = [];
+  let timedOut = false;
 
   for (const [label, dir] of [["backend", backendDir], ["frontend", frontendDir]] as const) {
     if (!existsSync(join(dir, "tsconfig.json"))) continue;
     // Install deps first so tsc can resolve imports and catch type errors.
     // --ignore-scripts prevents postinstall hooks that may fail in CI-like environments.
-    const install = spawnSync(resolveNodeCommand("npm"), ["install", "--ignore-scripts", "--prefer-offline"], {
-      cwd: dir, encoding: "utf-8", timeout: 120_000,
-      env: { ...process.env, NPM_CONFIG_FUND: "false", NPM_CONFIG_AUDIT: "false" },
-    });
-    if (install.status !== 0) {
-      results.push(`${label}: npm install failed\n${describeCommandFailure(install)}`);
-      continue;
+    // Try bun install first (faster, no spawn issues on Windows), fall back to npm
+    // Install deps so tsc can resolve imports. Skip if node_modules already present.
+    // Use bun (always available in this runtime) — avoids Windows npm spawn timeout.
+    // If install fails, proceed anyway: tsc will catch missing-module errors explicitly.
+    const nodeModulesExists = existsSync(join(dir, "node_modules"));
+    if (!nodeModulesExists) {
+      const bunInstall = spawnSync(process.execPath, ["install", "--ignore-scripts"], {
+        cwd: dir, encoding: "utf-8", timeout: 180_000,
+        env: { ...process.env },
+      });
+      if (bunInstall.status !== 0) {
+        console.log(`[compile-check] ${label}: bun install failed (${describeCommandFailure(bunInstall)}), proceeding to tsc anyway`);
+      }
     }
     try {
-      const tsc = spawnSync(resolveNodeCommand("npx"), ["tsc", "--noEmit", "--pretty", "false"], {
-        cwd: dir, encoding: "utf-8", timeout: 60_000,
-        env: { ...process.env, FORCE_COLOR: "0" },
-      });
-      const out = (tsc.stdout ?? "") + (tsc.stderr ?? "");
+      // Invoke the local tsc entry point directly via the runtime — bypasses
+      // npx + cmd.exe shell wrapping, which on Windows spawns a process tree
+      // (cmd.exe -> npx.cmd -> node -> tsc) prone to hanging (an orphaned
+      // grandchild holding the stdout pipe open past the parent's timeout).
+      // Direct invocation is both faster and immune to that hang.
+      const localTscBin = join(dir, "node_modules", "typescript", "bin", "tsc");
+      const tsc = existsSync(localTscBin)
+        ? spawnSync(process.execPath, [localTscBin, "--noEmit", "--pretty", "false"], {
+            cwd: dir, encoding: "utf-8", timeout: 60_000,
+            env: { ...process.env, FORCE_COLOR: "0" },
+          })
+        : spawnSync(resolveNodeCommand("npx"), ["tsc", "--noEmit", "--pretty", "false"], {
+            cwd: dir, encoding: "utf-8", timeout: 300_000, shell: process.platform === "win32",
+            env: { ...process.env, FORCE_COLOR: "0" },
+          });
+      const out = ((tsc.stdout ?? "") + (tsc.stderr ?? "")).trim();
       // Fail on any non-zero exit — catches syntax errors, missing files, import failures.
       if (tsc.status !== 0) {
-        const errorLines = out.split("\n").filter((l) => l.trim()).slice(0, 25);
-        results.push(`${label}: tsc exit ${tsc.status}\n${errorLines.join("\n")}`);
+        // A timed-out/signal-killed process has status=null and empty stdout/stderr —
+        // that is NOT a compile error, just an inconclusive run. Report it distinctly
+        // so the caller (code-fix) doesn't waste an iteration guessing at a fix for
+        // an error that was never actually reported.
+        if (!out) {
+          timedOut = true;
+          results.push(`${label}: tsc produced no output — ${describeCommandFailure(tsc)} (not a compile error, rerun)`);
+        } else {
+          const errorLines = out.split("\n").filter((l) => l.trim()).slice(0, 25);
+          results.push(`${label}: tsc exit ${tsc.status}\n${errorLines.join("\n")}`);
+        }
       } else {
         console.log(`[compile-check] ${label}: clean ✓`);
       }
@@ -187,7 +261,7 @@ export async function runCompileCheck(projectId: string): Promise<{ pass: boolea
   const pass = results.length === 0;
   const errors = results.join("\n\n");
   console.log(`[activity:compile-check] project=${projectId} pass=${pass}${pass ? "" : `\n${errors}`}`);
-  return { pass, errors };
+  return { pass, errors, timedOut };
 }
 
 // ── Live execution check — starts backend in Docker, hits /api/v1/* ─────────
@@ -317,6 +391,12 @@ export async function runDeepika(projectId: string, iteration: number): Promise<
   return runQaAgent("deepika", "performance/N+1", projectId, iteration);
 }
 
+const QA_AGENT_LABEL: Record<string, string> = {
+  navya:   "Logic QA",
+  karan:   "Security QA",
+  deepika: "Performance QA",
+};
+
 async function runQaAgent(
   agent: "navya" | "karan" | "deepika",
   focus: string,
@@ -326,6 +406,15 @@ async function runQaAgent(
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   const buildDir = getBuildDir(projectId);
+  const label = QA_AGENT_LABEL[agent] ?? agent;
+
+  // Announce QA agent start so UI can show parallel progress
+  appendEvent(projectId, {
+    type: "tool_call",
+    agent: label,
+    tool: `${agent}_review`,
+    input: { iteration, focus },
+  });
 
   // Pass actual file content (key files, 20K budget so agents see complete functions)
   const codeSnippet = sampleFileContent(buildDir, 20000);
@@ -357,6 +446,15 @@ async function runQaAgent(
       createdAt: new Date(),
     }).onConflictDoNothing();
 
+    // Publish QA result so UI shows pass/fail with score
+    appendEvent(projectId, {
+      type: "tool_result",
+      agent: label,
+      tool: `${agent}_review`,
+      status: score >= 85 ? "ok" : "error",
+      score,
+    });
+
     console.log(`[activity:qa:${agent}] iter=${iteration} score=${score}`);
     return score;
   } finally {
@@ -365,19 +463,30 @@ async function runQaAgent(
 }
 
 function qaPrompt(focus: string): string {
-  return `You are a code quality reviewer. Review ONLY the code shown. Focus on: ${focus}.
-CRITICAL RULE: Only flag issues you can see DIRECTLY in the provided code.
-DO NOT assume what is in files not shown. DO NOT flag missing implementations unless you can confirm absence.
-If a file appears truncated, skip that file — do not flag truncation as a bug.
+  return `You are an adversarial code quality reviewer. Your default assumption is FAIL — only pass code when evidence proves quality. Focus on: ${focus}.
+
+Review ALL code provided. Flag issues you can infer from the code structure, missing error handling, security gaps, and incomplete implementations.
 
 Severity definitions:
-CRITICAL: definitive crash, data-loss, or security exploit visible in code (SQL injection, unguarded null deref causing crash, missing auth on a route)
-HIGH: likely bug with clear evidence (off-by-one, unhandled promise rejection that reaches user)
-MEDIUM: code smell or real edge case with clear evidence in shown code
-LOW: minor style or optional improvement
+CRITICAL: crash, data-loss, or security exploit (SQL injection, missing auth, unguarded null deref, exposed secrets)
+HIGH: likely bug with clear evidence (off-by-one, unhandled promise rejection, missing validation)
+MEDIUM: code smell, missing edge case handling, or incomplete implementation
+LOW: minor style, naming, or optional improvement
 
-Score = 100 − (CRITICAL×10) − (HIGH×5) − (MEDIUM×2) − (LOW×1). Minimum 0.
+Score = 100 − (CRITICAL×20) − (HIGH×10) − (MEDIUM×5) − (LOW×1). Minimum 0.
 Output ONLY JSON: {"score":number,"findings":[{"severity":"CRITICAL|HIGH|MEDIUM|LOW","description":"..."}]}`;
+}
+
+// ── WS event publisher — appends to events.jsonl, tailed by /ws/pipeline/:id ─
+function appendEvent(projectId: string, event: Record<string, unknown>): void {
+  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const logsDir = join(buildDir, projectId, "logs");
+  try {
+    mkdirSync(logsDir, { recursive: true });
+    appendFileSync(join(logsDir, "events.jsonl"), JSON.stringify({ ...event, ts: Date.now() }) + "\n", "utf-8");
+  } catch (e) {
+    console.warn("[events] failed to append:", e);
+  }
 }
 
 // ── Code fix: target only the generator that owns the failing code ───────────
@@ -413,6 +522,18 @@ export async function runCodeFix(projectId: string, iteration: number, reason: s
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   console.log(`[activity:code-fix] iter=${iteration} reason=${reason}`);
+
+  // Publish self-heal event so the UI shows amber "Fixing..." card
+  const shortReason = reason
+    .replace(/^(live_check_fail|compile_error|qa_fail|spec_mismatch):\s*/, "")
+    .slice(0, 150);
+  appendEvent(projectId, {
+    type: "repair",
+    agent: "system",
+    tool: "code_fix",
+    attempt: iteration,
+    errorSnippet: shortReason || reason.slice(0, 80),
+  });
 
   try {
     const findings = await db

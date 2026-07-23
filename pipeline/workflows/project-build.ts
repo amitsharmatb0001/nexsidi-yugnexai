@@ -90,7 +90,8 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   state.stage = "decompose";
   await act.runArjun(projectId);
 
-  // GATE 1: Spec/Plan Approval
+  // GATE 1: Spec/Plan Approval — always required. A stale build-plan.json from a
+  // prior run must not bypass this; the user must confirm each new run's spec.
   state.stage = "await_spec_approval";
   await condition(() => specApproved);
 
@@ -114,6 +115,9 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     if (compile.pass) break;
     compileAttempts++;
     console.log(`[workflow] compile check failed (attempt ${compileAttempts}/3): ${compile.errors.slice(0, 200)}`);
+    // A timed-out tsc run reported no real error — just rerun the check, don't
+    // waste a code-fix cycle chasing a bug that was never actually observed.
+    if (compile.timedOut) continue;
     if (compileAttempts < 3) {
       await genAct.runCodeFix(projectId, 0, `compile_error:\n${compile.errors}`);
     }
@@ -150,9 +154,8 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
 
     const minScore = Math.min(navyaScore, karanScore, deepikaScore);
 
-    // Phase 1 threshold: ≥70. New scoring formula (CRITICAL×10 not ×20) makes this achievable.
-    // Phase 2 will raise to ≥85 once live Playwright eval also gates delivery.
-    const allPass = navyaScore >= 70 && karanScore >= 70 && deepikaScore >= 70;
+    // Production threshold: ≥85 per spec. Scoring: CRITICAL×20, HIGH×10, MEDIUM×5, LOW×1.
+    const allPass = navyaScore >= 85 && karanScore >= 85 && deepikaScore >= 85;
 
     if (!allPass) {
       // Stuck-state detection (D19 / Fix #7)
@@ -181,7 +184,16 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
 
     // Stage 1.5: compile check after QA pass — catches syntax errors before Docker
     // Runs npm install so tsc can resolve all imports properly.
-    const postQaCompile = await act.runCompileCheck(projectId);
+    let postQaCompile = await act.runCompileCheck(projectId);
+    // A timed-out tsc run under system load reports no real error — retry the
+    // check directly (not a full QA re-run, not a code-fix cycle) rather than
+    // spending the repair budget on a bug that was never actually observed.
+    let timeoutRetries = 0;
+    while (!postQaCompile.pass && postQaCompile.timedOut && timeoutRetries < 3) {
+      timeoutRetries++;
+      console.log(`[workflow] post-QA compile check timed out (retry ${timeoutRetries}/3), rerunning directly`);
+      postQaCompile = await act.runCompileCheck(projectId);
+    }
     if (!postQaCompile.pass) {
       postQaCompileFailures += 1;
       if (
