@@ -8,6 +8,7 @@ import { run as runShubhamAgent, runFix as runShubhamFix } from "../../agents/ge
 import { run as runAanyaAgent, runFix as runAanyaFix }   from "../../agents/generators/aanya/src/index.ts";
 import { run as runPranavAgent }  from "../../agents/generators/pranav/src/index.ts";
 import { run as runRiyaAgent }    from "../../agents/riya/src/index.ts";
+import { runTier3Review as runTier3ReviewAgent } from "../../agents/tilotma/src/tier3-review.ts";
 import { agentChat }               from "@nexsidi/llm-client";
 import { db, projects, qaResults, stuckStateLog } from "@nexsidi/db";
 import { eq, and } from "drizzle-orm";
@@ -331,6 +332,67 @@ export async function runLiveCheck(projectId: string): Promise<{ pass: boolean; 
 
   console.log(`[activity:live-check] project=${projectId} pass=${pass} ${detail}`);
   return { pass, detail };
+}
+
+// ── Stage 1.5b: Tier-3 browser observation gate ───────────────────────────────
+// Runs after live check passes (server starts OK) but BEFORE deploy approval.
+// Starts the full docker-compose stack, waits for frontend readiness, runs the
+// two-stage Tilotma Tier-3 review (Evidence Collector + Reality Checker), then
+// shuts docker-compose down regardless of outcome.
+export async function runTier3Gate(
+  projectId: string,
+): Promise<{ pass: boolean; findings: string[]; skipped?: boolean }> {
+  const buildDir = getBuildDir(projectId);
+  const composeFile = join(buildDir, "docker-compose.yml");
+
+  if (!existsSync(composeFile)) {
+    console.log(`[activity:tier3-gate] docker-compose.yml not found in ${buildDir} — skipping`);
+    return { pass: true, findings: [], skipped: true };
+  }
+
+  const frontendUrl = process.env.TIER3_REVIEW_URL ?? "http://localhost:3200";
+
+  // Start the full stack
+  console.log(`[activity:tier3-gate] starting docker compose in ${buildDir}`);
+  const up = spawnSync("docker", ["compose", "up", "-d"], {
+    cwd: buildDir, encoding: "utf-8", timeout: 120_000,
+  });
+  if (up.status !== 0) {
+    console.warn(`[activity:tier3-gate] docker compose up non-zero (${up.status}): ${(up.stderr ?? "").slice(0, 300)}`);
+  }
+
+  try {
+    // Poll up to 30 s (10 × 3 s) for the frontend to respond
+    let ready = false;
+    for (let i = 0; i < 10; i++) {
+      await new Promise<void>((r) => setTimeout(r, 3000));
+      const check = spawnSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", frontendUrl], {
+        encoding: "utf-8", timeout: 5_000,
+      });
+      const code = parseInt(check.stdout?.trim() ?? "0", 10);
+      if (code >= 200 && code < 500) {
+        ready = true;
+        console.log(`[activity:tier3-gate] frontend ready (HTTP ${code}) after ${(i + 1) * 3}s`);
+        break;
+      }
+      console.log(`[activity:tier3-gate] waiting for frontend... (attempt ${i + 1}/10, HTTP ${code})`);
+    }
+
+    if (!ready) {
+      console.warn(`[activity:tier3-gate] frontend not ready after 30s — proceeding with tier3 anyway`);
+    }
+
+    // Run the two-stage Tier-3 review (Evidence Collector + Reality Checker)
+    const result = await runTier3ReviewAgent(projectId, buildDir);
+    console.log(`[activity:tier3-gate] project=${projectId} pass=${result.pass} findings=${result.findings.length}`);
+    return result;
+  } finally {
+    // Always shut down — even if review throws
+    spawnSync("docker", ["compose", "down"], {
+      cwd: buildDir, encoding: "utf-8", timeout: 60_000,
+    });
+    console.log(`[activity:tier3-gate] docker compose down complete`);
+  }
 }
 
 // ── Stage 0 gate: spec-compliance check (D21 — runs before QA, cheap) ─────────

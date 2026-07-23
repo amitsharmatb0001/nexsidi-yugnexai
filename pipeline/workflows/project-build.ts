@@ -214,7 +214,19 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     // Stage 2 (live execution): Docker build + start + curl endpoint (D20)
     state.stage = "live_test";
     const live = await act.runLiveCheck(projectId);
-    if (live.pass) break; // server starts and responds — pipeline passes
+    if (live.pass) {
+      // Stage 1.5b: Tier-3 browser observation gate (two-stage Evidence + Reality Check)
+      // Uses genAct (30-min timeout) — two full agent loops with browser screenshot tools
+      state.stage = "tier3_review";
+      const tier3 = await genAct.runTier3Gate(projectId);
+      if (tier3.skipped || tier3.pass) {
+        break; // all gates passed — exit QA loop
+      }
+      // Tier-3 found issues — code fix then re-enter the QA loop
+      await genAct.runCodeFix(projectId, state.iteration, `tier3_fail: ${tier3.findings.slice(0, 3).join("; ")}`);
+      state.stage = "qa";
+      continue;
+    }
 
     state.stage = "qa";
     await genAct.runCodeFix(projectId, state.iteration, `live_check_fail: ${live.detail}`);
