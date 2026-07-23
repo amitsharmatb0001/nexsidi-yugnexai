@@ -17,22 +17,73 @@ import React, {
 import { syncBooleanAttribute } from "./boolean-attributes";
 
 // ─── JSX type augmentation so nex-* tags work in TSX ──────────────────────
-declare global {
+// React 19 moved the JSX namespace from the global scope into the "react"
+// module. With jsx:"react-jsx", TypeScript resolves intrinsic elements via
+// import("react").JSX.IntrinsicElements — declare global no longer works.
+//
+// These are DOM-level attribute types, not React prop types:
+// - All attributes that the wrapper stringifies (score, value, lines, etc.)
+//   are typed as string here, matching what actually reaches the DOM.
+// - Boolean attributes passed directly through spread (disabled, checked, etc.)
+//   stay as boolean — those are handled natively by the browser.
+// - ref is added explicitly; React.HTMLAttributes does not include it for
+//   custom elements.
+type NexBase = React.HTMLAttributes<HTMLElement> & { ref?: React.Ref<any> };
+
+declare module "react" {
   namespace JSX {
     interface IntrinsicElements {
-      "nex-panel":       React.HTMLAttributes<HTMLElement> & NexPanelProps;
-      "nex-button":      React.HTMLAttributes<HTMLElement> & NexButtonProps;
-      "nex-badge":       React.HTMLAttributes<HTMLElement> & NexBadgeProps;
-      "nex-input":       React.HTMLAttributes<HTMLElement> & NexInputProps;
-      "nex-avatar":      React.HTMLAttributes<HTMLElement> & NexAvatarProps;
-      "nex-status-ring": React.HTMLAttributes<HTMLElement> & NexStatusRingProps;
-      "nex-text-stream": React.HTMLAttributes<HTMLElement>;
-      "nex-progress":    React.HTMLAttributes<HTMLElement> & NexProgressProps;
-      "nex-switch":      React.HTMLAttributes<HTMLElement> & NexSwitchProps;
-      "nex-checkbox":    React.HTMLAttributes<HTMLElement> & NexCheckboxProps;
-      "nex-skeleton":    React.HTMLAttributes<HTMLElement> & NexSkeletonProps;
-      "nex-separator":   React.HTMLAttributes<HTMLElement> & NexSeparatorProps;
-      "nex-spinner":     React.HTMLAttributes<HTMLElement> & NexSpinnerProps;
+      "nex-panel": NexBase & {
+        variant?: string; padding?: string; elevation?: string; matrix?: string;
+      };
+      "nex-button": NexBase & {
+        variant?: string; size?: string; type?: string; disabled?: boolean;
+        // wrapper passes "true" | undefined — exactOptionalPropertyTypes needs explicit | undefined
+        loading?: string | undefined; "icon-only"?: string | undefined;
+      };
+      "nex-badge": NexBase & {
+        variant?: string; size?: string;
+        dot?: string | undefined; // "true" | undefined from wrapper
+      };
+      "nex-input": NexBase & {
+        type?: string; label?: string; placeholder?: string; helper?: string;
+        error?: string; size?: string; value?: string;
+        disabled?: boolean; required?: boolean;
+      };
+      "nex-avatar": NexBase & {
+        src?: string; name?: string; size?: string; status?: string; shape?: string;
+      };
+      "nex-status-ring": NexBase & {
+        label?: string; color?: string;
+        // String(number) | undefined from wrapper — needs explicit | undefined
+        score?: string | undefined; size?: string | undefined;
+      };
+      "nex-text-stream": NexBase & {
+        // String(n) | undefined from wrapper
+        "max-rows"?: string | undefined; "show-numbers"?: string | undefined;
+      };
+      "nex-progress": NexBase & {
+        variant?: string; size?: string; color?: string; label?: string;
+        // String(number)|undefined and "true"|undefined from wrapper
+        value?: string | undefined; "show-value"?: string | undefined;
+      };
+      "nex-switch": NexBase & {
+        disabled?: boolean; label?: string; size?: string; color?: string;
+      };
+      "nex-checkbox": NexBase & {
+        disabled?: boolean; label?: string; size?: string;
+      };
+      "nex-skeleton": NexBase & {
+        variant?: string; width?: string; height?: string;
+        // String(n)|undefined and "false"|undefined from wrapper
+        lines?: string | undefined; animate?: string | undefined;
+      };
+      "nex-separator": NexBase & {
+        orientation?: string; variant?: string; label?: string;
+      };
+      "nex-spinner": NexBase & {
+        size?: string; color?: string; label?: string;
+      };
     }
   }
 }

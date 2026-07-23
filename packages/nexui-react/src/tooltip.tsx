@@ -31,8 +31,8 @@ const SIDE_STYLES: Record<TooltipSide, CSSProperties> = {
 export function Tooltip({ content, side = "top", delay = 400, disabled, children }: TooltipProps) {
   const [visible, setVisible]     = useState(false);
   const [animated, setAnimated]   = useState(false);
-  const showTimer = useRef<ReturnType<typeof setTimeout>>();
-  const hideTimer = useRef<ReturnType<typeof setTimeout>>();
+  const showTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const show = useCallback(() => {
     clearTimeout(hideTimer.current);
