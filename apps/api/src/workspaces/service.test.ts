@@ -544,6 +544,51 @@ describe("draft specifications and atomic approval", () => {
     ).rejects.toThrow("spec_superseded");
   });
 
+  test("replays the immutable approved view after a later version supersedes it", async () => {
+    const service = new WorkspaceService(new MemoryWorkspaceStore());
+    const workspace = await service.createWorkspace("user-1", "Nextech");
+    const first = await service.saveDraftSpec(
+      "user-1",
+      workspace.id,
+      draftSpec(workspace.id, 1),
+    );
+    const firstApproval = await service.approveSpecAndCreateRun(
+      "user-1",
+      workspace.id,
+      first.id,
+      first.hash,
+      "approve-1",
+    );
+    const second = await service.saveDraftSpec(
+      "user-1",
+      workspace.id,
+      draftSpec(workspace.id, 2),
+    );
+    await service.approveSpecAndCreateRun(
+      "user-1",
+      workspace.id,
+      second.id,
+      second.hash,
+      "approve-2",
+    );
+
+    const replay = await service.approveSpecAndCreateRun(
+      "user-1",
+      workspace.id,
+      first.id,
+      first.hash,
+      "approve-1",
+    );
+
+    expect(replay.replay).toBe(true);
+    expect(replay.runId).toBe(firstApproval.runId);
+    expect(replay.spec.status).toBe("approved");
+    expect(replay.spec.id).toBe(first.id);
+    expect(replay.spec.version).toBe(first.version);
+    expect(replay.spec.hash).toBe(first.hash);
+    expect(computeSpecHash(replay.spec)).toBe(replay.spec.hash);
+  });
+
   test("replays one build run per approval key and rejects changed approval payloads", async () => {
     const service = new WorkspaceService(new MemoryWorkspaceStore());
     const workspace = await service.createWorkspace("user-1", "Nextech");
@@ -583,6 +628,74 @@ describe("draft specifications and atomic approval", () => {
         "approve-1",
       ),
     ).rejects.toThrow("idempotency_conflict");
+  });
+
+  test("serializes identical concurrent approval requests into one create and one replay", async () => {
+    const service = new WorkspaceService(new MemoryWorkspaceStore());
+    const workspace = await service.createWorkspace("user-1", "Nextech");
+    const spec = await service.saveDraftSpec(
+      "user-1",
+      workspace.id,
+      draftSpec(workspace.id),
+    );
+
+    const results = await Promise.all([
+      service.approveSpecAndCreateRun(
+        "user-1",
+        workspace.id,
+        spec.id,
+        spec.hash,
+        "approve-race",
+      ),
+      service.approveSpecAndCreateRun(
+        "user-1",
+        workspace.id,
+        spec.id,
+        spec.hash,
+        "approve-race",
+      ),
+    ]);
+
+    expect(results.map((result) => result.replay).sort()).toEqual([false, true]);
+    expect(new Set(results.map((result) => result.runId)).size).toBe(1);
+  });
+
+  test("turns conflicting concurrent approval payloads into idempotency_conflict", async () => {
+    const service = new WorkspaceService(new MemoryWorkspaceStore());
+    const workspace = await service.createWorkspace("user-1", "Nextech");
+    const first = await service.saveDraftSpec(
+      "user-1",
+      workspace.id,
+      draftSpec(workspace.id, 1),
+    );
+    const second = await service.saveDraftSpec(
+      "user-1",
+      workspace.id,
+      draftSpec(workspace.id, 2),
+    );
+
+    const results = await Promise.allSettled([
+      service.approveSpecAndCreateRun(
+        "user-1",
+        workspace.id,
+        first.id,
+        first.hash,
+        "approve-race",
+      ),
+      service.approveSpecAndCreateRun(
+        "user-1",
+        workspace.id,
+        second.id,
+        second.hash,
+        "approve-race",
+      ),
+    ]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(String(rejected[0]?.reason)).toContain("idempotency_conflict");
   });
 
   test("rejects a specification ID owned by another workspace", async () => {
@@ -685,8 +798,8 @@ test.skipIf(!runPostgresIntegration)(
     await expect(
       db.transaction(async (tx) => {
         await tx.insert(users).values([
-          { id: ownerId, email: `${ownerId}@example.test` },
-          { id: otherOwnerId, email: `${otherOwnerId}@example.test` },
+          { id: ownerId, email: `${ownerId}@example.test`, name: "Owner" },
+          { id: otherOwnerId, email: `${otherOwnerId}@example.test`, name: "Other Owner" },
         ]);
         const store = new PostgresWorkspaceStore(tx);
         const service = new WorkspaceService(store);
@@ -749,6 +862,29 @@ test.skipIf(!runPostgresIntegration)(
         );
         expect(approvalReplay.replay).toBe(true);
         expect(approvalReplay.runId).toBe(approved.runId);
+        const secondSpec = await service.saveDraftSpec(
+          ownerId,
+          workspace.id,
+          draftSpec(workspace.id, 2),
+        );
+        await service.approveSpecAndCreateRun(
+          ownerId,
+          workspace.id,
+          secondSpec.id,
+          secondSpec.hash,
+          "approve-live-2",
+        );
+        const supersededReplay = await service.approveSpecAndCreateRun(
+          ownerId,
+          workspace.id,
+          spec.id,
+          spec.hash,
+          "approve-live",
+        );
+        expect(supersededReplay.replay).toBe(true);
+        expect(supersededReplay.runId).toBe(approved.runId);
+        expect(supersededReplay.spec.status).toBe("approved");
+        expect(computeSpecHash(supersededReplay.spec)).toBe(spec.hash);
         await expect(service.snapshot(otherOwnerId, workspace.id)).rejects.toThrow(
           "workspace_not_found",
         );
@@ -762,5 +898,119 @@ test.skipIf(!runPostgresIntegration)(
       .from(projects)
       .where((await import("drizzle-orm")).eq(projects.id, workspaceId));
     expect(persisted).toEqual([]);
+  },
+);
+
+test.skipIf(!runPostgresIntegration)(
+  "postgres approvals serialize identical and conflicting two-connection races",
+  async () => {
+    const { db, projects, users } = await import("@nexsidi/db");
+    const { eq, inArray } = await import("drizzle-orm");
+    const ownerId = randomUUID();
+    const workspaceIds: string[] = [];
+
+    try {
+      await db
+        .insert(users)
+        .values({ id: ownerId, email: `${ownerId}@example.test`, name: "Owner" });
+      const service = new WorkspaceService(new PostgresWorkspaceStore(db));
+
+      const identicalWorkspace = await service.createWorkspace(
+        ownerId,
+        "Identical approval race",
+      );
+      workspaceIds.push(identicalWorkspace.id);
+      const identicalSpec = await service.saveDraftSpec(
+        ownerId,
+        identicalWorkspace.id,
+        draftSpec(identicalWorkspace.id),
+      );
+      const identical = await Promise.allSettled([
+        service.approveSpecAndCreateRun(
+          ownerId,
+          identicalWorkspace.id,
+          identicalSpec.id,
+          identicalSpec.hash,
+          "identical-race",
+        ),
+        service.approveSpecAndCreateRun(
+          ownerId,
+          identicalWorkspace.id,
+          identicalSpec.id,
+          identicalSpec.hash,
+          "identical-race",
+        ),
+      ]);
+      const identicalFulfilled = identical.filter(
+        (result) => result.status === "fulfilled",
+      );
+      expect(identicalFulfilled).toHaveLength(2);
+      if (
+        identical[0]?.status !== "fulfilled" ||
+        identical[1]?.status !== "fulfilled"
+      ) {
+        throw new Error(
+          `identical_race_failed:${identical
+            .filter((result) => result.status === "rejected")
+            .map((result) => String(result.reason))
+            .join("|")}`,
+        );
+      }
+      expect(identicalFulfilled.map((result) => result.value.replay).sort()).toEqual([
+        false,
+        true,
+      ]);
+      expect(
+        new Set(identicalFulfilled.map((result) => result.value.runId)).size,
+      ).toBe(1);
+
+      const conflictingWorkspace = await service.createWorkspace(
+        ownerId,
+        "Conflicting approval race",
+      );
+      workspaceIds.push(conflictingWorkspace.id);
+      const first = await service.saveDraftSpec(
+        ownerId,
+        conflictingWorkspace.id,
+        draftSpec(conflictingWorkspace.id, 1),
+      );
+      const second = await service.saveDraftSpec(
+        ownerId,
+        conflictingWorkspace.id,
+        draftSpec(conflictingWorkspace.id, 2),
+      );
+      const conflicting = await Promise.allSettled([
+        service.approveSpecAndCreateRun(
+          ownerId,
+          conflictingWorkspace.id,
+          first.id,
+          first.hash,
+          "conflicting-race",
+        ),
+        service.approveSpecAndCreateRun(
+          ownerId,
+          conflictingWorkspace.id,
+          second.id,
+          second.hash,
+          "conflicting-race",
+        ),
+      ]);
+      const conflictingFulfilled = conflicting.filter(
+        (result) => result.status === "fulfilled",
+      );
+      const conflictingRejected = conflicting.filter(
+        (result) => result.status === "rejected",
+      );
+      expect(conflictingFulfilled).toHaveLength(1);
+      expect(conflictingRejected).toHaveLength(1);
+      expect(String(conflictingRejected[0]?.reason)).toContain(
+        "idempotency_conflict",
+      );
+    } finally {
+      if (workspaceIds.length > 0) {
+        await db.delete(projects).where(inArray(projects.id, workspaceIds));
+      }
+      await db.delete(users).where(eq(users.id, ownerId));
+    }
   },
 );

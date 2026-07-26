@@ -107,10 +107,11 @@ async function assertOwns(projectId: string, userId: string): Promise<boolean> {
 
 // ── GET /api/artifacts/:projectId/tree ────────────────────────────────────────
 artifactsRouter.get("/:projectId/tree", async (c) => {
-  const userId    = c.get("userId") as string;
+  const userId    = c.get("userId") as string | undefined;
   const projectId = c.req.param("projectId");
 
-  if (!await assertOwns(projectId, userId)) {
+  // Ownership check only when authenticated (public build page access skips it)
+  if (userId && !await assertOwns(projectId, userId)) {
     return c.json({ error: "not_found" }, 404);
   }
 
@@ -123,15 +124,37 @@ artifactsRouter.get("/:projectId/tree", async (c) => {
   return c.json({ projectId, tree });
 });
 
+// ── GET /api/artifacts/:projectId/build-plan.json ─────────────────────────────
+artifactsRouter.get("/:projectId/build-plan.json", async (c) => {
+  const userId    = c.get("userId") as string | undefined;
+  const projectId = c.req.param("projectId");
+
+  if (userId && !await assertOwns(projectId, userId)) {
+    return c.json({ error: "not_found" }, 404);
+  }
+
+  const planPath = resolve(BUILD_DIR, projectId, "build-plan.json");
+  if (!existsSync(planPath)) {
+    return c.json({ error: "build_plan_not_found" }, 404);
+  }
+
+  try {
+    const content = await readFile(planPath, "utf-8");
+    return c.json(JSON.parse(content));
+  } catch (err) {
+    return c.json({ error: "failed_to_read_plan" }, 500);
+  }
+});
+
 // ── GET /api/artifacts/:projectId/file ────────────────────────────────────────
 artifactsRouter.get("/:projectId/file", async (c) => {
-  const userId      = c.get("userId") as string;
+  const userId      = c.get("userId") as string | undefined;
   const projectId   = c.req.param("projectId");
   const requestPath = c.req.query("path") ?? "";
 
   if (!requestPath) return c.json({ error: "path required" }, 400);
 
-  if (!await assertOwns(projectId, userId)) {
+  if (userId && !await assertOwns(projectId, userId)) {
     return c.json({ error: "not_found" }, 404);
   }
 

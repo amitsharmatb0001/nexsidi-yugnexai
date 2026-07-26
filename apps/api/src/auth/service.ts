@@ -16,7 +16,8 @@ export const authService: AuthService = {
     if (existing) return null;
     const passwordHash = await Bun.password.hash(password, { algorithm: "argon2id" });
     try {
-      const [user] = await db.insert(users).values({ email, passwordHash }).returning({ id: users.id, email: users.email });
+      const name = email.split("@")[0]!.replace(/[._-]+/g, " ").trim() || email;
+      const [user] = await db.insert(users).values({ email, passwordHash, name }).returning({ id: users.id, email: users.email });
       if (!user) throw new Error("user insert returned no record");
       return createSession(user);
     } catch (error) {

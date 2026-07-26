@@ -148,3 +148,28 @@ test("run() returns the default-FAIL result (not a thrown error) when BOTH attem
   const result = await run("diag", 1, "// some code", deps);
   expect(result.passed).toBe(false);
 });
+
+// 2026-07-24 (P2, full agentic upgrade): a finding with `file` but no
+// `line` still forces the generator to re-scan the whole file to locate
+// the issue — traced live this session as the root cause of QA-fix
+// oscillation (a score that improved then regressed across iterations
+// because the fix targeted the wrong part of the file). `line` must
+// survive parseSecurityFindings the same way `file` already does.
+test("parseSecurityFindings carries a numeric line through when present", () => {
+  const result = parseSecurityFindings(
+    JSON.stringify({ findings: [{ severity: "CRITICAL", description: "SQL injection", file: "backend/src/db.ts", line: 47 }] }),
+  );
+  expect(result[0]!.line).toBe(47);
+  expect(result[0]!.file).toBe("backend/src/db.ts");
+});
+
+test("parseSecurityFindings leaves line undefined when the model omits it (not attributable to one line)", () => {
+  const result = parseSecurityFindings(
+    JSON.stringify({ findings: [{ severity: "MEDIUM", description: "missing CORS config", file: "backend/src/app.ts" }] }),
+  );
+  expect(result[0]!.line).toBeUndefined();
+});
+
+test("QA_SYSTEM_PROMPT's JSON schema example includes line", () => {
+  expect(QA_SYSTEM_PROMPT).toContain('"line"');
+});

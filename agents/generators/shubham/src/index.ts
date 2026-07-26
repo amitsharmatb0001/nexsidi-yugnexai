@@ -5,7 +5,7 @@
 import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync, readdirSync, existsSync } from "fs";
 import { join } from "path";
-import type { BuildPlan } from "../../../arjun/src/index.ts";
+import type { BuildPlan, GeneratorTask } from "../../../arjun/src/index.ts";
 
 export interface GeneratorResult {
   success: boolean;
@@ -61,8 +61,11 @@ export function autoWireRoutes(backendDir: string): void {
 // exactly as before this feature existed rather than blocking on it.
 async function loadKnownMistakesPrefix(): Promise<string> {
   try {
-    const { queryRecentInstincts, formatInstinctsForPrompt } = await import("@nexsidi/db");
-    const instincts = await queryRecentInstincts("security");
+    const { queryRecentInstincts, formatInstinctsForPrompt, REACHABLE_INSTINCT_DOMAINS } = await import("@nexsidi/db");
+    // 2026-07-24 (P3.W3.3): was hardcoded to "security" only — missed every
+    // performance/architecture instinct QA ever recorded. See
+    // queryRecentInstincts's comment for the bug this closes.
+    const instincts = await queryRecentInstincts(REACHABLE_INSTINCT_DOMAINS);
     const formatted = formatInstinctsForPrompt(instincts);
     return formatted ? `${formatted}\n\n` : "";
   } catch {
@@ -94,9 +97,13 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
   const result = await resolveGeneratorRunner()({
     agentName: "shubham",
     model: "mistralai/mistral-medium-3.5-128b",
-    // qwen3.5-122b: confirmed working under 80K+ token inputs in stress-3's
-    // QA fallbacks — a genuinely different architecture for the second try.
-    fallbackModels: ["qwen/qwen3.5-122b-a10b"],
+    // 2026-07-24: qwen3.5-122b-a10b (chosen for being a genuinely different
+    // architecture from the primary) returns HTTP 410 Gone as of 2026-07-20
+    // — the NIM endpoint was permanently removed (see types.ts's ModelId
+    // comment). Using it as a fallback meant a real failure of the primary
+    // model fell through to a fallback that would ALWAYS also fail. Swapped
+    // for qwen3-next-80b, the documented working replacement.
+    fallbackModels: ["qwen/qwen3-next-80b-a3b-instruct"],
     apiKey,
     systemPrompt: knownMistakesPrefix + SHUBHAM_AGENT_SYSTEM_PROMPT,
     initialMessage: buildAgentTask(plan),
@@ -106,7 +113,17 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     // Shubham self-verifies its own work like a real backend dev (boot a
     // throwaway Postgres, apply migrations, start the server, curl health +
     // auth-enforcement) before handing off.
-    geminiModel: process.env.GEMINI_GENERATION_MODEL,
+    // 2026-07-25 (Phase 1, full MVP upgrade): was `geminiModel:
+    // process.env.GEMINI_GENERATION_MODEL`. Verified live (audit-2026-07-25.md,
+    // A.3): `.env` set GEMINI_GENERATION_MODEL=gemini-3.5-flash, and
+    // poolForTier(tier, explicitModel) collapses the WHOLE pool to that one
+    // model with no fallback whenever explicitModel is set — Shubham never
+    // reached gemini-3.6-flash regardless of what TIER_POOLS.generation
+    // said, silently pinned to the old model by an env var nobody was
+    // meant to be relying on as a permanent override. geminiModel now
+    // unset (still overridable per-run if a future caller has a real
+    // reason to pin one) — geminiTier: "generation" selects the pool.
+    geminiTier: "generation",
     enableHttpTools: true,
     enableDockerTools: true,
     enableWebSearch: true,
@@ -114,6 +131,17 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     enableBrowser: true,
     enableDbQuery: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
+    // 2026-07-25: raised from 40 (default) to 60 after two consecutive
+    // live P4 runs (nextech5, nextech6) both failed at exactly iteration 40
+    // while Shubham was still in the live-verification phase. Measured
+    // breakdown in both runs: ~33 code-write iterations + 7 verification
+    // iterations = 40 (cap). 60 gives a safe 20-iteration margin above
+    // measured usage. The non-retryable fix in generatorFailure() (same
+    // session) means a hit on this cap costs ONE attempt, not 5x retries.
+    // Also updated SELF-VERIFICATION PROTOCOL to remove the server-start
+    // + HTTP endpoint check (that was causing 7+ iterations of server-start
+    // failures on Windows); DB schema verification is now ≤4 calls.
+    maxIterations: 60,
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see
@@ -157,13 +185,26 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
   const result = await resolveGeneratorRunner()({
     agentName: "shubham",
     model: "mistralai/mistral-medium-3.5-128b",
-    fallbackModels: ["qwen/qwen3.5-122b-a10b"],
+    // 2026-07-24: see run()'s identical fix above — qwen3.5-122b-a10b 410s
+    // (endpoint permanently removed 2026-07-20); swapped for the documented
+    // working replacement, qwen3-next-80b.
+    fallbackModels: ["qwen/qwen3-next-80b-a3b-instruct"],
     apiKey,
     systemPrompt: SHUBHAM_AGENT_SYSTEM_PROMPT,
     initialMessage: buildFixTask(findings),
     sandboxDir: outputDir,
     projectId: plan.projectId,
-    geminiModel: process.env.GEMINI_GENERATION_MODEL,
+    // 2026-07-25 (Phase 1, full MVP upgrade): was `geminiModel:
+    // process.env.GEMINI_GENERATION_MODEL`. Verified live (audit-2026-07-25.md,
+    // A.3): `.env` set GEMINI_GENERATION_MODEL=gemini-3.5-flash, and
+    // poolForTier(tier, explicitModel) collapses the WHOLE pool to that one
+    // model with no fallback whenever explicitModel is set — Shubham never
+    // reached gemini-3.6-flash regardless of what TIER_POOLS.generation
+    // said, silently pinned to the old model by an env var nobody was
+    // meant to be relying on as a permanent override. geminiModel now
+    // unset (still overridable per-run if a future caller has a real
+    // reason to pin one) — geminiTier: "generation" selects the pool.
+    geminiTier: "generation",
     enableHttpTools: true,
     enableDockerTools: true,
     enableWebSearch: true,
@@ -171,6 +212,9 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     enableBrowser: true,
     enableDbQuery: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
+    // 2026-07-25: reverted the maxIterations override for the same reason
+    // as run() above — see that comment. A fix task's live-verification
+    // phase can be just as tool-call-heavy as a full generation's.
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see
@@ -194,13 +238,29 @@ You are Shubham, a senior Express + TypeScript backend engineer.
 You have been given tools to write files and run commands directly.
 You DO NOT output text — you USE TOOLS to create the project.
 
+PLAN-THEN-EXECUTE — this is the most important rule in this prompt:
+Your task message lists the COMPLETE, exhaustive file manifest Arjun already
+planned. Do not discover the shape of the backend one file at a time by
+writing something and immediately type-checking it — you already have the
+whole plan. Write EVERY planned file, batching SEVERAL write_file calls in
+the SAME response (aim for 3-4 files per turn) before you ever run a
+verification command. Type-checking after each individual file is the exact
+waste this workflow exists to remove — a real measured run burned 30-60
+tsc/build calls doing this. One exception: while writing, if you are
+genuinely unsure a shared type or interface you already wrote matches what a
+later file needs, use read_file to check it — that is cheap and expected;
+running tsc/npm run build is not.
+
 Your workflow:
-1. Use write_file to create every backend file (routes, controllers, middleware, types)
-2. Use run_command "npm install" to install dependencies
-3. Use run_command "npx tsc --noEmit" to type-check
-4. If tsc reports errors: use read_file to read the failing file, use write_file to fix it, run tsc again
-5. When tsc passes: use run_command "npm run build" to compile
-6. When build passes: call task_complete with verification_passed: true
+1. Use list_files to see the scaffold, then write EVERY file in the planned
+   manifest — batch several write_file calls per turn, do not verify in between.
+2. Once every planned file is written: run_command "npm install" once.
+3. Run_command "npx tsc --noEmit" ONCE. If it reports errors, fix ALL of them
+   in one batched pass (read_file + write_file/edit_file for each affected
+   file), THEN run tsc again ONCE more to confirm — do not re-run tsc after
+   fixing a single error in isolation.
+4. When tsc is clean: run_command "npm run build" ONCE to compile.
+5. When build passes: call task_complete with verification_passed: true
 
 STACK (non-negotiable):
 - Express 4.x / TypeScript / Node 22 / commonjs
@@ -318,21 +378,17 @@ HARD GATE (must pass — these are reliable and required):
      suppress with an any-cast or a ts-ignore comment).
   c) run_command "npm run build" — exits 0.
 
-LIVE VERIFICATION (act like a real backend dev — do as much as the sandbox
-allows, report results either way; do NOT burn many attempts fighting the
-environment — if a step genuinely can't run here, say so and move on):
-  d) Stand up a throwaway Postgres (docker_compose up with a minimal
-     postgres-only compose you write, or reuse the project's) and apply the
-     schema/migrations against it. Confirm the tables you expect actually
-     exist. A migration that doesn't apply is a real bug you must find NOW.
-  e) Start the server pointed at that DB (background it — do NOT run a
-     blocking foreground server that never returns; e.g. append " &" or use a
-     start script that daemonizes, then poll) and:
-       - http_request GET /health → expect 200.
-       - http_request a PROTECTED route WITHOUT an auth token → expect 401/403
-         (proves the route is mounted AND auth is actually enforced — a route
-         that returns 200 or 500 unauthenticated is a security bug).
-  f) Tear the throwaway DB down (docker_compose down) when done.
+DB SCHEMA VERIFICATION (optional but valuable — skip only if you are low on
+iteration budget; DO NOT start the server here, QA tests HTTP endpoints):
+  d) Write a minimal docker-compose.yml mapping port 55432 on the host
+     (NOT 5432 — native Postgres is already on 5432; wrong port = misleading
+     auth errors), start it with docker_compose up, apply your schema/migrations
+     using ONE run_command that runs a node script or npx ts-node, confirm the
+     expected tables exist (e.g. "SELECT table_name FROM information_schema.tables"
+     or psql with --command), then tear it down with docker_compose down.
+     All of d) must fit in ≤4 tool calls total (write compose + up + apply + down).
+     DO NOT start the Express server. DO NOT make http_request calls.
+     The QA stage tests live HTTP; your job is to prove the schema applies.
 
 PRODUCTION SECURITY — this app may be hosted publicly on day 0; it must not be
 trivially hacked. Beyond the SQL/IDOR/validation rules above, ensure ALL of:
@@ -370,7 +426,26 @@ function renderApiContractForPrompt(apiContract: BuildPlan["apiContract"]): stri
   return JSON.stringify(renamed, null, 2);
 }
 
+// P5.W5.1 (full agentic upgrade plan — plan-then-execute): Arjun's BuildPlan
+// already decomposes an exhaustive per-task file manifest ("outputFiles must
+// list every file the agent must produce. Be exhaustive.") but it was never
+// rendered into Shubham's prompt — the agent had zero visibility into the
+// exact file list Arjun already planned, unlike Aanya (whose buildAgentTask
+// already renders aanyaTasks as "PLANNED FRONTEND FILES AND PAGES"). Without
+// it, the only way the agent could tell whether it was "done" was to feel
+// around with tsc after every file — the measured cause of the 30-60x
+// per-session tsc/build re-verification tax. Mirrors Aanya's inline
+// taskDetails map; pure and exported for direct unit testing.
+export function renderTaskManifest(tasks: GeneratorTask[]): string {
+  if (tasks.length === 0) return "";
+  return tasks
+    .map((t, idx) => `Task ${idx + 1}: ${t.description}\nFiles to write:\n${t.outputFiles.map((f) => `- ${f}`).join("\n")}`)
+    .join("\n\n");
+}
+
 function buildAgentTask(plan: BuildPlan): string {
+  const taskDetails = renderTaskManifest(plan.shubhamTasks ?? []);
+
   return `Build a complete Express + TypeScript backend for this project.
 
 PROJECT: ${plan.appName ?? "web app"}
@@ -389,9 +464,16 @@ ${JSON.stringify(plan.dbSchema, null, 2)}
 SHARED TYPES (frontend and backend must agree on these):
 ${plan.sharedTypes ?? ""}
 
-Start by using list_files to see what scaffold files are already present,
-then write the business logic files using write_file,
-then verify with run_command.`;
+PLANNED BACKEND FILES (you MUST implement every file listed here — this is
+the complete, exhaustive manifest; nothing outside this workflow's plan is
+expected, and nothing in it should be skipped):
+${taskDetails}
+
+Start by using list_files to see what scaffold files are already present.
+Then write EVERY planned file above completely, batching several write_file
+calls per turn — do not pause to type-check between individual files. Only
+once every planned file is written do you move to the single verification
+pass described in your system prompt.`;
 }
 
 // ── Static scaffold — written before agent starts ────────────────────────────

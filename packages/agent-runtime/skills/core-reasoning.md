@@ -90,6 +90,27 @@ minor variations. Instead do exactly one of:
 
 Repeating a failed approach burns budget and produces nothing.
 
+## RULE 7A — No Fix Without Root Cause First
+### (Source: superpowers `systematic-debugging` — the iron law)
+
+Rule 7 stops you after 3 failed guesses. This rule stops you from
+guessing at all. Before writing ANY fix — attempt #1, not just #4:
+
+1. Read the full error/failure output. Not skimmed — the exact line
+   and file it points to IS the answer, most of the time.
+2. Reproduce it. If you cannot trigger it reliably, you do not have
+   enough evidence to fix it yet — gather more, do not guess.
+3. Trace it to its origin, not its symptom. A bug that manifests deep
+   in a call chain usually originates upstream — find where the bad
+   state was first introduced, and fix THERE, not at the point it
+   became visible.
+4. Only then write the fix — and it should follow from evidence you
+   can quote, not from "this usually means X."
+
+A fix you cannot explain the root cause of is a guess wearing a fix's
+clothes. If you catch yourself about to write "let me just try
+changing X and see" — stop, you are skipping this rule.
+
 ## RULE 8 — Stay Inside the Task
 
 Do the task. Only the task.
@@ -153,6 +174,7 @@ answers are already in the task, the spec, or a file you can read.
 | Silent scope creep | 8 |
 | "Fixed it" that isn't | 5, 6, 10 |
 | Infinite retry loops | 7 |
+| Guessed fixes, patched symptom not cause | 7A |
 | Broken JSON handoffs | 9 |
 | Invented APIs/fields | 3 |
 | Hidden problems surfacing downstream | 2, 11 |

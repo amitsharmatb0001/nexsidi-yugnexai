@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { MCPClient } from "./mcp/client.ts";
 import { nimChatWithTools, type NimToolDef, type NimMessage, type NimToolCall } from "@nexsidi/llm-client";
-import { execWriteFile, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol, FILE_TOOL_DEFS } from "./tools/file.ts";
+import { execWriteFile, execWriteFiles, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol, FILE_TOOL_DEFS } from "./tools/file.ts";
 import { initWorkspaceTransaction, commitWorkspaceTransaction } from "./tools/git.ts";
 import { compactHistory, estimateTokenCount } from "./compaction.ts";
 import { SharedTokenBucket } from "./token-bucket.ts";
@@ -18,7 +18,7 @@ import { execWebSearch, WEB_SEARCH_TOOL_DEF } from "./tools/websearch.ts";
 import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
 import { BrowserToolset, BROWSER_TOOL_DEFS, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
 import { execDbQuery, DB_QUERY_TOOL_DEF } from "./tools/db.ts";
-import { createEvidenceLedger } from "./enforce/evidence.ts";
+import { createEvidenceLedger, type EvidenceKind } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
 import { createStrikeCounter, buildFailureSignature, type StrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
@@ -62,7 +62,32 @@ export interface AgentRunConfig {
   // command has exited 0 during this exact run. Unrelated successful tools
   // such as `node -v` cannot satisfy a generator's compile gate.
   requiredVerificationCommands?: string[];
+  // 2026-07-25 (P5.W5.4): kind-level equivalent of the above, for agents
+  // whose real proof-of-work isn't a shell command — Riya's deploy
+  // verification is docker_compose/http_request tool calls, which
+  // requiredVerificationCommands (exact command-string matching) can't
+  // express at all. See EvidenceLedger.hasEvidenceOfKind.
+  requiredEvidenceKinds?: EvidenceKind[];
   subagentDepth?: number; // 0 = top-level agent; 1 = inside a spawn_subagent call. Capped at 1.
+  // 2026-07-25 (P5.W5.5): per-run override of MAX_ITERATIONS. The shared
+  // constant stays a generous ceiling for agents that legitimately need it
+  // (Riya's deploy+verify, Tilotma's live-eval navigating many pages); a
+  // generator that now writes its whole plan up front (P5.W5.1) and
+  // verifies once converges in a handful of turns, so a high shared cap
+  // only hides thrash for it. Unset = MAX_ITERATIONS (unchanged behavior).
+  maxIterations?: number;
+  // 2026-07-25 (Phase 1, full MVP upgrade): per-agent Gemini tier, ONLY
+  // consumed by gemini-loop.ts's runAgentWithGemini (this file's NIM path
+  // has its own separate model chain — AGENT_MODELS/FALLBACK_CHAIN — and
+  // ignores this field entirely). Typed as a bare string here rather than
+  // importing GeminiTier from @nexsidi/llm-client, so this NIM-only file
+  // doesn't take a dependency on a type it never uses; gemini-loop.ts casts
+  // it back to GeminiTier. Verified live (audit-2026-07-25.md, A.3) that
+  // every Gemini-loop agent previously hardcoded "generation" regardless of
+  // role — Aanya (frontend/design, 0.70 of the subjective score) got the
+  // same tier as Shubham (backend boilerplate). Unset = "generation"
+  // (unchanged behavior).
+  geminiTier?: string;
 }
 
 export interface AgentRunResult {
@@ -444,6 +469,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
   const filesWritten: string[] = [];
   const errors: string[] = [];
+  const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
   let iterations = 0;
   // Phase 5 Task 4: mechanical 3-strike escalation — see enforce/strikes.ts.
   const strikeCounter = createStrikeCounter();
@@ -471,7 +497,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   let consecutiveTransportFailures = 0;
   let abortedOnTransportFailures = false;
 
-  console.log(`[${config.agentName}:agent] Starting — model: ${config.model}, maxIter: ${MAX_ITERATIONS}` +
+  console.log(`[${config.agentName}:agent] Starting — model: ${config.model}, maxIter: ${effectiveMaxIterations}` +
     (modelChain.length > 1 ? `, fallbacks: ${modelChain.slice(1).join(", ")}` : ""));
 
   const budget = new BudgetTracker();
@@ -482,7 +508,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   // it on every exit path (task_complete, stop, cap, or throw).
   const browserToolset = config.enableBrowser ? new BrowserToolset() : null;
   try {
-  while (iterations < MAX_ITERATIONS) {
+  while (iterations < effectiveMaxIterations) {
     const currentModel = modelChain[modelIdx] ?? config.model;
 
     let response;
@@ -581,7 +607,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     const turnSignature = sanitizedToolCalls.map((c) => `${c.function.name}:${c.function.arguments}`).join("|");
     recentCallSignatures.push(turnSignature);
     if (detectStuckLoop(recentCallSignatures)) {
-      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${MAX_ITERATIONS}-iteration cap.`;
+      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${effectiveMaxIterations}-iteration cap.`;
       console.log(`[${config.agentName}:agent] ${reason}`);
       await saveHistory();
       return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish" };
@@ -613,6 +639,23 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
             filesWritten.push(writeArgs.path);
             commitWorkspaceTransaction(config.sandboxDir, `Wrote ${writeArgs.path}`);
             emitEvent({ type: "tool_result", tool: "write_file", status: "success", path: writeArgs.path });
+          }
+          result = r;
+          break;
+        }
+        // 2026-07-25 (Phase 2.3): batch write — see execWriteFiles's comment
+        // in tools/file.ts for the root cause this closes (one-file-per-turn
+        // forced by the tool shape, not by any real constraint).
+        case "write_files": {
+          const writeArgs = args as { files: Array<{ path: string; content: string }> };
+          emitEvent({ type: "tool_call", tool: "write_files", input: { count: writeArgs.files?.length ?? 0 } });
+          const r = execWriteFiles(config.sandboxDir, writeArgs);
+          if (r.status === "success" && Array.isArray(writeArgs.files)) {
+            for (const f of writeArgs.files) {
+              filesWritten.push(f.path);
+            }
+            commitWorkspaceTransaction(config.sandboxDir, `Wrote ${writeArgs.files.length} files`);
+            emitEvent({ type: "tool_result", tool: "write_files", status: "success", path: writeArgs.files.map((f) => f.path).join(",") });
           }
           result = r;
           break;
@@ -755,6 +798,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
             ledger,
             { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed },
             config.requiredVerificationCommands,
+            config.requiredEvidenceKinds,
           );
           if (!check.allowed) {
             console.log(`[${config.agentName}:agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);
@@ -823,7 +867,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
       ? `Three-strikes exhausted (${iterations} real model turns completed)`
       : abortedOnTransportFailures
         ? `Aborted after ${MAX_CONSECUTIVE_TRANSPORT_FAILURES} consecutive transport failures (${iterations} real model turns completed)`
-        : `Max iterations (${MAX_ITERATIONS}) reached without task_complete`,
+        : `Max iterations (${effectiveMaxIterations}) reached without task_complete`,
     filesWritten,
     iterations,
     errors: exhaustedThreeStrikes ? errors : [...errors, "Max iterations exceeded"],

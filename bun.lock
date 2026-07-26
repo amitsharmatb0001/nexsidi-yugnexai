@@ -149,6 +149,13 @@
         "zod": "^3.23.0",
       },
     },
+    "agents/vanya": {
+      "name": "@nexsidi/agent-vanya",
+      "version": "0.1.0",
+      "dependencies": {
+        "@nexsidi/llm-client": "workspace:*",
+      },
+    },
     "apps/api": {
       "name": "@nexsidi/api",
       "version": "0.1.0",
@@ -494,6 +501,8 @@
     "@nexsidi/agent-shubham": ["@nexsidi/agent-shubham@workspace:agents/generators/shubham"],
 
     "@nexsidi/agent-tilotma": ["@nexsidi/agent-tilotma@workspace:agents/tilotma"],
+
+    "@nexsidi/agent-vanya": ["@nexsidi/agent-vanya@workspace:agents/vanya"],
 
     "@nexsidi/api": ["@nexsidi/api@workspace:apps/api"],
 

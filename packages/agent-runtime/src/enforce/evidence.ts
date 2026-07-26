@@ -17,6 +17,14 @@ export interface EvidenceLedger {
   record(kind: EvidenceKind, ref: string): void;
   hasFreshEvidence(): boolean;
   hasSuccessfulCommand(command: string): boolean;
+  // 2026-07-25 (P5.W5.4): "any evidence kind" (hasFreshEvidence) is too
+  // permissive for an agent whose real proof-of-work isn't a shell command
+  // at all — Riya's tools are docker_compose/http_request, so
+  // requiredVerificationCommands (exact command-string matching) can't
+  // express "you must have called http_request successfully" for it. This
+  // lets a caller require a specific evidence KIND regardless of which
+  // exact tool call produced it.
+  hasEvidenceOfKind(kind: EvidenceKind): boolean;
   consume(): EvidenceRecord[];
 }
 
@@ -40,6 +48,9 @@ export function createEvidenceLedger(): EvidenceLedger {
           (ref.startsWith(`${required} `) && ref.endsWith(" -> exited 0"))
         );
       });
+    },
+    hasEvidenceOfKind(kind) {
+      return records.some((record) => record.kind === kind);
     },
     consume() {
       const current = records;

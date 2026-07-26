@@ -22,7 +22,7 @@ test("a single empty response is retried once and succeeds on the second attempt
   let callCount = 0;
   const stubChat = async () => {
     callCount++;
-    return { content: callCount === 1 ? "" : VALID_SPEC_JSON, modelUsed: "qwen/qwen3.5-122b-a10b" as const };
+    return { content: callCount === 1 ? "" : VALID_SPEC_JSON, modelUsed: "mistralai/mistral-nemotron" as const };
   };
 
   const spec = await run("proj123", "build me a task app", { chat: stubChat });
@@ -32,7 +32,7 @@ test("a single empty response is retried once and succeeds on the second attempt
 });
 
 test("two consecutive empty responses still throw — retry is not infinite masking of a real outage", async () => {
-  const stubChat = async () => ({ content: "", modelUsed: "qwen/qwen3.5-122b-a10b" as const });
+  const stubChat = async () => ({ content: "", modelUsed: "mistralai/mistral-nemotron" as const });
 
   await expect(run("proj123", "build me a task app", { chat: stubChat })).rejects.toThrow();
 });
@@ -41,7 +41,7 @@ test("a well-formed first response does not trigger a second call at all", async
   let callCount = 0;
   const stubChat = async () => {
     callCount++;
-    return { content: VALID_SPEC_JSON, modelUsed: "qwen/qwen3.5-122b-a10b" as const };
+    return { content: VALID_SPEC_JSON, modelUsed: "mistralai/mistral-nemotron" as const };
   };
 
   await run("proj123", "build me a task app", { chat: stubChat });

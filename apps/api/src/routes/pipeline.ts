@@ -8,21 +8,7 @@
 
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { startProjectBuild, getPipelineStatus, isWorkflowRunning, sendWorkflowSignal } from "../utils/temporal.ts";
-import { db, projects } from "@nexsidi/db";
-import { eq } from "drizzle-orm";
-import Redis from "ioredis";
-// Pipeline routes — trigger builds and stream status to the browser.
-//
-// POST /api/pipeline/start  — starts a project build workflow (called by chat route)
-// GET  /api/pipeline/:projectId/status — SSE stream of pipeline stage updates
-//
-// Security Layer 7: all SSE events go through translateEvent() deny-by-default filter.
-// Only whitelisted stage labels reach the browser — never agent names, scores, or errors.
-
-import { Hono } from "hono";
-import { streamSSE } from "hono/streaming";
-import { startProjectBuild, getPipelineStatus, isWorkflowRunning, sendWorkflowSignal } from "../utils/temporal.ts";
+import { startProjectBuild, getPipelineStatus, isWorkflowRunning, getWorkflowStatus, sendWorkflowSignal } from "../utils/temporal.ts";
 import { db, projects } from "@nexsidi/db";
 import { eq } from "drizzle-orm";
 import Redis from "ioredis";
@@ -52,8 +38,14 @@ function translateStage(stage: string): { stage: string; message: string } | nul
   return { stage, message };
 }
 
-// ── POST /api/pipeline/start ──────────────────────────────────────────────────
+// ── POST /api/pipeline/start — INTERNAL ONLY ─────────────────────────────────
+// The chat route triggers builds directly via startProjectBuild().
+// This HTTP endpoint exists for testing/CLI only; requires x-nexsidi-internal header.
 pipelineRouter.post("/start", async (c) => {
+  const internalKey = c.req.header("x-nexsidi-internal");
+  if (!internalKey || internalKey !== (process.env.INTERNAL_API_KEY ?? "dev-internal")) {
+    return c.json({ error: "Not found" }, 404);
+  }
   const userId = c.get("userId") as string;
   const body   = await c.req.json<{ projectId?: string; userRequest: string }>();
   const { userRequest } = body;
@@ -91,15 +83,41 @@ pipelineRouter.get("/:projectId/status", async (c) => {
   return streamSSE(c, async (stream) => {
     let lastStage = "";
 
-    const poll = async (): Promise<boolean> => {
+    const poll = async (): Promise<{ done: boolean; failed: boolean }> => {
       const state = await getPipelineStatus(projectId) as {
         stage?: string;
         iteration?: number;
       } | null;
 
+      const workflowStatus = await getWorkflowStatus(projectId);
+
+      // If no workflow runs at all, check database for historical state
+      if (!workflowStatus) {
+        return { done: true, failed: false };
+      }
+
+      // If workflow has terminated with failure
+      if (workflowStatus !== "RUNNING" && workflowStatus !== "COMPLETED") {
+        // Update DB status to failed
+        try {
+          await db.update(projects)
+            .set({ status: "failed", updatedAt: new Date() })
+            .where(eq(projects.id, projectId));
+        } catch (e) {
+          console.error("[status-poll] failed to update db status:", e);
+        }
+
+        return { done: true, failed: true };
+      }
+
+      // If workflow is not active but finished successfully
+      if (workflowStatus === "COMPLETED") {
+        return { done: true, failed: false };
+      }
+
       if (!state) {
         await stream.writeSSE({ data: JSON.stringify({ type: "waiting" }) });
-        return false;
+        return { done: false, failed: false };
       }
 
       const stage = state.stage ?? "unknown";
@@ -121,17 +139,38 @@ pipelineRouter.get("/:projectId/status", async (c) => {
       // Send heartbeat so the connection stays alive
       await stream.writeSSE({ data: JSON.stringify({ type: "ping" }) });
 
-      return stage === "done" || stage === "error";
+      return { done: stage === "done" || stage === "error", failed: stage === "error" };
     };
 
     // Poll until done, error, or client disconnects
     let done = false;
-    while (!done) {
-      done = await poll();
-      if (!done) await new Promise<void>((r) => setTimeout(r, 3_000));
-    }
+    let failed = false;
+    while (true) {
+      const res = await poll();
+      done = res.done;
+      failed = res.failed;
 
-    await stream.writeSSE({ data: JSON.stringify({ type: "complete" }) });
+      if (done) {
+        if (failed) {
+          await stream.writeSSE({
+            data: JSON.stringify({
+              type:    "stage",
+              stage:   "error",
+              message: "Execution failed. View system logs for details.",
+            }),
+          });
+        } else {
+          await stream.writeSSE({ data: JSON.stringify({ type: "complete" }) });
+        }
+        
+        // Keep connection open to prevent client EventSource reconnect loop
+        while (true) {
+          await stream.writeSSE({ data: JSON.stringify({ type: "ping" }) });
+          await new Promise<void>((r) => setTimeout(r, 15_000));
+        }
+      }
+      await new Promise<void>((r) => setTimeout(r, 3_000));
+    }
   });
 });
 

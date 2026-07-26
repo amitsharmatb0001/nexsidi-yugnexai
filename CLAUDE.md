@@ -190,15 +190,26 @@ LLM SDK:       @anthropic-ai/claude-agent-sdk (NOT raw @anthropic-ai/sdk)
                with Opus-tier models (they don't exhibit context anxiety)
 ```
 
-### Generated User Apps (DELIBERATELY DIFFERENT)
+### Generated User Apps
 ```
-Frontend:  Next.js 16.2 + TypeScript + Tailwind + shadcn/ui
+Frontend:  Next.js 16.2 + TypeScript + @yugnex/nexui-react (vendored into the
+           generated app's own output dir — no external npm dependency)
+           NOT Tailwind, NOT shadcn/ui, NOT @radix-ui
 Backend:   Node.js + Express + TypeScript
 Database:  PostgreSQL 16 (local Docker container)
-Auth:      Clerk
+Auth:      Custom JWT (jsonwebtoken + bcryptjs) — NOT Clerk
 Deploy:    Docker Compose → localhost (local delivery to user)
            NOT Vercel, NOT Railway, NOT Supabase — local only for now
 ```
+2026-07-25 (P4): corrected to match the actual Shubham/Aanya generator code
+(agents/generators/{shubham,aanya}/src/index.ts, packages/agent-runtime/skills/
+{shubham,aanya}.md) — both were already built around this stack; this section
+had never been updated to match and still said Tailwind+shadcn/ui+Clerk,
+found live while approving the NexTech build's spec-approval gate. NexUI is
+now used for BOTH NexSidi's own platform and every generated app — no longer
+"deliberately different" on the UI library, only on backend framework
+(Bun+Hono vs Express) and the reasoning in "Why Different Stacks" below still
+applies to that split.
 
 One `docker-compose.yml` per project. User gets the file + source code.
 They run `docker-compose up` and open `http://localhost:3000`.
@@ -612,9 +623,9 @@ Tilotma → Saanvi → Arjun → [Shubham + Aanya + Pranav parallel] → Navya/K
 ```
 
 **Generated app stack for this project:**
-- Frontend: Next.js 16.2 + Tailwind + shadcn/ui → port 3200
-- Backend: Express + TypeScript → port 3300
-- Database: PostgreSQL 16 container → port 5435
+- Frontend: Next.js 16.2 + @yugnex/nexui-react → port 3200 (or next free port in 3200-3299)
+- Backend: Express + TypeScript → port 3300 (or frontendPort+100)
+- Database: PostgreSQL 16 container → port 5435 (or next free port)
 - Auth: Custom JWT (no Clerk dependency)
 
 **Design direction:**

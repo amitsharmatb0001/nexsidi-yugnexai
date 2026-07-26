@@ -7,6 +7,7 @@
     "agents/*",
     "agents/generators/*",
     "agents/qa/*",
+    "agents/planner",
     "pipeline"
   ],
   "scripts": {

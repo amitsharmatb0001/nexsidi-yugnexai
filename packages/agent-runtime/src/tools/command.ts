@@ -2,6 +2,7 @@ import { spawnSync } from "child_process";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
 import type { EvidenceLedger } from "../enforce/evidence.ts";
+import { buildSandboxEnv } from "./sandbox-env.ts";
 
 // Command allowlist — from nexsidi-sandbox skill (Anthropic autonomous-coding baseline)
 const ALLOWED_COMMANDS = new Set([
@@ -89,7 +90,7 @@ export function execRunCommand(
       cwd,
       encoding: "utf-8",
       timeout,
-      env: { ...process.env, FORCE_COLOR: "0", NPM_CONFIG_FUND: "false", NPM_CONFIG_AUDIT: "false" },
+      env: buildSandboxEnv({ FORCE_COLOR: "0", NPM_CONFIG_FUND: "false", NPM_CONFIG_AUDIT: "false" }),
     });
 
     const stdout = truncateOutput(result.stdout ?? "", 1000, 5000);

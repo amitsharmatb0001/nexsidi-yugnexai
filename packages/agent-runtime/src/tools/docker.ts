@@ -2,6 +2,7 @@ import { spawnSync } from "child_process";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
 import { truncateOutput } from "./command.ts";
+import { buildSandboxEnv } from "./sandbox-env.ts";
 
 export function execDockerCompose(
   cwd: string,
@@ -29,7 +30,7 @@ export function execDockerCompose(
     cwd,
     encoding: "utf-8",
     timeout,
-    env: { ...process.env, FORCE_COLOR: "0", COMPOSE_PROGRESS: "plain" },
+    env: buildSandboxEnv({ FORCE_COLOR: "0", COMPOSE_PROGRESS: "plain" }),
   });
 
   const stdout = truncateOutput(result.stdout ?? "", 1000, 7000);

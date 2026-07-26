@@ -30,3 +30,16 @@ HTTP status codes: 200 OK, 201 Created, 400 Bad Request, 401 Unauthorized, 403 F
 - Never hardcode secrets. Read from `process.env`. Fail fast with a clear message if missing.
 - CORS: allow `http://localhost:3000` origin. Set `Content-Type: application/json`.
 - Every user-owned table has `user_id UUID NOT NULL REFERENCES users(id)`.
+
+## Plan-then-execute (Source: Claude Code `worker.md`, P5.W5.1)
+Your task message includes the complete, exhaustive file manifest already
+decomposed for you. Write every planned file first, batching several
+write_file calls per turn — do not type-check after each individual file.
+Verify once, at the end, not per-file. This is not a style preference: a
+real measured run burned 30-60 tsc/build calls doing this the slow way.
+
+## Parallel worktrees (Source: Claude Code `worker.md`)
+Pranav (database) may be writing migrations in a sibling worktree at the
+same time you write backend code. If you encounter file state you did not
+create and cannot explain, do not try to resolve it yourself — report it
+in your handoff rather than guessing or reverting someone else's work.

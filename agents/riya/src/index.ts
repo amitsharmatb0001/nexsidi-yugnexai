@@ -273,11 +273,23 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
     const email = `verify+${Date.now()}@example.com`;
     const password = `StrongPass123!${Date.now()}`;
 
+    // 2026-07-25 (Phase 7, full MVP upgrade): real bug found live on
+    // nextech10's own deploy — this call never sent `name`, which every
+    // generated app's registerSchema requires (Saanvi's locked spec always
+    // includes it — confirmed in the actual generated
+    // backend/src/controllers/auth.controller.ts). This smoke test would
+    // 400 with "Required" on EVERY correctly-generated app, reporting a
+    // false "stuck"/"failed" deploy verdict regardless of whether the app
+    // actually works — confirmed by hand: the real browser flow (real
+    // sign-up form, real fields) succeeded with 201 Created against the
+    // exact same running backend this check reported as failing.
+    const name = "NexSidi Verification";
+
     // Register custom auth user
     const regRes = await fetch(`${backendUrl}/api/v1/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, name }),
     });
     if (!regRes.ok) {
       return { ok: false, reason: `custom register failed: returned ${regRes.status}: ${(await regRes.text()).slice(0, 200)}` };
@@ -376,6 +388,13 @@ export async function run(projectId: string, deployTarget: "local" | "gcp" = "lo
     projectId,
     enableDockerTools: true,
     enableHttpTools: true,
+    // 2026-07-25 (P5.W5.4): Riya's proof-of-work is an http_request call,
+    // not a shell command — requiredVerificationCommands can't express it.
+    // Without this, Riya could declare verification_passed:true after
+    // `docker_compose up` alone (the exact false-success bug that shipped
+    // a build with a 500ing DB write — see the migrate-and-verify note
+    // below). See EvidenceLedger.hasEvidenceOfKind / checkCompletion.
+    requiredEvidenceKinds: ["http_check"],
   });
 
   // 2026-07-12: DETERMINISTIC migrate-and-verify — do NOT trust the deploy

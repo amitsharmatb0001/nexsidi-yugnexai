@@ -8,9 +8,12 @@ import {
   translateNimToolToGeminiTool,
   partsToText,
   partsToToolCalls,
+  buildGeminiContents,
+  formatUsageLog,
   GEMINI_ESCALATION_MODEL,
 } from "./gemini.ts";
 import type { NimToolDef } from "./nim.ts";
+import type { GeminiMessage } from "./gemini.ts";
 
 test("resolveGeminiModel returns the default when GEMINI_MODEL is unset", () => {
   delete process.env.GEMINI_MODEL;
@@ -111,10 +114,85 @@ test("isRetryableGeminiStatus is true for 429 and 503, false for other statuses"
   expect(isRetryableGeminiStatus(200)).toBe(false);
 });
 
+// 2026-07-24 (W0.3, full agentic upgrade): cachedContentTokenCount was never
+// read from Vertex AI's usageMetadata anywhere in this file before this fix
+// — a prompt-cache hit and a full-price miss were indistinguishable in the
+// logs, so there was no way to observe whether the stable system-prompt /
+// base-code-context prefix was ever actually being cached across the
+// repeated calls a single agent run makes.
+test("formatUsageLog reports plain usage when there is no cache hit", () => {
+  expect(formatUsageLog({ promptTokenCount: 1000, candidatesTokenCount: 200, totalTokenCount: 1200 }))
+    .toBe("usage: 1000 in / 200 out / 1200 total");
+});
+
+test("formatUsageLog surfaces cachedContentTokenCount when present and > 0", () => {
+  expect(formatUsageLog({ promptTokenCount: 1000, candidatesTokenCount: 200, totalTokenCount: 1200, cachedContentTokenCount: 850 }))
+    .toBe("usage: 1000 in / 200 out / 1200 total (850 cached)");
+});
+
+test("formatUsageLog omits the cache note when cachedContentTokenCount is 0", () => {
+  expect(formatUsageLog({ promptTokenCount: 1000, candidatesTokenCount: 200, totalTokenCount: 1200, cachedContentTokenCount: 0 }))
+    .toBe("usage: 1000 in / 200 out / 1200 total");
+});
+
 test("geminiRetryDelayMs backs off exponentially by attempt number", () => {
   const d0 = geminiRetryDelayMs(0);
   const d1 = geminiRetryDelayMs(1);
   const d2 = geminiRetryDelayMs(2);
   expect(d1).toBeGreaterThan(d0);
   expect(d2).toBeGreaterThan(d1);
+});
+
+// 2026-07-24 (NexSidi full agentic upgrade, W0.1): Gemini 3.x requires every
+// multi-turn request to echo back the `thoughtSignature` the API attached to
+// the FIRST functionCall part of a prior model turn — a missing signature on
+// upgrade to gemini-3.6-flash/gemini-3.1-pro-preview is a hard 400, not a
+// silent degradation. Before this fix, `GeminiPart`'s functionCall variant
+// had no typed field for it (audit: docs/audit/2026-07-22-nexsidi-depth-audit.md)
+// so any code constructing/inspecting a functionCall part could silently drop
+// it. This locks the field into the type and proves it survives the full
+// round trip: API response -> stored history -> next outgoing request body.
+test("GeminiPart functionCall variant carries a typed thoughtSignature field", () => {
+  const part: import("./gemini.ts").GeminiPart = {
+    functionCall: { name: "write_file", args: { path: "a.ts" } },
+    thoughtSignature: "opaque-signature-bytes",
+  };
+  expect(part.functionCall.name).toBe("write_file");
+  expect(part.thoughtSignature).toBe("opaque-signature-bytes");
+});
+
+test("buildGeminiContents preserves thoughtSignature on a prior model turn's functionCall part", () => {
+  const history: GeminiMessage[] = [
+    { role: "system", content: "you are an agent" },
+    { role: "user", content: "write a.ts" },
+    {
+      role: "model",
+      content: [
+        { functionCall: { name: "write_file", args: { path: "a.ts" } }, thoughtSignature: "sig-abc123" },
+      ],
+    },
+    { role: "user", content: [{ functionResponse: { name: "write_file", response: { status: "success" } } }] },
+  ];
+
+  const { contents, systemParts } = buildGeminiContents(history);
+
+  expect(systemParts).toEqual(["you are an agent"]);
+  // The model turn's functionCall part must reach the outgoing request body
+  // with thoughtSignature intact — this is what the API requires echoed back.
+  const modelTurn = contents.find((c) => c.role === "model");
+  expect(modelTurn).toBeDefined();
+  const fcPart = modelTurn!.parts.find((p) => "functionCall" in p) as { thoughtSignature?: string } | undefined;
+  expect(fcPart?.thoughtSignature).toBe("sig-abc123");
+});
+
+test("buildGeminiContents round-trips thoughtSignature through JSON.stringify (what actually goes over the wire)", () => {
+  const history: GeminiMessage[] = [
+    {
+      role: "model",
+      content: [{ functionCall: { name: "read_file", args: { path: "b.ts" } }, thoughtSignature: "sig-xyz789" }],
+    },
+  ];
+  const { contents } = buildGeminiContents(history);
+  const wireBody = JSON.parse(JSON.stringify({ contents }));
+  expect(wireBody.contents[0].parts[0].thoughtSignature).toBe("sig-xyz789");
 });

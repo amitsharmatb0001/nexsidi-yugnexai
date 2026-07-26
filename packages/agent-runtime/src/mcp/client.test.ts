@@ -35,11 +35,11 @@ test("MCPClient stdio handshake and tool calling", async () => {
 
     const toolsResult = await client.listTools();
     expect(toolsResult.tools).toHaveLength(1);
-    expect(toolsResult.tools[0].name).toBe("mock_tool");
+    expect(toolsResult.tools[0]!.name).toBe("mock_tool");
 
     const callResult = await client.callTool("mock_tool", {});
     expect(callResult.content).toHaveLength(1);
-    expect(callResult.content[0].text).toBe("called mock_tool");
+    expect(callResult.content[0]!.text).toBe("called mock_tool");
 
     await client.stop();
   } finally {

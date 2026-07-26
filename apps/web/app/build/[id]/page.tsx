@@ -1285,7 +1285,8 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
     try {
       const body = changeRequest.trim() ? JSON.stringify({ changes: changeRequest.trim() }) : undefined;
       const res = await fetch(`${API}/api/pipeline/${id}/approve-spec`, {
-        method: "POST", headers: body ? { "Content-Type": "application/json" } : undefined, body,
+        method: "POST", credentials: "include",
+        headers: body ? { "Content-Type": "application/json" } : undefined, body,
       });
       if (res.ok) {
         setStage("generate");
@@ -1301,7 +1302,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   async function approveDeploy() {
     setSubmitting(true);
     try {
-      const res = await fetch(`${API}/api/pipeline/${id}/approve-deploy`, { method: "POST" });
+      const res = await fetch(`${API}/api/pipeline/${id}/approve-deploy`, { method: "POST", credentials: "include" });
       if (res.ok) {
         setStage("deliver");
         setStageMessage("Deployment approved. Launching containers...");

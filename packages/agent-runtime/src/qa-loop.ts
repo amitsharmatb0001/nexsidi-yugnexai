@@ -11,7 +11,7 @@
 // then submit_findings — gated by finding-evidence.ts so a finding citing a
 // file the agent never actually read is rejected and it has to go check.
 import {
-  geminiChatWithTools,
+  routeToolsWithFallback,
   translateNimToolToGeminiTool,
   type GeminiMessage,
   type GeminiToolDef,
@@ -23,6 +23,13 @@ import { join, extname } from "node:path";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { checkFindingsEvidence, checkReviewCoverage } from "./enforce/finding-evidence.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
+import { compactGeminiHistory } from "./compaction.ts";
+
+// 2026-07-24 (W0.3): this loop previously had NO compaction at all. 2026-
+// 07-25 (Phase 0.3): matches gemini-loop.ts's threshold — 40K was 4% of the
+// documented 1M input window for every provisioned model (gemini_3_1_pro.md
+// etc., E:/ai yug/), amnesiac far too early for a 30-iteration exploration.
+const QA_COMPACTION_THRESHOLD_TOKENS = 750_000;
 
 export { detectStuckLoop };
 
@@ -38,6 +45,14 @@ export interface Finding {
   category: string;
   detail: string;
   file?: string;
+  // 2026-07-24 (P2, full agentic upgrade): a finding with `file` but no
+  // `line` still forces the generator to re-read and re-scan the whole
+  // file to locate the issue — the exact "broad refactor, new errors,
+  // score oscillates 83->69" failure mode this session's forensic audit
+  // traced. Optional (not every finding is line-attributable — e.g. a
+  // missing-file or architecture-level issue), but required whenever the
+  // model is citing something inside a file it already read.
+  line?: number;
 }
 
 export interface QAAgentConfig {
@@ -124,7 +139,7 @@ const QA_TOOL_DEFS: NimToolDef[] = [
     type: "function",
     function: {
       name: "submit_findings",
-      description: "Submit your final findings after reviewing the code. Every finding with a `file` field must be a file you already called read_file on. Call with an empty findings array if you found nothing.",
+      description: "Submit your final findings after reviewing the code. Every finding with a `file` field must be a file you already called read_file on. Whenever you cite a `file`, also cite the exact `line` number the issue is on (read_file's output — count from its start) so the fix can target that line directly instead of re-scanning the whole file. Call with an empty findings array if you found nothing.",
       parameters: {
         type: "object",
         properties: {
@@ -137,6 +152,7 @@ const QA_TOOL_DEFS: NimToolDef[] = [
                 category: { type: "string" },
                 detail: { type: "string" },
                 file: { type: "string" },
+                line: { type: "integer", description: "1-indexed line number within `file` where the issue is — omit only if the finding isn't attributable to a single line." },
               },
               required: ["severity", "category", "detail"],
             },
@@ -173,9 +189,23 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
   while (iterations < QA_MAX_ITERATIONS) {
     iterations++;
 
+    // 2026-07-24 (W0.3): proactive compaction — checked before the call it
+    // protects, not reactively after (see gemini-loop.ts for the same
+    // pattern and why "after" leaves the first oversized request unguarded).
+    messages = await compactGeminiHistory(messages, undefined, QA_COMPACTION_THRESHOLD_TOKENS);
+
     let response;
     try {
-      response = await geminiChatWithTools(messages, tools);
+      // 2026-07-24 (W0.2): route through the "qa" tier pool
+      // (gemini-3.1-pro-preview, thinking_level:HIGH, with zero-wait
+      // fallback to gemini-3.6-flash / gemini-3.5-flash on failure) instead
+      // of the un-tiered geminiChatWithTools(messages, tools) call this used
+      // to make — which silently defaulted every real GAN review to
+      // gemini-3.5-flash regardless of the TIER_POOLS config.
+      response = await routeToolsWithFallback("qa", messages, tools);
+      if (iterations === 1) {
+        console.log(`[${config.agentName}:qa-loop] model=${response.modelUsed}`);
+      }
     } catch (err) {
       errors.push(`Gemini call failed on iteration ${iterations}: ${String(err)}`);
       await new Promise((r) => setTimeout(r, 5000));

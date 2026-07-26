@@ -134,6 +134,82 @@ test("faultAgent pranav has no auto-fix path yet -> loop stops immediately, mark
   expect(result.iterations).toBe(1);
 });
 
+// 2026-07-24 (P3.W3.4, full agentic upgrade): the test above documents the
+// OLD behavior (no fixPranav dep provided — still correct, backward
+// compatible). These document the NEW behavior once a caller wires
+// fixPranav (as the real entry point runQAFixLoop now does).
+test("faultAgent pranav WITH fixPranav wired -> fixPranav is called and the loop can converge", async () => {
+  let qaCallCount = 0;
+  let pranavCalled = false;
+  const deps: QAFixDeps = {
+    runStage5: async () => {
+      qaCallCount++;
+      return qaCallCount === 1 ? failResult(1, "pranav") : passResult();
+    },
+    fixShubham: async () => ({ success: true }),
+    fixAanya: async () => ({ success: true }),
+    fixPranav: async () => {
+      pranavCalled = true;
+      return { success: true };
+    },
+  };
+
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(pranavCalled).toBe(true);
+  expect(result.pass).toBe(true);
+  expect(result.stuck).toBe(false);
+});
+
+test("mixed shubham+pranav findings WITH fixPranav wired -> both fixers run in the same round", async () => {
+  let qaCallCount = 0;
+  const called: { shubham: boolean; pranav: boolean } = { shubham: false, pranav: false };
+  const deps: QAFixDeps = {
+    runStage5: async () => {
+      qaCallCount++;
+      if (qaCallCount === 1) {
+        return {
+          pass: false,
+          findings: [
+            { file: "backend/routes.ts", issue: "issue A" },
+            { file: "db/schema.ts", issue: "issue B" },
+          ],
+        };
+      }
+      return passResult();
+    },
+    fixShubham: async () => {
+      called.shubham = true;
+      return { success: true };
+    },
+    fixAanya: async () => ({ success: true }),
+    fixPranav: async () => {
+      called.pranav = true;
+      return { success: true };
+    },
+  };
+
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(called.shubham).toBe(true);
+  expect(called.pranav).toBe(true);
+  expect(result.pass).toBe(true);
+});
+
+test("faultAgent pranav WITH fixPranav wired, but findings never improve -> still detects stuck (fixPranav doesn't bypass stuck-detection)", async () => {
+  const deps: QAFixDeps = {
+    runStage5: async () => failResult(2, "pranav"),
+    fixShubham: async () => ({ success: true }),
+    fixAanya: async () => ({ success: true }),
+    fixPranav: async () => ({ success: true }),
+  };
+
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(result.stuck).toBe(true);
+  expect(result.pass).toBe(false);
+});
+
 test("finding count strictly decreasing across fix attempts keeps the loop going, up to the iteration cap", async () => {
   let qaCallCount = 0;
   const deps: QAFixDeps = {

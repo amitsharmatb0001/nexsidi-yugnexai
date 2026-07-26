@@ -19,6 +19,16 @@ class FileLock {
   }
 
   public async acquire(): Promise<void> {
+    // 2026-07-25 (P5.W5.5): mkdirSync(this.lockPath) below throws ENOENT
+    // (not EEXIST) when its PARENT directory doesn't exist yet — a brand
+    // new BUILD_DIR nobody has created. The catch below treats every
+    // failure as "another process holds the lock" and retries forever;
+    // ENOENT never resolves itself no matter how many times it's retried,
+    // so a caller with a fresh BUILD_DIR hung here permanently with zero
+    // log output. Ensuring the parent exists up front makes every
+    // subsequent mkdirSync failure a genuine EEXIST (real contention),
+    // which the retry loop already handles correctly.
+    mkdirSync(dirname(this.lockPath), { recursive: true });
     let attempts = 0;
     while (true) {
       try {

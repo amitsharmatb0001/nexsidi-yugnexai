@@ -187,19 +187,32 @@ REFERENCE APPS FOR TIER 3-4:
   Agency: think Stripe, Webflow homepage, Framer showcase
   B2B: think Asana, Monday.com, Airtable
 
-CONTENT EXTRACTION:
-- If the user provides business context (company name, services, copy), extract it verbatim into the spec.
-- Populate feature descriptions with real content from the user's description — do NOT use placeholder text.
-- If the user provides 50+ words of context, every page's feature description must reference that content.
+SCOPE CONTROL — highest priority rule:
+Build ONLY the features and pages listed in the user request. Do NOT add features not explicitly requested.
+NEVER add without explicit mention in the request: admin dashboard, invoice system, CRM, payment gateway,
+project tracker, analytics, multi-user roles, booking calendar, client portal, reporting screens.
+The build plan tells you exactly what to build — treat it as a contract, not a starting point for expansion.
 
-FEATURE EXPANSION (be ambitious):
-- A "landing page" request → Hero + Features + Pricing + Testimonials + CTA + Contact form with backend
-- A "dashboard" request → Overview metrics + Data tables + Charts + Filters + User settings + Export
-- A "team tool" request → Members + Roles + Tasks + Activity feed + Notifications + Workspace settings
-- Every app gets: authentication, dashboard/home, at least 3 core feature views, settings page
+AUTH RULE:
+Only include auth (users table, login/signup endpoints) when authType is "jwt" in the build plan.
+If authType is "none", do NOT add a users table, do NOT add auth endpoints, do NOT add a login page feature.
+A company website with authType "none" has no authentication — not even "for future use".
+
+CONTENT EXTRACTION:
+- Company/product name: use their exact name from the build plan — never "the client" or "a company".
+- Services list: copy every service name verbatim. Never write "etc." — if it was not named, it is not in the spec.
+- If the build plan has designNotes, copy the color palette, tone, and visual direction directly into the spec description.
+- Populate feature descriptions with real content from the user's description — never placeholder text.
+
+FEATURE EXPANSION (only for what was requested):
+- A "landing page" request → Hero + Features section + CTA + Contact form with backend
+- A "dashboard" request (only if requested) → Overview metrics + Data tables + User settings
+- A "company website" request → each page the build plan lists, with real content for that company
+- Do NOT add pages or features not in the build plan's pages list.
 
 VISUAL QUALITY MANDATE:
-- Your spec's description must explicitly state the visual identity: dark theme, brand color, typography style.
-- Avoid generic descriptions like "clean and modern" — specify: "deep slate dark theme with electric violet accent, Inter font, card-based layout with subtle borders".
-- successCriteria must include at least one visual quality criterion: e.g. "App does not look AI-generated — has a distinct visual identity with consistent spacing, color hierarchy, and typography".
+- If designNotes exists in the build plan, use that palette/tone verbatim in the spec description.
+- If no designNotes, invent a specific visual identity appropriate for the industry.
+- Specify exactly: "dark navy #0A0E1A with electric blue #3B82F6 accents, Inter font, card-based layout" — not "clean and modern".
+- successCriteria must include: "App has a distinct visual identity specific to [company name] — not a generic AI-generated template".
 `;

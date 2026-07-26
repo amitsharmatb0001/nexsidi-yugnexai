@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execWriteFile, execEditFile, execDeleteFile } from "./file.ts";
+import { execWriteFile, execWriteFiles, execEditFile, execDeleteFile } from "./file.ts";
 
 // Full-system audit L2: a model sometimes sends write_file's `content`
 // argument as a JSON object instead of a string (observed in stress-test
@@ -49,6 +49,43 @@ test("array content is also coerced rather than throwing", () => {
 // write_file for single-line changes, burning output tokens re-emitting
 // unchanged content. execEditFile mirrors Anthropic's own text-editor
 // str_replace command: exactly one match required, or it's an error.
+
+// 2026-07-25 (Phase 2.3, full MVP upgrade): write_files closes the
+// one-file-per-turn bug the audit root-caused as the biggest single
+// contributor to the 40-iteration grind — write_file's shape forced a
+// model to spend one whole turn per file even after the real output budget
+// (Phase 0) made batching several files per turn genuinely possible.
+test("write_files writes every file in one call", () => {
+  const result = execWriteFiles(sandboxDir, {
+    files: [
+      { path: "a.ts", content: "export const a = 1;" },
+      { path: "nested/b.ts", content: "export const b = 2;" },
+      { path: "c.ts", content: "export const c = 3;" },
+    ],
+  });
+  expect(result.status).toBe("success");
+  expect(readFileSync(join(sandboxDir, "a.ts"), "utf-8")).toBe("export const a = 1;");
+  expect(readFileSync(join(sandboxDir, "nested/b.ts"), "utf-8")).toBe("export const b = 2;");
+  expect(readFileSync(join(sandboxDir, "c.ts"), "utf-8")).toBe("export const c = 3;");
+});
+
+test("write_files rejects an empty files array instead of silently no-op'ing", () => {
+  const result = execWriteFiles(sandboxDir, { files: [] });
+  expect(result.status).toBe("error");
+});
+
+test("write_files reports partial failure without losing the files that DID succeed", () => {
+  const result = execWriteFiles(sandboxDir, {
+    files: [
+      { path: "good.ts", content: "export const ok = 1;" },
+      { path: "../escape.ts", content: "malicious" }, // blocked by guardPath
+    ],
+  });
+  expect(result.status).toBe("error");
+  expect(result.summary).toContain("1/2 succeeded");
+  // the good file was still written — one bad path in the batch doesn't roll back the rest
+  expect(readFileSync(join(sandboxDir, "good.ts"), "utf-8")).toBe("export const ok = 1;");
+});
 
 test("edit_file replaces a unique match and leaves the rest of the file untouched", () => {
   writeFileSync(join(sandboxDir, "a.ts"), "export const x = 1;\nexport const y = 2;\n");

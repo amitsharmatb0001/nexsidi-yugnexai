@@ -17,6 +17,18 @@ import type { instincts } from "./schema.ts";
 export type Confidence = "0.3" | "0.5" | "0.7" | "0.9";
 export type InstinctDomain = "code-style" | "security" | "performance" | "testing" | "architecture";
 
+// 2026-07-24 (P3.W3.3), extended 2026-07-25 (P5.W5.2): originally just the
+// domains inferInstinctDomain (stage5-qa-fix-loop.ts) actually PRODUCES from
+// live QA findings — "code-style" and "testing" were excluded because
+// nothing classified a finding into either. P5.W5.2 (seed-instincts.ts)
+// seeds 5 confirmed recurring generation bugs directly, not via QA — two of
+// them are genuinely "code-style" (a hallucinated package, a missing
+// Tailwind color-extension block). "code-style" is now a real write source,
+// so it must be reachable here, or those two seeds are write-only —
+// repeating the exact bug this array was created to fix. "testing" stays
+// excluded: nothing writes to it yet, seeded or QA-inferred.
+export const REACHABLE_INSTINCT_DOMAINS: InstinctDomain[] = ["security", "performance", "architecture", "code-style"];
+
 export interface InstinctInput {
   agentName: string;
   domain: InstinctDomain;
@@ -48,6 +60,22 @@ export interface PromptInstinct {
   confidence: string;
 }
 
+// 2026-07-24 (P3.W3.3, full agentic upgrade): every instinct was previously
+// inserted as a fresh row at a flat "0.5" confidence, forever — a mistake
+// QA catches for the 5th time in a row gets logged with the exact same
+// weight as one seen for the first time. D31 ("confidence tiers change
+// enforcement") only means anything if confidence actually MOVES when a
+// pattern repeats. This is the escalation ladder recordInstinct (below)
+// climbs when it finds an existing instinct for the same domain+trigger —
+// caps at "0.9" (the highest tier), never invented above it.
+const CONFIDENCE_TIERS: Confidence[] = ["0.3", "0.5", "0.7", "0.9"];
+
+export function escalateConfidence(current: Confidence): Confidence {
+  const idx = CONFIDENCE_TIERS.indexOf(current);
+  const nextIdx = Math.min(idx + 1, CONFIDENCE_TIERS.length - 1);
+  return CONFIDENCE_TIERS[nextIdx]!;
+}
+
 // Empty on purpose returns "" (no header) rather than an empty section —
 // an agent's very first run (or a run with no relevant history) should get
 // a system prompt identical to before this feature existed, not a
@@ -63,6 +91,28 @@ export function formatInstinctsForPrompt(instinctList: PromptInstinct[]): string
 export async function recordInstinct(agentName: string, domain: InstinctDomain, trigger: string, finding: string): Promise<void> {
   const { db } = await import("./client.ts");
   const { instincts: instinctsTable } = await import("./schema.ts");
+  const { eq, and, desc } = await import("drizzle-orm");
+
+  // 2026-07-24 (P3.W3.3): escalate confidence on a repeated pattern instead
+  // of inserting a flat duplicate every time. "Same pattern" = same domain
+  // + same trigger text, still an open "mistake" (not superseded). Only the
+  // most recent matching row is escalated — older rows for the same pattern
+  // are left as the historical record, not rewritten.
+  const existing = await db
+    .select({ id: instinctsTable.id, confidence: instinctsTable.confidence })
+    .from(instinctsTable)
+    .where(and(eq(instinctsTable.domain, domain), eq(instinctsTable.trigger, trigger), eq(instinctsTable.outcome, "mistake")))
+    .orderBy(desc(instinctsTable.createdAt))
+    .limit(1);
+
+  if (existing[0]) {
+    await db
+      .update(instinctsTable)
+      .set({ confidence: escalateConfidence(existing[0].confidence as Confidence), action: finding })
+      .where(eq(instinctsTable.id, existing[0].id));
+    return;
+  }
+
   await db.insert(instinctsTable).values(buildInstinctRecord({ agentName, domain, trigger, finding }));
 }
 
@@ -73,14 +123,24 @@ export async function recordInstinct(agentName: string, domain: InstinctDomain, 
 // most-recent first. Per-project promotion/scoping refinement is future
 // work, not blocking the basic "does the agent see its own past mistakes"
 // loop this closes.
-export async function queryRecentInstincts(domain: InstinctDomain, limit = 5): Promise<PromptInstinct[]> {
+//
+// 2026-07-24 (P3.W3.3): accepts one domain OR several. Real bug found
+// during this session's audit: both call sites (Shubham/Aanya) hardcoded
+// queryRecentInstincts("security") — but inferInstinctDomain
+// (stage5-qa-fix-loop.ts) classifies findings into "security",
+// "performance", or "architecture" depending on which QA agent found them.
+// Querying only "security" meant every Deepika (performance) and Navya
+// (logic->architecture) instinct was written correctly but NEVER read back
+// by either generator — 2 of the 3 reachable domains were write-only.
+export async function queryRecentInstincts(domain: InstinctDomain | InstinctDomain[], limit = 5): Promise<PromptInstinct[]> {
   const { db } = await import("./client.ts");
   const { instincts: instinctsTable } = await import("./schema.ts");
-  const { eq, desc, and } = await import("drizzle-orm");
+  const { eq, inArray, desc, and } = await import("drizzle-orm");
+  const domainFilter = Array.isArray(domain) ? inArray(instinctsTable.domain, domain) : eq(instinctsTable.domain, domain);
   const rows = await db
     .select({ trigger: instinctsTable.trigger, action: instinctsTable.action, confidence: instinctsTable.confidence })
     .from(instinctsTable)
-    .where(and(eq(instinctsTable.domain, domain), eq(instinctsTable.outcome, "mistake")))
+    .where(and(domainFilter, eq(instinctsTable.outcome, "mistake")))
     .orderBy(desc(instinctsTable.createdAt))
     .limit(limit);
   return rows;

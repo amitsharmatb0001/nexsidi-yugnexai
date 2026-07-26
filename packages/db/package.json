@@ -11,7 +11,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "generate": "drizzle-kit generate",
-    "migrate": "bun src/migrate.ts"
+    "migrate": "bun src/migrate.ts",
+    "seed-instincts": "bun src/seed-instincts.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.40.0",

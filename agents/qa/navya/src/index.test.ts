@@ -103,6 +103,32 @@ test("a finding without a file field leaves file undefined rather than inventing
   expect(result.findings[0]!.file).toBeUndefined();
 });
 
+// 2026-07-24 (P2, full agentic upgrade): a finding with `file` but no
+// `line` still forces the generator to re-scan the whole file to locate
+// the issue — traced live this session as the root cause of QA-fix
+// oscillation. `line` must survive parsing the same way `file` already does.
+test("a finding with a line field is preserved through parsing", () => {
+  const result = parseAndScoreFindings(
+    JSON.stringify({
+      findings: [
+        { severity: "HIGH", category: "null-deref", detail: "unchecked optional access", file: "backend/src/controllers/auth.ts", line: 47 },
+      ],
+    }),
+  );
+  expect(result.findings[0]!.line).toBe(47);
+});
+
+test("a finding without a line field leaves line undefined rather than inventing one", () => {
+  const result = parseAndScoreFindings(
+    JSON.stringify({ findings: [{ severity: "LOW", category: "style", detail: "no line supplied", file: "a.ts" }] }),
+  );
+  expect(result.findings[0]!.line).toBeUndefined();
+});
+
+test("QA_SYSTEM_PROMPT's JSON schema example includes line", () => {
+  expect(QA_SYSTEM_PROMPT).toContain('"line"');
+});
+
 // Found in stress-test 1 (F7): the model's real output was wrapped in
 // markdown code fences despite the prompt saying "Output ONLY JSON",
 // tripping the D25 default-FAIL path even though the underlying findings
@@ -157,8 +183,8 @@ test("run() retries once on an empty/unparseable first response before giving up
     chat: async () => {
       callCount++;
       return callCount === 1
-        ? { content: "", modelUsed: "qwen/qwen3.5-122b-a10b" as const }
-        : { content: JSON.stringify({ findings: [] }), modelUsed: "qwen/qwen3.5-122b-a10b" as const };
+        ? { content: "", modelUsed: "mistralai/mistral-nemotron" as const }
+        : { content: JSON.stringify({ findings: [] }), modelUsed: "mistralai/mistral-nemotron" as const };
     },
   };
   const result = await run("diag", 1, "// some code", deps);
@@ -168,7 +194,7 @@ test("run() retries once on an empty/unparseable first response before giving up
 });
 
 test("run() returns the default-FAIL result (not a thrown error) when BOTH attempts are empty/unparseable", async () => {
-  const deps = { chat: async () => ({ content: "", modelUsed: "qwen/qwen3.5-122b-a10b" as const }) };
+  const deps = { chat: async () => ({ content: "", modelUsed: "mistralai/mistral-nemotron" as const }) };
   const result = await run("diag", 1, "// some code", deps);
   expect(result.passed).toBe(false);
   expect(result.findings[0]!.severity).toBe("CRITICAL");
@@ -187,7 +213,7 @@ test("run() requests a wide output budget so a full-codebase review isn't trunca
   const deps = {
     chat: async (_agent: string, _messages: unknown, _apiKey: string, opts?: { maxTokens?: number }) => {
       capturedOpts = opts;
-      return { content: JSON.stringify({ findings: [] }), modelUsed: "qwen/qwen3.5-122b-a10b" as const };
+      return { content: JSON.stringify({ findings: [] }), modelUsed: "mistralai/mistral-nemotron" as const };
     },
   };
   await run("diag", 1, "// some code", deps as unknown as NavyaDeps);

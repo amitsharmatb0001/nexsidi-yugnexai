@@ -24,6 +24,7 @@ import {
   type ClaudeToolDef,
 } from "@nexsidi/llm-client";
 import { runAgent, buildToolList, MAX_ITERATIONS, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
+import { join } from "path";
 import { runAgentWithGemini } from "./gemini-loop.ts";
 import { execWriteFile, execReadFile, execListFiles, execEditFile, execDeleteFile } from "./tools/file.ts";
 import { execRunCommand } from "./tools/command.ts";
@@ -114,6 +115,20 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
       originalError(...args);
     };
   }
+
+  const emitEvent = (event: Record<string, unknown>) => {
+    if (!config.projectId) return;
+    try {
+      const logDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", config.projectId!, "logs");
+      const { mkdirSync, appendFileSync } = require("fs");
+      mkdirSync(logDir, { recursive: true });
+      appendFileSync(
+        join(logDir, "events.jsonl"),
+        JSON.stringify({ ts: Date.now(), agent: config.agentName, ...event }) + "\n",
+        "utf-8",
+      );
+    } catch {}
+  };
 
   const claudeApiKey = process.env.ANTHROPIC_API_KEY ?? "";
 
@@ -211,16 +226,17 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   const filesWritten: string[] = [];
   const errors: string[] = [];
   let iterations = 0;
+  const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
   let abortedOnUnrecoverableError = false;
   const recentCallSignatures: string[] = [];
 
-  console.log(`[${config.agentName}:claude-agent] Starting — model: claude-sonnet-5, maxIter: ${MAX_ITERATIONS}`);
+  console.log(`[${config.agentName}:claude-agent] Starting — model: claude-sonnet-5, maxIter: ${effectiveMaxIterations}`);
 
   // Interactive-browser QA session (Tilotma Tier 3) — same lifecycle as
   // loop.ts: lazily spawned, closed in the finally on every exit path.
   const browserToolset = config.enableBrowser ? new BrowserToolset() : null;
   try {
-  while (iterations < MAX_ITERATIONS) {
+  while (iterations < effectiveMaxIterations) {
     iterations++;
     console.log(`[${config.agentName}:claude-agent] Iteration ${iterations}`);
 
@@ -271,7 +287,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
     const turnSignature = response.toolCalls.map((c) => `${c.name}:${JSON.stringify(c.input)}`).join("|");
     recentCallSignatures.push(turnSignature);
     if (detectStuckLoop(recentCallSignatures)) {
-      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${MAX_ITERATIONS}-iteration cap.`;
+      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${effectiveMaxIterations}-iteration cap.`;
       console.log(`[${config.agentName}:claude-agent] ${reason}`);
       await saveHistory();
       return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason] };
@@ -290,12 +306,16 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
 
       switch (toolName) {
         case "write_file": {
-          const r = execWriteFile(config.sandboxDir, args as { path: string; content: string });
-          if (r.status === "success") filesWritten.push((args as { path: string }).path);
+          const writeArgs = args as { path: string; content: string };
+          emitEvent({ type: "tool_call", tool: "write_file", input: { path: writeArgs.path, bytes: writeArgs.content.length } });
+          const r = execWriteFile(config.sandboxDir, writeArgs);
+          if (r.status === "success") filesWritten.push(writeArgs.path);
+          emitEvent({ type: "tool_result", tool: "write_file", status: r.status, path: writeArgs.path });
           result = r;
           break;
         }
         case "read_file": {
+          emitEvent({ type: "tool_call", tool: "read_file", input: { path: (args as { path: string }).path } });
           result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number }, ledger);
           break;
         }
@@ -304,31 +324,59 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "edit_file": {
-          result = execEditFile(config.sandboxDir, args as { path: string; old_str: string; new_str: string });
+          const editArgs = args as { path: string; old_str: string; new_str: string };
+          emitEvent({ type: "tool_call", tool: "edit_file", input: { path: editArgs.path } });
+          result = execEditFile(config.sandboxDir, editArgs);
+          emitEvent({ type: "tool_result", tool: "edit_file", status: result.status, path: editArgs.path });
           break;
         }
         case "delete_file": {
-          result = execDeleteFile(config.sandboxDir, args as { path: string });
+          const delArgs = args as { path: string };
+          emitEvent({ type: "tool_call", tool: "delete_file", input: { path: delArgs.path } });
+          result = execDeleteFile(config.sandboxDir, delArgs);
           break;
         }
         case "run_command": {
-          result = execRunCommand(config.sandboxDir, args as { command: string; timeout_ms?: number }, ledger);
+          const commandArgs = args as { command: string; timeout_ms?: number };
+          emitEvent({ type: "tool_call", tool: "run_command", input: commandArgs });
+          result = execRunCommand(config.sandboxDir, commandArgs, ledger);
+          emitEvent({ type: "tool_result", tool: "run_command", status: result.status, summary: result.summary, output: (result.output ?? "").slice(0, 500) });
+          if (result.status === "error" && config.enableWebSearch) {
+            const errorSnippet = (result.output ?? result.summary ?? "").slice(0, 150);
+            emitEvent({ type: "repair", status: "searching", errorSnippet: errorSnippet.slice(0, 150) });
+            result.next_actions = [
+              `SELF-REPAIR: use web_search immediately with the exact error: "${errorSnippet}" — find the fix, apply it, THEN retry the command.`,
+              ...(result.next_actions ?? []),
+            ];
+          }
           break;
         }
         case "http_request": {
-          result = await execHttpRequest(args as { method: string; url: string; headers?: Record<string, string>; body?: string; timeout_ms?: number }, ledger);
+          const httpArgs = args as { method: string; url: string; headers?: Record<string, string>; body?: string; timeout_ms?: number };
+          emitEvent({ type: "tool_call", tool: "http_request", input: { method: httpArgs.method, url: httpArgs.url } });
+          result = await execHttpRequest(httpArgs, ledger);
+          emitEvent({ type: "tool_result", tool: "http_request", status: result.status, summary: result.summary });
           break;
         }
         case "docker_compose": {
-          result = execDockerCompose(config.sandboxDir, args as { action: "up" | "down" | "logs" | "ps"; service?: string; timeout_ms?: number });
+          const dockerArgs = args as { action: "up" | "down" | "logs" | "ps"; service?: string; timeout_ms?: number };
+          emitEvent({ type: "tool_call", tool: "docker_compose", input: dockerArgs });
+          result = execDockerCompose(config.sandboxDir, dockerArgs);
+          emitEvent({ type: "tool_result", tool: "docker_compose", status: result.status, summary: result.summary });
           break;
         }
         case "web_search": {
-          result = await execWebSearch(args as { query: string; timeout_ms?: number });
+          const searchArgs = args as { query: string; timeout_ms?: number };
+          emitEvent({ type: "tool_call", tool: "web_search", input: { query: searchArgs.query } });
+          result = await execWebSearch(searchArgs);
+          emitEvent({ type: "tool_result", tool: "web_search", status: result.status, summary: result.summary });
           break;
         }
         case "screenshot": {
-          result = await execScreenshot(args as { url: string; outputPath: string });
+          const ssArgs = args as { url: string; outputPath: string };
+          emitEvent({ type: "tool_call", tool: "screenshot", input: ssArgs });
+          result = await execScreenshot(ssArgs);
+          emitEvent({ type: "tool_result", tool: "screenshot", status: result.status, summary: result.summary, outputPath: ssArgs.outputPath });
           break;
         }
         case "task_complete": {
@@ -340,6 +388,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
             ledger,
             { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed },
             config.requiredVerificationCommands,
+            config.requiredEvidenceKinds,
           );
           if (!check.allowed) {
             console.log(`[${config.agentName}:claude-agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);
@@ -380,7 +429,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
 
     // Proactively compact history if it grows too large
     const { compactHistory } = await import("./compaction.ts");
-    messages = await compactHistory(messages);
+    messages = (await compactHistory(messages as any)) as any;
   }
 
   await saveHistory();
@@ -388,7 +437,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
     success: false,
     summary: abortedOnUnrecoverableError
       ? "Aborted early: hit an unrecoverable error (quota exhaustion, auth failure, or permission denied)"
-      : `Max iterations (${MAX_ITERATIONS}) reached without task_complete`,
+      : `Max iterations (${effectiveMaxIterations}) reached without task_complete`,
     filesWritten,
     iterations,
     errors: abortedOnUnrecoverableError ? errors : [...errors, "Max iterations exceeded"],

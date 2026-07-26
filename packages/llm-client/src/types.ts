@@ -35,7 +35,6 @@ export type AgentName =
 export type ModelId =
   | "moonshotai/kimi-k2.6"
   | "qwen/qwen3-next-80b-a3b-instruct"
-  | "qwen/qwen3-next-80b-a3b-instruct"
   | "mistralai/mistral-nemotron"
   | "mistralai/mistral-medium-3.5-128b"
   | "qwen2.5-coder:7b-instruct-q4_K_M"
@@ -84,7 +83,6 @@ export const AGENT_MODELS: Record<AgentName, ModelId> = {
 // The NIM client round-robins keys, so the shared bucket refills at 4× rate.
 export const MODEL_RPM_LIMITS: Record<string, number> = {
   "moonshotai/kimi-k2.6":                160,
-  "qwen/qwen3-next-80b-a3b-instruct":              160,
   "qwen/qwen3-next-80b-a3b-instruct":    160,
   "mistralai/mistral-nemotron":          160,
   "mistralai/mistral-medium-3.5-128b":   160,
@@ -99,8 +97,7 @@ export const NIM_CONTEXT_LIMITS: Record<string, number> = {
   // maximum context length is 262144 tokens" (2026-07-04). The prior 32768
   // entry was never measured for this model; it was a guessed default that
   // happened to also match several genuinely-32K models in this table.
-  "qwen/qwen3-next-80b-a3b-instruct":              262144,
-  "qwen/qwen3-next-80b-a3b-instruct":    32768,
+  "qwen/qwen3-next-80b-a3b-instruct":    262144,
   "mistralai/mistral-nemotron":          32768,
   "mistralai/mistral-medium-3.5-128b":   131072,
   "z-ai/glm-5.2":                        32768, // not independently verified — conservative default, same as the other 32K-class models above; model itself demoted from every fallback chain (see ModelId comment) after being proven to hang on every request shape

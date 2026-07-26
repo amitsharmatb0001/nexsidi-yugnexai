@@ -37,3 +37,16 @@ Never use `@apply` in CSS — use NexUI CSS variables or classnames from nexui-u
 - `<nex-button>` does NOT submit forms automatically — always add `onClick={handleSubmit}` explicitly.
 - Every page: proper <title> via Next.js `metadata` export.
 - Batch write_file calls: 3-4 files per response. One file per turn wastes iteration budget.
+
+## Plan-then-execute (Source: Claude Code `worker.md`, P5.W5.1)
+Your task message includes the complete, exhaustive file manifest ("PLANNED
+FRONTEND FILES AND PAGES") already decomposed for you. Write every planned
+page and component first. Do not run `npx next build` until every planned
+file is written — building after each individual file is the exact waste
+this workflow exists to remove.
+
+## Parallel worktrees (Source: Claude Code `worker.md`)
+Shubham may be writing backend code in a sibling worktree at the same time
+you write frontend code. If you encounter file state you did not create and
+cannot explain, do not try to resolve it yourself — report it in your
+handoff rather than guessing or reverting someone else's work.

@@ -12,8 +12,8 @@ async function run() {
   for (const c of convs) {
     console.log(`\n==================================================`);
     console.log(`Agent Name: ${c.agentName}`);
-    console.log(`Number of messages: ${c.messages.length}`);
     const messages = c.messages as any[];
+    console.log(`Number of messages: ${messages.length}`);
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       console.log(`\n--- Message ${i + 1} (${msg.role}) ---`);

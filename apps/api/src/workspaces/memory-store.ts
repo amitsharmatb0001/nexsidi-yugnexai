@@ -36,6 +36,27 @@ interface StoredEvent {
   event: PublicActivityEvent;
 }
 
+function approvedReplaySpec(
+  spec: WorkspaceSpec,
+  run: StoredRun,
+): WorkspaceSpec {
+  if (
+    spec.id !== run.specId ||
+    spec.version !== run.specVersion ||
+    spec.hash !== run.specHash ||
+    !spec.approvedAt ||
+    !spec.approvedBy
+  ) {
+    throw new Error("approval_record_mismatch");
+  }
+  return {
+    ...clone(spec),
+    status: "approved",
+    approvedAt: spec.approvedAt,
+    approvedBy: spec.approvedBy,
+  };
+}
+
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
@@ -271,7 +292,11 @@ export class MemoryWorkspaceStore implements WorkspaceStore {
       }
       const replaySpec = workspaceSpecs.get(existingRun.specId);
       if (!replaySpec) throw new Error("spec_not_found");
-      return { spec: clone(replaySpec), runId: existingRun.id, replay: true };
+      return {
+        spec: approvedReplaySpec(replaySpec, existingRun),
+        runId: existingRun.id,
+        replay: true,
+      };
     }
 
     const selected = workspaceSpecs.get(specId);

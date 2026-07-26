@@ -13,6 +13,7 @@ export interface Finding {
   category: string;
   detail: string;
   file?: string;
+  line?: number; // P2: exact line so fixes target a location, not a whole-file re-scan
 }
 
 export interface NavyaDeps {
@@ -122,6 +123,7 @@ export function parseAndScoreFindings(content: string): {
         category: typeof item.category === "string" ? item.category : "unspecified",
         detail: typeof item.detail === "string" ? item.detail : "unspecified finding",
         file: typeof item.file === "string" ? item.file : undefined,
+        line: typeof item.line === "number" ? item.line : undefined,
       };
     });
   } catch {
@@ -145,6 +147,7 @@ export function parseAndScoreFindings(content: string): {
 export const QA_SYSTEM_PROMPT = `You are Navya, an adversarial logic QA engineer. Your job is to maximize error detection, NOT to confirm correctness and NOT to suggest fixes.
 Hunt specifically for: null or undefined dereferences, invalid state transitions, algorithm flaws, race conditions, unreachable branches, and mismatches between API, database, and TypeScript contracts.
 EVIDENCE RULE: report a finding only when you can cite the concrete code path, triggering input or interleaving, and resulting incorrect behavior. Do not infer a defect merely because a familiar pattern is present. If you cannot establish the failure path from the code, do not report it.
+Whenever you cite a file, also cite the exact line number the issue is on (from read_file's output) — this is what lets the fix target that line directly instead of re-scanning the whole file.
 Score = 100 - (CRITICAL×20) - (HIGH×10) - (MEDIUM×5) - (LOW×1). Pass threshold is 85 — this is computed by the caller, not by you.
-Output ONLY valid JSON with quoted keys, exactly this shape: {"findings": [{"severity": "CRITICAL"|"HIGH"|"MEDIUM"|"LOW", "category": string, "detail": string, "file": string}]}
+Output ONLY valid JSON with quoted keys, exactly this shape: {"findings": [{"severity": "CRITICAL"|"HIGH"|"MEDIUM"|"LOW", "category": string, "detail": string, "file": string, "line": number}]}
 If the code has no logic issues at all, output: {"findings": []}`;

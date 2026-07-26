@@ -87,17 +87,22 @@ test("persists failed status through the injected project status writer", async 
   expect(writes).toEqual([{ projectId: "abc123", status: "failed" }]);
 });
 
-test("live check injects custom-auth JWT configuration and no Clerk secret", async () => {
+// 2026-07-25 (Phase 6, full MVP upgrade): escalateTilotma was a pure
+// console.error stub — found live on nextech10's own run, which hit this
+// exact path (qa-fix-loop stuck after 4 rounds, 4 findings not converging).
+// The project's status stayed whatever it was before, indistinguishable
+// from a healthy in-progress build to anyone reading project status without
+// a log tail open.
+test("escalateTilotma persists a needs_review status through the injected project status writer", async () => {
   const activities = await import("./index.ts") as Record<string, unknown>;
-  const buildLiveCheckEnv = activities.buildLiveCheckEnv as
-    | ((env: Record<string, string | undefined>) => string[])
+  const escalateTilotma = activities.escalateTilotma as
+    | ((projectId: string, reason: string, state: unknown, writeStatus: (projectId: string, status: string) => Promise<void>) => Promise<void>)
     | undefined;
+  const writes: Array<{ projectId: string; status: string }> = [];
 
-  const args = buildLiveCheckEnv?.({
-    JWT_SECRET: "test-jwt-secret",
-    CLERK_SECRET_KEY: "obsolete-clerk-secret",
+  await escalateTilotma?.("nextech10", "stuck_state", { stage: "qa" }, async (projectId, status) => {
+    writes.push({ projectId, status });
   });
 
-  expect(args).toContain("JWT_SECRET=test-jwt-secret");
-  expect(args?.some((value) => value.includes("CLERK"))).toBe(false);
+  expect(writes).toEqual([{ projectId: "nextech10", status: "needs_review" }]);
 });

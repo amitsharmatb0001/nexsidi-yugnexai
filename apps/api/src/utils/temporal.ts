@@ -45,15 +45,21 @@ export async function getPipelineStatus(projectId: string): Promise<unknown> {
 
 // Check if a workflow is currently running
 export async function isWorkflowRunning(projectId: string): Promise<boolean> {
+  const status = await getWorkflowStatus(projectId);
+  return status === "RUNNING";
+}
+
+// Get the actual workflow execution status name
+export async function getWorkflowStatus(projectId: string): Promise<string | null> {
   const client = await getClient();
   const workflowId = `project-build-${projectId}`;
 
   try {
     const handle = client.workflow.getHandle(workflowId);
     const desc = await handle.describe();
-    return desc.status.name === "RUNNING";
+    return desc.status.name;
   } catch {
-    return false;
+    return null;
   }
 }
 

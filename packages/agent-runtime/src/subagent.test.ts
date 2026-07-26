@@ -150,7 +150,7 @@ test("dynamic subagent spawning and execution", async () => {
   try {
     const result = await runAgent({
       agentName: "parent-agent",
-      model: "google/gemini-3.5-flash",
+      model: "gemini-3.5-flash",
       apiKey: "key",
       systemPrompt: "prompt",
       initialMessage: "start",

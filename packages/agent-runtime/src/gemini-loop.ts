@@ -10,16 +10,19 @@
 // execWriteFile/execReadFile/etc. tool-execution functions, and the SAME
 // MAX_ITERATIONS constant.
 import {
-  geminiChatWithTools,
+  routeToolsWithFallback,
   translateNimToolToGeminiTool,
+  geminiCreateCachedContent,
   type GeminiMessage,
   type GeminiToolDef,
   type GeminiPart,
+  type GeminiTier,
 } from "@nexsidi/llm-client";
 import { runAgent, buildToolList, evaluateCommandStrike, MAX_ITERATIONS, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
+import { compactGeminiHistory } from "./compaction.ts";
 import { createStrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
-import { execWriteFile, execReadFile, execListFiles, execEditFile, execDeleteFile } from "./tools/file.ts";
+import { execWriteFile, execWriteFiles, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol } from "./tools/file.ts";
 import { execRunCommand } from "./tools/command.ts";
 import { execHttpRequest } from "./tools/http.ts";
 import { execDockerCompose } from "./tools/docker.ts";
@@ -33,8 +36,26 @@ import { assembleSystemPrompt } from "./prompt-assembly.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
-const GEMINI_CONTEXT_LIMIT = 900_000;      // Gemini 3.x 1M context, 900K safe cap
-const COMPACT_AT_FRACTION = 0.80;
+// 2026-07-24 (W0.3): replaced the old reactive 720K-token hard-drop with a
+// proactive check before every model call. But 40K over-corrected: verified
+// live against Amit's own model docs (gemini_3_1_pro.md / _3_5_flash.md /
+// _3_6_flash.md — all read in full from E:/ai yug/) that every provisioned
+// model has a **1M-token input window**. 40K was 4% of that — the agent was
+// made amnesiac every ~40K tokens, which is the root cause of the "fixes one
+// thing, breaks another" oscillation the audit documented (a summarized-away
+// earlier decision gets silently re-broken). Raised to ~750K: still leaves
+// headroom under 1M for the current turn's output + tool schemas, but keeps
+// working context intact for the length of one real generation run
+// (measured full runs: 190-311K tokens — this threshold now sits comfortably
+// above that instead of triggering on every turn).
+//
+// This does NOT abandon cost control — that job moves to two other levers,
+// not raw history truncation: explicit prompt caching (geminiCreateCachedContent,
+// wired below) makes the repeated stable prefix (system prompt + build plan)
+// cheap to resend, and 2.5.3's relevant-context selection (only the task,
+// touched files, open findings — not the full transcript) is the intended
+// long-term replacement for "compact by token count" entirely.
+const COMPACTION_THRESHOLD_TOKENS = 750_000;
 
 // Same category of error as claude-loop.ts's isUnrecoverableClaudeError —
 // auth/permission failures on Gemini will repeat identically on every retry
@@ -43,6 +64,33 @@ const COMPACT_AT_FRACTION = 0.80;
 // on purpose: unlike Claude on this project, Gemini has real granted quota
 // (confirmed live) — a 429 here would be a genuinely transient rate spike,
 // not a permanent wall, so it stays in the retry path.
+// 2026-07-25 (Phase 2.5.1, full MVP upgrade): a third error category,
+// distinct from both the retry-as-is path (transient/429) and the abort
+// path (isUnrecoverableGeminiError). Proactive compaction (COMPACTION_
+// THRESHOLD_TOKENS, checked above before every call) makes this rare in
+// practice, but is not a hard guarantee — a single turn's tool outputs
+// could still push a request over the limit between one compaction check
+// and the next. Confirmed by reading Amit's own model docs (gemini_3_1_pro.md
+// / _3_5_flash.md / _3_6_flash.md / _2_5_flash_lite.md, E:/ai yug/): every
+// currently provisioned model shares the SAME 1M input / 64k output limit —
+// there is no smaller-context/larger-context model in the fleet to switch
+// to, so "switch model for more headroom" is not meaningful today. What IS
+// meaningful and was previously missing: on a genuine context-exceeded
+// response, retrying with the IDENTICAL oversized history (the old
+// behavior — sleep 5s, continue) fails identically forever, silently
+// grinding to MAX_ITERATIONS. Detect it and force emergency compaction
+// instead.
+export function isContextLengthExceededError(err: unknown): boolean {
+  const message = String(err).toLowerCase();
+  return (
+    message.includes("token count exceeds") ||
+    message.includes("exceeds the maximum number of tokens") ||
+    (message.includes("input token count") && message.includes("exceed")) ||
+    message.includes("context length") ||
+    message.includes("context_length_exceeded")
+  );
+}
+
 export function isUnrecoverableGeminiError(err: unknown): boolean {
   const message = String(err);
   return (
@@ -88,9 +136,15 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         if (sysIdx >= 0) {
           messages[sysIdx] = { role: "system", content: systemPrompt };
         }
-        messages.push({ role: "user", content: config.initialMessage });
         loadedFromDb = true;
         console.log(`[${config.agentName}:gemini-agent] Loaded existing conversation history (${messages.length} messages) from database`);
+        // 2026-07-24 (W0.3): this load was previously UNBOUNDED — the entire
+        // persisted transcript (measured up to 820 messages / ~300K tokens
+        // on a resumed code-fix) was re-sent verbatim on the very first call
+        // of the resumed run. Compact immediately on load, before appending
+        // the new turn, so a resume never starts from an oversized history.
+        messages = await compactGeminiHistory(messages, undefined, COMPACTION_THRESHOLD_TOKENS);
+        messages.push({ role: "user", content: config.initialMessage });
       }
     } catch (e) {
       console.error(`[${config.agentName}:gemini-agent] Failed to load history:`, e);
@@ -147,6 +201,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   const filesWritten: string[] = [];
   const errors: string[] = [];
   let iterations = 0;
+  const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
   let abortedOnUnrecoverableError = false;
   // 2026-07-11: real bug found live (stress-userupd run) — Shubham burned all
   // 40 iterations without task_complete, and separately without this counter
@@ -177,24 +232,91 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   // Deepika, applied here so Shubham/Aanya/Riya get the same early exit.
   const recentCallSignatures: string[] = [];
 
-  console.log(`[${config.agentName}:gemini-agent] Starting — model: ${config.geminiModel ?? process.env.GEMINI_MODEL ?? "gemini-3.5-flash"}, maxIter: ${MAX_ITERATIONS}`);
+  // 2026-07-25 (Phase 1): per-agent tier — see loop.ts's geminiTier comment
+  // for why this is a bare string there. Unset defaults to "generation",
+  // preserving every existing caller's behavior.
+  const tier = (config.geminiTier ?? "generation") as GeminiTier;
+
+  console.log(`[${config.agentName}:gemini-agent] Starting — model: ${config.geminiModel ?? process.env.GEMINI_MODEL ?? "gemini-3.5-flash"}, tier: ${tier}, maxIter: ${effectiveMaxIterations}`);
+
+  // 2026-07-25 (Phase 0.4, second bug found LIVE on the same nextech10 run):
+  // Vertex's cachedContents API binds a cache to ONE exact model — sending
+  // it as `cachedContent` on a request to a DIFFERENT model 400s. But
+  // routeToolsWithFallback resolves the model dynamically from a tier pool
+  // with zero-wait fallback (poolForTier) — the model actually used for any
+  // given call can differ turn to turn, and is never known at cache-creation
+  // time for a tier-routed agent. Confirmed live: every explicit cache
+  // creation this run targeted the stale "gemini-3.5-flash" default
+  // (resolveGeminiModel's hardcoded fallback) regardless of the agent's
+  // real tier (Aanya on "design" → gemini-3.1-pro-preview, Shubham on
+  // "generation" → gemini-3.6-flash) — a cache that could never have been
+  // reused by the model that actually served the request.
+  //
+  // Fix: only attempt EXPLICIT caching when config.geminiModel is a fixed,
+  // known-in-advance model (the one case where the bound model is certain).
+  // For tier-routed agents (the common case now), skip it — Vertex's
+  // IMPLICIT caching already applies automatically to any repeated
+  // byte-identical prefix with no wiring needed, and is confirmed working:
+  // this same nextech10 run showed real non-zero `(N cached)` hits via
+  // implicit caching throughout, on gemini-3.1-pro-preview specifically.
+  let cachedContentHandle: string | undefined;
+  if (config.geminiModel) {
+    try {
+      const handle = await geminiCreateCachedContent(systemPrompt, config.initialMessage, { model: config.geminiModel });
+      cachedContentHandle = handle.name;
+      console.log(`[${config.agentName}:gemini-agent] Created prompt cache: ${handle.name}`);
+    } catch (err) {
+      console.log(`[${config.agentName}:gemini-agent] Prompt cache creation skipped (falling back to uncached): ${String(err)}`);
+    }
+  }
 
   // Interactive-browser QA session (Tilotma Tier 3) — same lifecycle as
   // loop.ts: lazily spawned, closed in the finally on every exit path.
   const browserToolset = config.enableBrowser ? new BrowserToolset() : null;
   try {
-  while (iterations < MAX_ITERATIONS) {
+  while (iterations < effectiveMaxIterations) {
     iterations++;
     console.log(`[${config.agentName}:gemini-agent] Iteration ${iterations}`);
 
+    // 2026-07-24 (W0.3): proactive compaction, checked BEFORE the call it
+    // protects — the old approach only reacted to the PREVIOUS response's
+    // promptTokens, so the request that first crossed the threshold was
+    // always sent in full anyway. Checking here means no call this loop
+    // makes exceeds the threshold in the first place.
+    messages = await compactGeminiHistory(messages, undefined, COMPACTION_THRESHOLD_TOKENS);
+
     let response;
     try {
-      response = await geminiChatWithTools(messages, tools, { model: config.geminiModel });
+      // 2026-07-24 (W0.2)/2026-07-25 (Phase 1): route through the agent's
+      // assigned tier pool instead of calling geminiChatWithTools directly
+      // with only config.geminiModel — which silently resolved to
+      // gemini-3.5-flash (resolveGeminiModel's hardcoded default) whenever
+      // GEMINI_GENERATION_MODEL was unset. config.geminiModel still wins
+      // when set — poolForTier collapses to that single model, no pool
+      // fallback. cachedContentHandle (Phase 0.4) is passed through so a
+      // cache hit is possible on every turn, not just the first.
+      response = await routeToolsWithFallback(tier, messages, tools, { model: config.geminiModel, cachedContent: cachedContentHandle });
+      if (iterations === 1) {
+        console.log(`[${config.agentName}:gemini-agent] model=${response.modelUsed}`);
+      }
     } catch (err) {
       if (isUnrecoverableGeminiError(err)) {
         errors.push(`Gemini call failed on iteration ${iterations} with an unrecoverable error — aborting early instead of retrying: ${String(err)}`);
         abortedOnUnrecoverableError = true;
         break;
+      }
+      // 2026-07-25 (Phase 2.5.1): a context-exceeded error retried with the
+      // IDENTICAL oversized history (the old behavior below) fails
+      // identically forever — this is the "never stop, always send relevant
+      // context" fix. Force a much smaller emergency budget (1/10th of the
+      // normal proactive threshold) so the next attempt has real headroom,
+      // instead of grinding silently to MAX_ITERATIONS on a call that can
+      // never succeed as-is.
+      if (isContextLengthExceededError(err)) {
+        console.log(`[${config.agentName}:gemini-agent] Context length exceeded on iteration ${iterations} — forcing emergency compaction and retrying`);
+        messages = await compactGeminiHistory(messages, undefined, Math.floor(COMPACTION_THRESHOLD_TOKENS / 10));
+        errors.push(`Context length exceeded on iteration ${iterations} — recovered via emergency compaction: ${String(err)}`);
+        continue;
       }
       errors.push(`Gemini call failed on iteration ${iterations}: ${String(err)}`);
       await new Promise((r) => setTimeout(r, 5000));
@@ -274,29 +396,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     const turnSignature = response.toolCalls.map((c) => `${c.name}:${JSON.stringify(c.input)}`).join("|");
     recentCallSignatures.push(turnSignature);
     if (detectStuckLoop(recentCallSignatures)) {
-      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${MAX_ITERATIONS}-iteration cap.`;
+      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${effectiveMaxIterations}-iteration cap.`;
       console.log(`[${config.agentName}:gemini-agent] ${reason}`);
       await saveHistory();
       return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish" };
-    }
-
-    // 80% context compaction: if prompt tokens > 720K (80% of 900K safe cap),
-    // drop old history to prevent hitting the context limit on the next call.
-    const promptTokens = response.promptTokens ?? 0;
-    if (promptTokens > GEMINI_CONTEXT_LIMIT * COMPACT_AT_FRACTION) {
-      console.log(`[${config.agentName}:gemini-agent] Context at ${promptTokens} tokens (>${Math.round(COMPACT_AT_FRACTION * 100)}% of ${GEMINI_CONTEXT_LIMIT}) — compacting history`);
-      const sys = messages.filter((m) => m.role === "system");
-      const nonSys = messages.filter((m) => m.role !== "system");
-      const recentTurns = nonSys.slice(-6); // last 3 pairs (user+model)
-      const droppedCount = nonSys.length - recentTurns.length;
-      if (droppedCount > 0) {
-        const summaryMsg: GeminiMessage = {
-          role: "user",
-          content: `[CONTEXT COMPACTED: ${droppedCount} earlier messages dropped to stay within context limit. Continue from current state.]`,
-        };
-        messages = [...sys, summaryMsg, ...recentTurns];
-        console.log(`[${config.agentName}:gemini-agent] Compacted: dropped ${droppedCount} messages, kept ${recentTurns.length} recent turns`);
-      }
     }
 
     const responseParts: GeminiPart[] = [];
@@ -312,6 +415,19 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         case "write_file": {
           const r = execWriteFile(config.sandboxDir, args as { path: string; content: string });
           if (r.status === "success") filesWritten.push((args as { path: string }).path);
+          result = r;
+          break;
+        }
+        // 2026-07-25 (Phase 2.3): batch write — this is the loop that
+        // actually runs in production (GENERATOR_TIER=gemini), so this is
+        // the handler that matters for the one-file-per-turn fix. See
+        // execWriteFiles's comment in tools/file.ts for the root cause.
+        case "write_files": {
+          const writeArgs = args as { files: Array<{ path: string; content: string }> };
+          const r = execWriteFiles(config.sandboxDir, writeArgs);
+          if (r.status === "success" && Array.isArray(writeArgs.files)) {
+            for (const f of writeArgs.files) filesWritten.push(f.path);
+          }
           result = r;
           break;
         }
@@ -364,6 +480,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
             ledger,
             { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed },
             config.requiredVerificationCommands,
+            config.requiredEvidenceKinds,
           );
           if (!check.allowed) {
             console.log(`[${config.agentName}:gemini-agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);
@@ -386,6 +503,63 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
         case "db_query": {
           result = await execDbQuery(args as { query: string });
+          break;
+        }
+        // 2026-07-25 (Phase 2.2): same audit finding as spawn_subagent below
+        // — advertised via buildToolList(), no handler here, silently
+        // returned "Unknown tool" and burned an iteration. Mirrors loop.ts.
+        case "rollback_workspace": {
+          result = execRollbackWorkspace(config.sandboxDir);
+          break;
+        }
+        case "query_symbol": {
+          result = execQuerySymbol(config.sandboxDir, args as { path: string; symbol: string });
+          break;
+        }
+        // 2026-07-25 (Phase 2.2, full MVP upgrade): was advertised to every
+        // Gemini-loop agent via buildToolList() but had no handler here —
+        // fell to the `default` case below and returned "Unknown tool:
+        // spawn_subagent", burning a paid iteration for nothing every time
+        // a model tried to delegate (audit-2026-07-25.md, A.2). Mirrors
+        // loop.ts's NIM implementation (same depth cap of 1, same result
+        // shape) but recurses into runAgentWithGemini so a generator can
+        // hand a disjoint slice of its file manifest to a helper instead of
+        // writing everything in one sequential loop — this is the actual
+        // parallel-delegation capability the Codex-style doctrine (Phase 4)
+        // tells agents to use.
+        case "spawn_subagent": {
+          const a = args as { subtask: string; agentName: string };
+          if ((config.subagentDepth ?? 0) >= 1) {
+            result = { status: "error", summary: "Subagent depth limit reached — subagents cannot spawn further subagents." };
+            break;
+          }
+          console.log(`[${config.agentName}:gemini-agent] Spawning subagent "${a.agentName}" to run subtask: ${a.subtask}`);
+          try {
+            const subagentResult = await runAgentWithGemini({
+              agentName: `${config.agentName}-${a.agentName}`,
+              model: config.model,
+              apiKey: config.apiKey,
+              systemPrompt: `You are a specialized subagent named "${a.agentName}" helper spawned by "${config.agentName}". Complete the delegated subtask: "${a.subtask}"`,
+              initialMessage: a.subtask,
+              sandboxDir: config.sandboxDir,
+              projectId: config.projectId,
+              enableHttpTools: config.enableHttpTools,
+              enableDockerTools: config.enableDockerTools,
+              geminiModel: config.geminiModel,
+              geminiTier: config.geminiTier,
+              subagentDepth: (config.subagentDepth ?? 0) + 1,
+            });
+            result = {
+              status: subagentResult.success ? "success" : "error",
+              summary: `Subagent completed with success=${subagentResult.success}`,
+              output: subagentResult.summary,
+            };
+          } catch (err) {
+            result = {
+              status: "error",
+              summary: `Failed to spawn or run subagent: ${String(err)}`,
+            };
+          }
           break;
         }
         default: {
@@ -419,7 +593,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       ? `Three-strikes exhausted (${iterations} real model turns completed)`
       : abortedOnUnrecoverableError
         ? "Aborted early: hit an unrecoverable error (auth failure or permission denied)"
-        : `Max iterations (${MAX_ITERATIONS}) reached without task_complete`,
+        : `Max iterations (${effectiveMaxIterations}) reached without task_complete`,
     filesWritten,
     iterations,
     errors: exhaustedThreeStrikes || abortedOnUnrecoverableError ? errors : [...errors, "Max iterations exceeded"],

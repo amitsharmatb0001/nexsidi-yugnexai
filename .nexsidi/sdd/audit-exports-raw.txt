@@ -1,0 +1,69 @@
+FILES SCANNED: 320
+EXPORTED SYMBOLS: 706
+ZERO NON-TEST REFERENCES: 174
+---
+agents/arjun/src/index.ts: ArjunDeps, LockedPage, findMissingLockedPages, synthesizeTaskForPage
+agents/generators/aanya/src/index.ts: stripDevDependencies, buildAgentPrompt, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig
+agents/generators/pranav/src/index.ts: PranavFixDeps, nextMigrationFilename
+agents/generators/shubham/src/index.ts: autoWireRoutes, renderTaskManifest, UpdateTaskRequest
+agents/neha/src/index.ts: KnowledgeUpdate, handleCvePush, pollAll
+agents/qa/deepika/src/index.ts: DeepikaDeps, DeepikaExploringDeps
+agents/qa/karan/src/index.ts: KaranDeps, KaranExploringDeps, parseSecurityFindings
+agents/qa/navya/src/index.ts: NavyaDeps, NavyaExploringDeps
+agents/riya/src/index.ts: sanitizeGeneratedPackageJsons, applyMigrationsToDeployedDb, verifyLiveAuthenticatedRoundTrip
+agents/saanvi/src/index.ts: Feature, ApiEndpoint, DbField, DbTable
+agents/tilotma/src/index.ts: TilotmaInput
+agents/tilotma/src/live-eval.ts: LiveEvalScores, LIVE_EVAL_WEIGHTS, LIVE_PASS_THRESHOLD, calculateLiveScore, parseLiveEvalScores, LiveEvalDeps, LIVE_EVAL_SYSTEM_PROMPT
+agents/tilotma/src/orchestrator.ts: OrchestrateInput
+agents/tilotma/src/tier3-review.ts: EVIDENCE_COLLECTOR_PROMPT, buildRealityCheckerTask
+agents/tilotma/src/tools.ts: ToolHandler
+agents/vanya/src/index.ts: VanyaDeps, validateDesignBrief, FALLBACK_BRIEF, VANYA_SYSTEM_PROMPT
+apps/api/src/app.ts: AppType
+apps/api/src/routes/auth.ts: createAuthRouter
+apps/api/src/workspaces/memory-store.ts: MemoryWorkspaceStore
+apps/api/src/workspaces/postgres-store.ts: PostgresWorkspaceStore
+apps/api/src/workspaces/service.ts: DraftSpecInput, WorkspaceService
+packages/agent-runtime/src/browser/client.ts: BrowserResponse, drainJsonLines
+packages/agent-runtime/src/claude-loop.ts: buildEscalationMessage
+packages/agent-runtime/src/compaction.ts: CompactionChat, GeminiCompactionChat, estimateGeminiTokenCount
+packages/agent-runtime/src/enforce/authorization.ts: AuthorizationRecord, AuthorizationError, requireAuthorization
+packages/agent-runtime/src/enforce/completion-gate.ts: CompletionClaim, CompletionCheck
+packages/agent-runtime/src/enforce/contracts.ts: ContractKind, ValidationResult, validateHandoff, validateHandoff, validateHandoff, validateHandoff, validateHandoff, validateHandoff
+packages/agent-runtime/src/enforce/evidence.ts: EvidenceRecord
+packages/agent-runtime/src/enforce/finding-evidence.ts: FindingLike, FindingEvidenceCheck, ReviewCoverageCheck
+packages/agent-runtime/src/enforce/strikes.ts: StrikeResult
+packages/agent-runtime/src/gemini-loop.ts: isUnrecoverableGeminiError
+packages/agent-runtime/src/instinct-observer.ts: SubmittedQAFindings, LaterFinding, RecurringInstructionUpdate
+packages/agent-runtime/src/loop.ts: SPAWN_SUBAGENT_TOOL, sanitizeModelChain
+packages/agent-runtime/src/mcp/client.ts: MCPTool, MCPListToolsResult, MCPCallToolResult
+packages/agent-runtime/src/prompt-assembly.ts: AssembleSystemPromptArgs
+packages/agent-runtime/src/qa-loop.ts: QA_MAX_ITERATIONS, QAAgentConfig, QAAgentResult, listLabeledFiles, resolveLabeledFile
+packages/agent-runtime/src/tools/command.ts: resolveCommandExecutable
+packages/agent-runtime/src/tools/db.ts: isReadOnlyQuery
+packages/agent-runtime/src/tools/file.ts: cleanComposeContent
+packages/agent-runtime/src/tools/git.ts: normalizeGitOutput, execGit, isGitRepo
+packages/agent-runtime/src/tools/sandbox-env.ts: SANDBOX_BLOCKED_ENV_VARS
+packages/db/src/instincts.ts: Confidence, InstinctInput, buildInstinctRecord, PromptInstinct
+packages/db/src/schema.ts: contextChain, promptAudit
+packages/db/src/seed-instincts.ts: SeedInstinct, SPRINT1_SEEDED_INSTINCTS, buildSeedRecords, seedInstincts
+packages/llm-client/src/circuit-breaker.ts: CircuitState
+packages/llm-client/src/claude.ts: supportsAdaptiveThinking, withCacheBreakpoint, withLastMessageCacheBreakpoint
+packages/llm-client/src/gemini.ts: isRetryableGeminiStatus, geminiRetryDelayMs, partsToToolCalls, buildGeminiContents
+packages/llm-client/src/ollama.ts: OllamaResponse
+packages/llm-client/src/router.ts: shouldUseGeminiForPipeline
+packages/llm-client/src/token-bucket.ts: tryAcquire
+packages/prompt-audit/src/index.ts: SealedPrompt, unsealPrompt
+packages/workspace-contract/src/public-events.ts: InternalActivityEvent, toPublicActivityEvent, sanitizePublicActivityEvent
+packages/workspace-contract/src/state-machine.ts: transitionWorkspace
+packages/workspace-contract/src/types.ts: ScopeState, RequirementQuestion, ConfirmedFact, Assumption, ScopeItem, PageSpec, EntitySpec, ApiContract, ApprovedBuildInput
+pipeline/activities/index.ts: resolveNodeCommand, describeCommandFailure, buildLiveCheckEnv, RepairTarget, selectRepairTargets, runSelectedRepairs, ProjectStatusWriter, QAFixLoopActivityResult, DeployActivityResult
+pipeline/instinct-cron.ts: InstinctCronDeps, runInstinctCron
+pipeline/meta-supervisor.ts: MetaSupervisorDeps
+pipeline/orchestrator/dag.ts: CycleDetectedError, DanglingReferenceError
+pipeline/orchestrator/run.ts: Stage1Output, Stage3Output, Stage4Output, Stage5Output, Stage6Output
+pipeline/orchestrator/stages/stage1-requirements.ts: Stage1Result
+pipeline/orchestrator/stages/stage4-multi-agent-dev.ts: identifyFaultAgents, verifyAgentHandoff, getProjectKeyPair, runActiveSmokeProbe
+pipeline/orchestrator/stages/stage5-adversarial-qa.ts: Stage5Agents, locationPrefix, runStage5WithAgents, collectCode
+pipeline/orchestrator/stages/stage5-qa-fix-loop.ts: QAFixLoopResult, QAFixDeps, summarizeFindingToInstinctRule, conductPeerDebateReal, runQAFixLoopWithDeps
+pipeline/orchestrator/stages/stage6-deployment.ts: LiveRetestResult, DeliverySummary, buildDeliverySummary, runLiveRetestStub
+pipeline/workflows/project-build.ts: PipelineState, shouldStopCompileRepair

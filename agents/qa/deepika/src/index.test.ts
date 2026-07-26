@@ -103,6 +103,32 @@ test("a finding without a file field leaves file undefined rather than inventing
   expect(result.findings[0]!.file).toBeUndefined();
 });
 
+// 2026-07-24 (P2, full agentic upgrade): a finding with `file` but no
+// `line` still forces the generator to re-scan the whole file to locate
+// the issue — traced live this session as the root cause of QA-fix
+// oscillation. `line` must survive parsing the same way `file` already does.
+test("a finding with a line field is preserved through parsing", () => {
+  const result = parseAndScoreFindings(
+    JSON.stringify({
+      findings: [
+        { severity: "HIGH", category: "n-plus-one", detail: "query inside a loop", file: "backend/src/services/orders.ts", line: 112 },
+      ],
+    }),
+  );
+  expect(result.findings[0]!.line).toBe(112);
+});
+
+test("a finding without a line field leaves line undefined rather than inventing one", () => {
+  const result = parseAndScoreFindings(
+    JSON.stringify({ findings: [{ severity: "LOW", category: "allocation", detail: "no line supplied", file: "a.ts" }] }),
+  );
+  expect(result.findings[0]!.line).toBeUndefined();
+});
+
+test("QA_SYSTEM_PROMPT's JSON schema example includes line", () => {
+  expect(QA_SYSTEM_PROMPT).toContain('"line"');
+});
+
 // Found in stress-test 1 (F7): the model's real output was wrapped in
 // markdown code fences despite the prompt saying "Output ONLY JSON",
 // tripping the D25 default-FAIL path even though the underlying findings

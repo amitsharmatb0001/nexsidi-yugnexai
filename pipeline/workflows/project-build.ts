@@ -29,10 +29,25 @@ const genAct = proxyActivities<typeof activities>({
   retry: { maximumAttempts: 5 },   // more headroom while we tune the output format
 });
 
-// Deploy proxy — no heartbeatTimeout because execSync blocks the event loop
-// startToCloseTimeout must cover: docker build (5 min) + startup (1 min) + GitHub (1 min)
-const deployAct = proxyActivities<typeof activities>({
-  startToCloseTimeout: "15 minutes",
+// 2026-07-25 (Phase 2.1): deployAct (a "no heartbeatTimeout because
+// execSync blocks the event loop" proxy sized for runRiya's direct
+// docker+GitHub archive path) was removed here — its only caller was the
+// deleted legacy loop's tail delivery step. The live unified path deploys
+// via orchestratorAct.runDeployWithLiveRetest below instead.
+
+// 2026-07-24 (P1): the real GAN (runQAFixLoopActivity) can run up to
+// MAX_FIX_ITERATIONS=5 full rounds, each round a complete QA pass (up to
+// 30 tool-call iterations per agent) PLUS a generator fix pass (up to 40
+// iterations) — well beyond genAct's 30-minute budget, which was sized for
+// a single generation pass. runDeployWithLiveRetest similarly re-runs a
+// full QA pass plus the Tier-3 browser review against the live deploy, up
+// to MAX_DEPLOY_ATTEMPTS=2 times. Both activities heartbeat internally
+// every 30s (see pipeline/activities/index.ts), so a generous
+// startToCloseTimeout with a heartbeatTimeout is safe — Temporal will still
+// notice a genuinely hung activity within one missed heartbeat window.
+const orchestratorAct = proxyActivities<typeof activities>({
+  startToCloseTimeout: "2 hours",
+  heartbeatTimeout: "3 minutes",
   retry: { maximumAttempts: 2 },
 });
 
@@ -124,123 +139,95 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   }
   // After 3 failed compile attempts, continue anyway — QA will catch it.
 
-  // ── QA Loop ─────────────────────────────────────────────────────────────
-  state.stage = "qa";
-  let specMismatchCount = 0;
-  let postQaCompileFailures = 0;
-  while (true) {
-    state.iteration += 1;
+  // ── P1 (full agentic upgrade, 2026-07-24): unify onto the real GAN ───────
+  // Replaces the degenerate one-shot QA scorer (a flash model guessing a
+  // score from a 20K-char code sample, no file locations, oscillating
+  // 69-93 across iterations) with the real evidence-gated GAN — agents
+  // that read files themselves, peer debate to drop false positives, and
+  // fault-isolated fixes — already built (pipeline/orchestrator/stages/
+  // stage5-qa-fix-loop.ts) but previously reachable only from dev-run.ts,
+  // never this Temporal worker. Deploy is likewise replaced with Stage 6:
+  // deploy THEN re-run adversarial QA against the live URL with a real
+  // Playwright browser (Tilotma Tier-3) — the only point in the running
+  // pipeline that actually observes the frontend rendering, not curling
+  // an HTTP status code. patched() so any workflow already in flight when
+  // this deploys keeps replaying its original (pre-unification) code path.
+  if (patched("unify-real-gan-and-deploy-v1")) {
+    state.stage = "qa";
+    const qaResult = await orchestratorAct.runQAFixLoopActivity(projectId);
+    state.iteration = qaResult.iterations;
 
-    // Stage 0 (cheap gate): spec-compliance check (D21)
-    const compliant = await act.runSpecCompliance(projectId, state.iteration);
-    if (!compliant) {
-      specMismatchCount++;
-      if (specMismatchCount < 3) {
-        await genAct.runCodeFix(projectId, state.iteration, "spec_mismatch");
-        continue;
-      }
-      // After 3 spec failures, force through to QA — don't loop forever
-    } else {
-      specMismatchCount = 0;
+    if (!qaResult.pass) {
+      // The GAN's own internal loop already exhausted its fix attempts or
+      // hit its own stuck-detection (findings count stopped improving) —
+      // don't re-litigate that here, just escalate with the evidence.
+      // minScore/improvement are 0,0 placeholders: the real GAN tracks
+      // convergence by findings COUNT, not a 0-100 score, so there's no
+      // numeric score to log here — logStuckState's shape predates this
+      // unification and is kept only for its audit-trail row.
+      await act.logStuckState(projectId, qaResult.iterations, 0, 0);
+      await act.escalateTilotma(projectId, "stuck_state", state);
+      return;
     }
 
-    // Stage 1 (static): Navya + Karan + Deepika in parallel
-    // Fix #8: returns individual scores, NOT averaged
-    const [navyaScore, karanScore, deepikaScore] = await Promise.all([
-      act.runNavya(projectId, state.iteration),
-      act.runKaran(projectId, state.iteration),
-      act.runDeepika(projectId, state.iteration),
-    ]);
-
-    const minScore = Math.min(navyaScore, karanScore, deepikaScore);
-
-    // Production threshold: ≥85 per spec. Scoring: CRITICAL×20, HIGH×10, MEDIUM×5, LOW×1.
-    const allPass = navyaScore >= 85 && karanScore >= 85 && deepikaScore >= 85;
-
-    if (!allPass) {
-      // Stuck-state detection (D19 / Fix #7)
-      state.recentMinScores.push(minScore);
-      if (state.recentMinScores.length > 3) state.recentMinScores.shift();
-
-      if (state.recentMinScores.length === 3) {
-        const improvement =
-          (state.recentMinScores[2] ?? 0) - (state.recentMinScores[0] ?? 0);
-        if (improvement < 3) {
-          state.stuckIterations += 1;
-          await act.logStuckState(projectId, state.iteration, minScore, improvement);
-          if (state.stuckIterations >= 1) {
-            // Escalate — Tilotma asks user ONE specific question
-            await act.escalateTilotma(projectId, "stuck_state", state);
-            return;
-          }
-        } else {
-          state.stuckIterations = 0;
-        }
-      }
-
-      await genAct.runCodeFix(projectId, state.iteration, "qa_fail");
-      continue;
-    }
-
-    // Stage 1.5: compile check after QA pass — catches syntax errors before Docker
-    // Runs npm install so tsc can resolve all imports properly.
+    // Deterministic safety net the GAN doesn't run itself: confirm the code
+    // still compiles before handing off to deploy. Same bounded-retry shape
+    // as the pre-QA gate above.
+    state.stage = "compile_check";
     let postQaCompile = await act.runCompileCheck(projectId);
-    // A timed-out tsc run under system load reports no real error — retry the
-    // check directly (not a full QA re-run, not a code-fix cycle) rather than
-    // spending the repair budget on a bug that was never actually observed.
     let timeoutRetries = 0;
     while (!postQaCompile.pass && postQaCompile.timedOut && timeoutRetries < 3) {
       timeoutRetries++;
       console.log(`[workflow] post-QA compile check timed out (retry ${timeoutRetries}/3), rerunning directly`);
       postQaCompile = await act.runCompileCheck(projectId);
     }
-    if (!postQaCompile.pass) {
+    let postQaCompileFailures = 0;
+    while (!postQaCompile.pass) {
       postQaCompileFailures += 1;
-      if (
-        patched("post-qa-compile-repair-limit-v1") &&
-        shouldStopCompileRepair(postQaCompileFailures, MAX_POST_QA_COMPILE_FAILURES)
-      ) {
+      if (shouldStopCompileRepair(postQaCompileFailures, MAX_POST_QA_COMPILE_FAILURES)) {
         state.stage = "error";
-        if (patched("persist-project-failure-v1")) {
-          await act.markProjectFailed(projectId, "compile_repair_limit");
-        }
+        await act.markProjectFailed(projectId, "compile_repair_limit");
         await act.escalateTilotma(projectId, "compile_repair_limit", state);
         return;
       }
       await genAct.runCodeFix(projectId, state.iteration, `compile_error:\n${postQaCompile.errors}`);
-      continue;
+      postQaCompile = await act.runCompileCheck(projectId);
     }
 
-    // Stage 2 (live execution): Docker build + start + curl endpoint (D20)
-    state.stage = "live_test";
-    const live = await act.runLiveCheck(projectId);
-    if (live.pass) {
-      // Stage 1.5b: Tier-3 browser observation gate (two-stage Evidence + Reality Check)
-      // Uses genAct (30-min timeout) — two full agent loops with browser screenshot tools
-      state.stage = "tier3_review";
-      const tier3 = await genAct.runTier3Gate(projectId);
-      if (tier3.skipped || tier3.pass) {
-        break; // all gates passed — exit QA loop
-      }
-      // Tier-3 found issues — code fix then re-enter the QA loop
-      await genAct.runCodeFix(projectId, state.iteration, `tier3_fail: ${tier3.findings.slice(0, 3).join("; ")}`);
-      state.stage = "qa";
-      continue;
+    // GATE 2: Deployment/Rollout Approval
+    state.stage = "await_deploy_approval";
+    await condition(() => deployApproved);
+
+    // ── Stage 6: deploy + live-browser retest ──────────────────────────────
+    state.stage = "deliver";
+    const deployResult = await orchestratorAct.runDeployWithLiveRetest(projectId);
+    if (!deployResult.success) {
+      state.stage = "error";
+      await act.markProjectFailed(projectId, deployResult.stuck ? "deploy_stuck" : "deploy_failed");
+      await act.escalateTilotma(projectId, "deploy_failed", state);
+      return;
     }
 
-    state.stage = "qa";
-    await genAct.runCodeFix(projectId, state.iteration, `live_check_fail: ${live.detail}`);
+    state.stage = "done";
+    return;
   }
 
-  // GATE 2: Deployment/Rollout Approval
-  state.stage = "await_deploy_approval";
-  await condition(() => deployApproved);
-
-  // ── Stage 4: Delivery ───────────────────────────────────────────────────
-  state.stage = "deliver";
-  // Fix #9: Riya archives to GitHub before delivering to user
-  // Uses deployAct (no heartbeatTimeout) because docker build blocks the event loop
-  await deployAct.runRiya(projectId);
-
-  state.stage = "done";
+  // 2026-07-25 (Phase 2.1, full MVP upgrade): the pre-unification legacy QA
+  // loop that used to live here (per-agent Navya/Karan/Deepika severity
+  // scoring, no located findings, no live-browser observation) is deleted,
+  // not just dead-code-flagged. It is provably unreachable: patched()
+  // returns true unconditionally for every workflow execution started after
+  // this patch marker was introduced (2026-07-24) — the branch above always
+  // returns. It would only matter for replaying a workflow history that was
+  // ALREADY IN FLIGHT at that exact patch boundary; per audit-2026-07-25.md
+  // (A.3), every prior run (nextech1-9) has since completed or failed, and
+  // Phase 7 restarts the worker fresh, so no such in-flight history exists
+  // to replay. Deleting it also retires its five now-truly-dead-only
+  // activities (runSpecCompliance, runNavya, runKaran, runDeepika,
+  // runLiveCheck, runTier3Gate, runRiya — see activities/index.ts) — none
+  // of the other unified-path stages (Stage 5's real GAN, Stage 6's live
+  // retest) ever called them; only this deleted loop did.
+  throw new Error(
+    "[workflow] unreachable: patched('unify-real-gan-and-deploy-v1') must be true for every workflow started after 2026-07-24 — reaching this line means an in-flight workflow from before that patch is replaying and hit code that no longer exists. Do not resume it; start a fresh run instead.",
+  );
 }

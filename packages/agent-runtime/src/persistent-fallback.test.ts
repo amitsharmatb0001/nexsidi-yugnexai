@@ -1,5 +1,6 @@
 import { test, expect, mock } from "bun:test";
 import { runAgent } from "./loop.ts";
+import type { ModelId } from "@nexsidi/llm-client";
 import { writeFileSync, existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -99,7 +100,10 @@ test("persistent file fallback works when database throws", async () => {
     turn = 0;
     const result = await runAgent({
       agentName: "shubham",
-      model: "mock-model",
+      // Deliberately invalid — see mcp/integration.test.ts's identical
+      // assertion for why (exercises the runtime's own disallowed-model
+      // handling, not a real model to add to ModelId).
+      model: "mock-model" as ModelId,
       apiKey: "key",
       systemPrompt: "prompt",
       initialMessage: "start",

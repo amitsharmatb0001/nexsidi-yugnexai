@@ -6,6 +6,7 @@ import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync, readFileSync, cpSync, existsSync } from "fs";
 import { join, resolve } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
+import { formatDesignBriefForPrompt } from "../../../vanya/src/index.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
 
@@ -19,8 +20,11 @@ export function getOutputDir(projectId: string): string {
 // dependency.
 async function loadKnownMistakesPrefix(): Promise<string> {
   try {
-    const { queryRecentInstincts, formatInstinctsForPrompt } = await import("@nexsidi/db");
-    const instincts = await queryRecentInstincts("security");
+    const { queryRecentInstincts, formatInstinctsForPrompt, REACHABLE_INSTINCT_DOMAINS } = await import("@nexsidi/db");
+    // 2026-07-24 (P3.W3.3): was hardcoded to "security" only — missed every
+    // performance/architecture instinct QA ever recorded. See
+    // queryRecentInstincts's comment for the bug this closes.
+    const instincts = await queryRecentInstincts(REACHABLE_INSTINCT_DOMAINS);
     const formatted = formatInstinctsForPrompt(instincts);
     return formatted ? `${formatted}\n\n` : "";
   } catch {
@@ -62,26 +66,49 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
   const result = await resolveGeneratorRunner()({
     agentName: "aanya",
     model: "mistralai/mistral-medium-3.5-128b",
-    // qwen3.5-122b: confirmed working under 80K+ token inputs in stress-3's
-    // QA fallbacks — a genuinely different architecture for the second try.
-    fallbackModels: ["qwen/qwen3.5-122b-a10b"],
+    // 2026-07-24: qwen3.5-122b-a10b (chosen for being a genuinely different
+    // architecture from the primary) returns HTTP 410 Gone as of 2026-07-20
+    // — the NIM endpoint was permanently removed (see types.ts's ModelId
+    // comment). Using it as a fallback meant a real failure of the primary
+    // model fell through to a fallback that would ALWAYS also fail. Swapped
+    // for qwen3-next-80b, the documented working replacement.
+    fallbackModels: ["qwen/qwen3-next-80b-a3b-instruct"],
     apiKey,
     systemPrompt: loadAndInjectContract(plan.projectId, knownMistakesPrefix + buildAgentPrompt(mode)),
     initialMessage: buildAgentTask(plan, mode),
     sandboxDir: outputDir,
     projectId: plan.projectId,
-    // 2026-07-12: Aanya stays on the CHEAP flash model (default GEMINI_MODEL),
-    // NOT pro. Rationale (CLAUDE.md's parallel-agent rule): Shubham and Aanya
-    // run in PARALLEL — putting both on gemini-3.1-pro-preview would collide on
-    // pro's rate limit. Pro goes to the backend (Shubham: SQL/security/logic,
-    // where quality matters most); frontend is adequate on flash and this
-    // spreads the parallel load across both models to avoid 429s. http tools so
-    // Aanya still self-verifies (npm install + next build + typecheck). Live UI is Tier 3.
+    // 2026-07-12: Aanya was kept on the cheap flash model to avoid a
+    // rate-limit collision with Shubham's parallel run on pro.
+    // 2026-07-25 (Phase 1, full MVP upgrade): reversed. Verified against
+    // System B's own weighting (nexsidi-adversarial-qa): designQuality +
+    // originality are 0.35 each — 0.70 of the live subjective score — and
+    // are exactly the two criteria a flash model reliably fails ("purple
+    // gradients over white cards" AI-slop pattern), so keeping Aanya on
+    // flash was capping the single most heavily-weighted gate in the
+    // pipeline. The original rate-limit worry doesn't actually reproduce
+    // under the new tier map: Shubham now runs on "generation" (3.6-flash
+    // leading, never pro) while Aanya runs on "design" (3.1-pro-preview
+    // leading) — the two parallel generators are on DIFFERENT primary
+    // models, so there is no shared-pool collision. QA's own use of
+    // gemini-3.1-pro-preview runs AFTER generation completes (see
+    // project-build.ts's `await Promise.all(genPromises)` before the QA
+    // stage begins), not concurrently with it.
+    geminiTier: "design",
+    // http tools so Aanya still self-verifies (npm install + next build +
+    // typecheck). Live UI is Tier 3.
     enableHttpTools: true,
     enableWebSearch: true,
     enableScreenshot: true,
     enableBrowser: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
+    // 2026-07-25: raised to 60. Measured live in nextech7: Aanya hit the
+    // 40-iteration default exactly while still running npx next build to fix
+    // proxy.ts + portal dashboard import issues. Pattern: ~32 write iterations
+    // + ~8 build-fix iterations = 40 (cap). 60 gives a safe 20-iteration
+    // margin. Non-retryable failure is already in place (generatorFailure()),
+    // so a cap hit costs one attempt only.
+    maxIterations: 60,
   });
 
   return {
@@ -119,7 +146,10 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
   const result = await resolveGeneratorRunner()({
     agentName: "aanya",
     model: "mistralai/mistral-medium-3.5-128b",
-    fallbackModels: ["qwen/qwen3.5-122b-a10b"],
+    // 2026-07-24: see run()'s identical fix above — qwen3.5-122b-a10b 410s
+    // (endpoint permanently removed 2026-07-20); swapped for the documented
+    // working replacement, qwen3-next-80b.
+    fallbackModels: ["qwen/qwen3-next-80b-a3b-instruct"],
     apiKey,
     systemPrompt: buildAgentPrompt("integrate"), // fix always happens post-integrate, per Stage 5's placement after Stage 4
     initialMessage: buildFixTask(findings),
@@ -131,6 +161,7 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     enableScreenshot: true,
     enableBrowser: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
+    // 2026-07-25: reverted the maxIterations override — see run() above.
   });
 
   return {
@@ -200,16 +231,26 @@ const AANYA_SHARED_PROMPT_BASE = `\
 You are Aanya, a senior Next.js 16.2 + TypeScript frontend engineer.
 You have tools to write files and run commands. DO NOT output text — USE TOOLS.
 
+PLAN-THEN-EXECUTE — this is the most important rule in this prompt:
+Your task message lists the COMPLETE, exhaustive file manifest under
+"PLANNED FRONTEND FILES AND PAGES." Do not discover the app one file at a
+time by writing something and immediately rebuilding — you already have the
+whole plan. Write EVERY planned file before you run "npx next build" even
+once. Building after each individual file is the exact waste this workflow
+exists to remove.
+
 Your workflow:
 1. Use list_files ONCE (recursive) to understand the scaffold already present
-2. Use write_file to create all app pages, components, hooks, and utilities
+2. Use write_file to create EVERY planned page, component, hook, and utility
    — BATCH your work: emit SEVERAL write_file calls in the SAME response
    (3-4 files per turn). One file per turn wastes most of your iteration
-   budget on round trips.
-3. Use run_command "npm install" (runs in project root)
-4. Use run_command "npx next build" to verify the build passes
-5. If build fails: read the error, fix it (edit_file for small changes —
-   cheaper than rewriting the whole file), rebuild
+   budget on round trips, and so does building before the plan is complete.
+3. Once every planned file is written: run_command "npm install" once.
+4. Use run_command "npx next build" ONCE to verify the build passes.
+5. If build fails: read the error, fix ALL the errors it reports in one
+   batched pass (edit_file for small changes — cheaper than rewriting the
+   whole file), THEN rebuild ONCE more to confirm — do not rebuild after
+   fixing a single error in isolation.
 6. When build passes: call task_complete with verification_passed: true
 
 STACK (non-negotiable):
@@ -449,11 +490,7 @@ DO produce: a distinct visual identity — consistent dark theme using NexUI's v
   a brand color hierarchy (primary action, secondary text, muted borders), deliberate
   typography scale, cards with real content and purposeful spacing.
 
-APP-SPECIFIC VISUAL IDENTITY from the spec description:
-${plan.appDescription}
-Implement this identity in every component — if the spec says "electric violet accent", every
-primary Button uses that color. If the spec says "card-based layout", every data section uses
-Panel/Card components with consistent padding. No generic defaults.
+${formatDesignBriefForPrompt(plan.designBrief)}
 
 CONTENT RULE — NO PLACEHOLDER TEXT:
 Every page must show real content from the project spec, NOT "Lorem ipsum" or "Coming soon".

@@ -19,6 +19,14 @@ import { run as runRiya, type DeployResult } from "../../../agents/riya/src/inde
 import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
+// 2026-07-24 (P2, full agentic upgrade): System B — the subjective live
+// evaluator CLAUDE.md documents (design/originality/craft/functionality,
+// pass >=7.0). Did not exist before this: runLiveTest (pipeline/activities/
+// index.ts) was a hardcoded `return 8.0` stub, zero callers. Wired in here,
+// not in Stage 5, because System B needs a real deployed URL to browse —
+// the same reason Tier 3 only legitimately runs post-deploy (see
+// runRealLiveRetest below).
+import { runLiveEval, type LiveEvalResult } from "../../../agents/tilotma/src/live-eval.ts";
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
 // never appear in anything that could be user-facing. buildDeliverySummary()
@@ -42,6 +50,11 @@ const INTERNAL_AGENT_NAMES = [
 export interface LiveRetestResult {
   pass: boolean;
   findings: unknown;
+  // 2026-07-24 (P2): System B result, when it ran. Optional so existing
+  // callers/tests that construct a LiveRetestResult without it (deploy-only
+  // stubs, unit tests exercising deploy logic in isolation) are unaffected —
+  // buildDeliverySummary only gates on it when present.
+  liveEval?: LiveEvalResult;
 }
 
 export interface Stage6Result {
@@ -68,8 +81,13 @@ export function buildDeliverySummary(
   deployResult: DeployResult,
   retest: LiveRetestResult,
 ): DeliverySummary {
+  // 2026-07-24 (P2): fail-closed on System B too, when it ran — a site that
+  // passes every objective check but scores as generic AI slop must not
+  // reach "delivered". `liveEval` is optional so callers that never ran it
+  // (deploy-only tests/stubs) aren't gated on something that didn't happen.
+  const liveEvalOk = retest.liveEval ? retest.liveEval.pass : true;
   return {
-    status: deployResult.success && retest.pass ? "delivered" : "failed",
+    status: deployResult.success && retest.pass && liveEvalOk ? "delivered" : "failed",
     appUrl: deployResult.appUrl,
     githubRepo: deployResult.githubRepo,
   };
@@ -134,7 +152,19 @@ async function runRealLiveRetest(
     // runStage5's own comment for why the pre-deployment gate defaults to
     // false instead.
     const result: Stage5Result = await runStage5(projectId, stage4Result, true);
-    return { pass: result.pass, findings: result.findings };
+    if (!result.pass) {
+      // Don't spend a live browser evaluation judging the design of an app
+      // that's about to loop back for objective bug fixes anyway — System B
+      // only runs once System A (findings) + Tier 3 (does it work) agree
+      // the app is objectively sound. `liveEval` stays absent here, which
+      // buildDeliverySummary treats as "didn't run", not "failed".
+      return { pass: result.pass, findings: result.findings };
+    }
+
+    // 2026-07-24 (P2): System B — the app is objectively correct; now judge
+    // whether it's actually good, not generic AI-slop that happens to work.
+    const liveEval = await runLiveEval(projectId, appUrl, stage4Result.frontendOutputDir);
+    return { pass: result.pass && liveEval.pass, findings: result.findings, liveEval };
   } finally {
     if (previousUrl === undefined) {
       delete process.env.TIER3_REVIEW_URL;

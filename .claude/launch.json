@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "nexsidi-api",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "start"],
+      "cwd": "E:/ai yug/.claude/worktrees/eager-varahamihira-967edb/apps/api",
+      "port": 8080
+    },
+    {
+      "name": "nexsidi-web",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "E:/ai yug/.claude/worktrees/eager-varahamihira-967edb/apps/web",
+      "port": 3000
+    }
+  ]
+}

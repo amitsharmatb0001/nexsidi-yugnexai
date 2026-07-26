@@ -1,5 +1,6 @@
 import { test, expect, mock } from "bun:test";
 import { runAgent } from "../loop.ts";
+import type { ModelId } from "@nexsidi/llm-client";
 import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -103,7 +104,12 @@ test("runAgent auto-discovers and executes MCP tools from mcp-config.json", asyn
   try {
     const result = await runAgent({
       agentName: "shubham",
-      model: "mock-model",
+      // Deliberately invalid — this test exercises the runtime's own
+      // disallowed-model-dropping validation (see the "[model-routing]
+      // Dropping disallowed model" log line it triggers), so the type
+      // system needs to be told this is an intentional bad value, not a
+      // real model that should be added to ModelId.
+      model: "mock-model" as ModelId,
       apiKey: "key",
       systemPrompt: "prompt",
       initialMessage: "start",

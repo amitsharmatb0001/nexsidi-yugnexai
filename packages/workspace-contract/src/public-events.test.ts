@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { toPublicActivityEvent } from "./public-events.ts";
+import {
+  sanitizePublicActivityEvent,
+  toPublicActivityEvent,
+} from "./public-events.ts";
 
 test("translates an internal tool event without copying raw details", () => {
   const event = toPublicActivityEvent({
@@ -75,5 +78,94 @@ test("omits every path containing parent traversal", () => {
     "/workspace/../secret.txt",
   ]) {
     expect(publicEventWithPath(unsafePath)?.safePath).toBeUndefined();
+  }
+});
+
+function candidateEvent(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "event-safe_1",
+    workspaceId: "abc123def456",
+    runId: "run-1",
+    category: "command",
+    status: "running",
+    summary: "Bearer secret-token from a private worker",
+    createdAt: "2026-07-19T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+test("replaces stored summaries and drops unknown fields", () => {
+  const sanitized = sanitizePublicActivityEvent({
+    ...candidateEvent(),
+    internalAgent: "hidden-worker",
+    rawCommand: "printenv SECRET_TOKEN",
+  });
+
+  expect(sanitized?.summary).toBe("Running a workspace command");
+  expect(JSON.stringify(sanitized)).not.toContain("secret-token");
+  expect(sanitized).not.toHaveProperty("internalAgent");
+  expect(sanitized).not.toHaveProperty("rawCommand");
+});
+
+test("omits unsafe stored paths, evidence IDs, and elapsed values", () => {
+  for (const safePath of [
+    "C:\\Users\\owner\\secret.txt",
+    "\\\\server\\share\\secret.txt",
+    "/etc/passwd",
+    "src/../../secret.txt",
+  ]) {
+    const sanitized = sanitizePublicActivityEvent(
+      candidateEvent({
+        safePath,
+        evidenceId: "../../secret-evidence",
+        elapsedMs: -1,
+      }),
+    );
+    expect(sanitized?.safePath).toBeUndefined();
+    expect(sanitized?.evidenceId).toBeUndefined();
+    expect(sanitized?.elapsedMs).toBeUndefined();
+  }
+});
+
+test("preserves validated optional public evidence", () => {
+  expect(
+    sanitizePublicActivityEvent(
+      candidateEvent({
+        safePath: "/workspace/src/index.ts",
+        evidenceId: "evidence_123",
+        elapsedMs: 42,
+      }),
+    ),
+  ).toMatchObject({
+    safePath: "src/index.ts",
+    evidenceId: "evidence_123",
+    elapsedMs: 42,
+  });
+});
+
+test("rejects unknown categories, statuses, and invalid combinations", () => {
+  expect(
+    sanitizePublicActivityEvent(candidateEvent({ category: "raw_log" })),
+  ).toBeNull();
+  expect(
+    sanitizePublicActivityEvent(candidateEvent({ status: "streaming" })),
+  ).toBeNull();
+  expect(
+    sanitizePublicActivityEvent(
+      candidateEvent({ category: "file", status: "running" }),
+    ),
+  ).toBeNull();
+});
+
+test("rejects malformed records and identifiers", () => {
+  for (const candidate of [
+    null,
+    [],
+    candidateEvent({ id: "../../event" }),
+    candidateEvent({ workspaceId: "short" }),
+    candidateEvent({ runId: "../../run" }),
+    candidateEvent({ createdAt: "not-a-date" }),
+  ]) {
+    expect(sanitizePublicActivityEvent(candidate)).toBeNull();
   }
 });

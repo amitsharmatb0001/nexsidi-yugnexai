@@ -1,6 +1,9 @@
 {
   "name": "nexui-publish-workspace",
   "private": true,
+  "scripts": {
+    "typecheck": "echo 'nexui-publish-workspace has no source of its own — see nexui/ and nexui-react/'"
+  },
   "workspaces": [
     "nexui",
     "nexui-react"

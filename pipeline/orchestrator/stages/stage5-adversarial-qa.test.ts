@@ -2,7 +2,15 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runStage5WithAgents, collectCode, type Stage5Agents } from "./stage5-adversarial-qa.ts";
+import {
+  runStage5WithAgents,
+  collectCode,
+  locationPrefix,
+  karanFindingToFinding,
+  navyaFindingToFinding,
+  deepikaFindingToFinding,
+  type Stage5Agents,
+} from "./stage5-adversarial-qa.ts";
 import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { QAResult as KaranResult } from "../../../agents/qa/karan/src/index.ts";
 import type { QAResult as NavyaResult } from "../../../agents/qa/navya/src/index.ts";
@@ -321,9 +329,12 @@ test("combined findings include mapped entries from all three agents on failure"
 
   expect(result.pass).toBe(false);
   expect(result.findings).toHaveLength(2);
+  // P2 (2026-07-24): issue text now includes the file (and line, when the
+  // agent supplied one) as a location prefix — this finding has no line, so
+  // it degrades to "file — " per locationPrefix's no-line branch.
   expect(result.findings[0]).toEqual({
     file: "backend/src/routes/tasks.routes.ts",
-    issue: "[security/CRITICAL] SQL injection",
+    issue: "backend/src/routes/tasks.routes.ts — [security/CRITICAL] SQL injection",
   });
   expect(result.findings[1]).toEqual({
     file: "",
@@ -365,4 +376,43 @@ test("collectCode prefixes every file with its agent label, not just the bare re
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// 2026-07-24 (P2, full agentic upgrade): `issue` is the ONE text field that
+// survives all the way to the generator's fix prompt (via formatFinding in
+// stage5-qa-fix-loop.ts) — a `line` on the QA finding does nothing for
+// convergence unless it's embedded here. These pin the exact format so a
+// future edit can't silently drop it back to file-only.
+
+test("locationPrefix embeds file:line when both are present", () => {
+  expect(locationPrefix("backend/src/db.ts", 47)).toBe("backend/src/db.ts:47 — ");
+});
+
+test("locationPrefix falls back to file-only when line is absent — never a misleading ':undefined'", () => {
+  expect(locationPrefix("backend/src/db.ts", undefined)).toBe("backend/src/db.ts — ");
+});
+
+test("locationPrefix is empty when file itself is absent", () => {
+  expect(locationPrefix(undefined, 47)).toBe("");
+});
+
+test("karanFindingToFinding embeds file:line into the issue text reaching the generator", () => {
+  const result = karanFindingToFinding({ severity: "CRITICAL", description: "SQL injection", file: "backend/src/db.ts", line: 47 });
+  expect(result.issue).toBe("backend/src/db.ts:47 — [security/CRITICAL] SQL injection");
+  expect(result.file).toBe("backend/src/db.ts");
+});
+
+test("navyaFindingToFinding embeds file:line into the issue text reaching the generator", () => {
+  const result = navyaFindingToFinding({ severity: "HIGH", category: "null-deref", detail: "unchecked optional", file: "backend/src/auth.ts", line: 12 });
+  expect(result.issue).toBe("backend/src/auth.ts:12 — [logic/HIGH] null-deref: unchecked optional");
+});
+
+test("deepikaFindingToFinding embeds file:line into the issue text reaching the generator", () => {
+  const result = deepikaFindingToFinding({ severity: "MEDIUM", category: "n-plus-one", detail: "query in loop", file: "backend/src/orders.ts", line: 88 });
+  expect(result.issue).toBe("backend/src/orders.ts:88 — [performance/MEDIUM] n-plus-one: query in loop");
+});
+
+test("xFindingToFinding functions degrade gracefully to file-only issue text when line is absent", () => {
+  const result = karanFindingToFinding({ severity: "LOW", description: "missing rate limit", file: "backend/src/app.ts" });
+  expect(result.issue).toBe("backend/src/app.ts — [security/LOW] missing rate limit");
 });

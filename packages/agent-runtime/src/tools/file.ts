@@ -63,6 +63,38 @@ export function execWriteFile(sandboxDir: string, args: { path: string; content:
   }
 }
 
+// 2026-07-25 (Phase 2.3, full MVP upgrade): batch write. Root cause of the
+// 40-iteration grind (audit-2026-07-25.md): write_file takes exactly one
+// path+content, and with the pre-Phase-0 16K output cap a model could only
+// fit 1-2 files per turn regardless of instructions — a 15-file site needed
+// ~30 write turns before any verification even started. Now that Phase 0
+// raised the real output ceiling to 64K, one turn can legitimately hold
+// several files' worth of content; write_files lets the model actually use
+// that budget instead of being forced back into one-call-per-file by the
+// tool shape itself. Each file is written independently via execWriteFile —
+// a failure on file N does not roll back files 1..N-1 (they already exist on
+// disk); the per-file result array tells the caller exactly which failed.
+export function execWriteFiles(sandboxDir: string, args: { files: Array<{ path: string; content: string }> }): ToolResult {
+  if (!Array.isArray(args.files) || args.files.length === 0) {
+    return { status: "error", summary: "write_files requires a non-empty files array", next_actions: ["pass at least one {path, content} entry"] };
+  }
+  const results = args.files.map((f) => ({ path: f.path, ...execWriteFile(sandboxDir, f) }));
+  const failed = results.filter((r) => r.status === "error");
+  if (failed.length > 0) {
+    return {
+      status: "error",
+      summary: `write_files: ${results.length - failed.length}/${results.length} succeeded, ${failed.length} failed`,
+      output: failed.map((f) => `${f.path}: ${f.summary}`).join("\n"),
+      next_actions: ["retry the failed paths individually with write_file", "check each failed path for traversal or invalid content"],
+    };
+  }
+  return {
+    status: "success",
+    summary: `Wrote ${results.length} files: ${results.map((r) => r.path).join(", ")}`,
+    next_actions: ["run_command to verify (tsc, npm install, etc.)"],
+  };
+}
+
 // Phase B, L7 (full-system audit): agents rewrote whole files via write_file
 // for single-line changes, burning output tokens re-emitting unchanged
 // content. Mirrors Anthropic's own text-editor str_replace command — exactly
@@ -204,6 +236,31 @@ export const FILE_TOOL_DEFS: NimToolDef[] = [
           content: { type: "string", description: "Full file content to write" },
         },
         required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_files",
+      description: "Write MULTIPLE files in a single call — PREFER THIS over repeated write_file calls whenever you already know several files' full content (e.g. from a locked build plan). Batching several files per turn is what your real output budget is for; writing one file per turn wastes iterations re-deciding what to write next when you already know.",
+      parameters: {
+        type: "object",
+        properties: {
+          files: {
+            type: "array",
+            description: "List of files to write in this one call",
+            items: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Relative path from project root, e.g. 'src/routes/tasks.ts'" },
+                content: { type: "string", description: "Full file content to write" },
+              },
+              required: ["path", "content"],
+            },
+          },
+        },
+        required: ["files"],
       },
     },
   },

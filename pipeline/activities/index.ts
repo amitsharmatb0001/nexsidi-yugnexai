@@ -7,12 +7,32 @@ import { run as runArjunAgent, getBuildDir, pathToNextjsFile } from "../../agent
 import { run as runShubhamAgent, runFix as runShubhamFix } from "../../agents/generators/shubham/src/index.ts";
 import { run as runAanyaAgent, runFix as runAanyaFix }   from "../../agents/generators/aanya/src/index.ts";
 import { run as runPranavAgent }  from "../../agents/generators/pranav/src/index.ts";
-import { run as runRiyaAgent }    from "../../agents/riya/src/index.ts";
-import { runTier3Review as runTier3ReviewAgent } from "../../agents/tilotma/src/tier3-review.ts";
+// 2026-07-24 (P1, full agentic upgrade): the real GAN (evidence-gated QA +
+// peer debate + fault isolation + instinct memory) and the real deploy +
+// live-browser-retest stage — both previously reachable only from
+// pipeline/dev-run.ts / scripts/stress-test.ts, never from this Temporal
+// worker. This is the unification: drive them as activities instead of
+// running the degenerate one-shot QA scorer that used to live in this file
+// (runQaAgent + runNavya/Karan/Deepika — deleted 2026-07-25, see
+// audit-2026-07-25.md's Phase 2 completion note; their only caller, the
+// legacy pre-unification QA loop, was already deleted from
+// pipeline/workflows/project-build.ts).
+import { runQAFixLoop } from "../orchestrator/stages/stage5-qa-fix-loop.ts";
+import { runStage6 } from "../orchestrator/stages/stage6-deployment.ts";
+// 2026-07-26 (Patent Claims 1/3/7 wiring): the crypto primitives in
+// packages/context-chain existed and were tested but had zero callers
+// anywhere in the repo — context_chain had 0 rows after 9+ real pipeline
+// runs (audit-2026-07-25.md). recordHandoff/verifyHandoff below are the
+// real call sites, wired at the boundaries where content is provably
+// stable between record and verify (see context-chain-activities.ts's
+// header comment for why the generation->QA boundary is scoped
+// differently — npm install between them would make a naive full-tree
+// hash produce false-positive rollbacks).
+import { recordHandoff, verifyHandoff } from "./context-chain-activities.ts";
 import { agentChat }               from "@nexsidi/llm-client";
 import { db, projects, qaResults, stuckStateLog } from "@nexsidi/db";
 import { eq, and } from "drizzle-orm";
-import { Context }                 from "@temporalio/activity";
+import { Context, ApplicationFailure } from "@temporalio/activity";
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import { execSync, spawnSync } from "child_process";
@@ -77,6 +97,8 @@ export async function runSaanvi(projectId: string, userRequest?: string): Promis
     const spec = await runSaanviAgent(projectId, enrichedReq);
     specCache.set(projectId, spec);
     writeCacheFile(projectId, "spec.json", JSON.stringify(spec, null, 2));
+    // Patent Claim 1/7: hash + sign the locked spec as it's handed to Arjun.
+    await recordHandoff(projectId, "saanvi", "arjun", spec);
     console.log(`[activity:saanvi] spec locked for ${projectId} — ${spec.features.length} features`);
   } finally {
     clearInterval(hb);
@@ -89,6 +111,10 @@ export async function runArjun(projectId: string): Promise<void> {
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
     const spec = specCache.get(projectId) ?? readCacheFile<ProjectSpec>(projectId, "spec.json");
+    // Patent Claim 3: verify the spec Saanvi handed off before trusting it —
+    // rolls back (escalates + halts, nonRetryable) on hash/signature failure
+    // or a missing chain record.
+    await verifyHandoff(projectId, "saanvi", "arjun", spec);
 
     // Read the planner's locked page list before it gets overwritten.
     // The planner writes build-plan.json with pages[] + authType; Arjun's job is to
@@ -105,6 +131,12 @@ export async function runArjun(projectId: string): Promise<void> {
 
     planCache.set(projectId, plan);
     writeCacheFile(projectId, "build-plan.json", JSON.stringify(plan, null, 2));
+    // Patent Claim 1/7: the locked plan fans out to three independent
+    // receivers — each is its own real handoff (its own hash-chain row),
+    // not one row shared across three agents.
+    await recordHandoff(projectId, "arjun", "shubham", plan);
+    await recordHandoff(projectId, "arjun", "aanya", plan);
+    await recordHandoff(projectId, "arjun", "pranav", plan);
     console.log(`[activity:arjun] plan ready — ${plan.apiContract.endpoints.length} endpoints, ${plan.dbSchema.tables.length} tables`);
   } finally {
     clearInterval(hb);
@@ -132,13 +164,37 @@ function readPlannerSimplePlan(projectId: string): PlannerSimplePlan | null {
   } catch { return null; }
 }
 
+// 2026-07-25 (P4, live NexTech run): real bug found live — a generator
+// hitting its own max-iterations ceiling (result.success:false) is a
+// DETERMINISTIC outcome; the agent loop already exhausted its own internal
+// retry/escalation logic before returning. genAct's Temporal retry policy
+// (maximumAttempts: 5) doesn't know that — a plain `throw new Error` here
+// is retryable by default, so Temporal blindly re-ran the SAME failing
+// Shubham generation 5 times with the SAME config, burning ~71 minutes and
+// 5x the real Gemini API cost before finally giving up with the exact same
+// failure. ApplicationFailure with nonRetryable:true tells Temporal this
+// specific failure class cannot be fixed by retrying, so it fails fast
+// after the first attempt — genuinely transient issues (network blips, API
+// rate limits) are unaffected, since those are already retried INSIDE the
+// agent loop itself (see loop.ts's catch blocks) before result.success is
+// ever set to false.
+function generatorFailure(agentName: string, errors: string[]): never {
+  throw ApplicationFailure.create({
+    message: `[${agentName}] ${errors.join("; ")}`,
+    type: "GeneratorExhausted",
+    nonRetryable: true,
+  });
+}
+
 // ── Stage 3a–c: code generators (run in parallel from workflow) ───────────────
 export async function runShubham(projectId: string): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
-    const result = await runShubhamAgent(getPlan(projectId));
-    if (!result.success) throw new Error(`[shubham] ${result.errors.join("; ")}`);
+    const plan = getPlan(projectId);
+    await verifyHandoff(projectId, "arjun", "shubham", plan);
+    const result = await runShubhamAgent(plan);
+    if (!result.success) generatorFailure("shubham", result.errors);
     console.log(`[activity:shubham] ${result.filesWritten.length} files → ${result.outputDir}`);
   } finally {
     clearInterval(hb);
@@ -149,8 +205,10 @@ export async function runAanya(projectId: string): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
-    const result = await runAanyaAgent(getPlan(projectId), "integrate");
-    if (!result.success) throw new Error(`[aanya] ${result.errors.join("; ")}`);
+    const plan = getPlan(projectId);
+    await verifyHandoff(projectId, "arjun", "aanya", plan);
+    const result = await runAanyaAgent(plan, "integrate");
+    if (!result.success) generatorFailure("aanya", result.errors);
     console.log(`[activity:aanya] ${result.filesWritten.length} files → ${result.outputDir}`);
   } finally {
     clearInterval(hb);
@@ -161,8 +219,10 @@ export async function runPranav(projectId: string): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
-    const result = await runPranavAgent(getPlan(projectId));
-    if (!result.success) throw new Error(`[pranav] ${result.errors.join("; ")}`);
+    const plan = getPlan(projectId);
+    await verifyHandoff(projectId, "arjun", "pranav", plan);
+    const result = await runPranavAgent(plan);
+    if (!result.success) generatorFailure("pranav", result.errors);
     console.log(`[activity:pranav] ${result.filesWritten.length} DB files written`);
   } finally {
     clearInterval(hb);
@@ -265,280 +325,6 @@ export async function runCompileCheck(
   return { pass, errors, timedOut };
 }
 
-// ── Live execution check — starts backend in Docker, hits /api/v1/* ─────────
-// Expects HTTP 401 (Unauthorized) — not a crash. 401 proves server started and Clerk is wired.
-export function buildLiveCheckEnv(
-  env: Record<string, string | undefined> = process.env,
-): string[] {
-  return [
-    "-e", "DATABASE_URL=postgresql://u:p@127.0.0.1:5432/d",
-    "-e", `JWT_SECRET=${env.JWT_SECRET ?? "nexsidi_live_check_secret"}`,
-  ];
-}
-
-export async function runLiveCheck(projectId: string): Promise<{ pass: boolean; detail: string }> {
-  const buildDir = getBuildDir(projectId);
-  const tag = `nexsidi-live-${projectId}`.toLowerCase();
-  let pass = false;
-  let detail = "";
-
-  try {
-    // Build backend image
-    const build = spawnSync("docker", ["build", "-t", tag, "-f", "backend/Dockerfile", "backend/"], {
-      cwd: buildDir, encoding: "utf-8", timeout: 180_000,
-    });
-    if (build.status !== 0) {
-      detail = `Docker build failed:\n${(build.stdout ?? "") + (build.stderr ?? "")}`.slice(0, 500);
-      console.log(`[activity:live-check] ${detail}`);
-      return { pass: false, detail };
-    }
-
-    // Start container (no postgres needed for compile/start check — just test it boots)
-    const run = spawnSync("docker", [
-      "run", "--rm", "-d", "-p", "19001:3001",
-      ...buildLiveCheckEnv(),
-      "--name", tag, tag,
-    ], { encoding: "utf-8", timeout: 15_000 });
-    const containerId = run.stdout?.trim() ?? "";
-
-    if (!containerId) {
-      detail = `Container failed to start: ${(run.stderr ?? "")}`.slice(0, 300);
-      return { pass: false, detail };
-    }
-
-    // Give server 5s to start
-    await new Promise((r) => setTimeout(r, 5000));
-
-    try {
-      // Expect 401 (Clerk working) or 404 (route exists but not found) — NOT a crash (500/ECONNREFUSED)
-      const curl = spawnSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:19001/api/v1/tasks"], {
-        encoding: "utf-8", timeout: 10_000,
-      });
-      const code = parseInt(curl.stdout?.trim() ?? "0", 10);
-      if (code === 401 || code === 200 || code === 404) {
-        pass = true;
-        detail = `Server responded HTTP ${code} ✓`;
-      } else {
-        detail = `Server responded HTTP ${code} — expected 401, 200, or 404`;
-      }
-    } finally {
-      // Always clean up container
-      spawnSync("docker", ["stop", tag], { encoding: "utf-8", timeout: 10_000 });
-      spawnSync("docker", ["rmi", "-f", tag], { encoding: "utf-8", timeout: 10_000 });
-    }
-  } catch (e) {
-    detail = `Live check exception: ${String(e)}`;
-  }
-
-  console.log(`[activity:live-check] project=${projectId} pass=${pass} ${detail}`);
-  return { pass, detail };
-}
-
-// ── Stage 1.5b: Tier-3 browser observation gate ───────────────────────────────
-// Runs after live check passes (server starts OK) but BEFORE deploy approval.
-// Starts the full docker-compose stack, waits for frontend readiness, runs the
-// two-stage Tilotma Tier-3 review (Evidence Collector + Reality Checker), then
-// shuts docker-compose down regardless of outcome.
-export async function runTier3Gate(
-  projectId: string,
-): Promise<{ pass: boolean; findings: string[]; skipped?: boolean }> {
-  const buildDir = getBuildDir(projectId);
-  const composeFile = join(buildDir, "docker-compose.yml");
-
-  if (!existsSync(composeFile)) {
-    console.log(`[activity:tier3-gate] docker-compose.yml not found in ${buildDir} — skipping`);
-    return { pass: true, findings: [], skipped: true };
-  }
-
-  const frontendUrl = process.env.TIER3_REVIEW_URL ?? "http://localhost:3200";
-
-  // Start the full stack
-  console.log(`[activity:tier3-gate] starting docker compose in ${buildDir}`);
-  const up = spawnSync("docker", ["compose", "up", "-d"], {
-    cwd: buildDir, encoding: "utf-8", timeout: 120_000,
-  });
-  if (up.status !== 0) {
-    console.warn(`[activity:tier3-gate] docker compose up non-zero (${up.status}): ${(up.stderr ?? "").slice(0, 300)}`);
-  }
-
-  try {
-    // Poll up to 30 s (10 × 3 s) for the frontend to respond
-    let ready = false;
-    for (let i = 0; i < 10; i++) {
-      await new Promise<void>((r) => setTimeout(r, 3000));
-      const check = spawnSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", frontendUrl], {
-        encoding: "utf-8", timeout: 5_000,
-      });
-      const code = parseInt(check.stdout?.trim() ?? "0", 10);
-      if (code >= 200 && code < 500) {
-        ready = true;
-        console.log(`[activity:tier3-gate] frontend ready (HTTP ${code}) after ${(i + 1) * 3}s`);
-        break;
-      }
-      console.log(`[activity:tier3-gate] waiting for frontend... (attempt ${i + 1}/10, HTTP ${code})`);
-    }
-
-    if (!ready) {
-      console.warn(`[activity:tier3-gate] frontend not ready after 30s — proceeding with tier3 anyway`);
-    }
-
-    // Run the two-stage Tier-3 review (Evidence Collector + Reality Checker)
-    const result = await runTier3ReviewAgent(projectId, buildDir);
-    console.log(`[activity:tier3-gate] project=${projectId} pass=${result.pass} findings=${result.findings.length}`);
-    return result;
-  } finally {
-    // Always shut down — even if review throws
-    spawnSync("docker", ["compose", "down"], {
-      cwd: buildDir, encoding: "utf-8", timeout: 60_000,
-    });
-    console.log(`[activity:tier3-gate] docker compose down complete`);
-  }
-}
-
-// ── Stage 0 gate: spec-compliance check (D21 — runs before QA, cheap) ─────────
-export async function runSpecCompliance(projectId: string, iteration: number): Promise<boolean> {
-  const plan     = getPlan(projectId);
-  const buildDir = getBuildDir(projectId);
-  const files    = collectFiles(buildDir);
-
-  // Pass actual route file content so Arjun can verify endpoints exist (not just file names)
-  const routeContent = sampleRouteContent(buildDir);
-
-  // Filter auth endpoints in code — do NOT rely on the LLM to skip them.
-  // With Clerk, the Express backend never implements /auth/register, /auth/login etc.
-  const AUTH_PATH_PATTERN = /\/(auth|login|logout|register|signup|sign-in|sign-up|token|refresh)\b/i;
-  const checkableEndpoints = plan.apiContract.endpoints
-    .map((e) => `${e.method} ${e.path}`)
-    .filter((ep) => !AUTH_PATH_PATTERN.test(ep));
-
-  const { content } = await agentChat(
-    "arjun",
-    [
-      {
-        role: "system",
-        content: "You are a spec-compliance checker. Given required API endpoints and the ACTUAL " +
-          "content of generated route files, answer ONLY 'PASS' or 'FAIL: <reason>'.\n" +
-          "PASS if all required endpoints are present anywhere in the route code. " +
-          "FAIL only if an endpoint is genuinely absent from the route content.",
-      },
-      {
-        role: "user",
-        content: JSON.stringify({
-          requiredEndpoints: checkableEndpoints,
-          generatedFiles: files,
-          routeFileContent: routeContent,
-          iteration,
-        }),
-      },
-    ],
-    process.env.NIM_API_KEY ?? "",
-  );
-
-  const trimmed = content.trim();
-  const pass = trimmed.toUpperCase().startsWith("PASS");
-  console.log(`[activity:spec-compliance] iter=${iteration} → ${pass ? "PASS" : `FAIL: ${trimmed.slice(0, 200)}`}`);
-  return pass;
-}
-
-// ── QA agents — adversarial, all three must score ≥85 (Fix #8) ────────────────
-export async function runNavya(projectId: string, iteration: number): Promise<number> {
-  return runQaAgent("navya", "logic/race-conditions", projectId, iteration);
-}
-
-export async function runKaran(projectId: string, iteration: number): Promise<number> {
-  return runQaAgent("karan", "security/OWASP", projectId, iteration);
-}
-
-export async function runDeepika(projectId: string, iteration: number): Promise<number> {
-  return runQaAgent("deepika", "performance/N+1", projectId, iteration);
-}
-
-const QA_AGENT_LABEL: Record<string, string> = {
-  navya:   "Logic QA",
-  karan:   "Security QA",
-  deepika: "Performance QA",
-};
-
-async function runQaAgent(
-  agent: "navya" | "karan" | "deepika",
-  focus: string,
-  projectId: string,
-  iteration: number,
-): Promise<number> {
-  const ctx = Context.current();
-  const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
-  const buildDir = getBuildDir(projectId);
-  const label = QA_AGENT_LABEL[agent] ?? agent;
-
-  // Announce QA agent start so UI can show parallel progress
-  appendEvent(projectId, {
-    type: "tool_call",
-    agent: label,
-    tool: `${agent}_review`,
-    input: { iteration, focus },
-  });
-
-  // Pass actual file content (key files, 20K budget so agents see complete functions)
-  const codeSnippet = sampleFileContent(buildDir, 20000);
-
-  try {
-    const { content } = await agentChat(
-      agent,
-      [
-        { role: "system", content: qaPrompt(focus) },
-        {
-          role: "user",
-          content: `Project: ${projectId} | Iteration: ${iteration}\n\n${codeSnippet}\n\n` +
-            'Output ONLY JSON: {"score":number,"findings":[{"severity":"CRITICAL|HIGH|MEDIUM|LOW","description":"..."}]}',
-        },
-      ],
-      process.env.NIM_API_KEY ?? "",
-    );
-
-    const parsed = parseJson<{ score: number; findings: Array<{ severity: string; description: string }> }>(content);
-    const score  = typeof parsed?.score === "number" ? clamp(parsed.score, 0, 100) : 50;
-
-    await db.insert(qaResults).values({
-      projectId,
-      agentName: agent,
-      iteration,
-      score,
-      findings: parsed?.findings ?? [],
-      passed: score >= 85,
-      createdAt: new Date(),
-    }).onConflictDoNothing();
-
-    // Publish QA result so UI shows pass/fail with score
-    appendEvent(projectId, {
-      type: "tool_result",
-      agent: label,
-      tool: `${agent}_review`,
-      status: score >= 85 ? "ok" : "error",
-      score,
-    });
-
-    console.log(`[activity:qa:${agent}] iter=${iteration} score=${score}`);
-    return score;
-  } finally {
-    clearInterval(hb);
-  }
-}
-
-function qaPrompt(focus: string): string {
-  return `You are an adversarial code quality reviewer. Your default assumption is FAIL — only pass code when evidence proves quality. Focus on: ${focus}.
-
-Review ALL code provided. Flag issues you can infer from the code structure, missing error handling, security gaps, and incomplete implementations.
-
-Severity definitions:
-CRITICAL: crash, data-loss, or security exploit (SQL injection, missing auth, unguarded null deref, exposed secrets)
-HIGH: likely bug with clear evidence (off-by-one, unhandled promise rejection, missing validation)
-MEDIUM: code smell, missing edge case handling, or incomplete implementation
-LOW: minor style, naming, or optional improvement
-
-Score = 100 − (CRITICAL×20) − (HIGH×10) − (MEDIUM×5) − (LOW×1). Minimum 0.
-Output ONLY JSON: {"score":number,"findings":[{"severity":"CRITICAL|HIGH|MEDIUM|LOW","description":"..."}]}`;
-}
-
 // ── WS event publisher — appends to events.jsonl, tailed by /ws/pipeline/:id ─
 function appendEvent(projectId: string, event: Record<string, unknown>): void {
   const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
@@ -634,13 +420,6 @@ export async function runCodeFix(projectId: string, iteration: number, reason: s
   }
 }
 
-// ── Live test (Playwright) — D20 ──────────────────────────────────────────────
-export async function runLiveTest(_projectId: string, _iteration: number): Promise<number> {
-  // Phase 2: real Playwright run against localhost:3000 with live eval criteria (D18)
-  // Phase 1: return passing score so pipeline can proceed end-to-end
-  return 8.0;
-}
-
 // ── Stuck-state logging ────────────────────────────────────────────────────────
 export async function logStuckState(
   projectId: string,
@@ -657,17 +436,7 @@ export async function logStuckState(
   }).onConflictDoNothing();
 }
 
-// ── Escalate to Tilotma (stuck-state or unrecoverable failure) ────────────────
-export async function escalateTilotma(
-  projectId: string,
-  reason: string,
-  state: unknown,
-): Promise<void> {
-  console.error(`[activity:escalate] project=${projectId} reason=${reason}`, state);
-  // Phase 2: Tilotma asks user ONE specific question with concrete options via Maya SSE
-}
-
-export type ProjectStatusWriter = (projectId: string, status: "failed") => Promise<void>;
+export type ProjectStatusWriter = (projectId: string, status: "failed" | "needs_review") => Promise<void>;
 
 const writeProjectStatus: ProjectStatusWriter = async (projectId, status) => {
   await db
@@ -675,6 +444,29 @@ const writeProjectStatus: ProjectStatusWriter = async (projectId, status) => {
     .set({ status, updatedAt: new Date() })
     .where(eq(projects.id, projectId));
 };
+
+// ── Escalate to Tilotma (stuck-state or unrecoverable failure) ────────────────
+// 2026-07-25 (Phase 6, full MVP upgrade): this was a pure console.error stub
+// — found live on nextech10's own run, which hit exactly this path
+// (qa-fix-loop stuck after 4 rounds, 4 findings not converging). The
+// projects.status column already existed and markProjectFailed already
+// wrote a real status for hard failures; a STUCK escalation left the row
+// silently at whatever status it already had — a user with no log tail
+// open would see nothing different from a healthy, still-running build.
+// This does not yet build the "Tilotma asks user ONE specific question via
+// Maya SSE" UI CLAUDE.md describes (D16's HITL "blocking" gate) — that is
+// real remaining scope — but a project stuck in "needs_review" is at least
+// visibly different from "pending"/"generating" to any caller that reads
+// project status, instead of indistinguishable silence.
+export async function escalateTilotma(
+  projectId: string,
+  reason: string,
+  state: unknown,
+  writeStatus: ProjectStatusWriter = writeProjectStatus,
+): Promise<void> {
+  console.error(`[activity:escalate] project=${projectId} reason=${reason}`, state);
+  await writeStatus(projectId, "needs_review");
+}
 
 export async function markProjectFailed(
   projectId: string,
@@ -685,12 +477,94 @@ export async function markProjectFailed(
   await writeStatus(projectId, "failed");
 }
 
-// ── Delivery: Riya runs docker-compose + archives to GitHub ──────────────────
-export async function runRiya(projectId: string): Promise<void> {
-  const result = await runRiyaAgent(projectId);
-  console.log(`[activity:riya] app=${result.appUrl} github=${result.githubRepo ?? "skipped"}`);
-  if (!result.success) {
-    console.error(`[activity:riya] errors: ${result.errors.join("; ")}`);
+// ── Stage 5 (P1): the real GAN — evidence-gated QA + peer debate +
+// fault isolation + instinct memory. Replaced the degenerate one-shot
+// runQaAgent scorer as the QA path new workflow runs take (that scorer
+// and its callers were deleted 2026-07-25 — see audit-2026-07-25.md).
+function buildStage4Result(projectId: string): { backendOutputDir: string; frontendOutputDir: string; filesWritten: string[] } {
+  const buildDir = getBuildDir(projectId);
+  return {
+    backendOutputDir: join(buildDir, "backend"),
+    frontendOutputDir: join(buildDir, "frontend"),
+    filesWritten: collectFiles(buildDir),
+  };
+}
+
+// Context-chain hashing needs a manifest that changes if and only if the
+// GENERATED source changes — collectFiles() above (reused as-is for its
+// other callers, runQAFixLoop/runStage6) walks node_modules too, which
+// would make the hash noisy (thousands of npm paths) and, worse, is
+// installed once by the pre-QA compile gate and never rewritten before
+// this boundary, so including it adds no signal — only cost. Filtered here,
+// not in collectFiles itself, so this scoping is local to the one caller
+// that needs it.
+function filterSourceManifest(stage4Result: { backendOutputDir: string; frontendOutputDir: string; filesWritten: string[] }) {
+  const EXCLUDE = /(^|\/)(node_modules|\.next|dist)(\/|$)/;
+  return {
+    backendOutputDir: stage4Result.backendOutputDir,
+    frontendOutputDir: stage4Result.frontendOutputDir,
+    filesWritten: stage4Result.filesWritten.filter((f) => !EXCLUDE.test(f)).sort(),
+  };
+}
+
+export interface QAFixLoopActivityResult {
+  pass: boolean;
+  stuck: boolean;
+  iterations: number;
+  findingsCount: number;
+}
+
+export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoopActivityResult> {
+  const ctx = Context.current();
+  const hb = setInterval(() => ctx.heartbeat("running"), 30_000);
+  try {
+    const plan = getPlan(projectId);
+    const stage4Result = buildStage4Result(projectId);
+    const result = await runQAFixLoop(projectId, plan, stage4Result);
+    console.log(
+      `[activity:qa-fix-loop] pass=${result.pass} stuck=${result.stuck ?? false} iterations=${result.iterations} findings=${result.findings.length}`,
+    );
+    if (result.pass) {
+      // Patent Claim 1/7: QA is handing off a VERIFIED-GOOD codebase to
+      // deploy — record it now, at the moment it becomes true, not
+      // speculatively before QA has actually passed.
+      await recordHandoff(projectId, "qa-gan", "deploy", filterSourceManifest(stage4Result));
+    }
+    return {
+      pass: result.pass,
+      stuck: result.stuck ?? false,
+      iterations: result.iterations,
+      findingsCount: result.findings.length,
+    };
+  } finally {
+    clearInterval(hb);
+  }
+}
+
+// ── Stage 6 (P1): deploy + re-run adversarial QA against the LIVE deployed
+// URL, driving the real Playwright browser (Tilotma Tier-3). This is the
+// only place in the running pipeline where the generated frontend is
+// actually observed rendering, not just curled for an HTTP status code.
+export interface DeployActivityResult {
+  success: boolean;
+  appUrl: string;
+  stuck: boolean;
+}
+
+export async function runDeployWithLiveRetest(projectId: string): Promise<DeployActivityResult> {
+  const ctx = Context.current();
+  const hb = setInterval(() => ctx.heartbeat("running"), 30_000);
+  try {
+    const plan = getPlan(projectId);
+    const stage4Result = buildStage4Result(projectId);
+    // Patent Claim 3: verify the codebase QA just approved is exactly what
+    // deploy is about to ship — before it's shipped.
+    await verifyHandoff(projectId, "qa-gan", "deploy", filterSourceManifest(stage4Result));
+    const result = await runStage6(projectId, stage4Result, plan);
+    console.log(`[activity:deploy] success=${result.success} appUrl=${result.appUrl} stuck=${result.stuck ?? false}`);
+    return { success: result.success, appUrl: result.appUrl, stuck: result.stuck ?? false };
+  } finally {
+    clearInterval(hb);
   }
 }
 
@@ -716,83 +590,6 @@ function readCacheFile<T>(projectId: string, filename: string): T {
   return JSON.parse(readFileSync(p, "utf-8")) as T;
 }
 
-// Read actual source content from key generated files
-// Uses 20K char budget so QA agents see complete files, not truncated excerpts.
-// Truncated excerpts cause hallucinated "stray character" / "incomplete function" findings.
-function sampleFileContent(buildDir: string, maxChars: number): string {
-  const priority = [
-    // Backend: app setup, routes, controllers (most bug-prone)
-    "backend/src/app.ts", "backend/src/index.ts",
-    "backend/src/routes/taskRouter.ts", "backend/src/routes/tasks.ts",
-    "backend/src/controllers/taskController.ts",
-    "backend/src/repositories/taskRepository.ts",
-    "backend/src/middlewares/auth.ts", "backend/src/middleware/auth.ts",
-    // Frontend: pages and key components
-    "frontend/app/page.tsx", "frontend/app/layout.tsx",
-    "frontend/app/tasks/page.tsx",
-    "frontend/components/TaskList.tsx", "frontend/components/TaskForm.tsx",
-    "frontend/lib/api/client.ts",
-    // DB schema
-    "db/src/schema.ts", "db/migrations/0000_initial.sql",
-  ];
-
-  const parts: string[] = [];
-  let total = 0;
-
-  const tryRead = (rel: string) => {
-    if (total >= maxChars) return;
-    const abs = join(buildDir, rel);
-    try {
-      // Allow up to 4000 chars per file (was 2000) so files aren't cut mid-function
-      const text = readFileSync(abs, "utf-8").slice(0, 4000);
-      parts.push(`=== ${rel} ===\n${text}`);
-      total += text.length;
-    } catch { /* file doesn't exist — skip */ }
-  };
-
-  for (const p of priority) tryRead(p);
-
-  // Fill remaining budget with whatever files exist
-  if (total < maxChars) {
-    for (const sub of ["backend", "frontend", "db"]) {
-      for (const f of collectFiles(join(buildDir, sub)).slice(0, 8)) {
-        if (total >= maxChars) break;
-        tryRead(join(sub, f));
-      }
-    }
-  }
-
-  return parts.length > 0 ? parts.join("\n\n") : "No source files found in build directory.";
-}
-
-// Read route file content for spec-compliance verification
-// Scans the actual backend/src/routes/ directory dynamically — no hardcoded names.
-// Routes files with full CRUD are 300-500 lines (10-15K chars) — use 15K per file.
-function sampleRouteContent(buildDir: string): string {
-  const parts: string[] = [];
-  // Always include entry files
-  for (const rel of ["backend/src/app.ts", "backend/src/index.ts"]) {
-    try {
-      const text = readFileSync(join(buildDir, rel), "utf-8").slice(0, 5000);
-      parts.push(`=== ${rel} ===\n${text}`);
-    } catch { /* skip */ }
-  }
-  // Scan every file in routes dir — no slice cap: full file needed for CRUD completeness check
-  const routesDir = join(buildDir, "backend", "src", "routes");
-  try {
-    const entries = readdirSync(routesDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      const rel = `backend/src/routes/${entry.name}`;
-      try {
-        const text = readFileSync(join(buildDir, rel), "utf-8");
-        parts.push(`=== ${rel} ===\n${text}`);
-      } catch { /* skip */ }
-    }
-  } catch { /* routes dir may not exist */ }
-  return parts.length > 0 ? parts.join("\n\n") : "No route files found.";
-}
-
 function collectFiles(dir: string): string[] {
   const walk = (d: string, prefix = ""): string[] => {
     try {
@@ -804,18 +601,6 @@ function collectFiles(dir: string): string[] {
     } catch { return []; }
   };
   return walk(dir);
-}
-
-function parseJson<T>(text: string): T | null {
-  try {
-    const fm = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-    const s  = fm?.[1] ?? text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
-    return JSON.parse(s) as T;
-  } catch { return null; }
-}
-
-function clamp(n: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, n));
 }
 
 export async function checkPlanNeeds(projectId: string): Promise<{ shubham: boolean; pranav: boolean }> {

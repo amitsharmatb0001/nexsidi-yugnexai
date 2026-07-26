@@ -64,16 +64,30 @@ export interface Stage5Agents {
 // responsible agent instead of always falling through to identifyFaultAgent's
 // "shubham" default (still the fallback when the model doesn't supply a
 // file path).
-function karanFindingToFinding(f: SecurityFinding): Finding {
-  return { file: f.file ?? "", issue: `[security/${f.severity}] ${f.description}` };
+//
+// 2026-07-24 (P2): `issue` is the ONE text field that survives all the way
+// to the generator's fix prompt (via formatFinding in
+// stage5-qa-fix-loop.ts) — a `line` on the QA finding does nothing for
+// convergence unless it's embedded here. Format is `file:line` (matching
+// the conventional grep/stack-trace location format any generator model has
+// seen a million times), prefixed only when `line` is present — a finding
+// without one still shows just the file, never a misleading ":undefined".
+// Exported for direct testing (same convention as collectCode below).
+export function locationPrefix(file: string | undefined, line: number | undefined): string {
+  if (!file) return "";
+  return line !== undefined ? `${file}:${line} — ` : `${file} — `;
 }
 
-function navyaFindingToFinding(f: NavyaFinding): Finding {
-  return { file: f.file ?? "", issue: `[logic/${f.severity}] ${f.category}: ${f.detail}` };
+export function karanFindingToFinding(f: SecurityFinding): Finding {
+  return { file: f.file ?? "", issue: `${locationPrefix(f.file, f.line)}[security/${f.severity}] ${f.description}` };
 }
 
-function deepikaFindingToFinding(f: DeepikaFinding): Finding {
-  return { file: f.file ?? "", issue: `[performance/${f.severity}] ${f.category}: ${f.detail}` };
+export function navyaFindingToFinding(f: NavyaFinding): Finding {
+  return { file: f.file ?? "", issue: `${locationPrefix(f.file, f.line)}[logic/${f.severity}] ${f.category}: ${f.detail}` };
+}
+
+export function deepikaFindingToFinding(f: DeepikaFinding): Finding {
+  return { file: f.file ?? "", issue: `${locationPrefix(f.file, f.line)}[performance/${f.severity}] ${f.category}: ${f.detail}` };
 }
 
 /**

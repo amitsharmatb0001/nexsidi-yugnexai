@@ -114,10 +114,18 @@ function endpointFor(model: string, location: string, method: "generateContent")
 
 // ── Gemini content-part / tool types (mirrors claude.ts's ClaudeContentBlockParam family) ──
 
+// 2026-07-24 (NexSidi full agentic upgrade, W0.1): Gemini 3.x attaches a
+// `thoughtSignature` to the model's functionCall part and REQUIRES it be
+// echoed back verbatim on the next turn of a multi-step call — omitting it
+// is a hard 400, not a soft degradation. It was previously typed only as a
+// mis-named `signature` field on the `thought` variant (never on
+// `functionCall`, the variant that actually needs it), so any code
+// constructing/inspecting a functionCall part had no type-level signal to
+// preserve it. Both fields are now named to match the real API field.
 export type GeminiPart =
   | { text: string }
-  | { thought: true; text?: string; signature?: string }  // Gemini 3.x thought parts — preserve verbatim
-  | { functionCall: { name: string; args: Record<string, unknown> } }
+  | { thought: true; text?: string; thoughtSignature?: string }  // Gemini 3.x thought parts — preserve verbatim
+  | { functionCall: { name: string; args: Record<string, unknown> }; thoughtSignature?: string }
   | { functionResponse: { name: string; response: Record<string, unknown> } };
 
 export interface GeminiToolDef {
@@ -148,6 +156,34 @@ export interface GeminiChatWithToolsResult {
   // back as the next "model" turn verbatim, mirroring claude.ts's rawContent.
   rawParts: GeminiPart[];
   promptTokens?: number;  // from usageMetadata — used for compaction threshold check
+  // 2026-07-24 (W0.3): surfaced so callers/logs can observe implicit prompt-
+  // caching effectiveness (Vertex AI Gemini caches a repeated prefix — e.g.
+  // a stable system instruction + base code context — automatically when
+  // the prefix is byte-identical across calls; this field is how a cache HIT
+  // becomes visible, since there's no separate "cache hit" flag otherwise).
+  cachedContentTokens?: number;
+}
+
+// Shape of the `usageMetadata` object Vertex AI returns on every
+// generateContent response. cachedContentTokenCount is present (and > 0)
+// only when the request's cacheable prefix matched a live implicit cache.
+export interface GeminiUsageMetadata {
+  promptTokenCount: number;
+  candidatesTokenCount: number;
+  totalTokenCount: number;
+  cachedContentTokenCount?: number;
+}
+
+// 2026-07-24 (W0.3): pure formatter, extracted so the cache-hit visibility
+// this fix adds is unit-testable without a network call — before this,
+// cachedContentTokenCount was never read from the API response at all, so a
+// cache hit and a cache miss were indistinguishable in the logs.
+export function formatUsageLog(usage: GeminiUsageMetadata): string {
+  const base = `usage: ${usage.promptTokenCount} in / ${usage.candidatesTokenCount} out / ${usage.totalTokenCount} total`;
+  if (usage.cachedContentTokenCount && usage.cachedContentTokenCount > 0) {
+    return `${base} (${usage.cachedContentTokenCount} cached)`;
+  }
+  return base;
 }
 
 // Lets the EXISTING NIM-shaped tool defs (packages/agent-runtime/src/tools/*.ts)
@@ -178,15 +214,54 @@ export function partsToToolCalls(parts: GeminiPart[]): GeminiToolCall[] {
     .map((p) => ({ id: `${p.functionCall.name}-${index++}`, name: p.functionCall.name, input: p.functionCall.args ?? {} }));
 }
 
+// 2026-07-24 (NexSidi full agentic upgrade, W0.1): extracted from the inline
+// contents-assembly duplicated in geminiChat/geminiChatWithTools so the
+// thoughtSignature round-trip (API response -> stored GeminiMessage history
+// -> next outgoing request body) is unit-testable without mocking the
+// network. This function does a straight pass-through of each message's
+// GeminiPart[] — it must NOT reconstruct individual parts (that's exactly
+// what would silently drop thoughtSignature), only route system vs
+// user/model content.
+export function buildGeminiContents(
+  messages: GeminiMessage[],
+): { systemParts: string[]; contents: Array<{ role: "user" | "model"; parts: GeminiPart[] }> } {
+  const systemParts: string[] = [];
+  const contents: Array<{ role: "user" | "model"; parts: GeminiPart[] }> = [];
+  for (const m of messages) {
+    if (m.role === "system") {
+      systemParts.push(m.content);
+      continue;
+    }
+    const parts: GeminiPart[] = typeof m.content === "string" ? [{ text: m.content }] : m.content;
+    contents.push({ role: m.role, parts });
+  }
+  return { systemParts, contents };
+}
+
 function describeError(err: unknown): string {
   return String(err);
 }
 
 // ── One-shot chat (mirrors claudeChat()'s shape) ───────────────────────────
 
+// 2026-07-25 (Phase 0, full MVP upgrade): Gemini 3.x replaced the legacy
+// `thinking_budget` integer with a `thinking_level` enum — sending both in
+// the same request is a hard 400 (gemini_3_1_pro.md / gemini_3_5_flash.md /
+// gemini_3_6_flash.md, all read in full from E:/ai yug/, §"Thinking Level
+// Configuration"). 3.1 Pro only documents LOW/MEDIUM/HIGH (no MINIMAL);
+// 3.5/3.6 Flash document MINIMAL too. Passing MINIMAL to 3.1 Pro isn't
+// documented as erroring, but callers should prefer LOW there — see
+// thinkingLevelForTier in router.ts, which already picks per-tier, not
+// per-model, so this type stays a superset.
+export type GeminiThinkingLevel = "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
+
+function buildThinkingConfig(level: GeminiThinkingLevel | undefined): { thinkingLevel: GeminiThinkingLevel } | undefined {
+  return level ? { thinkingLevel: level } : undefined;
+}
+
 export async function geminiChat(
   messages: ChatMessage[],
-  opts?: { maxTokens?: number; model?: string; thinkingBudget?: number },
+  opts?: { maxTokens?: number; model?: string; thinkingLevel?: GeminiThinkingLevel },
 ): Promise<{ content: string }> {
   // Validated before any network activity (circuit breaker, token bucket, or
   // the ADC auth call itself) so a missing-project error is immediate and
@@ -209,25 +284,28 @@ export async function geminiChat(
 
   await waitForToken(model, GEMINI_RPM_LIMIT);
 
-  const systemParts: string[] = [];
-  const contents: Array<{ role: "user" | "model"; parts: GeminiPart[] }> = [];
-  for (const m of messages) {
-    if (m.role === "system") {
-      systemParts.push(m.content);
-    } else {
-      contents.push({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] });
-    }
-  }
+  // geminiChat's ChatMessage role is "assistant", not Gemini's "model" — map
+  // it before handing off to the shared builder (which expects GeminiMessage).
+  const geminiMessages: GeminiMessage[] = messages.map((m) =>
+    m.role === "system"
+      ? { role: "system", content: m.content }
+      : { role: m.role === "assistant" ? "model" : "user", content: m.content },
+  );
+  const { systemParts, contents } = buildGeminiContents(geminiMessages);
 
+  // 2026-07-25 (Phase 0): 64k is the documented output ceiling for every
+  // provisioned model (3.1 Pro, 3.5/3.6 Flash all list "Output token limit:
+  // 64k"). The old 16000 default was an arbitrary conservative guess that
+  // caused the MAX_TOKENS truncation-resend loop documented in
+  // gemini-loop.ts. Still overridable via GEMINI_MAX_OUTPUT_TOKENS.
   const body: Record<string, unknown> = {
     contents,
     ...(systemParts.length > 0 ? { systemInstruction: { parts: [{ text: systemParts.join("\n\n") }] } } : {}),
-    generationConfig: { maxOutputTokens: opts?.maxTokens ?? Number(process.env.GEMINI_MAX_OUTPUT_TOKENS ?? 16000) },
+    generationConfig: { maxOutputTokens: opts?.maxTokens ?? Number(process.env.GEMINI_MAX_OUTPUT_TOKENS ?? 64000) },
   };
-  if (opts?.thinkingBudget !== undefined) {
-    (body.generationConfig as Record<string, unknown>).thinkingConfig = {
-      thinkingBudget: opts.thinkingBudget,
-    };
+  const thinkingConfig = buildThinkingConfig(opts?.thinkingLevel);
+  if (thinkingConfig) {
+    (body.generationConfig as Record<string, unknown>).thinkingConfig = thinkingConfig;
   }
 
   const controller = new AbortController();
@@ -250,14 +328,14 @@ export async function geminiChat(
 
     const data = (await res.json()) as {
       candidates: Array<{ content: { parts: GeminiPart[] }; finishReason?: string }>;
-      usageMetadata?: { promptTokenCount: number; candidatesTokenCount: number; totalTokenCount: number };
+      usageMetadata?: GeminiUsageMetadata;
     };
     recordSuccess(circuitKey);
 
     const parts = data.candidates?.[0]?.content?.parts ?? [];
     const content = partsToText(parts);
     if (data.usageMetadata) {
-      console.log(`[gemini:${model}] usage: ${data.usageMetadata.promptTokenCount} in / ${data.usageMetadata.candidatesTokenCount} out / ${data.usageMetadata.totalTokenCount} total`);
+      console.log(`[gemini:${model}] ${formatUsageLog(data.usageMetadata)}`);
     }
     return { content };
   } catch (err) {
@@ -273,7 +351,7 @@ export async function geminiChat(
 export async function geminiChatWithTools(
   messages: GeminiMessage[],
   tools: GeminiToolDef[],
-  opts?: { model?: string },
+  opts?: { model?: string; thinkingLevel?: GeminiThinkingLevel; cachedContent?: string },
 ): Promise<GeminiChatWithToolsResult> {
   projectIdOrThrow();
   // 2026-07-12: per-role model routing. Two-model cost strategy — the pricey
@@ -296,30 +374,40 @@ export async function geminiChatWithTools(
 
   await waitForToken(model, GEMINI_RPM_LIMIT);
 
-  const systemParts: string[] = [];
-  const contents: Array<{ role: "user" | "model"; parts: GeminiPart[] }> = [];
-  for (const m of messages) {
-    if (m.role === "system") {
-      systemParts.push(m.content);
-      continue;
-    }
-    const parts: GeminiPart[] = typeof m.content === "string" ? [{ text: m.content }] : m.content;
-    contents.push({ role: m.role, parts });
-  }
+  const { systemParts, contents } = buildGeminiContents(messages);
 
+  // 2026-07-25 (Phase 0): 64k is the documented ceiling for every
+  // provisioned model — not a 3.1-Pro-specific bump. The old 32000 was
+  // itself already a guess-and-raise off the original 16000 default; both
+  // undershot the real limit and were the direct cause of the MAX_TOKENS
+  // truncation-resend loop (gemini-loop.ts:262-279). Still overridable via
+  // GEMINI_MAX_OUTPUT_TOKENS.
   const body: Record<string, unknown> = {
     contents,
     ...(systemParts.length > 0 ? { systemInstruction: { parts: [{ text: systemParts.join("\n\n") }] } } : {}),
     tools: [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }],
-    // 2026-07-12: raised 16000 -> 32000 for gemini-3.1-pro-preview, a heavy
-    // THINKING model — it spends a large "thoughts" token budget internally
-    // (e.g. 327 thought tokens for a one-line function) that competes with the
-    // visible tool-call/code output. At 16k, thinking on a real file-write
-    // could starve the actual output and truncate (MAX_TOKENS) or come back
-    // empty. Higher cap only bills what's actually used. Overridable via
-    // GEMINI_MAX_OUTPUT_TOKENS.
-    generationConfig: { maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS ?? 32000) },
+    generationConfig: { maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS ?? 64000) },
+    // 2026-07-25 (Phase 0.4): real explicit context caching — a handle
+    // created via geminiCreateCachedContent() for the stable prefix (system
+    // prompt + build plan + NexUI reference). Distinct from Gemini's
+    // automatic IMPLICIT caching (which needs no wiring and already applies
+    // to any byte-identical repeated prefix); this is the EXPLICIT form the
+    // docs list separately ("Context Caching" + "Implicit Caching" as two
+    // capabilities). Sending both cachedContent and a non-empty systemParts
+    // in the same request is fine — the cache only covers what was baked
+    // into it at creation time, not the live systemInstruction.
+    ...(opts?.cachedContent ? { cachedContent: opts.cachedContent } : {}),
   };
+  // 2026-07-24 (W0.2)/2026-07-25 (Phase 0): thinkingLevel wasn't previously
+  // plumbed through the tool-calling path at all (only the one-shot
+  // geminiChat had it) — the QA tier's HIGH requirement had no way to reach
+  // the actual API request for qa-loop.ts's tool-calling agent. Now sends
+  // the current thinking_level enum instead of the legacy thinking_budget
+  // integer (see buildThinkingConfig's comment above geminiChat).
+  const thinkingConfig = buildThinkingConfig(opts?.thinkingLevel);
+  if (thinkingConfig) {
+    (body.generationConfig as Record<string, unknown>).thinkingConfig = thinkingConfig;
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
@@ -341,14 +429,14 @@ export async function geminiChatWithTools(
 
     const data = (await res.json()) as {
       candidates: Array<{ content: { parts: GeminiPart[] }; finishReason?: string }>;
-      usageMetadata?: { promptTokenCount: number; candidatesTokenCount: number; totalTokenCount: number };
+      usageMetadata?: GeminiUsageMetadata;
     };
     recordSuccess(circuitKey);
 
     const candidate = data.candidates?.[0];
     const parts = candidate?.content?.parts ?? [];
     if (data.usageMetadata) {
-      console.log(`[gemini:${model}] usage: ${data.usageMetadata.promptTokenCount} in / ${data.usageMetadata.candidatesTokenCount} out / ${data.usageMetadata.totalTokenCount} total`);
+      console.log(`[gemini:${model}] ${formatUsageLog(data.usageMetadata)}`);
     }
 
     return {
@@ -357,10 +445,88 @@ export async function geminiChatWithTools(
       stopReason: candidate?.finishReason ?? null,
       rawParts: parts,
       promptTokens: data.usageMetadata?.promptTokenCount,
+      cachedContentTokens: data.usageMetadata?.cachedContentTokenCount,
     };
   } catch (err) {
     recordFailure(circuitKey);
     throw new Error(`[Gemini ${model}] ${describeError(err)}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ── Explicit context caching (Phase 0.4) ────────────────────────────────────
+// Prior state: GeminiChatWithToolsResult.cachedContentTokens and
+// formatUsageLog already READ cachedContentTokenCount from the response —
+// but nothing in this file ever created a cache or sent `cachedContent` in a
+// request, so that field was always 0 and the log line was permanently dead.
+// This is the write side. Vertex AI's cachedContents resource: POST once per
+// stable prefix (system prompt + build plan + NexUI reference — the same
+// bytes on every turn of one agent run), get back a `name` handle, then pass
+// that handle as `cachedContent` on every subsequent geminiChatWithTools call
+// for that run. Billed once to create, then a fraction of input-token price
+// per hit — the "70-80% cost cut" only exists once this function is called.
+export interface GeminiCachedContentHandle {
+  name: string;
+  expireTime?: string;
+}
+
+function cachedContentsEndpoint(location: string): string {
+  const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
+  return `https://${host}/v1/projects/${projectIdOrThrow()}/locations/${location}/cachedContents`;
+}
+
+// 2026-07-25: real bug found LIVE on nextech10's first real end-to-end run
+// (the run this whole Phase 0-3 upgrade was built to make work). Vertex's
+// cachedContents API rejects a bare `publishers/google/models/{model}` —
+// it requires the FULLY QUALIFIED path including project and location, or
+// it 400s with "The project `` in Model name ... should match the one in
+// the CachedContent resource". Confirmed live: every single explicit cache
+// creation attempt this run failed with exactly this error (fail-open
+// caught it, the run continued uncached on the explicit path — but see the
+// second bug below, implicit caching is what was ACTUALLY producing the
+// real cache hits seen throughout the run).
+function fullyQualifiedModelPath(model: string, location: string): string {
+  return `projects/${projectIdOrThrow()}/locations/${location}/publishers/google/models/${model}`;
+}
+
+// Fail-open by design (see callers in gemini-loop.ts): if cache creation
+// errors (quota, transient, prefix too small — Vertex requires a minimum
+// token count to accept a cache), the caller falls back to sending the full
+// prefix uncached rather than failing the run. This function itself throws
+// on error; callers wrap it in try/catch.
+export async function geminiCreateCachedContent(
+  systemInstruction: string,
+  content: string,
+  opts?: { model?: string; ttlSeconds?: number },
+): Promise<GeminiCachedContentHandle> {
+  projectIdOrThrow();
+  const model = opts?.model ?? resolveGeminiModel();
+  const location = resolveGeminiLocation();
+
+  const body = {
+    model: fullyQualifiedModelPath(model, location),
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    contents: [{ role: "user", parts: [{ text: content }] }],
+    ttl: `${opts?.ttlSeconds ?? 3600}s`,
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  try {
+    const token = await getAccessToken();
+    const res = await fetch(cachedContentsEndpoint(location), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error(`[Gemini ${model}] cachedContents create ${res.status}: ${errBody}`);
+    }
+    const data = (await res.json()) as { name: string; expireTime?: string };
+    return { name: data.name, expireTime: data.expireTime };
   } finally {
     clearTimeout(timer);
   }

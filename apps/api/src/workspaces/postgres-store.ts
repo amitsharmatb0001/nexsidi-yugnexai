@@ -98,6 +98,24 @@ function toSpec(row: SpecRow): WorkspaceSpec {
   };
 }
 
+function approvedReplaySpec(row: SpecRow, run: RunRow): WorkspaceSpec {
+  if (
+    row.id !== run.specId ||
+    row.version !== run.specVersion ||
+    row.hash !== run.specHash ||
+    !row.approvedAt ||
+    !row.approvedBy
+  ) {
+    throw new Error("approval_record_mismatch");
+  }
+  return {
+    ...toSpec(row),
+    status: "approved",
+    approvedAt: iso(row.approvedAt),
+    approvedBy: row.approvedBy,
+  };
+}
+
 function toPhase(status: string): WorkspacePhase {
   const phases = new Set<WorkspacePhase>([
     "intake",
@@ -549,6 +567,14 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
   ): Promise<ApprovalResult> {
     try {
       return await this.db.transaction(async (tx) => {
+        const [lockedWorkspace] = await tx
+          .select({ id: projects.id })
+          .from(projects)
+          .where(eq(projects.id, workspaceId))
+          .for("update")
+          .limit(1);
+        if (!lockedWorkspace) throw new Error("workspace_not_found");
+
         const existingRun = await findRunByKey(
           tx,
           workspaceId,
@@ -564,7 +590,7 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
           const replaySpec = await findSpec(tx, workspaceId, specId);
           if (!replaySpec) throw new Error("spec_not_found");
           return {
-            spec: toSpec(replaySpec),
+            spec: approvedReplaySpec(replaySpec, existingRun),
             runId: existingRun.id,
             replay: true,
           };
@@ -650,7 +676,11 @@ export class PostgresWorkspaceStore implements WorkspaceStore {
       }
       const replaySpec = await findSpec(this.db, workspaceId, specId);
       if (!replaySpec) throw new Error("spec_not_found");
-      return { spec: toSpec(replaySpec), runId: existingRun.id, replay: true };
+      return {
+        spec: approvedReplaySpec(replaySpec, existingRun),
+        runId: existingRun.id,
+        replay: true,
+      };
     }
   }
 

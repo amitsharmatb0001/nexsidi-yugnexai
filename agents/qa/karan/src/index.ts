@@ -28,6 +28,7 @@ export interface SecurityFinding {
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
   description: string;
   file?: string; // best-effort file path — lets Stage 5 fault-isolate to the responsible agent
+  line?: number; // P2: exact line so fixes target a location, not a whole-file re-scan
 }
 
 export interface QAResult {
@@ -86,7 +87,7 @@ export async function run(
 // file never actually read is rejected. Preferred path; run() (text-dump)
 // kept as the tested fallback call shape.
 function qaLoopFindingToSecurityFinding(f: QALoopFinding): SecurityFinding {
-  return { severity: f.severity, description: `${f.category}: ${f.detail}`, file: f.file };
+  return { severity: f.severity, description: `${f.category}: ${f.detail}`, file: f.file, line: f.line };
 }
 
 export interface KaranExploringDeps {
@@ -153,6 +154,7 @@ export function parseSecurityFindings(content: string): SecurityFinding[] {
         severity: validSeverity,
         description: typeof r.description === "string" ? r.description : String(r.detail ?? "unspecified finding"),
         file: typeof r.file === "string" ? r.file : undefined,
+        line: typeof r.line === "number" ? r.line : undefined,
       };
     });
   } catch {
@@ -182,7 +184,9 @@ A finding must describe a CONCRETE failing scenario: the exact input, request, o
 - Do NOT report design trade-offs (e.g., caching vs. no caching) as defects — both sides of a trade-off cannot be bugs.
 Severity reflects real-world impact of the DEMONSTRATED scenario: CRITICAL = exploitable now with serious impact, HIGH = real defect likely to fire in normal use, MEDIUM = real but edge-case, LOW = minor/hardening.
 
-Output ONLY valid JSON with quoted keys, exactly this shape: {"findings": [{"severity": "CRITICAL"|"HIGH"|"MEDIUM"|"LOW", "description": string, "file": string}]}
+Whenever you cite a file, also cite the exact line number the issue is on (from read_file's output) — this is what lets the fix target that line directly instead of re-scanning the whole file.
+
+Output ONLY valid JSON with quoted keys, exactly this shape: {"findings": [{"severity": "CRITICAL"|"HIGH"|"MEDIUM"|"LOW", "description": string, "file": string, "line": number}]}
 If the code has no demonstrable vulnerabilities, output: {"findings": []}`;
 
 // CLAUDE.md System A (authoritative, lines 370-373): Score = 100 −

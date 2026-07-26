@@ -55,6 +55,13 @@ export interface QAFixDeps {
   runStage5: (projectId: string, stage4Result: Stage4Result) => Promise<Stage5Result>;
   fixShubham: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
   fixAanya: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
+  // 2026-07-24 (P3.W3.4): Pranav previously had NO fix path at all — a
+  // db/-only finding set stopped the loop immediately ("no auto-fix path
+  // yet"). Optional (like recordInstincts below) so existing DI tests that
+  // predate this fix keep compiling and behaving unchanged; the real entry
+  // point wires Pranav's real runFix (expand-contract migration, not a
+  // schema rewrite — see agents/generators/pranav/src/index.ts).
+  fixPranav?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
   // 2026-07-08: Patent Claim 2's instinct memory had a real DB table but
   // nothing ever wrote to it — every pipeline run started with total
   // amnesia. Optional so existing DI tests (which don't care about memory)
@@ -222,11 +229,17 @@ export async function runQAFixLoopWithDeps(
     const groups = groupFindingsByAgent(result.findings);
     const shubhamFindings = groups.get("shubham");
     const aanyaFindings = groups.get("aanya");
+    const pranavFindings = groups.get("pranav");
 
-    if (!shubhamFindings && !aanyaFindings) {
-      // Only pranav (or an unrecognized prefix) findings remain — no
-      // auto-fix path yet. Stop rather than loop uselessly (Stage 5 would
-      // just return the exact same result).
+    // 2026-07-24 (P3.W3.4): pranav findings now have a real fix path
+    // (deps.fixPranav) when the caller wires one — only stop if there is
+    // truly nothing that can act on any of the findings this round.
+    if (!shubhamFindings && !aanyaFindings && !(pranavFindings && deps.fixPranav)) {
+      // Only pranav findings remain and no fixPranav dep was provided
+      // (existing DI tests, or a caller that hasn't wired it) — stop
+      // rather than loop uselessly (Stage 5 would just return the same
+      // result). Once fixPranav is wired, this path is no longer reachable
+      // for a pranav-only finding set.
       return { ...result, iterations, stuck: true };
     }
 
@@ -239,6 +252,11 @@ export async function runQAFixLoopWithDeps(
       const formatted = aanyaFindings.map(formatFinding);
       await deps.recordInstincts?.("aanya", formatted);
       await deps.fixAanya(plan, formatted);
+    }
+    if (pranavFindings && deps.fixPranav) {
+      const formatted = pranavFindings.map(formatFinding);
+      await deps.recordInstincts?.("pranav", formatted);
+      await deps.fixPranav(plan, formatted);
     }
 
     result = await deps.runStage5(projectId, stage4Result);
@@ -265,15 +283,18 @@ export async function runQAFixLoopWithDeps(
   return { ...result, iterations, stuck: !result.pass };
 }
 
-/** Real entry point — wires the actual Stage 5 + Shubham/Aanya fix calls. */
+/** Real entry point — wires the actual Stage 5 + Shubham/Aanya/Pranav fix calls. */
 export async function runQAFixLoop(
   projectId: string,
   plan: BuildPlan,
   stage4Result: Stage4Result,
 ): Promise<QAFixLoopResult> {
-  const [{ runFix: fixShubhamReal }, { runFix: fixAanyaReal }] = await Promise.all([
+  const [{ runFix: fixShubhamReal }, { runFix: fixAanyaReal }, { runFix: fixPranavReal }] = await Promise.all([
     import("../../../agents/generators/shubham/src/index.ts"),
     import("../../../agents/generators/aanya/src/index.ts"),
+    // 2026-07-24 (P3.W3.4): real db fault-isolation path — was previously
+    // absent entirely (see fixPranav's comment on QAFixDeps above).
+    import("../../../agents/generators/pranav/src/index.ts"),
   ]);
 
   return runQAFixLoopWithDeps(projectId, plan, stage4Result, {
@@ -284,6 +305,10 @@ export async function runQAFixLoop(
     },
     fixAanya: async (p, findings) => {
       const r = await fixAanyaReal(p, findings);
+      return { success: r.success };
+    },
+    fixPranav: async (p, findings) => {
+      const r = await fixPranavReal(p, findings);
       return { success: r.success };
     },
     conductPeerDebate: conductPeerDebateReal,

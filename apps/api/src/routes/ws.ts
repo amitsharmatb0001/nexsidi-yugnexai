@@ -14,6 +14,45 @@ import { join } from "path";
 
 export const wsRouter = new Hono();
 
+// 2026-07-25 (Phase 6, full MVP upgrade): real, live confidentiality leak
+// found while verifying Layer 7 ("WebSocket deny-by-default, no internal
+// events leak agent names or architecture") — this route was forwarding
+// events.jsonl VERBATIM to any connected client. Those events are written
+// by emitEvent (packages/agent-runtime/src/loop.ts:276-288) as
+// `{ agent: config.agentName, ... }`, where agentName is the literal
+// internal roster name ("shubham", "navya", "karan", ...) — exactly what
+// CLAUDE.md's CONFIDENTIALITY RULE says must NEVER appear in any
+// user-facing interface. `packages/workspace-contract/src/public-events.ts`
+// already has a sanitizer (toPublicActivityEvent/sanitizePublicActivityEvent)
+// but it targets a completely different event shape (the unwired
+// apps/api/src/workspaces/* layer — see audit-2026-07-25.md, A.1) and does
+// not apply here. This is a minimal sanitizer for the shape this route
+// ACTUALLY streams: strip the raw agent identity, keep everything else
+// (tool name, path, status — none of that is confidential per CLAUDE.md,
+// only agent names/count/architecture are).
+const PUBLIC_AGENT_LABEL: Record<string, string> = {
+  saanvi: "Requirements",
+  arjun: "Planning",
+  shubham: "Backend",
+  aanya: "Frontend",
+  pranav: "Database",
+  navya: "Logic QA",
+  karan: "Security QA",
+  deepika: "Performance QA",
+  riya: "Deployment",
+  tilotma: "Orchestrator",
+};
+
+export function sanitizePipelineEvent(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const event = raw as Record<string, unknown>;
+  if (typeof event.agent !== "string") return event;
+  // Prefix-strip a subagent name like "shubham-researcher" -> map the base
+  // agent, never leak the spawned subagent's own free-text name either.
+  const base = event.agent.split("-")[0]!.toLowerCase();
+  return { ...event, agent: PUBLIC_AGENT_LABEL[base] ?? "Build Agent" };
+}
+
 wsRouter.get(
   "/agents",
   upgradeWebSocket(() => {
@@ -51,6 +90,12 @@ wsRouter.get(
   "/pipeline/:projectId",
   upgradeWebSocket((c) => {
     const projectId = c.req.param("projectId");
+    if (!projectId) {
+      return {
+        onOpen() {},
+        onClose() {}
+      };
+    }
     let interval: ReturnType<typeof setInterval> | null = null;
     let logPosition = 0;
     let eventPosition = 0;
@@ -76,7 +121,7 @@ wsRouter.get(
             const raw = readFileSync(eventsPath, "utf-8");
             for (const line of raw.split("\n").filter(Boolean)) {
               try {
-                ws.send(JSON.stringify({ type: "event", event: JSON.parse(line) }));
+                ws.send(JSON.stringify({ type: "event", event: sanitizePipelineEvent(JSON.parse(line)) }));
               } catch {}
             }
             eventPosition = raw.length;
@@ -105,7 +150,7 @@ wsRouter.get(
                 const newLines = readFileSync(eventsPath, "utf-8").slice(eventPosition);
                 for (const line of newLines.split("\n").filter(Boolean)) {
                   try {
-                    ws.send(JSON.stringify({ type: "event", event: JSON.parse(line) }));
+                    ws.send(JSON.stringify({ type: "event", event: sanitizePipelineEvent(JSON.parse(line)) }));
                   } catch {}
                 }
                 eventPosition = stat.size;
@@ -125,6 +170,12 @@ wsRouter.get(
 // so the build page can show what the QA agent actually saw.
 wsRouter.get("/screenshots/:projectId", upgradeWebSocket((c) => {
   const projectId = c.req.param("projectId");
+  if (!projectId) {
+    return {
+      onOpen() {},
+      onClose() {}
+    };
+  }
   let sent = 0;
   let interval: ReturnType<typeof setInterval> | null = null;
 
