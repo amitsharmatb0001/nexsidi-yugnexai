@@ -46,6 +46,18 @@ export function computeQaMaxIterations(totalFiles: number): number {
   return Math.max(QA_MAX_ITERATIONS, totalFiles + 12);
 }
 
+// 2026-08-05: real bug found live (project 09bf2f89ca43) — a one-shot
+// extraction call that replays an agent's full conversation (including its
+// original system prompt, which mandates core-reasoning.md's Rule 0
+// <thinking> block) gets that block back even when its own instruction says
+// "no formatting, output only JSON". Strips a leading <thinking>...</thinking>
+// block (and the whitespace around it) so callers can JSON.parse what's
+// left — mirrors the same tag gemini-loop.ts/claude-loop.ts/loop.ts already
+// extract for logging, but removes it instead of just reading it.
+export function stripThinkingBlock(text: string): string {
+  return text.replace(/^\s*<thinking>[\s\S]*?<\/thinking>\s*/, "");
+}
+
 export interface LabeledDir {
   label: string; // "backend" | "frontend" — must match identifyFaultAgent's prefix check
   path: string;
@@ -470,7 +482,20 @@ async function extractFindingsFromHistory(
     });
 
     const response = await geminiChat(chatMessages);
-    const trimmed = response.content.trim();
+    // 2026-08-05: real bug found live (project 09bf2f89ca43) — this call
+    // replays the FULL original QA agent conversation, including its
+    // system-prompt role message (see the loop above: `if (m.role ===
+    // "system") chatMessages.push(...)`) — which carries core-reasoning.md's
+    // Rule 0 ("If you do not output a <thinking> block, the system will
+    // reject your completion"). The model dutifully wraps its JSON response
+    // in a <thinking> block despite this prompt's own "no formatting"
+    // instruction, and only markdown-fence stripping was handled here —
+    // JSON.parse threw on the leading "<", was swallowed by the catch below,
+    // and silently returned [] instead of whatever findings the agent
+    // actually reported. stripThinkingBlock mirrors the same extraction
+    // gemini-loop.ts/claude-loop.ts/loop.ts already use for logging, applied
+    // here to actually remove it before parsing.
+    const trimmed = stripThinkingBlock(response.content.trim()).trim();
     const fenceMatch = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/);
     const cleanJsonText = fenceMatch ? fenceMatch[1]! : trimmed;
     const parsed = JSON.parse(cleanJsonText) as { findings?: Finding[] };

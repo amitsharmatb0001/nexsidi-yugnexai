@@ -58,7 +58,12 @@ const ELEMENTS: Array<[string, CustomElementConstructor]> = [
   ["nex-spinner",     NexSpinner],
 ];
 
-export async function initializeNexuiEngine(defaultTheme: NexuiTheme = "void"): Promise<void> {
+// 2026-08-06: `overrides` lets a consuming app's own tokens (e.g. a
+// per-project design brief) win over the named theme's own values — see
+// compiler.ts's mountGlobalTheme/getThemeCSS header comments for why this
+// has to be baked into the SAME injected <style> tag rather than left to a
+// separate stylesheet to out-cascade it.
+export async function initializeNexuiEngine(defaultTheme: NexuiTheme = "void", overrides?: Record<string, string>): Promise<void> {
   if (typeof window === "undefined") return;
   if (!document.getElementById("yugnex-nexui-typography")) {
     const s = document.createElement("style");
@@ -66,13 +71,13 @@ export async function initializeNexuiEngine(defaultTheme: NexuiTheme = "void"): 
     s.textContent = NexuiTypographySheet;
     document.head.appendChild(s);
   }
-  nexui_compiler.mountGlobalTheme(defaultTheme);
+  nexui_compiler.mountGlobalTheme(defaultTheme, overrides);
   for (const [tag, ctor] of ELEMENTS) {
     if (!customElements.get(tag)) customElements.define(tag, ctor);
   }
 }
 
-export function setNexuiTheme(theme: NexuiTheme): void {
-  nexui_compiler.switchTheme(theme);
+export function setNexuiTheme(theme: NexuiTheme, overrides?: Record<string, string>): void {
+  nexui_compiler.switchTheme(theme, overrides);
   window.dispatchEvent(new CustomEvent("nexui:theme-change", { detail: { theme } }));
 }

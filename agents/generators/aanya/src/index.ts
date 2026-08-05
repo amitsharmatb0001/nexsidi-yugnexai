@@ -9,7 +9,7 @@ import { join, resolve } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
 import { formatDesignBriefForPrompt } from "../../../vanya/src/index.ts";
-import { buildThemeOverrideCss } from "./theme.ts";
+import { buildThemeOverrideCss, buildThemeOverrideTokens } from "./theme.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
 
@@ -719,6 +719,18 @@ a:hover {
     },
     {
       path: "app/layout.tsx",
+      // 2026-08-06: real bug found live (confirmed on two separate deployed
+      // builds via getComputedStyle) — theme-overrides.css's colors were
+      // correct in source but NEVER actually rendered. Root cause:
+      // NexuiProvider's initializeNexuiEngine injects the "void" preset's
+      // OWN <style> tag into document.head at runtime (client-side, after
+      // hydration) — which always lands later in the DOM than this file's
+      // statically-imported theme-overrides.css and wins the cascade
+      // regardless of import order. customTokens bakes this SAME project's
+      // colors/fonts into that runtime injection instead, so it can't lose
+      // that fight. theme-overrides.css is kept (still imported via
+      // globals.css above) only as a pre-hydration first-paint
+      // approximation — customTokens is the one guaranteed to actually win.
       content: `import type { ReactNode } from "react";
 import { NexuiProvider } from "@yugnex/nexui-react";
 import "./globals.css";
@@ -728,11 +740,13 @@ export const metadata = {
   description: "${plan.appDescription ?? ""}",
 };
 
+const nexuiCustomTokens = ${JSON.stringify(buildThemeOverrideTokens(plan.designBrief), null, 2)};
+
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <NexuiProvider theme="void">
+        <NexuiProvider theme="void" customTokens={nexuiCustomTokens}>
           {children}
         </NexuiProvider>
       </body>

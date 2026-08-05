@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listLabeledFiles, resolveLabeledFile, readLabeledFiles, detectStuckLoop, buildQaInitialMessage, computeQaMaxIterations, type LabeledDir } from "./qa-loop.ts";
+import { listLabeledFiles, resolveLabeledFile, readLabeledFiles, detectStuckLoop, buildQaInitialMessage, computeQaMaxIterations, stripThinkingBlock, type LabeledDir } from "./qa-loop.ts";
 
 let root: string;
 let dirs: LabeledDir[];
@@ -99,6 +99,27 @@ test("readLabeledFiles returns an empty result for an empty path list", () => {
 // list_files, submit_findings, and slack for a few non-read turns.
 test("computeQaMaxIterations scales past the old fixed cap for a real-size project", () => {
   expect(computeQaMaxIterations(84)).toBeGreaterThan(84);
+});
+
+// 2026-08-05 (live, project 09bf2f89ca43): the fallback findings-extraction
+// call replays the ORIGINAL QA agent's system prompt (which mandates
+// core-reasoning.md's Rule 0 <thinking> block) even though its own new
+// instruction says "no formatting, output only JSON" — the model wraps the
+// JSON in a thinking block anyway, and JSON.parse threw on the leading "<",
+// silently dropping real findings via the catch block's `return []`.
+test("stripThinkingBlock removes a leading thinking block before JSON content", () => {
+  const raw = "<thinking>\nThe agent found 2 issues, let me format them.\n</thinking>\n{\"findings\": []}";
+  expect(stripThinkingBlock(raw)).toBe('{"findings": []}');
+});
+
+test("stripThinkingBlock leaves plain JSON (no thinking block) unchanged", () => {
+  const raw = '{"findings": [{"severity": "HIGH"}]}';
+  expect(stripThinkingBlock(raw)).toBe(raw);
+});
+
+test("stripThinkingBlock only strips a LEADING thinking block, not one embedded mid-string", () => {
+  const raw = '{"findings": [{"detail": "mentions <thinking> literally in the text"}]}';
+  expect(stripThinkingBlock(raw)).toBe(raw);
 });
 
 test("computeQaMaxIterations never drops below the original 30 for small projects", () => {

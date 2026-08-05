@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { buildThemeOverrideCss } from "./theme.ts";
+import { buildThemeOverrideCss, buildThemeOverrideTokens } from "./theme.ts";
 import type { DesignBrief } from "../../../vanya/src/index.ts";
 
 // 2026-07-28: real bug found live — every generated app's layout.tsx
@@ -79,4 +79,37 @@ test("buildThemeOverrideCss falls back to luminance-based classification when pa
   // and SOME text color drawn from the palette (not NexUI's own defaults).
   expect(css).not.toContain("#0D1117"); // NexUI's own hardcoded default bg
   expect(css).not.toContain("'Inter'");
+});
+
+// ── buildThemeOverrideTokens (2026-08-06) ───────────────────────────────────
+// The DEFINITIVE source now — passed to <NexuiProvider customTokens={...}>
+// (see provider.tsx) so it lands in the SAME injected <style> tag NexUI's
+// own runtime theme engine uses, instead of a separate stylesheet that can
+// never win the cascade fight (see this file's and provider.tsx's header
+// comments for the full root cause, confirmed live on two separate builds).
+test("buildThemeOverrideTokens returns the same color/font values buildThemeOverrideCss renders as text", () => {
+  const tokens = buildThemeOverrideTokens(BRIEF_A);
+  expect(tokens["--nx-accent"]).toBe("#2F6F4F");
+  expect(tokens["--nx-ff-sans"]).toContain("IBM Plex Sans");
+  expect(tokens["--nx-ff-display"]).toContain("Fraunces");
+});
+
+test("buildThemeOverrideTokens ALSO sets --nx-font-sans (the separate variable NexUI's shadow-DOM component primitives read)", () => {
+  // Real bug found live: every packages/nexui/src/primitives/*.ts file reads
+  // var(--nx-font-sans, ...) for its OWN internal text — a completely
+  // different custom property from --nx-ff-sans, which only affects
+  // light-DOM body/heading text. Without this, a design brief's chosen font
+  // applied to page text but every NexUI button/input/panel silently kept
+  // the default typeface regardless.
+  const tokens = buildThemeOverrideTokens(BRIEF_A);
+  expect(tokens["--nx-font-sans"]).toBe(tokens["--nx-ff-sans"]);
+  expect(tokens["--nx-font-sans"]).toContain("IBM Plex Sans");
+});
+
+test("buildThemeOverrideTokens and buildThemeOverrideCss never drift apart — both derive from the same mapping", () => {
+  const tokens = buildThemeOverrideTokens(BRIEF_B);
+  const css = buildThemeOverrideCss(BRIEF_B);
+  for (const [key, value] of Object.entries(tokens)) {
+    expect(css).toContain(`${key}: ${value};`);
+  }
 });

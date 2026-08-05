@@ -35,7 +35,12 @@ function findByKeywords(palette: DesignBrief["palette"], keywords: string[]): st
   return null;
 }
 
-export function buildThemeOverrideCss(brief: DesignBrief): string {
+// 2026-08-06: extracted the palette/font mapping into one shared function so
+// buildThemeOverrideCss (kept for the pre-hydration first-paint approximation
+// — see index.ts's scaffold) and buildThemeOverrideTokens (the real,
+// always-correct source, passed to <NexuiProvider customTokens={...}> —
+// see provider.tsx) can never drift apart into two different color choices.
+function mapBriefToTokens(brief: DesignBrief): Record<string, string> {
   const palette = brief.palette;
   const sorted = [...palette].sort((a, b) => relativeLuminance(a.hex) - relativeLuminance(b.hex));
   const darkest = sorted[0]?.hex ?? "#0D1117";
@@ -51,17 +56,46 @@ export function buildThemeOverrideCss(brief: DesignBrief): string {
   const accentCandidate = findByKeywords(palette, ["accent", "primary", "brand"]);
   const accent = accentCandidate ?? sorted[Math.floor(sorted.length / 2)]?.hex ?? "#E89010";
   const border = findByKeywords(palette, ["border", "muted", "outline"]) ?? sorted[1]?.hex ?? sorted[0]?.hex ?? "#30363D";
+  const bodyFont = `'${brief.typography.body}', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
+  const displayFont = `'${brief.typography.display}', -apple-system, BlinkMacSystemFont, sans-serif`;
 
-  return `:root {
-  --nx-bg-base: ${bg};
-  --nx-bg-elevated: ${bg};
-  --nx-text: ${text};
-  --nx-accent: ${accent};
-  --nx-accent-text: ${accent};
-  --nx-border: ${border};
-  --nx-border-muted: ${border};
-  --nx-ff-sans: '${brief.typography.body}', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --nx-ff-display: '${brief.typography.display}', -apple-system, BlinkMacSystemFont, sans-serif;
+  return {
+    "--nx-bg-base": bg,
+    "--nx-bg-elevated": bg,
+    "--nx-text": text,
+    "--nx-accent": accent,
+    "--nx-accent-text": accent,
+    "--nx-border": border,
+    "--nx-border-muted": border,
+    // --nx-ff-* controls light-DOM typography (body/headings/code — see
+    // packages/nexui/src/assets/typography.ts's reset block).
+    "--nx-ff-sans": bodyFont,
+    "--nx-ff-display": displayFont,
+    // 2026-08-06: real bug found live — NexUI's own shadow-DOM component
+    // primitives (button, panel, input, etc.) read --nx-font-sans, a
+    // DIFFERENT custom property from the --nx-ff-sans the typography sheet
+    // uses for light-DOM text (see grep evidence: every packages/nexui/src/
+    // primitives/*.ts file reads var(--nx-font-sans, ...), never --nx-ff-*).
+    // Without this, a design brief's chosen body font applied to page text
+    // but NexUI's own buttons/inputs/panels — a large share of the actual
+    // UI surface — silently kept the default typeface regardless.
+    "--nx-font-sans": bodyFont,
+  };
 }
-`;
+
+export function buildThemeOverrideTokens(brief: DesignBrief): Record<string, string> {
+  return mapBriefToTokens(brief);
+}
+
+// Kept for the pre-hydration first-paint approximation only (the generated
+// layout.tsx still @imports this file so the page isn't unstyled/wrong-
+// themed for the brief instant before NexuiProvider's client-side effect
+// runs). buildThemeOverrideTokens (passed to <NexuiProvider customTokens>)
+// is now the DEFINITIVE source — see provider.tsx's header comment for why
+// a static CSS file alone can never reliably win against NexUI's runtime
+// theme injection.
+export function buildThemeOverrideCss(brief: DesignBrief): string {
+  const tokens = mapBriefToTokens(brief);
+  const rules = Object.entries(tokens).map(([k, v]) => `  ${k}: ${v};`).join("\n");
+  return `:root {\n${rules}\n}\n`;
 }
