@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
-import { isContextLengthExceededError, isUnrecoverableGeminiError, isAllPoolModelsExhaustedError, screenshotImagePathFor } from "./gemini-loop.ts";
+import { readFileSync } from "node:fs";
+import { isContextLengthExceededError, isUnrecoverableGeminiError, isAllPoolModelsExhaustedError, isQuotaExhaustionError, screenshotImagePathFor } from "./gemini-loop.ts";
+
+const source = readFileSync(new URL("./gemini-loop.ts", import.meta.url), "utf-8");
 
 // 2026-07-25 (Phase 2.5.1, full MVP upgrade): no gemini-loop.ts test file
 // existed at all before this — confirmed in .nexsidi/sdd/audit-2026-07-25.md
@@ -88,4 +91,41 @@ test("isAllPoolModelsExhaustedError is false for a single transient failure (fal
 
 test("isAllPoolModelsExhaustedError is false for an unrelated error", () => {
   expect(isAllPoolModelsExhaustedError(new Error("ECONNREFUSED"))).toBe(false);
+});
+
+// ── isQuotaExhaustionError ───────────────────────────────────────────────────
+// 2026-08-05 (live, d709f34a800e): real bug found live — a full-pool-exhaustion
+// GeneratorExhausted failure (the exact shape isAllPoolModelsExhaustedError
+// detects above) was ALWAYS thrown nonRetryable:true by pipeline/activities/
+// index.ts's generatorFailure, killing the entire workflow instantly instead
+// of waiting out the same circuit-breaker cooldown stage6-deployment.ts's
+// deployWithQuotaRetry already handles for the redeploy step. This is the
+// shared check both now use — moved here (was previously duplicated only in
+// stage6-deployment.ts) since generator activities need the identical logic.
+test("isQuotaExhaustionError recognizes the exact GeneratorExhausted message shape", () => {
+  expect(
+    isQuotaExhaustionError([
+      "Gemini call failed on iteration 9 — every model in the pool is circuit-broken, aborting early instead of grinding to MAX_ITERATIONS on a call that cannot succeed as-is: Error: [llm-client] routeToolsWithFallback(design) — all pool models exhausted:\ngemini-3.6-flash: 429 RESOURCE_EXHAUSTED",
+    ]),
+  ).toBe(true);
+});
+
+test("isQuotaExhaustionError returns false for a genuine generator error", () => {
+  expect(isQuotaExhaustionError(["Agent stopped calling tools for 5 turns without calling task_complete"])).toBe(false);
+});
+
+test("isQuotaExhaustionError returns false for an empty errors list", () => {
+  expect(isQuotaExhaustionError([])).toBe(false);
+});
+
+// 2026-08-05 (live, project 193c3080e582): the original no-tool-call nudge
+// asked the model to "actually call the tool now" but never forbade
+// re-reasoning — combined with core-reasoning.md's Rule 1 ("before doing
+// anything, write three lines"), a weaker model responded to the
+// correction by writing ANOTHER <thinking> block restating its plan
+// instead of executing it, repeating until MAX_NO_TOOL_CALL_TURNS killed
+// the whole generator. Confirms the strengthened nudge is actually wired,
+// not just described in a comment.
+test("the no-tool-call nudge explicitly forbids writing another thinking block", () => {
+  expect(source).toContain("Do NOT write another <thinking> block restating or expanding your plan");
 });

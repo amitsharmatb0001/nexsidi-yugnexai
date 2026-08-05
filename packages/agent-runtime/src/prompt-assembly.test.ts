@@ -40,16 +40,25 @@ test("with no contextBudgetTokens, nothing is trimmed — full task context surv
 });
 
 test("over budget: task context is trimmed first, base prompt and core-reasoning survive intact", () => {
+  const taskContext = "x".repeat(10_000);
   const result = assembleSystemPrompt({
     agentName: "shubham",
     basePrompt: "PROTECTED BASE PROMPT",
-    taskContext: "x".repeat(10_000),
+    taskContext,
     contextBudgetTokens: 200, // ~800 chars — core-reasoning alone already exceeds this
   });
   expect(result).toContain("PROTECTED BASE PROMPT");
   expect(result).toContain("NexSidi Core Reasoning");
-  // Task context should be trimmed down, not present at full length
-  expect(result.length).toBeLessThan(10_000);
+  // 2026-08-05: was a hardcoded `result.length < 10_000` — broke the instant
+  // core-reasoning.md legitimately grew (a real content fix, not a bug):
+  // that threshold assumed core-reasoning+base overhead was small enough
+  // that ANY trimming brought the total under the original 10K task
+  // context, which no longer holds now that the doctrine itself is bigger.
+  // Assert the actual invariant directly instead of via total-length
+  // arithmetic that depends on unrelated doctrine size: the untrimmed task
+  // context must not survive intact (matches the same pattern the
+  // "moderately tight" case below already uses).
+  expect(result).not.toContain(taskContext);
 });
 
 test("over budget with doctrine present: doctrine is trimmed AFTER task context is already gone", () => {
@@ -91,4 +100,18 @@ test("basePrompt is never trimmed even under an extremely tight budget", () => {
   const base = "y".repeat(2000);
   const result = assembleSystemPrompt({ agentName: "shubham", basePrompt: base, taskContext: "z".repeat(5000), contextBudgetTokens: 10 });
   expect(result).toContain(base);
+});
+
+// 2026-08-05: real bug found live (project 193c3080e582) — Rule 0 told the
+// model reasoning must be inside <thinking> tags and tool calls outside,
+// but never said a <thinking>-only turn is incomplete. Shubham's generator
+// wrote a 14k-token thinking block stating its next step, then ended the
+// turn without calling it — repeated 3 times, killing the whole generator.
+// This asserts the closed gap actually reaches every assembled agent prompt
+// (core-reasoning is unconditionally included — see the layering test
+// above), not just the source file.
+test("core-reasoning closes the thinking-block-without-a-tool-call gap (Rule 0)", () => {
+  const result = assembleSystemPrompt({ agentName: "shubham", basePrompt: "You are Shubham." });
+  expect(result).toContain("A <thinking> block by itself is never a complete turn");
+  expect(result).toContain("restate or expand your reasoning again");
 });

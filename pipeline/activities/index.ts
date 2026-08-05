@@ -48,6 +48,7 @@ import { execSync, spawnSync } from "child_process";
 import type { ProjectSpec } from "../../agents/saanvi/src/index.ts";
 import type { BuildPlan }   from "../../agents/arjun/src/index.ts";
 import type { DesignBrief } from "../../agents/vanya/src/index.ts";
+import { isQuotaExhaustionError } from "../../packages/agent-runtime/src/gemini-loop.ts";
 
 // ── In-process cache (activities run in same Temporal worker process)
 const specCache = new Map<string, ProjectSpec>();
@@ -258,12 +259,50 @@ function readPlannerSimplePlan(projectId: string): PlannerSimplePlan | null {
 // rate limits) are unaffected, since those are already retried INSIDE the
 // agent loop itself (see loop.ts's catch blocks) before result.success is
 // ever set to false.
-function generatorFailure(agentName: string, errors: string[]): never {
+// 2026-08-05: real bug found live (project d709f34a800e, web-UI-triggered
+// build) — a transient full-pool Gemini quota exhaustion (the exact shape
+// isQuotaExhaustionError/isAllPoolModelsExhaustedError detect) was always
+// thrown nonRetryable, killing the ENTIRE workflow instantly — losing
+// Shubham's and Pranav's already-completed work too, since Promise.all in
+// project-build.ts fails all three together. A genuine generator failure
+// (malformed output, stuck loop) really is unrecoverable by retrying
+// immediately, so it keeps nonRetryable:true; quota exhaustion gets
+// nonRetryable:false instead, so Temporal's own retry policy (genAct:
+// maximumAttempts 5) gets a chance — paired with runGeneratorWithQuotaRetry
+// below, which waits out the same ~90s cooldown deployWithQuotaRetry uses
+// BEFORE ever reaching this function, so by the time this throws, retrying
+// immediately again would be wasted anyway for a non-quota failure.
+export function generatorFailure(agentName: string, errors: string[]): never {
   throw ApplicationFailure.create({
     message: `[${agentName}] ${errors.join("; ")}`,
     type: "GeneratorExhausted",
-    nonRetryable: true,
+    nonRetryable: !isQuotaExhaustionError(errors),
   });
+}
+
+const GENERATOR_QUOTA_RETRY_BACKOFF_MS = 90_000;
+const MAX_GENERATOR_QUOTA_RETRIES = 2;
+
+// Mirrors stage6-deployment.ts's deployWithQuotaRetry: retries the WHOLE
+// generator call (not just the failed step) with a backoff wait, but ONLY
+// when the failure is quota-exhaustion-shaped — any other failure reason
+// returns immediately, unchanged from before, so generatorFailure still
+// fails fast on a genuine bug.
+async function runGeneratorWithQuotaRetry<T extends { success: boolean; errors: string[] }>(
+  attempt: () => Promise<T>,
+  sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<T> {
+  let result = await attempt();
+  let retries = 0;
+  while (!result.success && isQuotaExhaustionError(result.errors) && retries < MAX_GENERATOR_QUOTA_RETRIES) {
+    retries++;
+    console.log(
+      `[generator] failed on LLM quota/circuit-breaker exhaustion — waiting ${GENERATOR_QUOTA_RETRY_BACKOFF_MS}ms for recovery before retry ${retries}/${MAX_GENERATOR_QUOTA_RETRIES}`,
+    );
+    await sleepFn(GENERATOR_QUOTA_RETRY_BACKOFF_MS);
+    result = await attempt();
+  }
+  return result;
 }
 
 // ── Stage 3a–c: code generators (run in parallel from workflow) ───────────────
@@ -273,7 +312,7 @@ export async function runShubham(projectId: string): Promise<void> {
   try {
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "shubham", plan);
-    const result = await runShubhamAgent(plan);
+    const result = await runGeneratorWithQuotaRetry(() => runShubhamAgent(plan));
     if (!result.success) generatorFailure("shubham", result.errors);
     console.log(`[activity:shubham] ${result.filesWritten.length} files → ${result.outputDir}`);
   } finally {
@@ -287,7 +326,7 @@ export async function runAanya(projectId: string): Promise<void> {
   try {
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "aanya", plan);
-    const result = await runAanyaAgent(plan, "integrate");
+    const result = await runGeneratorWithQuotaRetry(() => runAanyaAgent(plan, "integrate"));
     if (!result.success) generatorFailure("aanya", result.errors);
     console.log(`[activity:aanya] ${result.filesWritten.length} files → ${result.outputDir}`);
   } finally {
@@ -301,7 +340,7 @@ export async function runPranav(projectId: string): Promise<void> {
   try {
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "pranav", plan);
-    const result = await runPranavAgent(plan);
+    const result = await runGeneratorWithQuotaRetry(() => runPranavAgent(plan));
     if (!result.success) generatorFailure("pranav", result.errors);
     console.log(`[activity:pranav] ${result.filesWritten.length} DB files written`);
   } finally {

@@ -119,6 +119,22 @@ export function isAllPoolModelsExhaustedError(err: unknown): boolean {
   return String(err).includes("all pool models exhausted");
 }
 
+// 2026-08-05: real bug found live (project d709f34a800e, web-UI-triggered
+// build) — Aanya's generator loop correctly aborted early on full pool
+// exhaustion (the fix above), but the activity wrapping it
+// (pipeline/activities/index.ts's generatorFailure) unconditionally marked
+// EVERY generator failure `nonRetryable: true`, including this one — killing
+// the ENTIRE workflow instantly (losing Shubham's and Pranav's already-
+// completed work too) instead of waiting out the same ~60-90s circuit-
+// breaker cooldown stage6-deployment.ts's deployWithQuotaRetry already
+// handles correctly for the redeploy step. Shared here (not duplicated in
+// both call sites) since both need the identical string-array error check —
+// checks the same three shapes deployWithQuotaRetry does: circuit-breaker
+// state, full-pool exhaustion, and the raw Vertex 429 message.
+export function isQuotaExhaustionError(errors: string[]): boolean {
+  return errors.some((e) => /circuit-broken|all pool models exhausted|RESOURCE_EXHAUSTED/i.test(e));
+}
+
 // 2026-07-28: real bug found live — "screenshot"/"browser_screenshot" saved
 // a PNG to disk and returned only a text path in their tool result; no
 // image bytes were ever sent to any model, so the "visual" QA agents
@@ -424,10 +440,25 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           escalations,
         };
       }
+      // 2026-08-05: real bug found live (project 193c3080e582) — the original
+      // one-line nudge below asked the model to "actually call the tool now"
+      // but didn't forbid re-reasoning, and core-reasoning.md's Rule 0/1
+      // (restate the task, log assumptions, plan in steps — all inside a
+      // <thinking> block) gave a weaker model every incentive to respond to
+      // this correction by writing ANOTHER thinking block restating its
+      // plan, rather than executing it — burning the turn again with zero
+      // progress. Confirmed live: iteration 1 produced a 14k-token
+      // thinking-only turn ("we need to list the project directory..."),
+      // and iterations 2-3 repeated the same shape after this exact nudge,
+      // hitting MAX_NO_TOOL_CALL_TURNS and failing the whole generator.
+      // Explicit "do not write another <thinking> block" call-out closes
+      // that gap; the streak-based give-up above is the backstop if a model
+      // ignores this too.
       messages.push({
         role: "user",
         content:
-          "You wrote a message but did not call any tool. Do NOT just describe what you will do next — actually call the tool now. " +
+          "You wrote a message but did not call any tool. Do NOT write another <thinking> block restating or expanding your plan — you already have one. " +
+          "Do NOT just describe what you will do next — actually call the tool now, with no reasoning text before it. " +
           "If every step of your task is genuinely complete and verified, call task_complete. Otherwise call the next tool (read_file, run_command, docker_compose, http_request, etc.) to continue.",
       });
       continue;

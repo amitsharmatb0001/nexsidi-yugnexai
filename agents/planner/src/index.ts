@@ -114,7 +114,19 @@ const PROPOSE_PLAN_TOOL = {
           type: "object",
           required: ["frontend","backend","database","auth"],
           properties: {
-            frontend: { type: "string" }, backend: { type: "string" },
+            // 2026-08-05: real bug found live — this field has no enforcement
+            // downstream (grepped: never read by Saanvi/Arjun/the generators,
+            // it's display-only in this planner's own preview UI), but with no
+            // description the model defaulted to the statistically common
+            // real-world pairing ("Next.js, Tailwind CSS") — actively
+            // misleading, since the mandated stack (CLAUDE.md) is
+            // Next.js + @yugnex/nexui-react, never Tailwind/shadcn/@radix-ui,
+            // and every downstream agent already enforces that independently.
+            // Fixed at the source (state the truth) rather than downstream,
+            // since this field's only job is to accurately preview what will
+            // actually be built.
+            frontend: { type: "string", description: "Always \"Next.js + @yugnex/nexui-react\" — never Tailwind, shadcn/ui, or @radix-ui; those are not used on this platform." },
+            backend: { type: "string" },
             database: { type: "string" }, auth:     { type: "string" },
           },
         },

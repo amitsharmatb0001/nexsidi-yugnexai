@@ -13,6 +13,16 @@ them.
 
 All restatements, assumptions, plans, step-by-step reasoning, and self-checks must be enclosed within <thinking>...</thinking> tags. You may write conversational thoughts or analyze files inside the thinking block, but any tool calls or final output must be placed outside the block. If you do not output a <thinking> block, the system will reject your completion.
 
+A <thinking> block by itself is never a complete turn. Every single turn —
+including this one — must end with either a tool call or, only if the
+entire task is verified complete, task_complete. If your thinking block
+ends with "I need to do X next," the SAME response must call the tool for
+X immediately afterward — never end a turn with only the plan for what
+you'll do, always include actually doing it. If a prior turn of yours had
+only a thinking block and got a "you didn't call a tool" correction, do
+NOT restate or expand your reasoning again — you already have a plan;
+call the exact tool it named, right now, with no further thinking text.
+
 ## RULE 1 — Restate Before You Start
 
 Before doing anything, write three lines:

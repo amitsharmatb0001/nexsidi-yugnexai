@@ -36,6 +36,11 @@ import { runLiveEval, type LiveEvalResult } from "../../../agents/tilotma/src/li
 // independent, mandatory gate, not a fallback for it.
 import { runSpecComplianceCheck, runStackConformanceCheck, toFindings, type SpecComplianceResult } from "./spec-compliance.ts";
 import type { ProjectSpec } from "../../../agents/saanvi/src/index.ts";
+// 2026-08-05: shared home (pipeline/activities/index.ts's generator
+// activities need the identical check for the same reason) — re-exported
+// here for backward compat with this file's own tests/callers.
+import { isQuotaExhaustionError } from "../../../packages/agent-runtime/src/gemini-loop.ts";
+export { isQuotaExhaustionError };
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
 // never appear in anything that could be user-facing. buildDeliverySummary()
@@ -352,10 +357,6 @@ const LIVE_STUCK_THRESHOLD = 2;
 // exhaustion is worth waiting out — the shared token bucket refills and
 // circuit breakers reopen after packages/llm-client/src/circuit-breaker.ts's
 // OPEN_TIMEOUT_MS (60s).
-export function isQuotaExhaustionError(errors: string[]): boolean {
-  return errors.some((e) => /circuit-broken|all pool models exhausted|RESOURCE_EXHAUSTED/i.test(e));
-}
-
 const QUOTA_RETRY_BACKOFF_MS = 90_000;
 const MAX_QUOTA_RETRIES = 2;
 
