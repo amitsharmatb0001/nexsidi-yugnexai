@@ -17,6 +17,8 @@ export {
   GEMINI_ESCALATION_MODEL,
 } from "./gemini.ts";
 export type { GeminiToolDef, GeminiToolCall, GeminiMessage, GeminiPart, GeminiChatWithToolsResult, GeminiSearchResult, GeminiUsageMetadata, GeminiThinkingLevel, GeminiCachedContentHandle } from "./gemini.ts";
+export { firecrawlFetchUrl } from "./firecrawl.ts";
+export type { FirecrawlFetchResult } from "./firecrawl.ts";
 export { waitForToken, getBucketState } from "./token-bucket.ts";
 export { getState, getAllStates } from "./circuit-breaker.ts";
 export { AGENT_MODELS, FALLBACK_CHAIN, NIM_CONTEXT_LIMITS, MODEL_RPM_LIMITS } from "./types.ts";

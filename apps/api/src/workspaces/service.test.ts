@@ -798,8 +798,8 @@ test.skipIf(!runPostgresIntegration)(
     await expect(
       db.transaction(async (tx) => {
         await tx.insert(users).values([
-          { id: ownerId, email: `${ownerId}@example.test`, name: "Owner" },
-          { id: otherOwnerId, email: `${otherOwnerId}@example.test`, name: "Other Owner" },
+          { id: ownerId, email: `${ownerId}@example.test`, name: "Owner", passwordHash: "test-fixture-hash" },
+          { id: otherOwnerId, email: `${otherOwnerId}@example.test`, name: "Other Owner", passwordHash: "test-fixture-hash" },
         ]);
         const store = new PostgresWorkspaceStore(tx);
         const service = new WorkspaceService(store);
@@ -912,7 +912,7 @@ test.skipIf(!runPostgresIntegration)(
     try {
       await db
         .insert(users)
-        .values({ id: ownerId, email: `${ownerId}@example.test`, name: "Owner" });
+        .values({ id: ownerId, email: `${ownerId}@example.test`, name: "Owner", passwordHash: "test-fixture-hash" });
       const service = new WorkspaceService(new PostgresWorkspaceStore(db));
 
       const identicalWorkspace = await service.createWorkspace(

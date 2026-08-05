@@ -54,6 +54,20 @@ export interface SaanviDeps {
   chat: typeof agentChat;
 }
 
+// 2026-08-05: Saanvi previously had no way to signal "this request is too
+// vague to spec confidently" — it always guessed, silently, on anything
+// unclear (the system prompt even said "invent a specific visual identity"
+// when no direction was given). Root cause of a real complaint: a short,
+// typo-heavy request should make the system ASK the user, not fabricate an
+// answer and lock it in. `needs_clarification` is reserved for genuinely
+// unusable input (no discernible product intent) — see SAANVI_SYSTEM_PROMPT's
+// calibration note; a normal brief-but-complete request (e.g. "build a task
+// tracker for small teams") must still produce a full, ambitious spec per
+// this file's existing "planner is ambitious" philosophy, not a question.
+export type SaanviResult =
+  | { status: "locked"; spec: ProjectSpec }
+  | { status: "needs_clarification"; questions: string[] };
+
 // ── Main entry ────────────────────────────────────────────────────────────────
 // `deps` is injectable (defaults to the real agentChat) so the retry
 // behavior below is unit-testable without a live LLM call — matches this
@@ -62,7 +76,7 @@ export async function run(
   projectId: string,
   userRequest: string,
   deps: SaanviDeps = { chat: agentChat },
-): Promise<ProjectSpec> {
+): Promise<SaanviResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const messages = [
     { role: "system" as const, content: SAANVI_SYSTEM_PROMPT },
@@ -86,7 +100,20 @@ export async function run(
     const { content } = await deps.chat("saanvi", messages, apiKey);
     rawResult = parseJson(content);
   }
-  const raw = rawResult as Omit<ProjectSpec, "projectId" | "lockedAt" | "specHash">;
+  const raw = rawResult as Omit<ProjectSpec, "projectId" | "lockedAt" | "specHash"> & {
+    needsClarification?: boolean;
+    questions?: unknown;
+  };
+
+  if (raw.needsClarification === true) {
+    const questions = Array.isArray(raw.questions) ? raw.questions.map(String).filter(Boolean) : [];
+    if (questions.length > 0) {
+      console.log(`[saanvi] request is too ambiguous to spec confidently — asking ${questions.length} question(s) instead of guessing`);
+      return { status: "needs_clarification", questions };
+    }
+    // Model set the flag but gave no actual questions — nothing to ask the
+    // user, so fall through and spec normally rather than pausing on nothing.
+  }
 
   const spec: Omit<ProjectSpec, "specHash"> = {
     projectId,
@@ -102,7 +129,7 @@ export async function run(
   };
 
   // Patent Claim 1: hash the spec at lock-time — immutable from here
-  return { ...spec, specHash: hashContext(spec) };
+  return { status: "locked", spec: { ...spec, specHash: hashContext(spec) } };
 }
 
 // ── JSON extraction — handles markdown fences and trailing prose ──────────────
@@ -122,6 +149,19 @@ function parseJson(text: string): unknown {
 // ── System prompt ─────────────────────────────────────────────────────────────
 const SAANVI_SYSTEM_PROMPT = `\
 You are a senior product architect. Convert a user's app idea into an ambitious, production-quality JSON specification targeting investor-demo level quality — the kind of product you would see from a well-funded startup, NOT a basic tutorial project.
+
+WHEN TO ASK INSTEAD OF GUESS (read this before anything else):
+Most requests are brief but usable — a one-sentence idea, a company name plus a service list, a rough
+feature list with typos. For those, fill gaps AMBITIOUSLY per the rules below. Do NOT ask questions for
+missing polish (exact colors, precise wording, page count) — invent something specific and good, as
+instructed further down.
+Only ask when the request is so vague or contradictory that ANY spec you produce would be a pure guess
+at the user's actual intent — e.g. no discernible product category at all ("make it good", "app for my
+thing"), or genuinely conflicting requirements you cannot resolve without knowing which one wins.
+When (and only when) that is true, output EXACTLY this JSON shape instead of a spec:
+{ "needsClarification": true, "questions": ["specific, answerable question", "..."] }
+Ask 1-3 questions maximum, each answerable in a short sentence. Never combine this with spec fields —
+if you're asking, ask; otherwise, commit to a full spec.
 
 Output a single JSON object (no markdown fences, no prose outside the object) matching this schema:
 

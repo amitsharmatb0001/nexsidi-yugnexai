@@ -31,6 +31,7 @@ import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 import { groupFindingsByAgent, type Stage4Result, type Finding } from "./stage4-multi-agent-dev.ts";
 import { runStage5, type Stage5Result } from "./stage5-adversarial-qa.ts";
 import type { InstinctDomain } from "@nexsidi/db";
+import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
 
 export interface QAFixLoopResult extends Stage5Result {
   iterations: number; // total QA passes run (initial + retests)
@@ -52,9 +53,15 @@ const MAX_FIX_ITERATIONS = 5; // retest cycles after the initial QA pass
 const STUCK_THRESHOLD = 2; // consecutive no-improvement fix cycles before giving up
 
 export interface QAFixDeps {
-  runStage5: (projectId: string, stage4Result: Stage4Result) => Promise<Stage5Result>;
-  fixShubham: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
-  fixAanya: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
+  // F5 (agent-autonomy-assessment): plan is optional third arg so existing
+  // stubs (which ignore it) keep working — the real entry point always
+  // passes it.
+  runStage5: (projectId: string, stage4Result: Stage4Result, plan?: BuildPlan) => Promise<Stage5Result>;
+  // P3 (agent-autonomy-assessment F3): escalations is optional on the
+  // result so existing DI test stubs (which return only {success}) keep
+  // compiling unchanged.
+  fixShubham: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[] }>;
+  fixAanya: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[] }>;
   // 2026-07-24 (P3.W3.4): Pranav previously had NO fix path at all — a
   // db/-only finding set stopped the loop immediately ("no auto-fix path
   // yet"). Optional (like recordInstincts below) so existing DI tests that
@@ -137,6 +144,32 @@ ACTION: <clean actionable rule>`;
   }
 }
 
+// 2026-08-04 (live, final838491): real bug found live — Navya precisely
+// identified a route-mounting mismatch (backend/src/routes/index.ts using
+// "/inquiry" instead of the contracted "/inquiries") that caused a genuine
+// 404 on every inquiry submission, confirmed by walking the deployed app.
+// Peer-debate dismissed it as a false positive and it shipped unfixed.
+// Tracing why surfaced a second, independent, purely mechanical bug in THIS
+// function: the old inline check `decisionLine.endsWith("VALID")` was meant
+// to reject "DECISION: INVALID" (per its own comment) but "INVALID" itself
+// ends with the substring "VALID" (I-N-VALID) — the exact opposite of the
+// stated intent. Extracted to a pure function so this class of bug is
+// caught by a fast unit test instead of only being discoverable by manually
+// walking a live deployed app.
+export function parseDebateDecision(responseContent: string): boolean {
+  const decisionLine = responseContent.split("\n").find((l) => l.toUpperCase().includes("DECISION:"));
+  if (!decisionLine) return true; // no parseable verdict — safe direction is to keep the finding
+
+  // Extract just the token(s) after "DECISION:" rather than substring-matching
+  // the whole line — "INVALID" contains "VALID" as a substring, so the old
+  // `line.endsWith("VALID")` check silently treated a rejection as an
+  // approval, the exact opposite of its own stated intent.
+  const verdict = decisionLine.toUpperCase().split("DECISION:")[1]?.trim() ?? "";
+  if (verdict.startsWith("FALSE_POSITIVE") || verdict.startsWith("INVALID")) return false;
+  if (verdict.startsWith("VALID")) return true;
+  return true; // unrecognized verdict text — safe direction is to keep the finding
+}
+
 export async function conductPeerDebateReal(findings: Finding[]): Promise<Finding[]> {
   if (findings.length === 0) return [];
 
@@ -168,18 +201,31 @@ AUTOMATIC VALID — classify as VALID without further analysis if any of these m
 - The issue mentions a raw ISO date string (like "2026-07-13") rendered directly in the UI where a human-readable format is expected.
 - The issue mentions a status badge ("Connected", "Online") that never reflects actual runtime state.
 
-Is this a genuine defect (compilation error, security flaw, broken functionality, or confidentiality/data-integrity violation per the automatic list above) that MUST be fixed, or a false positive (lint warning, style preference, purely hypothetical risk with no concrete failing scenario, reviewer mistake)?
+AUTOMATIC VALID — also classify as VALID without further analysis if the finding cites
+SPECIFIC, CHECKABLE facts you could verify by opening the named file yourself (an exact
+line number, an exact string/path/route being compared against another exact string/
+path/route, an exact field name). You cannot open the file from here — you are judging
+plausibility, not re-deriving the answer — so treat a finding this concrete as PROVEN
+unless the finding's OWN text is internally contradictory. Dismissing a specific,
+mechanically-verifiable claim as "hypothetical" is a real, confirmed failure mode: a QA
+agent once precisely identified a route mounted as "/inquiry" instead of the contracted
+"/inquiries" (exact file, exact line, exact mismatched strings) — debate dismissed it as
+a false positive, and it shipped, causing a genuine 404 on every real user's request.
+Reserve FALSE_POSITIVE for findings that are vague, purely hypothetical ("could
+theoretically cause issues at scale" with no concrete trigger), a style/lint preference,
+or contradicted by the finding's own description.
+
+Is this a genuine defect (compilation error, security flaw, broken functionality, or
+confidentiality/data-integrity violation per the automatic lists above) that MUST be
+fixed, or a false positive (lint warning, style preference, purely hypothetical risk with
+no concrete failing scenario, reviewer mistake)?
 
 Respond with exactly:
 Reasoning: <one sentence>
 DECISION: VALID   or   DECISION: FALSE_POSITIVE`;
 
         const response = await geminiChat([{ role: "user", content: prompt }]);
-        const decisionLine = response.content.split("\n").find((l) => l.toUpperCase().includes("DECISION:"));
-        // Use endsWith to avoid matching "INVALID" or "NOT VALID"
-        const isValid = decisionLine
-          ? decisionLine.toUpperCase().trimEnd().endsWith("VALID")
-          : true;
+        const isValid = parseDebateDecision(response.content);
 
         if (isValid) {
           console.log(`[debate] Approved: "${f.issue}" in ${f.file}`);
@@ -207,7 +253,7 @@ export async function runQAFixLoopWithDeps(
   stage4Result: Stage4Result,
   deps: QAFixDeps,
 ): Promise<QAFixLoopResult> {
-  let result = await deps.runStage5(projectId, stage4Result);
+  let result = await deps.runStage5(projectId, stage4Result, plan);
   if (!result.pass && deps.conductPeerDebate && result.findings.length > 0) {
     result.findings = await deps.conductPeerDebate(result.findings);
     if (result.findings.length === 0) {
@@ -243,23 +289,87 @@ export async function runQAFixLoopWithDeps(
       return { ...result, iterations, stuck: true };
     }
 
+    // 2026-07-26 (autonomy/throughput pass): real root cause found live on
+    // nextech10 — fixShubham/fixAanya/fixPranav's own {success} result was
+    // discarded entirely. A fix agent that genuinely fails to complete
+    // (exhausts its own iteration budget, an unrecoverable model error)
+    // leaves the code UNCHANGED; the next QA pass finds the exact same
+    // findings, and it took a full STUCK_THRESHOLD worth of wasted QA
+    // re-scans (each one 3 full agent passes + peer debate) before the
+    // loop gave up — with no way to distinguish "the fix never even ran"
+    // from "the fix ran but the issue is genuinely hard." Checking the
+    // result closes that gap; running the independent agents' fix rounds
+    // via Promise.all (they touch disjoint output directories, same as the
+    // initial parallel generation stage) is real wall-clock savings on the
+    // common case of findings spanning both backend and frontend.
+    const fixCalls: Promise<{ agent: string; success: boolean; escalations?: Escalation[] }>[] = [];
+
     if (shubhamFindings) {
       const formatted = shubhamFindings.map(formatFinding);
-      await deps.recordInstincts?.("shubham", formatted);
-      await deps.fixShubham(plan, formatted);
+      fixCalls.push(
+        (async () => {
+          await deps.recordInstincts?.("shubham", formatted);
+          const { success, escalations } = await deps.fixShubham(plan, formatted);
+          return { agent: "shubham", success, escalations };
+        })(),
+      );
     }
     if (aanyaFindings) {
       const formatted = aanyaFindings.map(formatFinding);
-      await deps.recordInstincts?.("aanya", formatted);
-      await deps.fixAanya(plan, formatted);
+      fixCalls.push(
+        (async () => {
+          await deps.recordInstincts?.("aanya", formatted);
+          const { success, escalations } = await deps.fixAanya(plan, formatted);
+          return { agent: "aanya", success, escalations };
+        })(),
+      );
     }
     if (pranavFindings && deps.fixPranav) {
       const formatted = pranavFindings.map(formatFinding);
-      await deps.recordInstincts?.("pranav", formatted);
-      await deps.fixPranav(plan, formatted);
+      fixCalls.push(
+        (async () => {
+          await deps.recordInstincts?.("pranav", formatted);
+          const { success } = await deps.fixPranav!(plan, formatted);
+          return { agent: "pranav", success };
+        })(),
+      );
     }
 
-    result = await deps.runStage5(projectId, stage4Result);
+    const fixOutcomes = await Promise.all(fixCalls);
+    const failedAgents = fixOutcomes.filter((o) => !o.success).map((o) => o.agent);
+    for (const agent of failedAgents) {
+      console.error(
+        `[qa-fix-loop] ${agent} fix FAILED to complete — the generator did not resolve its assigned findings this round`,
+      );
+    }
+    // Every implicated fix this round is KNOWN to have failed outright —
+    // the code is provably unchanged, so a rescan can only reproduce the
+    // exact same findings. Stop now rather than spend a full expensive QA
+    // pass confirming what is already known.
+    if (fixOutcomes.length > 0 && failedAgents.length === fixOutcomes.length) {
+      console.error(`[qa-fix-loop] stopping — every fix this round failed outright, a rescan would be wasted`);
+      return { ...result, iterations, stuck: true };
+    }
+
+    // P3 (agent-autonomy-assessment F3): a fix agent may have decided the
+    // real fix belongs in another agent's domain (escalate_finding) instead
+    // of forcing a workaround. Route escalations to pranav (currently the
+    // only cross-layer target with a real fix path) in THIS SAME round —
+    // waiting for another QA cycle to notice the same root cause is exactly
+    // the wasted-round cost this closes. Dispatched sequentially, after the
+    // main round, since it depends on this round's fix outcomes.
+    const pranavEscalations = fixOutcomes.flatMap((o) => o.escalations ?? []).filter((e) => e.targetAgent === "pranav");
+    if (pranavEscalations.length > 0 && deps.fixPranav) {
+      const formatted = pranavEscalations.map((e) => `${e.finding} — ${e.reason}`);
+      console.log(`[qa-fix-loop] routing ${formatted.length} escalated finding(s) to pranav this round`);
+      await deps.recordInstincts?.("pranav", formatted);
+      const { success } = await deps.fixPranav(plan, formatted);
+      if (!success) {
+        console.error(`[qa-fix-loop] pranav escalation fix FAILED to complete`);
+      }
+    }
+
+    result = await deps.runStage5(projectId, stage4Result, plan);
     if (!result.pass && deps.conductPeerDebate && result.findings.length > 0) {
       result.findings = await deps.conductPeerDebate(result.findings);
       if (result.findings.length === 0) {
@@ -298,14 +408,18 @@ export async function runQAFixLoop(
   ]);
 
   return runQAFixLoopWithDeps(projectId, plan, stage4Result, {
-    runStage5,
+    // includeTier3 stays at its default false — this is the pre-deployment
+    // gate, per runStage5's own header comment. Wrapped so plan lands in
+    // QAFixDeps.runStage5's 3rd positional slot instead of runStage5's own
+    // 3rd slot (includeTier3).
+    runStage5: (pid, s4, p) => runStage5(pid, s4, false, p),
     fixShubham: async (p, findings) => {
       const r = await fixShubhamReal(p, findings);
-      return { success: r.success };
+      return { success: r.success, escalations: r.escalations };
     },
     fixAanya: async (p, findings) => {
       const r = await fixAanyaReal(p, findings);
-      return { success: r.success };
+      return { success: r.success, escalations: r.escalations };
     },
     fixPranav: async (p, findings) => {
       const r = await fixPranavReal(p, findings);

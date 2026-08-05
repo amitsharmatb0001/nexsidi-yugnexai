@@ -98,12 +98,16 @@ export async function runExploring(
   projectId: string,
   dirs: LabeledDir[],
   deps: KaranExploringDeps = { runAgent: runQAAgent },
+  // F5 (agent-autonomy-assessment): see navya/src/index.ts's identical
+  // parameter for the full rationale.
+  systemContext?: string,
 ): Promise<QAResult> {
   const result = await deps.runAgent({
     agentName: "karan",
     systemPrompt: QA_SYSTEM_PROMPT,
     reviewFocus: "security vulnerabilities AND information-integrity defects — specifically: (1) OWASP issues (injection, auth/authz gaps, unsafe deserialization, exposed secrets, CSRF, unvalidated input); (2) read frontend JSX/TSX files and search for 'NexSidi', 'NexUI', '@yugnex' appearing as RENDERED TEXT in JSX (string literals between JSX tags, aria-label values, title/alt attributes, or text rendered inside <p>/<span>/<footer>/<h*> elements) — CRITICAL if found. IMPORTANT: TypeScript import statements (e.g. \"import { X } from '@yugnex/nexui-react'\") and package.json dependency entries are NOT user-visible text and must NOT be flagged — only flag when the string is actually rendered in the browser as visible text; (3) read frontend/app/dashboard/page.tsx and look for <Badge> or status text like 'Connected API', 'Online', 'Active' rendered unconditionally without a runtime state variable — MEDIUM if the value is a hardcoded string literal never set by an actual API check",
     dirs,
+    systemContext,
   });
 
   const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings") && !e.includes("Stuck:"));

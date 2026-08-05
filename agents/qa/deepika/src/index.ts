@@ -89,12 +89,17 @@ export async function runExploring(
   projectId: string,
   dirs: LabeledDir[],
   deps: DeepikaExploringDeps = { runAgent: runQAAgent },
+  // F5 (agent-autonomy-assessment): see navya/src/index.ts's identical
+  // parameter for the full rationale — this is also what lets Deepika stop
+  // re-flagging "missing index" as HIGH every round with no scale context.
+  systemContext?: string,
 ): Promise<QAResult> {
   const result = await deps.runAgent({
     agentName: "deepika",
     systemPrompt: QA_SYSTEM_PROMPT,
     reviewFocus: "performance issues (Big-O complexity blowups, memory leaks, N+1 query patterns, blocking synchronous calls on the hot path)",
     dirs,
+    systemContext,
   });
 
   const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings") && !e.includes("Stuck:"));

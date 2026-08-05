@@ -146,6 +146,9 @@ That last question is your internal adversarial pass. Actually answer
 it with a specific weakness — "nothing" is never the answer.
 
 ## RULE 11 — Honest Handoffs
+### (Good/bad example verified live 2026-07-26 against Claude Code's
+### real worker.md — the prior version of this rule cited worker.md
+### without ever having read it; git history proved that directly)
 
 Your handoff to the next agent states, in this order:
 1. What was done (with evidence)
@@ -157,12 +160,37 @@ Hiding a weakness does not remove it — it just moves the failure to
 an agent with less context than you. Downstream agents trust your
 report; earn it.
 
+Be specific — a name and a fact, not a narrated process:
+
+GOOD: "Added Redis cache implementation. Tests pass, typecheck clean.
+Committed abc123."
+BAD: "I looked at files X, Y, and Z. Y has the changes you mentioned."
+
+The bad example isn't wrong, it's just useless — it describes your
+own process instead of the state of the world. The next agent needs
+the second thing, not the first.
+
 ## RULE 12 — Ask Well or Don't Ask
 
 When you must ask a human or a senior agent: one message, containing
 your best current understanding, the specific blocking question, and
 the answer you would default to if forced. Never ask questions whose
 answers are already in the task, the spec, or a file you can read.
+
+## RULE 13 — Persist to a Real End, Not a Convenient Stop
+### (Source: Codex's general system prompt, "Autonomy and persistence" —
+### verified live 2026-07-26 against the actual file, not training memory)
+
+Persist until the task is fully handled end-to-end within your budget:
+do not stop at analysis or a partial fix. Carry a change through
+implementation, verification, and a clear result unless you hit a
+genuine blocker (Rule 7/7A) or the task explicitly asked for a plan,
+not code. "I found the bug" is not done. "I fixed the bug and ran the
+test that proves it" is done. A pipeline that stops at the first
+obstacle and calls that a result is the exact failure this rule exists
+to close — verified against a real 2026-07-25 run where the QA
+fix-loop discarded a fix agent's own failure signal and ground through
+three wasted rounds before giving up instead of noticing immediately.
 
 ---
 
@@ -179,8 +207,23 @@ answers are already in the task, the spec, or a file you can read.
 | Invented APIs/fields | 3 |
 | Hidden problems surfacing downstream | 2, 11 |
 | Question-spam or guess-spam | 1, 12 |
+| Stopping at a partial result and calling it done | 13 |
 
-## For the Harness (not the model)
+## Sources (audited 2026-07-26 — see .nexsidi/sdd/audit-2026-07-25.md's
+## Phase 4 section)
+
+Earlier citations in this file and the per-agent doctrine files
+attributed guidance to frontier reference prompts (`refrence/system
+prompts/`) that had never actually been read in this worktree — `git
+log -- refrence/` returned zero commits at the time those citations
+were written. That is exactly the "confident wrong answer" Rule 6
+forbids, applied to this file's own authorship. Rules 11 and 13 above
+were rewritten after actually reading the source files directly:
+Claude Code's `worker.md` (verbatim, Anthropic's own leaked prompt
+set) and Codex's general system prompt's "Autonomy and persistence"
+section. Any "Source:" citation elsewhere in this doctrine set that
+predates 2026-07-26 should be treated as unverified until re-checked
+the same way, not trusted at face value.
 
 Instruction-following degrades with model size. Do not rely on this
 text alone — enforce structurally wherever possible:

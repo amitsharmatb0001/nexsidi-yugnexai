@@ -3,8 +3,10 @@ import {
   geminiChat,
   isRetryableGeminiStatus,
   geminiRetryDelayMs,
+  fetchGeminiWithRetry,
   resolveGeminiModel,
   resolveGeminiLocation,
+  resolveGeminiRpmLimit,
   translateNimToolToGeminiTool,
   partsToText,
   partsToToolCalls,
@@ -35,6 +37,25 @@ test("resolveGeminiLocation honors a GEMINI_LOCATION override", () => {
   process.env.GEMINI_LOCATION = "us-east5";
   expect(resolveGeminiLocation()).toBe("us-east5");
   delete process.env.GEMINI_LOCATION;
+});
+
+test("resolveGeminiRpmLimit defaults to a conservative 8 RPM when unset", () => {
+  delete process.env.GEMINI_RPM_LIMIT;
+  expect(resolveGeminiRpmLimit()).toBe(8);
+});
+
+test("resolveGeminiRpmLimit honors a GEMINI_RPM_LIMIT override", () => {
+  process.env.GEMINI_RPM_LIMIT = "25";
+  expect(resolveGeminiRpmLimit()).toBe(25);
+  delete process.env.GEMINI_RPM_LIMIT;
+});
+
+test("resolveGeminiRpmLimit falls back to the default on a non-numeric or non-positive override", () => {
+  process.env.GEMINI_RPM_LIMIT = "not-a-number";
+  expect(resolveGeminiRpmLimit()).toBe(8);
+  process.env.GEMINI_RPM_LIMIT = "-5";
+  expect(resolveGeminiRpmLimit()).toBe(8);
+  delete process.env.GEMINI_RPM_LIMIT;
 });
 
 test("translateNimToolToGeminiTool converts name/description/parameters straight through", () => {
@@ -141,6 +162,77 @@ test("geminiRetryDelayMs backs off exponentially by attempt number", () => {
   const d2 = geminiRetryDelayMs(2);
   expect(d1).toBeGreaterThan(d0);
   expect(d2).toBeGreaterThan(d1);
+});
+
+// 2026-07-28: real efficiency bug found live — pool-driven callers
+// (routeWithFallback/routeToolsWithFallback in router.ts) already fall
+// through to the next model in the pool on ANY failure with a documented
+// "zero-wait... no sleep/backoff" contract, but geminiChat/geminiChatWithTools
+// paid up to ~35s of LOCAL exponential backoff on a 429 before that error
+// ever reached the pool loop's catch block — the zero-wait promise was being
+// silently broken. fastFailOn429 closes that gap for pooled callers while
+// leaving non-pooled one-shot callers (which have no fallback) on the
+// original retry-then-fail behavior, preserving the resilience the
+// 2026-07-09 fix added.
+test("fetchGeminiWithRetry returns immediately on a 429 when fastFailOn429 is true — no retry, no delay", async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = (async () => {
+    calls++;
+    return new Response("rate limited", { status: 429 });
+  }) as unknown as typeof fetch;
+
+  try {
+    const start = Date.now();
+    const res = await fetchGeminiWithRetry("https://example.com", {}, "test", { fastFailOn429: true });
+    const elapsedMs = Date.now() - start;
+
+    expect(res.status).toBe(429);
+    expect(calls).toBe(1); // no retry attempted
+    expect(elapsedMs).toBeLessThan(500); // no backoff delay was paid
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("fetchGeminiWithRetry still retries a 429 with backoff when fastFailOn429 is not set (non-pooled callers keep their fallback-free resilience)", async () => {
+  process.env.GEMINI_RETRY_BASE_DELAY_MS = "1"; // real retry loop, but fast for the test
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = (async () => {
+    calls++;
+    if (calls < 3) return new Response("rate limited", { status: 429 });
+    return new Response("ok", { status: 200 });
+  }) as unknown as typeof fetch;
+
+  try {
+    const res = await fetchGeminiWithRetry("https://example.com", {}, "test");
+    expect(res.status).toBe(200);
+    expect(calls).toBe(3); // retried twice before succeeding, same as before this fix
+  } finally {
+    global.fetch = originalFetch;
+    delete process.env.GEMINI_RETRY_BASE_DELAY_MS;
+  }
+});
+
+test("fetchGeminiWithRetry still retries a 503 with backoff even when fastFailOn429 is true — only 429 fast-fails", async () => {
+  process.env.GEMINI_RETRY_BASE_DELAY_MS = "1";
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = (async () => {
+    calls++;
+    if (calls < 2) return new Response("unavailable", { status: 503 });
+    return new Response("ok", { status: 200 });
+  }) as unknown as typeof fetch;
+
+  try {
+    const res = await fetchGeminiWithRetry("https://example.com", {}, "test", { fastFailOn429: true });
+    expect(res.status).toBe(200);
+    expect(calls).toBe(2); // 503 still retried once
+  } finally {
+    global.fetch = originalFetch;
+    delete process.env.GEMINI_RETRY_BASE_DELAY_MS;
+  }
 });
 
 // 2026-07-24 (NexSidi full agentic upgrade, W0.1): Gemini 3.x requires every

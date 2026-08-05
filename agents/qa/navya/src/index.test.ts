@@ -238,6 +238,23 @@ test("runExploring() computes the severity-weighted score from the loop's findin
   expect(result.passed).toBe(false);
 });
 
+// 2026-07-26 (agent-autonomy-assessment F5): systemContext (spec/API
+// contract/DB schema) is now threaded through to runQAAgent so Navya can
+// judge findings against actual intent instead of code shape alone — see
+// qa-loop.test.ts for the live evidence of the false-positive cost when
+// this was missing entirely.
+test("runExploring() forwards systemContext through to the underlying runAgent call", async () => {
+  let capturedConfig: any;
+  const deps = {
+    runAgent: async (config: any) => {
+      capturedConfig = config;
+      return { findings: [], iterations: 1, errors: [] };
+    },
+  };
+  await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps, "SYSTEM YOU ARE WORKING ON:\nGreenway Estates Portal");
+  expect(capturedConfig.systemContext).toContain("Greenway Estates Portal");
+});
+
 test("runExploring() does NOT default-FAIL when the loop timed out but had no fatal errors", async () => {
   const deps = {
     runAgent: async () => ({ findings: [], iterations: 30, errors: ["Max iterations (30) reached without submit_findings"] }),

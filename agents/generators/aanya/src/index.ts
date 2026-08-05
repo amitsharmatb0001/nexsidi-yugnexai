@@ -4,9 +4,12 @@
 
 import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync, readFileSync, cpSync, existsSync } from "fs";
+import { randomBytes } from "crypto";
 import { join, resolve } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
+import { buildSystemContext } from "../../../arjun/src/index.ts";
 import { formatDesignBriefForPrompt } from "../../../vanya/src/index.ts";
+import { buildThemeOverrideCss } from "./theme.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
 
@@ -99,6 +102,11 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // typecheck). Live UI is Tier 3.
     enableHttpTools: true,
     enableWebSearch: true,
+    // Phase 5 (full agentic upgrade): read the FULL content of a specific
+    // page the user referenced (their existing site, a design reference)
+    // instead of guessing at it — web_search alone only gives a
+    // synthesized multi-source answer, not one exact page's real content.
+    enableWebFetch: true,
     enableScreenshot: true,
     enableBrowser: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
@@ -126,22 +134,43 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
 // rewrite, no mode param (the locked preview/integrate design is already
 // fixed by this point) — just the agent loop pointed at a fix task instead
 // of a from-scratch build task.
-export function buildFixTask(findings: string[]): string {
-  return `An adversarial QA review found the following issues in the frontend code you already wrote. Fix ONLY these specific issues — do not rewrite unrelated files, do not change layout or visual design that wasn't flagged.
+// 2026-07-26 (agent-autonomy-assessment F1/F2): same root-cause fix as
+// Shubham's identical prompt — see shubham/src/index.ts's buildFixTask for
+// the full live evidence. "Fix ONLY these specific issues" forced
+// point-fixes to symptoms instead of root causes, and the agent never saw
+// the API contract/DB schema it needed to tell whether a fix belonged in
+// its own layer at all.
+export function buildFixTask(findings: string[], plan: BuildPlan): string {
+  return `An adversarial QA review found the following issues in the frontend code you already wrote.
+
+${buildSystemContext(plan)}
 
 ISSUES TO FIX:
 ${findings.map((f, i) => `${i + 1}. ${f}`).join("\n")}
+
+Each finding is a SYMPTOM, not necessarily the whole problem. Before editing:
+1. Diagnose the root cause — read the full component/file the finding points
+   at, not just the cited line. Check the API contract above: an "API
+   contract mismatch" or "over-fetching" finding is often really the
+   frontend not using a query param the backend already supports.
+2. Check whether the same class of issue elsewhere in your own files has the
+   same root cause — fix all real instances of it, not just the one cited.
+3. Stay within your own domain (frontend) and don't change layout or visual
+   design that wasn't flagged.
 
 Workflow:
 1. Use read_file to see the exact current content of each affected file
 2. Use edit_file for targeted fixes (cheaper than rewriting the whole file) — use write_file only if the fix genuinely requires touching most of the file
 3. Run "npx next build" to verify nothing broke
-4. Call task_complete with verification_passed: true only after verifying the fix actually addresses the issue`;
+4. Call task_complete with verification_passed: true only after verifying the fix actually addresses the root cause, not just silences the symptom`;
 }
 
 export async function runFix(plan: BuildPlan, findings: string[]): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
+  // F7 (agent-autonomy-assessment): mirrors Shubham's identical fix — see
+  // that file for the full rationale.
+  const knownMistakesPrefix = await loadKnownMistakesPrefix();
 
   const result = await resolveGeneratorRunner()({
     agentName: "aanya",
@@ -151,15 +180,23 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // working replacement, qwen3-next-80b.
     fallbackModels: ["qwen/qwen3-next-80b-a3b-instruct"],
     apiKey,
-    systemPrompt: buildAgentPrompt("integrate"), // fix always happens post-integrate, per Stage 5's placement after Stage 4
-    initialMessage: buildFixTask(findings),
+    systemPrompt: knownMistakesPrefix + buildAgentPrompt("integrate"), // fix always happens post-integrate, per Stage 5's placement after Stage 4
+    initialMessage: buildFixTask(findings, plan),
     sandboxDir: outputDir,
     projectId: plan.projectId,
     // flash (default) — see the rationale on Aanya's run() config above.
     enableHttpTools: true,
     enableWebSearch: true,
+    // Phase 5 (full agentic upgrade): read the FULL content of a specific
+    // page the user referenced (their existing site, a design reference)
+    // instead of guessing at it — web_search alone only gives a
+    // synthesized multi-source answer, not one exact page's real content.
+    enableWebFetch: true,
     enableScreenshot: true,
     enableBrowser: true,
+    // P3 (agent-autonomy-assessment F3): mirrors Shubham's identical flag —
+    // see that file for the full rationale.
+    enableEscalation: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
     // 2026-07-25: reverted the maxIterations override — see run() above.
   });
@@ -169,6 +206,7 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     projectId: plan.projectId,
     outputDir,
     filesWritten: result.filesWritten,
+    escalations: result.escalations,
     errors: result.errors,
   };
 }
@@ -450,7 +488,27 @@ function renderApiContractForPrompt(apiContract: BuildPlan["apiContract"]): stri
   return JSON.stringify(renamed, null, 2);
 }
 
-function buildAgentTask(plan: BuildPlan, mode: "preview" | "integrate"): string {
+// 2026-08-04 (live, verify4617991): the prompt below tells the model "Every
+// page must show real content from the project spec" — but the spec was never
+// in the message. This renders the locked spec's features/user stories so that
+// instruction refers to something the model can actually read. Exported for
+// direct unit testing (index.test.ts) without a live LLM call.
+export function formatFeaturesForPrompt(features: BuildPlan["features"]): string {
+  if (!features || features.length === 0) return "";
+  const blocks = features.map((f) => {
+    const stories = (f.userStories ?? []).map((s) => `    - ${s}`).join("\n");
+    return `- ${f.name}: ${f.description}${stories ? `\n  User stories:\n${stories}` : ""}`;
+  });
+  return `LOCKED SPEC — THE REQUIREMENTS YOU MUST SATISFY (this is "the project spec"):
+Every feature below was explicitly requested. Build ALL of it. When a feature
+names specific items (services, sections, fields), every single named item must
+appear in the UI — a page that shows 4 of 9 named services is INCOMPLETE and
+will be rejected.
+${blocks.join("\n")}
+`;
+}
+
+export function buildAgentTask(plan: BuildPlan, mode: "preview" | "integrate"): string {
   const backendUrl = plan.apiContract.baseUrl ?? "http://localhost:3001";
   const contractJson = renderApiContractForPrompt(plan.apiContract);
 
@@ -492,8 +550,9 @@ DO produce: a distinct visual identity — consistent dark theme using NexUI's v
 
 ${formatDesignBriefForPrompt(plan.designBrief)}
 
+${formatFeaturesForPrompt(plan.features)}
 CONTENT RULE — NO PLACEHOLDER TEXT:
-Every page must show real content from the project spec, NOT "Lorem ipsum" or "Coming soon".
+Every page must show real content from the LOCKED SPEC above, NOT "Lorem ipsum" or "Coming soon".
 User-facing copy must match what this specific app actually does.
 
 USER FLOW:
@@ -514,9 +573,17 @@ Start with list_files to see the scaffold, then write pages and components.`;
 // prerendering of /_not-found with "Missing publishableKey". Extracted as
 // its own function (rather than inline in writeStaticScaffold's template
 // string) so the env-var name is directly unit-testable.
+// 2026-07-26 (agent-autonomy-assessment follow-on): was
+// `process.env.JWT_SECRET || "default_dev_secret"` — a fixed, predictable
+// fallback baked into every generated app whenever the env var was unset.
+// Riya's deploy-time write (agents/riya/src/index.ts) always overwrites
+// this file with a real generated secret before the app starts and is the
+// authoritative source; this scaffold-time placeholder just must never be
+// a fixed string either, in case anything reads it before Riya runs.
 export function buildCustomEnvLocal(backendPort: string): string {
+  const placeholder = process.env.JWT_SECRET || randomBytes(32).toString("hex");
   return `NEXT_PUBLIC_API_URL=http://localhost:${backendPort}
-JWT_SECRET=${process.env.JWT_SECRET || "default_dev_secret"}
+JWT_SECRET=${placeholder}
 `;
 }
 
@@ -602,9 +669,22 @@ function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
       content: buildScaffoldNextConfig(),
     },
     {
+      // 2026-07-28: real bug found live — every generated app used NexUI's
+      // ONE fixed dark palette + hardcoded Inter font with zero per-project
+      // variation, even though Vanya's real designBrief (palette/typeface/
+      // mood) was already computed and available on `plan` — it was just
+      // never read. buildThemeOverrideCss derives real CSS custom-property
+      // overrides from it; @importing this AFTER NexUI's own tokens (below)
+      // lets the project's actual colors/fonts win the cascade for those
+      // specific variables, no vendored file needs touching.
+      path: "app/theme-overrides.css",
+      content: buildThemeOverrideCss(plan.designBrief),
+    },
+    {
       path: "app/globals.css",
       content: `@import "@yugnex/nexui/css/nexui-tokens.css";
 @import "@yugnex/nexui/css/nexui-base.css";
+@import "./theme-overrides.css";
 
 *, *::before, *::after {
   box-sizing: border-box;

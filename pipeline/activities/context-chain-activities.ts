@@ -189,6 +189,21 @@ export async function verifyHandoff(
   const decision = decideVerification(row, recomputedHash, sigValid);
 
   if (decision.outcome !== "valid") {
+    // 2026-08-03: real bug found live — a hash mismatch previously logged
+    // nothing but "hash mismatch," and only the HASH is persisted (not the
+    // raw manifest), so there was no way to see WHAT changed after the fact.
+    // Logging the current manifest's size/edges here doesn't recover the
+    // ORIGINAL snapshot, but turns the next occurrence from "opaque failure"
+    // into "here's what verify actually saw" — enough to spot an unexpected
+    // file immediately instead of re-deriving it from timestamps after the
+    // build directory has moved on.
+    if (decision.outcome === "hash_mismatch" && context && typeof context === "object" && "filesWritten" in context) {
+      const files = (context as { filesWritten: string[] }).filesWritten;
+      console.error(
+        `[context-chain] hash mismatch detail — verify saw ${files.length} file(s): ` +
+          `first 5: ${JSON.stringify(files.slice(0, 5))}, last 5: ${JSON.stringify(files.slice(-5))}`,
+      );
+    }
     await rollbackAndEscalate(projectId, `context_chain_${decision.outcome}: ${agentFrom} -> ${agentTo}`);
   }
 

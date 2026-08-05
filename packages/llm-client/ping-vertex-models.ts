@@ -9,7 +9,7 @@ const candidates = [
   "claude-sonnet-4",
 ];
 
-const client = new AnthropicVertex({ projectId: "ai-yugnex", region: "us-east5" });
+const client = new AnthropicVertex({ projectId: "ai-yug", region: "us-east5" });
 
 for (const model of candidates) {
   try {

@@ -40,10 +40,28 @@ export function resolveGeminiLocation(): string {
   return override ? override : "global";
 }
 
-const GEMINI_RPM_LIMIT = 50;
+// 2026-08-05: 50 was carried over from NIM's per-model limit with no direct
+// evidence for Gemini/Vertex — two consecutive live runs on this brand-new
+// project (ai-yug) hit real RESOURCE_EXHAUSTED 429s on solo, non-concurrent
+// calls (Aanya's design tier, then Arjun's plan tier), so the true per-minute
+// cap is below 50 regardless of how many agents call in at once. Quota-viewing
+// API access is blocked for the current service account (403 on
+// serviceusage.googleapis.com), so the real number can't be read
+// programmatically — 8 is a conservative default a brand-new project's
+// default quota is far more likely to sustain. Overridable via GEMINI_RPM_LIMIT
+// for the same reason GEMINI_MODEL/GEMINI_LOCATION are overridable above: once
+// a console quota increase is granted, raise this without a code change.
+const GEMINI_RPM_LIMIT_DEFAULT = 8;
+
+export function resolveGeminiRpmLimit(): number {
+  const override = process.env.GEMINI_RPM_LIMIT?.trim();
+  const parsed = override ? Number(override) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : GEMINI_RPM_LIMIT_DEFAULT;
+}
+
 const GEMINI_TIMEOUT_MS = 120_000;
 
-function circuitKeyFor(model: string): string {
+export function circuitKeyFor(model: string): string {
   return `gemini:${model}`;
 }
 
@@ -56,25 +74,52 @@ function circuitKeyFor(model: string): string {
 // one-shot path agentChat uses for Navya/Karan/Deepika) had none of that
 // resilience — this closes that gap.
 const GEMINI_MAX_RETRIES = 3;
-const GEMINI_RETRY_BASE_DELAY_MS = 5000;
 
 export function isRetryableGeminiStatus(status: number): boolean {
   return status === 429 || status === 503;
 }
 
-// Exponential backoff: 5s, 10s, 20s for attempts 0, 1, 2.
+// Exponential backoff: 5s, 10s, 20s for attempts 0, 1, 2. Reads the base
+// delay live (not a module-load-time constant) so tests can override it via
+// GEMINI_RETRY_BASE_DELAY_MS to exercise the real retry loop without waiting
+// tens of seconds — production behavior (default 5000ms) is unchanged.
 export function geminiRetryDelayMs(attempt: number): number {
-  return GEMINI_RETRY_BASE_DELAY_MS * 2 ** attempt;
+  const base = Number(process.env.GEMINI_RETRY_BASE_DELAY_MS ?? 5000);
+  return base * 2 ** attempt;
 }
 
-// Shared by all three fetch call sites below — a 429/503 retries with
-// backoff up to GEMINI_MAX_RETRIES; any other status (including a 429/503
-// on the FINAL attempt) is returned as-is for the caller's existing
-// !res.ok handling to report normally.
-async function fetchGeminiWithRetry(url: string, init: RequestInit, logPrefix: string): Promise<Response> {
+// 2026-07-28: pool-driven callers (routeWithFallback/routeToolsWithFallback,
+// router.ts) already fall through to the next model in the pool immediately
+// on ANY failure — paying this function's local backoff (up to ~35s total:
+// 5s+10s+20s) on a 429 before that fallback ever runs means the exact same
+// wasted wait happens on every pooled call while the pool's primary model's
+// quota is exhausted. Confirmed live: gemini-3.1-pro-preview (pool[0] for
+// the qa/plan/design tiers) was rate-limited on the large majority of calls
+// across every long build tonight, and gemini-3.6-flash (the fallback)
+// reliably succeeded — the 35s was pure waste, repeated hundreds of times
+// per build. A 429 means "unavailable right now", not "will likely work in
+// 5s", so retrying it locally before the pool ever gets a chance is
+// backwards for those callers.
+//
+// `fastFailOn429` is OFF by default and only passed `true` by
+// routeWithFallback/routeToolsWithFallback, which have a guaranteed
+// fallback one line away. Non-pooled one-shot callers (agentChat's Gemini
+// last-resort in router.ts, compaction.ts, qa-loop.ts's finding-parser,
+// the planner's web_search) have NO fallback if this call fails, so they
+// keep today's retry-then-fail behavior unchanged — stripping it
+// unconditionally would reintroduce the exact 2026-07-09 bug this retry was
+// originally added to fix (a transient 429 on the last-resort path used to
+// crash the entire pipeline).
+export async function fetchGeminiWithRetry(
+  url: string,
+  init: RequestInit,
+  logPrefix: string,
+  opts?: { fastFailOn429?: boolean },
+): Promise<Response> {
   let res: Response;
   for (let attempt = 0; ; attempt++) {
     res = await fetch(url, init);
+    if (res.status === 429 && opts?.fastFailOn429) return res;
     if (!isRetryableGeminiStatus(res.status) || attempt >= GEMINI_MAX_RETRIES) return res;
     const delay = geminiRetryDelayMs(attempt);
     console.log(`[${logPrefix}] ${res.status} — retrying in ${delay}ms (attempt ${attempt + 1}/${GEMINI_MAX_RETRIES})`);
@@ -122,11 +167,21 @@ function endpointFor(model: string, location: string, method: "generateContent")
 // `functionCall`, the variant that actually needs it), so any code
 // constructing/inspecting a functionCall part had no type-level signal to
 // preserve it. Both fields are now named to match the real API field.
+// 2026-07-28: real bug found live — `browser_screenshot`/`screenshot` saved a
+// PNG to disk and returned only a text path; no image bytes were ever sent
+// to any model, so every "visual" QA agent (Tier-3, live-eval) judged DOM/
+// text only. Confirmed live: a build with sitewide corrupted-glyph text
+// scored 7.47/10 against a 7.0 pass bar because nothing ever actually looked
+// at a pixel. `inlineData` is Gemini's real API field for embedding a
+// base64-encoded image directly in a `contents` part (Vertex/Gemini
+// generateContent request format) — this is the type-level support needed
+// so a caller can attach a screenshot's actual bytes to the next turn.
 export type GeminiPart =
   | { text: string }
   | { thought: true; text?: string; thoughtSignature?: string }  // Gemini 3.x thought parts — preserve verbatim
   | { functionCall: { name: string; args: Record<string, unknown> }; thoughtSignature?: string }
-  | { functionResponse: { name: string; response: Record<string, unknown> } };
+  | { functionResponse: { name: string; response: Record<string, unknown> } }
+  | { inlineData: { mimeType: string; data: string } };
 
 export interface GeminiToolDef {
   name: string;
@@ -261,7 +316,7 @@ function buildThinkingConfig(level: GeminiThinkingLevel | undefined): { thinking
 
 export async function geminiChat(
   messages: ChatMessage[],
-  opts?: { maxTokens?: number; model?: string; thinkingLevel?: GeminiThinkingLevel },
+  opts?: { maxTokens?: number; model?: string; thinkingLevel?: GeminiThinkingLevel; fastFailOn429?: boolean },
 ): Promise<{ content: string }> {
   // Validated before any network activity (circuit breaker, token bucket, or
   // the ADC auth call itself) so a missing-project error is immediate and
@@ -282,7 +337,7 @@ export async function geminiChat(
     }
   }
 
-  await waitForToken(model, GEMINI_RPM_LIMIT);
+  await waitForToken(model, resolveGeminiRpmLimit());
 
   // geminiChat's ChatMessage role is "assistant", not Gemini's "model" — map
   // it before handing off to the shared builder (which expects GeminiMessage).
@@ -318,7 +373,7 @@ export async function geminiChat(
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
       signal: controller.signal,
-    }, "gemini:geminiChat");
+    }, "gemini:geminiChat", { fastFailOn429: opts?.fastFailOn429 });
 
     if (!res.ok) {
       const errBody = await res.text();
@@ -351,7 +406,7 @@ export async function geminiChat(
 export async function geminiChatWithTools(
   messages: GeminiMessage[],
   tools: GeminiToolDef[],
-  opts?: { model?: string; thinkingLevel?: GeminiThinkingLevel; cachedContent?: string },
+  opts?: { model?: string; thinkingLevel?: GeminiThinkingLevel; cachedContent?: string; fastFailOn429?: boolean },
 ): Promise<GeminiChatWithToolsResult> {
   projectIdOrThrow();
   // 2026-07-12: per-role model routing. Two-model cost strategy — the pricey
@@ -372,7 +427,7 @@ export async function geminiChatWithTools(
     }
   }
 
-  await waitForToken(model, GEMINI_RPM_LIMIT);
+  await waitForToken(model, resolveGeminiRpmLimit());
 
   const { systemParts, contents } = buildGeminiContents(messages);
 
@@ -419,7 +474,7 @@ export async function geminiChatWithTools(
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
       signal: controller.signal,
-    }, "gemini:geminiChatWithTools");
+    }, "gemini:geminiChatWithTools", { fastFailOn429: opts?.fastFailOn429 });
 
     if (!res.ok) {
       const errBody = await res.text();
@@ -559,7 +614,7 @@ export async function geminiWebSearch(query: string, opts?: { timeoutMs?: number
     }
   }
 
-  await waitForToken(model, GEMINI_RPM_LIMIT);
+  await waitForToken(model, resolveGeminiRpmLimit());
 
   const body = {
     contents: [{ role: "user", parts: [{ text: query }] }],

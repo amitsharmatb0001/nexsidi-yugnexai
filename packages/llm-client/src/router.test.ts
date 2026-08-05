@@ -1,5 +1,7 @@
 import { test, expect } from "bun:test";
-import { shouldUseGeminiForQA, poolForTier, thinkingLevelForTier, pipelineTierFor } from "./router.ts";
+import { shouldUseGeminiForQA, poolForTier, thinkingLevelForTier, pipelineTierFor, shouldSkipGeminiModel, rotatedPoolForAgent } from "./router.ts";
+import { recordFailure } from "./circuit-breaker.ts";
+import { circuitKeyFor } from "./gemini.ts";
 
 // 2026-07-08: root-caused why a Gemini-primary generation run still took
 // 6.5 hours (23,511s) despite generation itself finishing in minutes —
@@ -110,4 +112,68 @@ test("thinkingLevelForTier: plan/design/qa are HIGH, generation is MEDIUM, a2a/u
   expect(thinkingLevelForTier("generation")).toBe("MEDIUM");
   expect(thinkingLevelForTier("a2a")).toBe("LOW");
   expect(thinkingLevelForTier("user")).toBe("LOW");
+});
+
+// 2026-07-28: real efficiency bug found live — routeWithFallback/
+// routeToolsWithFallback's pool loop had NO circuit-breaker skip check (the
+// agentChat NIM/Ollama chain already had this, D15: "skips any model whose
+// circuit breaker is OPEN"). Without it, a pool call against an
+// already-OPEN model still invoked geminiChat/geminiChatWithTools, which
+// calls waitForCircuit and blocks for up to OPEN_TIMEOUT_MS (60s) waiting
+// out the cooldown — on every single call, while a working fallback model
+// was one line away. shouldSkipGeminiModel is the pure decision extracted
+// so the pool loop can skip straight to the next model instead of waiting;
+// matches this file's own stated convention of unit-testing the
+// deterministic decision, not the network call it gates.
+test("shouldSkipGeminiModel is false for a model with no recorded failures", () => {
+  expect(shouldSkipGeminiModel("gemini-3.1-pro-preview-test-fresh")).toBe(false);
+});
+
+test("shouldSkipGeminiModel is true once a model's circuit breaker has tripped OPEN", () => {
+  const model = "gemini-3.1-pro-preview-test-tripped";
+  const key = circuitKeyFor(model);
+  for (let i = 0; i < 5; i++) recordFailure(key); // FAILURE_THRESHOLD = 5
+  expect(shouldSkipGeminiModel(model)).toBe(true);
+});
+
+// 2026-07-28: real bug found live on a fresh end-to-end run — Navya, Karan,
+// and Deepika (meant to run in genuine parallel per CLAUDE.md's own design:
+// "Same model = 40 RPM rate limit collision. Different models = 120 RPM
+// effective capacity") all called routeToolsWithFallback("qa", ...) with the
+// IDENTICAL pool in the IDENTICAL order. With the shared primary
+// (gemini-3.1-pro-preview) exhausted for the whole run, all three agents
+// collided on the SAME fallback model's shared 50 RPM token bucket instead
+// of spreading across the 2 available fallback models — a live QA pass took
+// over an hour partly because of this collision. rotatedPoolForAgent keeps
+// the same quality-tier primary first but rotates the FALLBACK order
+// per-agent, deterministically (not randomly, so it's reproducible/testable).
+test("rotatedPoolForAgent keeps the same primary model first for every agent", () => {
+  expect(rotatedPoolForAgent("qa", "navya")[0]).toBe("gemini-3.1-pro-preview");
+  expect(rotatedPoolForAgent("qa", "karan")[0]).toBe("gemini-3.1-pro-preview");
+  expect(rotatedPoolForAgent("qa", "deepika")[0]).toBe("gemini-3.1-pro-preview");
+});
+
+test("rotatedPoolForAgent gives at least two of navya/karan/deepika DIFFERENT first-fallback models", () => {
+  const navya = rotatedPoolForAgent("qa", "navya");
+  const karan = rotatedPoolForAgent("qa", "karan");
+  const deepika = rotatedPoolForAgent("qa", "deepika");
+  const firstFallbacks = new Set([navya[1], karan[1], deepika[1]]);
+  // The whole point: not all three colliding on the exact same fallback —
+  // with only 2 fallback models available, at least 2 distinct values must
+  // appear across the 3 agents.
+  expect(firstFallbacks.size).toBeGreaterThan(1);
+});
+
+test("rotatedPoolForAgent is deterministic — same agent name always gets the same rotation", () => {
+  expect(rotatedPoolForAgent("qa", "navya")).toEqual(rotatedPoolForAgent("qa", "navya"));
+});
+
+test("rotatedPoolForAgent still contains every model from the tier's pool — no model dropped, just reordered", () => {
+  const pool = poolForTier("qa");
+  const rotated = rotatedPoolForAgent("qa", "karan");
+  expect([...rotated].sort()).toEqual([...pool].sort());
+});
+
+test("rotatedPoolForAgent returns the pool unchanged for a 2-model (or smaller) tier — nothing to rotate", () => {
+  expect(rotatedPoolForAgent("design", "aanya")).toEqual(poolForTier("design"));
 });

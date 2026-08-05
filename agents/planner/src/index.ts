@@ -11,6 +11,16 @@ import { fileURLToPath } from "node:url";
 import { AGENT_MODELS, MODEL_RPM_LIMITS, NIM_CONTEXT_LIMITS, waitForToken, routeToolsWithFallback, translateNimToolToGeminiTool } from "@nexsidi/llm-client";
 import type { GeminiMessage, GeminiPart, NimToolDef } from "@nexsidi/llm-client";
 import type { PlannerState, StreamChunk, BuildPlan, ProposedPlan, ElicitationQuestion } from "./types.ts";
+// Phase 5 (full agentic upgrade): the same shared primitives every other
+// agent's research capability is built on — see the "web_search /
+// fetch_url" call site below for why the planner's own Firecrawl-only
+// implementation was retired in favor of these. (Not agent-runtime's own
+// execWebSearch/execFetchUrl wrappers: the planner's tsconfig.json sets a
+// strict rootDir that cannot import outside agents/planner/src at all —
+// confirmed live via a TS6059 build error — so this calls the underlying
+// @nexsidi/llm-client primitives directly instead of their ToolResult-
+// wrapped agent-runtime versions.)
+import { geminiWebSearch, firecrawlFetchUrl } from "@nexsidi/llm-client";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INTAKE_RULES = readFileSync(join(__dirname, "..", "INTAKE_RULES.md"), "utf-8");
@@ -274,47 +284,6 @@ function proposedPlanToBuildPlan(proposed: ProposedPlan): BuildPlan {
   };
 }
 
-// ─── Firecrawl helpers ───────────────────────────────────────────────────────
-const FIRECRAWL_URL = "https://api.firecrawl.dev/v1";
-
-async function firecrawlSearch(query: string, limit = 5, key: string): Promise<string> {
-  try {
-    const r = await fetch(`${FIRECRAWL_URL}/search`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ query, limit }),
-    });
-    const data = await r.json() as {
-      success: boolean;
-      data?: Array<{ url: string; title: string; description: string; markdown?: string }>;
-    };
-    if (!data.success || !data.data?.length) return "No results found.";
-    return data.data
-      .map(d => `### ${d.title}\n${d.url}\n${d.description}${d.markdown ? "\n\n" + d.markdown.slice(0, 600) : ""}`)
-      .join("\n\n---\n\n");
-  } catch (err) {
-    return `Search error: ${String(err)}`;
-  }
-}
-
-async function firecrawlFetch(url: string, key: string): Promise<string> {
-  try {
-    const r = await fetch(`${FIRECRAWL_URL}/scrape`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ url, formats: ["markdown"] }),
-    });
-    const data = await r.json() as {
-      success: boolean;
-      data?: { markdown: string; metadata?: { title?: string } };
-    };
-    if (!data.success || !data.data?.markdown) return "Could not fetch the page.";
-    return data.data.markdown.slice(0, 4000);
-  } catch (err) {
-    return `Fetch error: ${String(err)}`;
-  }
-}
-
 // Convert OpenAI-format planner messages → Gemini multi-turn format
 type NimMsg = { role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
 function nimToGemini(nimMsgs: NimMsg[]): GeminiMessage[] {
@@ -353,8 +322,6 @@ export async function* streamReply(
   state: PlannerState,
   apiKey: string,
 ): AsyncGenerator<StreamChunk> {
-  const firecrawlKey = process.env.FIRECRAWL_API_KEY ?? "";
-
   // ── Fast path: user accepted the plan — convert directly without LLM ────────
   // Bug 2 fix: proposedPlan is saved by the propose_plan handler. When "build it"
   // arrives we convert it directly instead of asking the LLM to reconstruct the
@@ -516,13 +483,24 @@ export async function* streamReply(
     }
 
     // ── web_search / fetch_url → execute and loop ─────────────────────────────
+    // Phase 5 (full agentic upgrade): was the planner's own Firecrawl-only
+    // implementation (firecrawlSearch/firecrawlFetch, since deleted) — a
+    // second, duplicate research path alongside the shared primitives every
+    // other agent's research capability is built on. web_search now uses
+    // Gemini's native google_search grounding directly (the "default for
+    // factual grounding" the plan calls for); fetch_url uses the same
+    // Firecrawl-backed firecrawlFetchUrl Aanya and Saanvi now use via
+    // agent-runtime's wrapper — one real implementation each, not three.
     let toolResult = "No result.";
     try {
       const args = JSON.parse(toolCallArgs) as { query?: string; url?: string; limit?: number };
       if (toolCallName === "web_search" && args.query) {
-        toolResult = await firecrawlSearch(args.query, args.limit ?? 5, firecrawlKey);
+        const { content, sources } = await geminiWebSearch(args.query);
+        const sourceLines = sources.map((s, i) => `[${i + 1}] ${s.title} — ${s.url}`).join("\n");
+        toolResult = [content, sourceLines ? `Sources:\n${sourceLines}` : ""].filter(Boolean).join("\n\n") || "No results found.";
       } else if (toolCallName === "fetch_url" && args.url) {
-        toolResult = await firecrawlFetch(args.url, firecrawlKey);
+        const result = await firecrawlFetchUrl(args.url);
+        toolResult = result.success && result.content ? result.content : (result.error ?? "Could not fetch the page.");
       }
     } catch (err) {
       toolResult = `Tool error: ${String(err)}`;

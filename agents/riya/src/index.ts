@@ -6,6 +6,7 @@
 import { runAgentEscalated } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "fs";
 import { execSync } from "child_process";
+import { randomBytes } from "crypto";
 import { join } from "path";
 // @nexsidi/db and drizzle-orm are imported dynamically inside run() (at the
 // point of use) rather than at module top level — @nexsidi/db's client
@@ -254,6 +255,43 @@ function verifyDbWriteReadRoundTrip(
 // controller has already been confirmed to require live this session; that
 // contract itself is not yet published in api-contract.json's response types,
 // which describe TS type NAMES, not field shapes.
+// 2026-08-03: real bug found live (project=verify4617991) — the round-trip
+// check hardcoded a generic {title: marker} create payload, which only
+// matches Sprint 1's NexTech-style CRUD assumption. A contact-form endpoint
+// (CreateContactRequest { subject: string; message: string }) got 400
+// "Required" on every attempt — a false "broken deploy" verdict on an app
+// that genuinely worked. Arjun always writes shared-types.ts at the build
+// root (agents/arjun/src/index.ts) with the real flat interface definitions
+// — parsing the NAMED type out of it gives the actual required fields
+// instead of guessing a shape. Simple regex parse, not a full TS parser:
+// Arjun's own interfaces are always flat `field: type;` lists (verified
+// against real generated shared-types.ts across projects tonight).
+export function buildPayloadForRequestType(
+  sharedTypesSource: string,
+  typeName: string,
+  marker: string,
+): Record<string, unknown> | null {
+  const typeMatch = sharedTypesSource.match(new RegExp(`interface\\s+${typeName}\\s*\\{([^}]*)\\}`));
+  if (!typeMatch) return null;
+  const body = typeMatch[1] ?? "";
+  const fieldRegex = /(\w+)\??\s*:\s*([^;]+);/g;
+  const payload: Record<string, unknown> = {};
+  let match: RegExpExecArray | null;
+  let foundAny = false;
+  while ((match = fieldRegex.exec(body)) !== null) {
+    foundAny = true;
+    const [, fieldName, fieldType] = match;
+    if (!fieldName) continue;
+    const type = (fieldType ?? "").trim();
+    const lowerName = fieldName.toLowerCase();
+    if (lowerName.includes("email")) payload[fieldName] = `verify+${marker}@example.com`;
+    else if (type.includes("number")) payload[fieldName] = 1;
+    else if (type.includes("boolean")) payload[fieldName] = true;
+    else payload[fieldName] = marker;
+  }
+  return foundAny ? payload : null;
+}
+
 export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backendUrl: string): Promise<{ ok: boolean; reason: string }> {
   const contractPath = join(buildDir, "api-contract.json");
   if (!existsSync(contractPath)) return { ok: false, reason: "api-contract.json not found — cannot discover endpoints" };
@@ -266,7 +304,19 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
 
   const createEp = endpoints.find((e) => e.method === "POST" && e.auth && !e.path.includes("{"));
   const getByIdEp = endpoints.find((e) => e.method === "GET" && e.auth && e.path.includes("{id}"));
-  if (!createEp) return { ok: false, reason: "no authenticated POST endpoint found in api-contract.json" };
+  // 2026-07-26 (live, simple1): a project whose locked spec asked for
+  // sign-in/sign-up but no protected resource to create (e.g. a small
+  // business site with only a public contact form) has NO authenticated
+  // POST endpoint by design — that is not a broken deploy, it's a feature
+  // the app never claimed to have. Failing hard here hardcoded Sprint 1's
+  // NexTech-style CRUD assumption onto every project, violating "build ANY
+  // site — nothing hardcoded to NexTech" (plan Phase 3.5b / D50). Only a
+  // missing/unreadable contract (checked above) is a real verification
+  // failure; a contract that legitimately has no auth:true POST endpoint
+  // just has nothing to round-trip-test at this layer.
+  if (!createEp) {
+    return { ok: true, reason: "no authenticated POST endpoint in api-contract.json — nothing to verify at this layer, skipping" };
+  }
   const deleteEp = endpoints.find((e) => e.method === "DELETE" && e.auth && e.path.includes("{id}"));
 
   try {
@@ -311,18 +361,58 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
     if (!token) return { ok: false, reason: "Login response did not contain token" };
 
     const marker = `nexsidi-e2e-verify-${Date.now()}`;
+    // 2026-08-03: derive the real payload shape from shared-types.ts instead
+    // of hardcoding {title} — see buildPayloadForRequestType's header comment.
+    // Falls back to the old {title} shape if the type can't be found (e.g. an
+    // inline requestType, or the file is missing) — strictly additive, never
+    // worse than today's behavior.
+    const sharedTypesPath = join(buildDir, "shared-types.ts");
+    const sharedTypesSource = existsSync(sharedTypesPath) ? readFileSync(sharedTypesPath, "utf-8") : "";
+    const requestType = (createEp as { requestType?: string }).requestType;
+    const dynamicPayload = requestType && requestType !== "null"
+      ? buildPayloadForRequestType(sharedTypesSource, requestType, marker)
+      : null;
+    const createPayload = dynamicPayload ?? { title: marker };
     const createRes = await fetch(`${backendUrl}${createEp.path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ title: marker }),
+      body: JSON.stringify(createPayload),
     });
+    // 2026-07-27 (live, complex1): this test user registers with no role
+    // (defaults to whatever the app's safest default is) and createEp is
+    // just the FIRST auth:true POST endpoint — on a role-gated app (e.g.
+    // property creation restricted to landlord/staff), a base-role test
+    // account correctly gets 403. That is proof authorization is WORKING,
+    // not a broken deploy — conflating them retried a correctly-secured
+    // app into a false stuck-state. Only treat non-403 failures (401 no
+    // auth at all, 500 server error, network failure) as real breakage.
+    if (createRes.status === 403) {
+      return {
+        ok: true,
+        reason: `create ${createEp.path} returned 403 Forbidden — the test account's default role lacks permission for this endpoint, which confirms authorization is enforced correctly rather than indicating a broken deploy`,
+      };
+    }
     if (!createRes.ok) return { ok: false, reason: `create ${createEp.path} returned ${createRes.status}: ${(await createRes.text()).slice(0, 200)}` };
     const createBody = (await createRes.json()) as Record<string, unknown>;
     // Unwrap {success, data: {...}} envelope (Express convention) if present
     const created = (createBody.data ?? createBody) as Record<string, unknown>;
     const createdId = created.id as string | undefined;
     if (!createdId) return { ok: false, reason: `create response has no id: ${JSON.stringify(createBody).slice(0, 200)}` };
-    if (created.title !== marker) return { ok: false, reason: `create response title mismatch — sent "${marker}", got "${created.title}"` };
+    // 2026-08-03 (live, verify4617991, follow-on to the payload-shape fix
+    // above): a real contract can legitimately declare a minimal ack
+    // response (CreateContactResponse { id: string; status: string } —
+    // no content fields at all), so requiring an echoed marker HARD-fails a
+    // genuinely correct deploy. The echo is now a bonus confidence check,
+    // not a requirement: log it either way, but only the presence of a real
+    // id (already checked above) blocks/passes this step. Riya's separate
+    // DB round-trip check (deployed DB fully verified, above) already
+    // confirms writes genuinely persist at the storage layer.
+    const echoedMarker = Object.values(created).some((v) => typeof v === "string" && v.includes(marker));
+    console.log(
+      echoedMarker
+        ? `[riya] create response echoes the sent marker — strong confirmation of a real write`
+        : `[riya] create response has no echoed fields (responseType returns only ${Object.keys(created).join(", ")}) — real id present, treating as a legitimate minimal ack shape`,
+    );
 
     if (getByIdEp) {
       const readRes = await fetch(`${backendUrl}${getByIdEp.path.replace("{id}", createdId)}`, {
@@ -346,7 +436,25 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
   }
 }
 
-export async function run(projectId: string, deployTarget: "local" | "gcp" = "local"): Promise<DeployResult> {
+// 2026-07-28 (live, complex1): real gap found live — a POST-FIX redeploy
+// (inside Stage 6's live-retest fix loop, after Shubham/Aanya/Pranav have
+// just changed code) is a genuinely different task shape than the FIRST
+// deploy: it requires diagnosing a real runtime bug via docker logs, editing
+// the right file, rebuilding, and re-verifying — not just bringing up a
+// known-good compose file. Confirmed via the raw log: Riya's second-round
+// redeploy on complex1 spent all 40 iterations on continuously VARYING tool
+// calls (never a repeated call — not a stuck loop) chasing a real
+// parameterized-query bug (`LIMIT ${paramIndex++}` missing its `$` prefix)
+// that turned out to have two separate occurrences in the same controller
+// file, then ran out mid-edit with no verdict either way. Optional so every
+// existing call site (including the FIRST deploy, which doesn't need the
+// extra room) is unaffected — undefined falls through to loop.ts's own
+// `config.maxIterations ?? MAX_ITERATIONS` default, unchanged.
+export async function run(
+  projectId: string,
+  deployTarget: "local" | "gcp" = "local",
+  maxIterations?: number,
+): Promise<DeployResult> {
   resolveDeployTarget(deployTarget);
 
   const buildDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId);
@@ -369,9 +477,15 @@ export async function run(projectId: string, deployTarget: "local" | "gcp" = "lo
   const appUrl = `http://localhost:${frontendPort}`;
   const backendUrl = `http://localhost:${backendPort}`;
 
-  // Write the correct frontend .env.local using the host published port
+  // Write the correct frontend .env.local using the host published port.
+  // jwtSecret is generated ONCE here and is the sole source of truth for
+  // this deploy — buildAgentTask below passes the SAME value into the
+  // docker-compose prompt so backend and frontend never end up trusting
+  // different secrets (see jwt-secret.test.ts for the live evidence of
+  // what happens when they don't).
+  const jwtSecret = generateJwtSecret();
   const frontendEnvPath = join(buildDir, "frontend", ".env.local");
-  writeFileSync(frontendEnvPath, `NEXT_PUBLIC_API_URL=http://localhost:${backendPort}\nJWT_SECRET=${process.env.JWT_SECRET || "default_dev_secret"}\n`, "utf-8");
+  writeFileSync(frontendEnvPath, `NEXT_PUBLIC_API_URL=http://localhost:${backendPort}\nJWT_SECRET=${jwtSecret}\n`, "utf-8");
   console.log(`[riya-orchestrator] Pre-wrote frontend .env.local with NEXT_PUBLIC_API_URL=http://localhost:${backendPort}`);
 
   // runAgentEscalated (Task 15): NIM/kimi-k2.6 first, Sonnet 5 as a one-time
@@ -383,11 +497,12 @@ export async function run(projectId: string, deployTarget: "local" | "gcp" = "lo
     model: "moonshotai/kimi-k2.6",
     apiKey: process.env.NIM_API_KEY ?? "",
     systemPrompt: RIYA_AGENT_SYSTEM_PROMPT,
-    initialMessage: buildAgentTask(projectId, buildDir, frontendPort, backendPort, dbPort),
+    initialMessage: buildAgentTask(projectId, buildDir, frontendPort, backendPort, dbPort, jwtSecret),
     sandboxDir: buildDir,
     projectId,
     enableDockerTools: true,
     enableHttpTools: true,
+    maxIterations,
     // 2026-07-25 (P5.W5.4): Riya's proof-of-work is an http_request call,
     // not a shell command — requiredVerificationCommands can't express it.
     // Without this, Riya could declare verification_passed:true after
@@ -510,12 +625,22 @@ database tables actually exist (verified, not assumed). Both are required before
 task_complete — a running app with an empty database is a FAILED delivery.
 `;
 
-function buildAgentTask(
+// 2026-07-26 (agent-autonomy-assessment follow-on): the sole source of
+// truth for this deploy's JWT secret. Every other write (frontend
+// .env.local, the docker-compose prompt below) must use THIS SAME value —
+// see jwt-secret.test.ts for the live evidence of what happens when they
+// don't (three independently-decided values, frontend/backend mismatch).
+export function generateJwtSecret(): string {
+  return randomBytes(32).toString("hex");
+}
+
+export function buildAgentTask(
   projectId: string,
   buildDir: string,
   frontendPort: number,
   backendPort: number,
   dbPort: number,
+  jwtSecret: string,
 ): string {
   return `Deploy the project in this directory: ${buildDir}
 
@@ -529,8 +654,11 @@ Ports to use:
 - Backend:    host port ${backendPort} → container port 3001
 - Frontend:   host port ${frontendPort} → container port 3000
 
-JWT credentials (for environment variables):
-- JWT_SECRET = ${process.env.JWT_SECRET || "default_dev_secret"}
+JWT credentials (for environment variables) — use this EXACT value, do not
+invent your own or use a placeholder; the frontend has already been
+configured with this same secret and a mismatch will break every
+authenticated request:
+- JWT_SECRET = ${jwtSecret}
 
 Project ID: ${projectId}
 

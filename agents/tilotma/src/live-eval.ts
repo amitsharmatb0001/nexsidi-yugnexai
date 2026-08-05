@@ -171,7 +171,13 @@ Tools available to you:
 - browser_navigate {url}: open a page.
 - browser_screenshot {outputPath}: capture the CURRENT page. Take one on
   every page you judge — a score without a screenshot to back it is not
-  evidence, it's a guess.
+  evidence, it's a guess. The actual image is attached to your NEXT turn —
+  LOOK AT IT. DESIGN_QUALITY and ORIGINALITY in particular cannot be judged
+  from browser_get_text's extracted DOM string alone — color, layout,
+  imagery, and visual coherence only exist in the pixels. A page can pass
+  every text-based check while looking like generic AI-slop (or, the
+  opposite failure mode: while being visually broken in a way the DOM text
+  never reveals) — judge what's actually in the screenshot.
 - browser_get_text: the visible text of the current page.
 - browser_computed_style {selector}: computed CSS + bounding box — use this
   to back a CRAFT score with concrete spacing/contrast numbers, not eyeballing.

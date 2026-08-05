@@ -1,6 +1,6 @@
 import { nimChat } from "./nim.ts";
 import { ollamaChat } from "./ollama.ts";
-import { geminiChat, geminiChatWithTools, type GeminiMessage, type GeminiToolDef, type GeminiChatWithToolsResult, type GeminiThinkingLevel } from "./gemini.ts";
+import { geminiChat, geminiChatWithTools, circuitKeyFor, type GeminiMessage, type GeminiToolDef, type GeminiChatWithToolsResult, type GeminiThinkingLevel } from "./gemini.ts";
 import { AGENT_MODELS, FALLBACK_CHAIN, type AgentName, type ChatMessage, type ModelId } from "./types.ts";
 import { getState } from "./circuit-breaker.ts";
 
@@ -178,6 +178,48 @@ export function thinkingLevelForTier(tier: GeminiTier): GeminiThinkingLevel {
   return TIER_THINKING_LEVEL[tier];
 }
 
+// 2026-07-28: real bug found live — Navya/Karan/Deepika (meant to run in
+// genuine parallel, per CLAUDE.md's own stated design: "Same model = 40 RPM
+// rate limit collision. Different models = 120 RPM effective capacity") all
+// called routeToolsWithFallback("qa", ...) with the IDENTICAL pool in the
+// IDENTICAL order. With gemini-3.1-pro-preview (pool[0]) exhausted for an
+// entire live run, all three agents collided on the SAME fallback model's
+// shared 50 RPM token bucket (waitForToken is keyed by model name, not by
+// agent) — exactly the collision CLAUDE.md's own architecture was designed
+// to avoid, just lost when QA routing moved from per-agent NIM models to a
+// single shared Gemini tier pool. Rotating each agent's FALLBACK order
+// (keeping the same pro-tier model first for quality) spreads the 3 agents
+// across the 2 available fallback models instead of all queueing on one.
+// Deterministic (not random) so behavior is reproducible and testable.
+function stringHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h ^ (h << 5) ^ (h >> 2) ^ s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+export function rotatedPoolForAgent(tier: GeminiTier, agentName: string): string[] {
+  const pool = TIER_POOLS[tier];
+  if (pool.length <= 2) return pool; // nothing to rotate among
+
+  const [primary, ...fallbacks] = pool;
+  const offset = stringHash(agentName) % fallbacks.length;
+  const rotatedFallbacks = [...fallbacks.slice(offset), ...fallbacks.slice(0, offset)];
+  return primary ? [primary, ...rotatedFallbacks] : rotatedFallbacks;
+}
+
+// 2026-07-28: mirrors the exact D15 pattern agentChat's NIM/Ollama chain
+// already uses ("skips any model whose circuit breaker is OPEN") — the
+// Gemini pool functions below didn't have it, so a pool call that hit an
+// already-OPEN circuit for pool[0] still called into geminiChat/
+// geminiChatWithTools, which then invoked waitForCircuit and BLOCKED for up
+// to OPEN_TIMEOUT_MS (60s) waiting out the cooldown before even attempting
+// a HALF_OPEN probe — on every single call, while a working fallback model
+// was one line away the whole time. Skipping here means the loop moves to
+// the next pool model immediately instead of paying that wait.
+export function shouldSkipGeminiModel(model: string): boolean {
+  return getState(circuitKeyFor(model)) === "OPEN";
+}
+
 export async function routeWithFallback(
   tier: GeminiTier,
   messages: ChatMessage[],
@@ -188,11 +230,22 @@ export async function routeWithFallback(
   const errors: string[] = [];
 
   for (const model of pool) {
+    if (shouldSkipGeminiModel(model)) {
+      errors.push(`${model}: circuit breaker OPEN — skipped`);
+      continue;
+    }
     try {
       const { content } = await geminiChat(messages, {
         model,
         maxTokens: opts?.maxTokens,
         thinkingLevel,
+        // 2026-07-28: this loop already promises "zero-wait... no sleep/
+        // backoff" below — but geminiChat's own internal retry paid up to
+        // ~35s of local backoff on a 429 BEFORE that promise ever took
+        // effect, on every failed pool model. fastFailOn429 closes that gap:
+        // a guaranteed fallback is one line away, so there's no reason to
+        // retry locally first.
+        fastFailOn429: true,
       });
       if (model !== pool[0]) {
         console.log(`[routeWithFallback:${tier}] used fallback model ${model} (pool[0]=${pool[0]} failed)`);
@@ -223,15 +276,36 @@ export async function routeToolsWithFallback(
   tier: GeminiTier,
   messages: GeminiMessage[],
   tools: GeminiToolDef[],
-  opts?: { model?: string; cachedContent?: string },
+  opts?: { model?: string; cachedContent?: string; agentName?: string },
 ): Promise<GeminiChatWithToolsResult & { modelUsed: string }> {
-  const pool = poolForTier(tier, opts?.model);
+  // 2026-07-28: opts.agentName rotates the FALLBACK order (see
+  // rotatedPoolForAgent's header comment) so parallel callers sharing one
+  // tier (Navya/Karan/Deepika all on "qa") don't all collide on the same
+  // fallback model's rate limit when the shared primary is exhausted.
+  // opts.model still takes precedence when set (collapses to one model,
+  // existing override semantics unchanged).
+  const pool = opts?.model
+    ? poolForTier(tier, opts.model)
+    : opts?.agentName
+      ? rotatedPoolForAgent(tier, opts.agentName)
+      : poolForTier(tier);
   const thinkingLevel = thinkingLevelForTier(tier);
   const errors: string[] = [];
 
   for (const model of pool) {
+    if (shouldSkipGeminiModel(model)) {
+      errors.push(`${model}: circuit breaker OPEN — skipped`);
+      continue;
+    }
     try {
-      const result = await geminiChatWithTools(messages, tools, { model, thinkingLevel, cachedContent: opts?.cachedContent });
+      const result = await geminiChatWithTools(messages, tools, {
+        model,
+        thinkingLevel,
+        cachedContent: opts?.cachedContent,
+        // 2026-07-28: same reasoning as routeWithFallback above — a
+        // guaranteed fallback model is one line away in this loop.
+        fastFailOn429: true,
+      });
       if (model !== pool[0]) {
         console.log(`[routeToolsWithFallback:${tier}] used fallback model ${model} (pool[0]=${pool[0]} failed)`);
       }

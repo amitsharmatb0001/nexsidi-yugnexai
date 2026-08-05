@@ -55,6 +55,7 @@ const TEST_PLAN: BuildPlan = {
     typography: { display: "d", body: "b" },
     layoutConcept: "l",
   },
+  features: [],
   sharedTypes: "",
   apiContract: { baseUrl: "http://localhost:3001", endpoints: [] },
   dbSchema: { tables: [] },

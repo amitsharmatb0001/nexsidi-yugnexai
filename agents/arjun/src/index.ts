@@ -5,7 +5,7 @@
 
 import { agentChat } from "@nexsidi/llm-client";
 import { hashContext } from "@nexsidi/context-chain";
-import type { ProjectSpec } from "../../saanvi/src/index.ts";
+import type { ProjectSpec, Feature } from "../../saanvi/src/index.ts";
 import { run as runVanya, type DesignBrief } from "../../vanya/src/index.ts";
 import { mkdirSync } from "fs";
 import { join } from "path";
@@ -48,6 +48,15 @@ export interface BuildPlan {
   // on appDescription (a one-paragraph requirements summary, not a design
   // decision) for its "APP-SPECIFIC VISUAL IDENTITY" prompt section.
   designBrief: DesignBrief;
+  // 2026-08-04: root-caused live (verify4617991) — BuildPlan is the ONLY
+  // artifact handed to the generators, and it had no field for the spec's
+  // requirements. Saanvi's spec named all 9 requested services; the plan
+  // carried only a 9-word task label ("Implement Services and Products
+  // catalog pages") and two filenames, so the delivered site shipped 4.
+  // Aanya's prompt even says "show real content from the project spec"
+  // while never receiving that spec. Copied verbatim from ProjectSpec.features
+  // (not LLM-produced) so requirements cannot be lost or paraphrased here.
+  features: Feature[];
   sharedTypes: string;          // TypeScript type declarations shared by frontend + backend
   apiContract: {
     baseUrl: "http://localhost:3001";
@@ -140,15 +149,27 @@ export async function run(
   // fallback contract inside run() already; this just invokes it).
   const designBrief = await (deps.runVanya ?? runVanya)(spec);
 
+  // Contract security gate (RC-1): sanitize endpoints FIRST, then use that
+  // same sanitized list to also clean any named shared-type interface a
+  // public endpoint references — see sanitizeSharedTypesForPublicEndpoints'
+  // header comment for why both are needed.
+  const sanitizedEndpoints = sanitizePublicEndpointContracts(
+    Array.isArray(raw.apiContract?.endpoints) ? raw.apiContract.endpoints : [],
+  );
+  const rawSharedTypes = typeof raw.sharedTypes === "string" ? raw.sharedTypes : "";
+
   const plan: Omit<BuildPlan, "buildPlanHash"> = {
     projectId: spec.projectId,
     appName: spec.name,
     appDescription: spec.description,
     designBrief,
-    sharedTypes: typeof raw.sharedTypes === "string" ? raw.sharedTypes : "",
+    // Copied straight from the locked spec — never LLM-regenerated, so the
+    // planner cannot drop or paraphrase a requirement on the way through.
+    features: Array.isArray(spec.features) ? spec.features : [],
+    sharedTypes: sanitizeSharedTypesForPublicEndpoints(rawSharedTypes, sanitizedEndpoints),
     apiContract: {
       baseUrl: "http://localhost:3001",
-      endpoints: Array.isArray(raw.apiContract?.endpoints) ? raw.apiContract.endpoints : [],
+      endpoints: sanitizedEndpoints,
     },
     dbSchema: {
       tables: Array.isArray(raw.dbSchema?.tables) ? raw.dbSchema.tables : [],
@@ -211,6 +232,119 @@ export function synthesizeTaskForPage(page: LockedPage): GeneratorTask {
   };
 }
 
+// ── Shared system context ──────────────────────────────────────────────────
+// Root-cause fix (2026-07-26 autonomy assessment, F2/F5): fix runs
+// (Shubham/Aanya/Pranav's runFix) and QA runs (Navya/Karan/Deepika) were
+// handed ONLY a bug-report string — no spec, no API contract, no DB schema —
+// even though generation gets all three. Live proof: a race-condition fix
+// kept failing because Shubham was never shown the DB schema and so could
+// never see that `applications` had no unique constraint on
+// (user_id, property_id) — the one fact that would have pointed at the
+// actual root cause instead of another application-layer patch. This is the
+// ONE renderer every fix/QA call site injects, so "what is this system and
+// what does it look like right now" is never re-derived differently in two
+// places.
+export function buildSystemContext(plan: BuildPlan): string {
+  return `SYSTEM YOU ARE WORKING ON:
+${plan.appName} — ${plan.appDescription}
+
+FULL API CONTRACT (every endpoint, not just the one a finding cited):
+${JSON.stringify(plan.apiContract, null, 2)}
+
+FULL DATABASE SCHEMA (every table/column/constraint — check this before
+assuming a fix belongs in application code; a missing UNIQUE/CHECK
+constraint here is often the actual root cause of a "race condition" or
+"invalid state" finding):
+${JSON.stringify(plan.dbSchema, null, 2)}
+
+SHARED TYPES (frontend and backend must agree on these):
+${plan.sharedTypes}`;
+}
+
+// ── Contract security gate (agent-autonomy-assessment RC-1) ────────────────
+// Live root cause: a public (auth:false) endpoint whose request shape
+// accepts a privilege-indicating field (role, isAdmin, permissions, ...)
+// puts the contract itself at odds with security review — Navya enforces
+// "matches the contract" while Karan enforces "no unauthenticated privilege
+// escalation," and no code can satisfy both. Confirmed live: Shubham
+// flip-flopped the same two lines of authController.ts across consecutive
+// fix rounds trying to satisfy first one QA agent then the other, never
+// converging. escalate_finding doesn't help — it only routes to
+// implementation agents, and the bug is in the spec they're implementing
+// correctly. Fixed at the only point that can't oscillate: before any code
+// exists, by never letting the contract offer the conflict in the first
+// place.
+const PRIVILEGE_FIELD_NAMES = /^(role|isadmin|is_admin|isstaff|is_staff|islandlord|is_landlord|permission|permissions|scope|scopes|admin)$/i;
+
+// Splits a `{ field: type; field: type }` request-shape literal into its
+// field segments. Deliberately simple (split on top-level `;`/`,`, not a
+// full TS parser) — these strings are always LLM-generated flat object
+// literals (see ARJUN_SYSTEM_PROMPT's own examples), never nested types.
+function splitRequestFields(requestType: string): { prefix: string; fields: string[]; suffix: string } {
+  const match = requestType.match(/^(\s*\{)([\s\S]*)(\}\s*)$/);
+  if (!match) return { prefix: "", fields: [], suffix: requestType };
+  const [, prefix, body, suffix] = match;
+  const fields = body!.split(/[;,]/).map((f) => f.trim()).filter(Boolean);
+  return { prefix: prefix!, fields, suffix: suffix! };
+}
+
+export function sanitizePublicEndpointContracts(endpoints: RestEndpoint[]): RestEndpoint[] {
+  return endpoints.map((endpoint) => {
+    if (endpoint.auth !== false) return endpoint;
+
+    const { prefix, fields, suffix } = splitRequestFields(endpoint.requestType);
+    if (fields.length === 0) return endpoint;
+
+    const kept = fields.filter((f) => {
+      const fieldName = f.split(":")[0]?.trim() ?? "";
+      return !PRIVILEGE_FIELD_NAMES.test(fieldName);
+    });
+    if (kept.length === fields.length) return endpoint; // nothing to strip
+
+    console.warn(
+      `[arjun] contract security gate: stripped privilege field(s) from public endpoint ${endpoint.method} ${endpoint.path} — ` +
+        `a public (auth:false) endpoint cannot accept a role/permission field without letting any caller self-assign it`,
+    );
+    return { ...endpoint, requestType: `${prefix} ${kept.join("; ")} ${suffix.trim()}` };
+  });
+}
+
+// Live gap found running the fix above for real (not a fixture): Arjun
+// sometimes emits a NAMED shared-type reference (`requestType:
+// "RegisterRequest"`) instead of an inline `{ ... }` literal — the
+// vulnerable field then lives in the `export interface RegisterRequest {
+// ... }` definition in sharedTypes, which sanitizePublicEndpointContracts
+// never looks at. Same privilege-field pattern, same strip-don't-fail
+// approach, applied to the interface body instead of the endpoint's own
+// requestType string.
+export function sanitizeSharedTypesForPublicEndpoints(sharedTypes: string, endpoints: RestEndpoint[]): string {
+  let result = sharedTypes;
+  for (const endpoint of endpoints) {
+    if (endpoint.auth !== false) continue;
+    const typeName = endpoint.requestType.trim();
+    if (!/^[A-Za-z_$][\w$]*$/.test(typeName)) continue; // not a bare identifier — inline literal, handled elsewhere
+
+    const interfacePattern = new RegExp(`(export interface ${typeName}\\s*\\{)([\\s\\S]*?)(\\})`);
+    const match = result.match(interfacePattern);
+    if (!match) continue;
+
+    const [, prefix, body] = match;
+    const fields = body!.split(/[;,]/).map((f) => f.trim()).filter(Boolean);
+    const kept = fields.filter((f) => {
+      const fieldName = f.split(":")[0]?.trim() ?? "";
+      return !PRIVILEGE_FIELD_NAMES.test(fieldName);
+    });
+    if (kept.length === fields.length) continue; // nothing to strip
+
+    console.warn(
+      `[arjun] contract security gate: stripped privilege field(s) from shared type "${typeName}" — ` +
+        `referenced by public endpoint ${endpoint.method} ${endpoint.path}`,
+    );
+    result = result.replace(interfacePattern, `${prefix}\n  ${kept.join(";\n  ")};\n}`);
+  }
+  return result;
+}
+
 // ── Write contract files so each agent can read their tasks ───────────────────
 function writePlanFiles(projectId: string, plan: Omit<BuildPlan, "buildPlanHash">): void {
   const dir = getBuildDir(projectId);
@@ -241,7 +375,9 @@ function parseJson(text: string): unknown {
 }
 
 // ── System prompt ─────────────────────────────────────────────────────────────
-const ARJUN_SYSTEM_PROMPT = `\
+// Exported so index.test.ts can assert it never contradicts a generator's own
+// stack rules (e.g. instructing Tailwind while Aanya's prompt forbids it).
+export const ARJUN_SYSTEM_PROMPT = `\
 You are a senior technical architect. Given a ProjectSpec JSON, produce a complete BuildPlan JSON.
 
 Be AMBITIOUS (D22). Design real systems, not toy demos.
@@ -319,6 +455,26 @@ PAGE ROUTES — use what the spec says, nothing else:
 - If the spec says /sign-up, the file MUST be app/(auth)/sign-up/page.tsx. NEVER app/(auth)/register/page.tsx.
 - Include EVERY page mentioned in the spec (Home, About, Vision, Mission, Services, Products, Contact, Sign-In, Sign-Up, etc.).
 - DO NOT add pages the spec does not mention.
+
+FRONTEND UI STACK — the generated app uses NexUI, never Tailwind:
+- The frontend imports components from "@yugnex/nexui-react" (Button, Panel, Card,
+  Input, Badge, Modal, Tabs, Select, Spinner, etc.), styled with NexUI CSS variables.
+- NEVER use Tailwind, shadcn/ui, or @radix-ui. Never list tailwind.config.ts,
+  postcss.config.js, or components/ui/*.tsx in any outputFiles array.
+- Never write a task description that mentions configuring Tailwind or installing
+  a third-party component library.
+
+TASK DESCRIPTIONS — say WHAT GOES IN the file, not just which file:
+- A task description is the ONLY content instruction the generator receives. It never
+  sees the raw spec text you are reading now.
+- "Implement Services and Products catalog pages" is USELESS — it produced a page with
+  4 of the 9 services the spec named, because the generator had to guess the content.
+- Instead, name the actual required content explicitly, e.g. "Services page listing all
+  nine offerings by name: mobile app development, web app development, custom software,
+  CRM, POS, bulk SMS, email marketing, domain & hosting, digital marketing — each with
+  its own heading and description".
+- Copy concrete nouns (service names, page sections, field names) out of
+  spec.features[*].description and spec.features[*].userStories into the description.
 
 AUTH TECHNOLOGY — the spec says provider: "custom". That means:
 - NEVER add app/api/auth/[...nextauth]/route.ts. NextAuth is forbidden.

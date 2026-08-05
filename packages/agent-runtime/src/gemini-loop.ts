@@ -27,8 +27,11 @@ import { execRunCommand } from "./tools/command.ts";
 import { execHttpRequest } from "./tools/http.ts";
 import { execDockerCompose } from "./tools/docker.ts";
 import { execWebSearch } from "./tools/websearch.ts";
+import { execFetchUrl } from "./tools/research.ts";
+import { recordEscalation, type Escalation } from "./tools/escalate.ts";
 import { execScreenshot } from "./tools/screenshot.ts";
 import { BrowserToolset, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
+import { readFileSync } from "node:fs";
 import { execDbQuery } from "./tools/db.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
@@ -99,6 +102,37 @@ export function isUnrecoverableGeminiError(err: unknown): boolean {
     message.includes("no access token") ||
     message.includes("application-default login")
   );
+}
+
+// 2026-08-04: real bug found live (project verify057463) — when EVERY model
+// in a tier's pool has its circuit breaker OPEN, routeToolsWithFallback
+// throws "all pool models exhausted" — but the generic catch-all error path
+// (sleep 5s, continue) treated it identically to a single transient
+// failure. A circuit that's OPEN doesn't clear in 5 seconds, so the retry is
+// guaranteed to fail the exact same way every time — the loop ground through
+// all 60 iterations (~8.3 minutes) before finally giving up. Distinct from a
+// single-model 429 (where a fallback in the pool can still succeed), this
+// specific shape means NOTHING in the pool can serve the request right now —
+// same "stop wasting iterations on a call that can't work as-is" reasoning
+// isUnrecoverableGeminiError already applies to auth failures.
+export function isAllPoolModelsExhaustedError(err: unknown): boolean {
+  return String(err).includes("all pool models exhausted");
+}
+
+// 2026-07-28: real bug found live — "screenshot"/"browser_screenshot" saved
+// a PNG to disk and returned only a text path in their tool result; no
+// image bytes were ever sent to any model, so the "visual" QA agents
+// (Tier-3, live-eval) judged DOM/text only. Confirmed live: a build with
+// sitewide corrupted-glyph text scored 7.47/10 against a 7.0 pass bar
+// because nothing ever actually looked at a pixel
+// (.nexsidi/sdd/agent-autonomy-assessment-2026-07-26.md, F9). Pure and
+// exported for direct unit testing without a real screenshot/filesystem.
+const SCREENSHOT_TOOL_NAMES = new Set(["screenshot", "browser_screenshot"]);
+
+export function screenshotImagePathFor(toolName: string, result: Record<string, any>): string | null {
+  if (!SCREENSHOT_TOOL_NAMES.has(toolName)) return null;
+  if (result?.status !== "success") return null;
+  return typeof result?.output === "string" ? result.output : null;
 }
 
 export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentRunResult> {
@@ -199,6 +233,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   };
 
   const filesWritten: string[] = [];
+  const escalations: Escalation[] = [];
   const errors: string[] = [];
   let iterations = 0;
   const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
@@ -295,13 +330,18 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       // when set — poolForTier collapses to that single model, no pool
       // fallback. cachedContentHandle (Phase 0.4) is passed through so a
       // cache hit is possible on every turn, not just the first.
-      response = await routeToolsWithFallback(tier, messages, tools, { model: config.geminiModel, cachedContent: cachedContentHandle });
+      response = await routeToolsWithFallback(tier, messages, tools, { model: config.geminiModel, cachedContent: cachedContentHandle, agentName: config.agentName });
       if (iterations === 1) {
         console.log(`[${config.agentName}:gemini-agent] model=${response.modelUsed}`);
       }
     } catch (err) {
       if (isUnrecoverableGeminiError(err)) {
         errors.push(`Gemini call failed on iteration ${iterations} with an unrecoverable error — aborting early instead of retrying: ${String(err)}`);
+        abortedOnUnrecoverableError = true;
+        break;
+      }
+      if (isAllPoolModelsExhaustedError(err)) {
+        errors.push(`Gemini call failed on iteration ${iterations} — every model in the pool is circuit-broken, aborting early instead of grinding to MAX_ITERATIONS on a call that cannot succeed as-is: ${String(err)}`);
         abortedOnUnrecoverableError = true;
         break;
       }
@@ -381,6 +421,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           filesWritten,
           iterations,
           errors: [...errors, `Agent stopped calling tools for ${noToolCallStreak} turns without calling task_complete`],
+          escalations,
         };
       }
       messages.push({
@@ -399,7 +440,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${effectiveMaxIterations}-iteration cap.`;
       console.log(`[${config.agentName}:gemini-agent] ${reason}`);
       await saveHistory();
-      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish" };
+      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish", escalations };
     }
 
     const responseParts: GeminiPart[] = [];
@@ -467,8 +508,20 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           result = await execWebSearch(args as { query: string; timeout_ms?: number });
           break;
         }
+        case "fetch_url": {
+          result = await execFetchUrl(args as { url: string; timeout_ms?: number });
+          break;
+        }
         case "screenshot": {
           result = await execScreenshot(args as { url: string; outputPath: string });
+          break;
+        }
+        case "escalate_finding": {
+          const a = args as { target_agent: string; finding: string; reason: string };
+          const { escalation, result: escalationResult } = recordEscalation(a);
+          escalations.push(escalation);
+          console.log(`[${config.agentName}:gemini-agent] Escalated finding to ${escalation.targetAgent}: ${escalation.reason.slice(0, 100)}`);
+          result = escalationResult;
           break;
         }
         case "task_complete": {
@@ -499,6 +552,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
             filesWritten: [...filesWritten, ...(a.files_written ?? [])].filter((v, i, arr) => arr.indexOf(v) === i),
             iterations,
             errors,
+            escalations,
           };
         }
         case "db_query": {
@@ -572,6 +626,20 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       }
 
       responseParts.push({ functionResponse: { name: toolName, response: result } });
+
+      // Attach the ACTUAL image bytes right after the functionResponse for
+      // this call, in the same turn — a text-only "Screenshot saved to X"
+      // result is exactly what let a visually-broken build pass QA before
+      // (see screenshotImagePathFor's header comment).
+      const imagePath = screenshotImagePathFor(toolName, result);
+      if (imagePath) {
+        try {
+          const imageBytes = readFileSync(imagePath);
+          responseParts.push({ inlineData: { mimeType: "image/png", data: imageBytes.toString("base64") } });
+        } catch (err) {
+          console.error(`[${config.agentName}:gemini-agent] Failed to read screenshot for vision attachment (${imagePath}): ${String(err)}`);
+        }
+      }
     }
 
     messages.push({ role: "user", content: responseParts });
@@ -598,6 +666,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     iterations,
     errors: exhaustedThreeStrikes || abortedOnUnrecoverableError ? errors : [...errors, "Max iterations exceeded"],
     ...(exhaustedThreeStrikes ? { escalationReason: "three_strikes" as const } : {}),
+    escalations,
   };
   } finally {
     if (browserToolset) await browserToolset.close();

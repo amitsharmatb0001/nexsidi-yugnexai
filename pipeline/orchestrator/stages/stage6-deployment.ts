@@ -16,9 +16,10 @@
 // explaining why real QA coverage is being turned off again.
 import { resolveFlags } from "../flags.ts";
 import { run as runRiya, type DeployResult } from "../../../agents/riya/src/index.ts";
-import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
+import { agentForFile, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
+import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
 // 2026-07-24 (P2, full agentic upgrade): System B — the subjective live
 // evaluator CLAUDE.md documents (design/originality/craft/functionality,
 // pass >=7.0). Did not exist before this: runLiveTest (pipeline/activities/
@@ -27,6 +28,14 @@ import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 // the same reason Tier 3 only legitimately runs post-deploy (see
 // runRealLiveRetest below).
 import { runLiveEval, type LiveEvalResult } from "../../../agents/tilotma/src/live-eval.ts";
+// 2026-08-05: a cheap, mechanical check for literal spec violations that
+// neither System A (bug hunting) nor System B (holistic design judgment) can
+// catch — see spec-compliance.ts's header comment for the exact live bug
+// (correct colors in generated source, wrong colors in the live render) that
+// motivated this. Runs regardless of System B's pass/fail — it is an
+// independent, mandatory gate, not a fallback for it.
+import { runSpecComplianceCheck, runStackConformanceCheck, toFindings, type SpecComplianceResult } from "./spec-compliance.ts";
+import type { ProjectSpec } from "../../../agents/saanvi/src/index.ts";
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
 // never appear in anything that could be user-facing. buildDeliverySummary()
@@ -55,6 +64,9 @@ export interface LiveRetestResult {
   // stubs, unit tests exercising deploy logic in isolation) are unaffected —
   // buildDeliverySummary only gates on it when present.
   liveEval?: LiveEvalResult;
+  // 2026-08-05: literal spec-compliance result, when it ran. Same optionality
+  // convention as liveEval above — independent of it, not derived from it.
+  specCompliance?: SpecComplianceResult;
 }
 
 export interface Stage6Result {
@@ -86,8 +98,13 @@ export function buildDeliverySummary(
   // reach "delivered". `liveEval` is optional so callers that never ran it
   // (deploy-only tests/stubs) aren't gated on something that didn't happen.
   const liveEvalOk = retest.liveEval ? retest.liveEval.pass : true;
+  // 2026-08-05: same fail-closed convention — a site System B rates as
+  // well-designed can still violate a literal spec fact (wrong color,
+  // missing form field). Independent of liveEvalOk: neither gate rescues
+  // the other.
+  const specComplianceOk = retest.specCompliance ? retest.specCompliance.pass : true;
   return {
-    status: deployResult.success && retest.pass && liveEvalOk ? "delivered" : "failed",
+    status: deployResult.success && retest.pass && liveEvalOk && specComplianceOk ? "delivered" : "failed",
     appUrl: deployResult.appUrl,
     githubRepo: deployResult.githubRepo,
   };
@@ -124,11 +141,29 @@ export async function runLiveRetestStub(projectId: string, appUrl: string): Prom
 // duration of the call and restores whatever was there before, so a live
 // retest actually reviews the deployed instance rather than whatever
 // TIER3_REVIEW_URL happened to be set to.
+// Same BUILD_DIR/projectId/<file> + dynamic-import-of-node:fs convention this
+// file already uses for qa-submissions.json reads below (instinct-mismatch
+// observation blocks). Throws on a missing/unreadable/malformed file —
+// callers (runRealLiveRetest) catch and fail open, since a broken spec.json
+// read is this check's own plumbing failing, not a real spec violation.
+async function readProjectSpec(projectId: string): Promise<ProjectSpec> {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const specPath = join(buildDir, projectId, "spec.json");
+  return JSON.parse(readFileSync(specPath, "utf-8")) as ProjectSpec;
+}
+
 async function runRealLiveRetest(
   projectId: string,
   appUrl: string,
   backendUrl: string,
   stage4Result: Stage4Result,
+  // F5 (agent-autonomy-assessment): same systemContext fan-out as the
+  // pre-deployment gate (stage5-qa-fix-loop.ts) — the live retest re-runs
+  // the SAME Navya/Karan/Deepika and deserves the same spec/contract/schema
+  // context, not just the pre-deploy pass.
+  plan?: BuildPlan,
 ): Promise<LiveRetestResult> {
   const { runStage5 } = await import("./stage5-adversarial-qa.ts");
 
@@ -151,7 +186,7 @@ async function runRealLiveRetest(
     // actual live URL — the one place Tier 3 can legitimately run. See
     // runStage5's own comment for why the pre-deployment gate defaults to
     // false instead.
-    const result: Stage5Result = await runStage5(projectId, stage4Result, true);
+    const result: Stage5Result = await runStage5(projectId, stage4Result, true, plan);
     if (!result.pass) {
       // Don't spend a live browser evaluation judging the design of an app
       // that's about to loop back for objective bug fixes anyway — System B
@@ -164,7 +199,69 @@ async function runRealLiveRetest(
     // 2026-07-24 (P2): System B — the app is objectively correct; now judge
     // whether it's actually good, not generic AI-slop that happens to work.
     const liveEval = await runLiveEval(projectId, appUrl, stage4Result.frontendOutputDir);
-    return { pass: result.pass && liveEval.pass, findings: result.findings, liveEval };
+
+    // 2026-08-05: independent of liveEval's outcome (see spec-compliance.ts's
+    // header comment) — a literal spec fact (color, required form field) can
+    // be wrong even when System B rates the design as competent on its own
+    // terms. Fails open on infra/read errors (missing spec.json, a browser
+    // worker crash) rather than blocking delivery on this check's own
+    // plumbing breaking — only a REAL comparison result blocks delivery.
+    let specCompliance: SpecComplianceResult | undefined;
+    try {
+      const spec = await readProjectSpec(projectId);
+      specCompliance = await runSpecComplianceCheck(spec, appUrl);
+      if (!specCompliance.pass) {
+        console.error(`[stage6] Spec-compliance check FAILED:\n${specCompliance.violations.join("\n")}`);
+      }
+    } catch (err) {
+      console.error(`[stage6] Spec-compliance check could not run — skipping (fail-open): ${String(err)}`);
+    }
+
+    // 2026-08-05: same reasoning as spec-compliance above, but for the FIXED
+    // global stack rule (Next.js + @yugnex/nexui-react, no Tailwind/shadcn/
+    // @radix-ui) rather than a per-project spec fact — see spec-compliance.ts's
+    // "Stack conformance" section header comment. Source-file check (reads
+    // package.json), not live — no browser worker needed, so failures here
+    // are almost always a real violation, not infra flakiness; still fails
+    // open on a read error for the same reason as above.
+    let stackConformance: SpecComplianceResult | undefined;
+    try {
+      stackConformance = await runStackConformanceCheck(stage4Result.frontendOutputDir);
+      if (!stackConformance.pass) {
+        console.error(`[stage6] Stack-conformance check FAILED:\n${stackConformance.violations.join("\n")}`);
+      }
+    } catch (err) {
+      console.error(`[stage6] Stack-conformance check could not run — skipping (fail-open): ${String(err)}`);
+    }
+
+    // 2026-08-05: BOTH checks above previously blocked `pass` correctly but
+    // never contributed to `findings` — the fix loop in runStage6 only ever
+    // reads `retest.findings` to decide what to route to fixShubham/fixAanya
+    // (splitLiveFindings → agentForFile), so a spec-compliance or stack-
+    // conformance failure had no fix path at all: it would just burn through
+    // MAX_LIVE_FIX_ATTEMPTS unfixed and end in a stuck failure requiring a
+    // human, even though the actual fix (swap a color, remove a banned
+    // dependency) is exactly the kind of small, targeted edit runFix already
+    // handles well. Merging their violations into `findings` (as
+    // Finding-shaped objects — see toFindings) closes that gap: they now
+    // route to Aanya via the same agentForFile("frontend/...") path every
+    // other frontend finding uses, and get re-verified on the next retest
+    // loop iteration exactly like any Navya/Karan/Deepika finding — no full
+    // plan/spec rebuild, just a targeted edit to the existing generated files.
+    const complianceFindings = [
+      ...(specCompliance ? toFindings(specCompliance, "frontend/app/theme-overrides.css") : []),
+      ...(stackConformance ? toFindings(stackConformance, "frontend/package.json") : []),
+    ];
+    const findings = complianceFindings.length > 0 ? [...result.findings, ...complianceFindings] : result.findings;
+
+    const specComplianceOk = specCompliance ? specCompliance.pass : true;
+    const stackConformanceOk = stackConformance ? stackConformance.pass : true;
+    return {
+      pass: result.pass && liveEval.pass && specComplianceOk && stackConformanceOk,
+      findings,
+      liveEval,
+      specCompliance,
+    };
   } finally {
     if (previousUrl === undefined) {
       delete process.env.TIER3_REVIEW_URL;
@@ -191,11 +288,29 @@ async function runRealLiveRetest(
 // "skip the pre-flight, caller is responsible" (the production default wires
 // in the real check; test stubs don't need a real DB to exist).
 export interface Stage6Deps {
-  deployFn: (projectId: string, deployTarget: "local" | "gcp") => Promise<DeployResult>;
+  // 2026-07-28 (live, complex1): optional 3rd param so the fix-loop's
+  // redeploy calls below can request a larger iteration budget than the
+  // FIRST deploy — see REDEPLOY_MAX_ITERATIONS' header comment.
+  deployFn: (projectId: string, deployTarget: "local" | "gcp", maxIterations?: number) => Promise<DeployResult>;
   liveRetestFn: (projectId: string, appUrl: string, backendUrl: string) => Promise<LiveRetestResult>;
   dbCheckFn?: () => Promise<boolean>;
-  fixShubham?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
-  fixAanya?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
+  // 2026-07-28 (live, complex1): escalations is optional on both — existing
+  // DI test stubs (which return only {success}) keep compiling unchanged,
+  // matching the same convention stage5-qa-fix-loop.ts's QAFixDeps uses.
+  fixShubham?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[] }>;
+  fixAanya?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[] }>;
+  // 2026-07-28 (live, complex1): the live post-deploy retest previously had
+  // NO fix path for db-owned findings at all — a schema finding (e.g.
+  // "backend/init.sql: missing index") was either misrouted to shubham (who
+  // is instructed to never touch schema files) or silently dropped if it
+  // arrived alone. Optional, same convention as fixShubham/fixAanya above;
+  // the real entry point wires Pranav's real runFix.
+  fixPranav?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
+  // 2026-08-05: injectable so tests exercising deployWithQuotaRetry's retry
+  // path don't actually wait QUOTA_RETRY_BACKOFF_MS (90s) — defaults to a
+  // real setTimeout-based sleep in production (deployWithQuotaRetry's own
+  // default param), never set by the real entry point below.
+  sleepFn?: (ms: number) => Promise<void>;
 }
 
 // Pre-flight: verify NexSidi's own pipeline DB is reachable before spending
@@ -224,18 +339,82 @@ const MAX_DEPLOY_ATTEMPTS = 2;
 const MAX_LIVE_FIX_ATTEMPTS = 3;
 const LIVE_STUCK_THRESHOLD = 2;
 
+// 2026-08-05 (live, verify361300): distinguishes a redeploy failure caused by
+// transient LLM rate-limit/circuit-breaker exhaustion from a genuine app-level
+// deploy failure (bad docker-compose, migration error). Confirmed live: TWO
+// consecutive redeploy attempts in the same build both failed on "every model
+// in the pool is circuit-broken" (packages/agent-runtime/src/gemini-loop.ts's
+// isAllPoolModelsExhaustedError) — the fix loop silently abandoned the rest of
+// the live-retest cycle (System B's design/originality judge, and the spec-
+// compliance check below) on BOTH attempts, because a redeploy failure
+// immediately `break`s out regardless of WHY it failed. A genuine app bug
+// won't fix itself by waiting, so it still fails fast as before; quota
+// exhaustion is worth waiting out — the shared token bucket refills and
+// circuit breakers reopen after packages/llm-client/src/circuit-breaker.ts's
+// OPEN_TIMEOUT_MS (60s).
+export function isQuotaExhaustionError(errors: string[]): boolean {
+  return errors.some((e) => /circuit-broken|all pool models exhausted|RESOURCE_EXHAUSTED/i.test(e));
+}
+
+const QUOTA_RETRY_BACKOFF_MS = 90_000;
+const MAX_QUOTA_RETRIES = 2;
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Runs `deployAttempt` once, then retries (with a backoff wait, up to
+// MAX_QUOTA_RETRIES times) ONLY when the failure is quota-exhaustion-shaped —
+// any other failure reason returns immediately, unchanged from before.
+export async function deployWithQuotaRetry(
+  deployAttempt: () => Promise<DeployResult>,
+  sleepFn: (ms: number) => Promise<void> = defaultSleep,
+  log: (msg: string) => void = console.log,
+): Promise<DeployResult> {
+  let result = await deployAttempt();
+  let retries = 0;
+  while (!result.success && isQuotaExhaustionError(result.errors) && retries < MAX_QUOTA_RETRIES) {
+    retries++;
+    log(
+      `[stage6] Deploy failed on LLM quota/circuit-breaker exhaustion — waiting ${QUOTA_RETRY_BACKOFF_MS}ms for recovery before retry ${retries}/${MAX_QUOTA_RETRIES}`,
+    );
+    await sleepFn(QUOTA_RETRY_BACKOFF_MS);
+    result = await deployAttempt();
+  }
+  return result;
+}
+
+// 2026-07-28 (live, complex1): a redeploy INSIDE the fix loop follows a real
+// code change and needs to diagnose+fix+rebuild+reverify against a running
+// container — a fundamentally bigger task than the FIRST deploy (bring up a
+// known-good compose file). See agents/riya/src/index.ts's run() header
+// comment for the concrete evidence (a real parameterized-query bug with two
+// separate occurrences consumed all 40 default iterations on continuously
+// varying tool calls, never repeating — genuine progress cut off, not a
+// stuck loop). Only applied to the redeploy call below, not the first deploy.
+const REDEPLOY_MAX_ITERATIONS = 70;
+
 function isStage6Deps(value: BuildPlan | Stage6Deps | undefined): value is Stage6Deps {
   return typeof value === "object" && value !== null && "deployFn" in value;
 }
 
-function splitLiveFindings(findings: unknown): { shubham: string[]; aanya: string[] } {
-  const groups = { shubham: [] as string[], aanya: [] as string[] };
+// 2026-07-28 (live, complex1): rewritten to route through the SAME
+// agentForFile Stage 5's fix loop uses, instead of a second, independent
+// backend/frontend-only prefix check. A finding on "backend/init.sql" (a
+// real generated project's actual schema-file location) used to fall
+// through to the shubham bucket via the old startsWith("backend/") check —
+// see agentForFile's header comment in stage4-multi-agent-dev.ts for the
+// full root cause and how it produced an unfixable, endlessly-recurring
+// finding across every live-retest round.
+function splitLiveFindings(findings: unknown): { shubham: string[]; aanya: string[]; pranav: string[] } {
+  const groups = { shubham: [] as string[], aanya: [] as string[], pranav: [] as string[] };
   if (!Array.isArray(findings)) return groups;
   for (const finding of findings as Array<{ file?: string; issue?: string; detail?: string }>) {
+    if (!finding.file) continue;
     const text = finding.issue ?? finding.detail ?? "";
-    const formatted = finding.file ? `${finding.file}: ${text}` : text;
-    if (finding.file?.startsWith("frontend/")) groups.aanya.push(formatted);
-    if (finding.file?.startsWith("backend/")) groups.shubham.push(formatted);
+    const formatted = `${finding.file}: ${text}`;
+    const agent = agentForFile(finding.file) as "shubham" | "aanya" | "pranav";
+    if (agent === "shubham" || agent === "aanya" || agent === "pranav") groups[agent].push(formatted);
   }
   return groups;
 }
@@ -258,7 +437,7 @@ export async function runStage6(
     if (depsOrPlan) plan = depsOrPlan as BuildPlan;
     deps = {
       deployFn: runRiya,
-      liveRetestFn: (pid, appUrl, backendUrl) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result),
+      liveRetestFn: (pid, appUrl, backendUrl) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result, plan),
       dbCheckFn: checkNexsidiDbReachable,
     };
   }
@@ -288,7 +467,10 @@ export async function runStage6(
   let stuck = false;
 
   for (let attempt = 1; attempt <= MAX_DEPLOY_ATTEMPTS; attempt++) {
-    deployResult = await deps.deployFn(projectId, flags.deployTarget);
+    deployResult = await deployWithQuotaRetry(
+      () => deps.deployFn(projectId, flags.deployTarget),
+      deps.sleepFn,
+    );
 
     if (deployResult.success) break;
 
@@ -325,6 +507,10 @@ export async function runStage6(
   });
   const fixAanyaReal = deps.fixAanya ?? (async (p, f) => {
     const { runFix } = await import("../../../agents/generators/aanya/src/index.ts");
+    return runFix(p, f);
+  });
+  const fixPranavReal = deps.fixPranav ?? (async (p, f) => {
+    const { runFix } = await import("../../../agents/generators/pranav/src/index.ts");
     return runFix(p, f);
   });
 
@@ -369,24 +555,64 @@ export async function runStage6(
       console.error(`[stage6] Failed to record instinct observations: ${String(obsErr)}`);
     }
 
-    const { shubham: shubhamFindings, aanya: aanyaFindings } = splitLiveFindings(retest.findings);
+    const { shubham: shubhamFindings, aanya: aanyaFindings, pranav: pranavFindings } = splitLiveFindings(retest.findings);
 
     if (plan) {
-      const fixPromises: Promise<any>[] = [];
+      const fixCalls: Promise<{ agent: string; success: boolean; escalations?: Escalation[] }>[] = [];
       if (shubhamFindings.length > 0) {
         console.log(`[stage6] Routing ${shubhamFindings.length} findings to Shubham`);
-        fixPromises.push(fixShubhamReal(plan, shubhamFindings));
+        fixCalls.push(fixShubhamReal(plan, shubhamFindings).then((r) => ({ agent: "shubham", ...r })));
       }
       if (aanyaFindings.length > 0) {
         console.log(`[stage6] Routing ${aanyaFindings.length} findings to Aanya`);
-        fixPromises.push(fixAanyaReal(plan, aanyaFindings));
+        fixCalls.push(fixAanyaReal(plan, aanyaFindings).then((r) => ({ agent: "aanya", ...r })));
+      }
+      // 2026-07-28 (live, complex1): db-owned findings (e.g. "backend/init.sql:
+      // missing index") now get a real fix path instead of being misrouted to
+      // shubham or silently dropped — see splitLiveFindings' header comment.
+      if (pranavFindings.length > 0) {
+        console.log(`[stage6] Routing ${pranavFindings.length} findings to Pranav`);
+        fixCalls.push(fixPranavReal(plan, pranavFindings).then((r) => ({ agent: "pranav", ...r })));
       }
 
-      if (fixPromises.length > 0) {
-        await Promise.all(fixPromises);
+      if (fixCalls.length > 0) {
+        // 2026-07-26 (autonomy/throughput pass): same root cause fixed in
+        // stage5-qa-fix-loop.ts, at this second boundary — the {success}
+        // result was discarded, so a fix agent that genuinely failed to
+        // complete (rather than completing but not fully resolving the
+        // issue) still triggered a full docker redeploy + live-retest
+        // cycle that could only reproduce the exact same findings.
+        const fixResults = await Promise.all(fixCalls);
+        const anyFixFailed = fixResults.some((r) => !r.success);
+        if (anyFixFailed && fixResults.every((r) => !r.success)) {
+          console.error(`[stage6] every implicated fix this round failed outright — skipping redeploy, a retest would be wasted`);
+          break;
+        }
+        if (anyFixFailed) {
+          console.error(`[stage6] one or more fixes failed outright this round — redeploying anyway since at least one agent's fix may have succeeded`);
+        }
+
+        // 2026-07-28 (live, complex1): mirrors stage5-qa-fix-loop.ts's same
+        // escalation routing — a fix agent may decide the real fix belongs
+        // in Pranav's domain (escalate_finding) instead of forcing a
+        // workaround in its own. Dispatched in THIS SAME round so a schema
+        // fix lands before the redeploy below, not a full wasted round later.
+        const pranavEscalations = fixResults.flatMap((r) => r.escalations ?? []).filter((e) => e.targetAgent === "pranav");
+        if (pranavEscalations.length > 0) {
+          const formatted = pranavEscalations.map((e) => `${e.finding} — ${e.reason}`);
+          console.log(`[stage6] routing ${formatted.length} escalated finding(s) to Pranav this round`);
+          const escalationResult = await fixPranavReal(plan, formatted);
+          if (!escalationResult.success) {
+            console.error(`[stage6] pranav escalation fix FAILED to complete`);
+          }
+        }
+
         console.log(`[stage6] Agent fixes completed — redeploying app via Riya`);
 
-        let redeployResult = await deps.deployFn(projectId, flags.deployTarget);
+        let redeployResult = await deployWithQuotaRetry(
+          () => deps.deployFn(projectId, flags.deployTarget, REDEPLOY_MAX_ITERATIONS),
+          deps.sleepFn,
+        );
         if (!redeployResult.success) {
           console.error(`[stage6] Redeployment failed: ${redeployResult.errors.join("; ")}`);
           deployResult = redeployResult;
@@ -396,7 +622,7 @@ export async function runStage6(
 
         retest = await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl);
       } else {
-        console.log(`[stage6] No frontend/backend specific findings to route — exiting fix loop`);
+        console.log(`[stage6] No specific findings to route — exiting fix loop`);
         break;
       }
     } else {

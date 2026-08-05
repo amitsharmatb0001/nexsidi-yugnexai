@@ -53,6 +53,11 @@ const orchestratorAct = proxyActivities<typeof activities>({
 
 export const approveSpecSignal = defineSignal<[boolean]>("approveSpecSignal");
 export const approveDeploySignal = defineSignal<[boolean]>("approveDeploySignal");
+// 2026-08-05: generic pause-and-ask primitive (see askAndWait below) — one
+// signal answers whatever question is currently pending, whichever agent/
+// stage raised it. Reused by Saanvi's clarification loop; available to any
+// future stuck-agent escalation without new signal plumbing.
+export const answerClarificationSignal = defineSignal<[string]>("answerClarificationSignal");
 
 // ─── Pipeline State ────────────────────────────────────────────────────────
 export interface PipelineState {
@@ -63,11 +68,39 @@ export interface PipelineState {
   recentMinScores:   number[];
   stuckIterations:   number;
   lastGoodStateHash: string | null;
+  // 2026-08-05: non-null while the workflow is paused waiting on
+  // answerClarificationSignal — the question(s) currently pending, visible
+  // via getPipelineState so a caller knows WHAT to answer, not just that
+  // the pipeline is stuck.
+  pendingQuestions:  string[] | null;
+  // 2026-08-05: real gap found live — Vanya's design brief (palette,
+  // typography, layout concept, mood) was generated and used silently; no
+  // page or query ever surfaced it, so "approve the spec" never meant
+  // "approve the design" even though CLAUDE.md's own approval flow implies
+  // both. Populated right before await_spec_approval so a caller has
+  // something concrete to review, not just a feature list.
+  designBrief: DesignBriefSummary | null;
+}
+
+// Query-facing shape only — avoids this workflow file importing Vanya's
+// full DesignBrief type just to re-export its shape; keeps the workflow's
+// only dependency on agent internals to the activity boundary (act.*), same
+// as everywhere else in this file.
+export interface DesignBriefSummary {
+  mood: string;
+  palette: Array<{ name: string; hex: string }>;
+  typography: { display: string; body: string };
+  layoutConcept: string;
 }
 
 export const getPipelineState = defineQuery<PipelineState>("getPipelineState");
 
 const MAX_POST_QA_COMPILE_FAILURES = 3;
+// 2026-08-05: bounds Saanvi's clarification loop — each round should narrow
+// the ambiguity (the user's answer is appended, not discarded), so a request
+// that still can't be spec'd after this many rounds is a genuine escalation,
+// not "ask one more question".
+const MAX_CLARIFICATION_ROUNDS = 3;
 
 export function shouldStopCompileRepair(failures: number, maximum: number): boolean {
   return failures >= maximum;
@@ -84,12 +117,21 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     recentMinScores: [],
     stuckIterations: 0,
     lastGoodStateHash: null,
+    pendingQuestions: null,
+    designBrief: null,
   };
   setHandler(getPipelineState, () => ({ ...state }));
 
-  let specApproved = false;
+  // 2026-08-05: was a plain boolean defaulting to false — indistinguishable
+  // from "not yet answered", so signaling approveSpecSignal(false) (an
+  // explicit REJECTION) did nothing: condition(() => specApproved) just kept
+  // waiting forever, identical to never having signaled at all. There was no
+  // real reject-and-redo path, only "approve" and "silently hang". A tri-
+  // state decision lets the workflow tell the two apart and act on a
+  // rejection (see the spec/design loop below).
+  let specDecision: "approved" | "rejected" | null = null;
   setHandler(approveSpecSignal, (approved) => {
-    specApproved = approved;
+    specDecision = approved ? "approved" : "rejected";
   });
 
   let deployApproved = false;
@@ -97,18 +139,89 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     deployApproved = approved;
   });
 
-  // ── Stage 1: Spec ───────────────────────────────────────────────────────
-  state.stage = "spec";
-  await act.runSaanvi(projectId, userRequest);
+  // 2026-08-05: generic pause-and-ask primitive. Sets pendingQuestions
+  // (visible via getPipelineState), blocks until answerClarificationSignal
+  // fires, then clears it and returns the answer. `clarificationAnswer`
+  // starts null each call so a stale answer from a PRIOR question can never
+  // be misread as the answer to THIS one.
+  let clarificationAnswer: string | null = null;
+  setHandler(answerClarificationSignal, (answer) => {
+    clarificationAnswer = answer;
+  });
+  async function askAndWait(questions: string[]): Promise<string> {
+    clarificationAnswer = null;
+    state.pendingQuestions = questions;
+    await condition(() => clarificationAnswer !== null);
+    state.pendingQuestions = null;
+    return clarificationAnswer as string;
+  }
 
-  // ── Stage 2: Task decomposition ─────────────────────────────────────────
-  state.stage = "decompose";
-  await act.runArjun(projectId);
+  // ── Stage 1+2: Spec, design, and decomposition, looped until approved ───
+  // 2026-08-05: two things folded into one loop, both root-caused live:
+  //   1. Saanvi's own "too ambiguous to spec confidently" signal — see
+  //      agents/saanvi/src/index.ts's SaanviResult header comment.
+  //   2. A rejection at the approval gate used to be a dead end
+  //      (approveSpecSignal(false) just made the wait condition permanently
+  //      false — nothing ever asked what to change, the workflow just hung).
+  //      Now a rejection asks ONE question ("what would you like changed"),
+  //      re-runs Saanvi+Arjun with that feedback appended, and re-presents —
+  //      including the design brief, which is now part of what's approved
+  //      (see designBrief on PipelineState — previously invisible entirely).
+  // clarificationHistory ACCUMULATES every round's question+answer (ambiguity
+  // AND rejection feedback alike, sharing one cap) — passing only the latest
+  // answer would silently drop earlier rounds' context, since runSaanvi
+  // always re-reads the ORIGINAL cached request fresh and appends whatever
+  // context string it's given.
+  let clarificationRounds = 0;
+  const clarificationHistory: string[] = [];
+  for (;;) {
+    state.stage = "spec";
+    for (;;) {
+      const saanviResult = await act.runSaanvi(
+        projectId,
+        clarificationRounds === 0 ? userRequest : undefined,
+        clarificationHistory.length > 0 ? clarificationHistory.join("\n\n") : undefined,
+      );
+      if (saanviResult.status === "locked") break;
 
-  // GATE 1: Spec/Plan Approval — always required. A stale build-plan.json from a
-  // prior run must not bypass this; the user must confirm each new run's spec.
-  state.stage = "await_spec_approval";
-  await condition(() => specApproved);
+      clarificationRounds++;
+      if (clarificationRounds > MAX_CLARIFICATION_ROUNDS || !saanviResult.questions) {
+        state.stage = "error";
+        await act.markProjectFailed(projectId, "clarification_exhausted");
+        await act.escalateTilotma(projectId, "clarification_exhausted", state);
+        return;
+      }
+
+      state.stage = "awaiting_clarification";
+      const answer = await askAndWait(saanviResult.questions);
+      state.stage = "spec";
+      clarificationHistory.push(`Q: ${saanviResult.questions.join(" / ")}\nA: ${answer}`);
+    }
+
+    // ── Stage 2: Task decomposition (includes Vanya's design brief) ───────
+    state.stage = "decompose";
+    await act.runArjun(projectId);
+    state.designBrief = await act.getDesignBrief(projectId);
+
+    // GATE 1: Spec/Plan/Design Approval — always required. A stale
+    // build-plan.json from a prior run must not bypass this; the user must
+    // confirm each new run's spec AND design (state.designBrief, above).
+    state.stage = "await_spec_approval";
+    specDecision = null;
+    await condition(() => specDecision !== null);
+    if (specDecision === "approved") break;
+
+    clarificationRounds++;
+    if (clarificationRounds > MAX_CLARIFICATION_ROUNDS) {
+      state.stage = "error";
+      await act.markProjectFailed(projectId, "spec_rejected_too_many_times");
+      await act.escalateTilotma(projectId, "spec_rejected_too_many_times", state);
+      return;
+    }
+    state.stage = "awaiting_clarification";
+    const feedback = await askAndWait(["The spec/design was rejected — what would you like changed?"]);
+    clarificationHistory.push(`Q: What would you like changed about the spec/design?\nA: ${feedback}`);
+  }
 
   // ── Stage 3: Parallel code generation ───────────────────────────────────
   state.stage = "generate";
@@ -193,6 +306,16 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       await genAct.runCodeFix(projectId, state.iteration, `compile_error:\n${postQaCompile.errors}`);
       postQaCompile = await act.runCompileCheck(projectId);
     }
+
+    // 2026-08-04 (live, final838491 — 2nd occurrence, root-caused): the
+    // context-chain snapshot for Claim 3 (recordHandoff) used to be taken the
+    // instant QA passed, BEFORE the compile-check retry loop above — which
+    // can legitimately touch the build directory and caused two real,
+    // reproducible false-positive hash mismatches. Snapshotting HERE, after
+    // compile-check has settled and before the deploy-approval wait, closes
+    // that race while still covering the actually-meaningful tamper window
+    // (the human approval wait below, which can be long).
+    await orchestratorAct.recordDeployHandoffActivity(projectId);
 
     // GATE 2: Deployment/Rollout Approval
     state.stage = "await_deploy_approval";

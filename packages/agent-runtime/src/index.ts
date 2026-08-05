@@ -1,4 +1,4 @@
-export { runAgent, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
+export { runAgent, MAX_ITERATIONS, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
 export { runAgentWithClaude, runAgentEscalated, type AgentEscalationDeps } from "./claude-loop.ts";
 export { runAgentWithGemini } from "./gemini-loop.ts";
 export { resolveGeneratorRunner, type GeneratorRunner } from "./generator-tier.ts";
@@ -8,3 +8,4 @@ export { HTTP_TOOL_DEF, execHttpRequest } from "./tools/http.ts";
 export { DOCKER_TOOL_DEF, execDockerCompose } from "./tools/docker.ts";
 export { WEB_SEARCH_TOOL_DEF, execWebSearch } from "./tools/websearch.ts";
 export { SCREENSHOT_TOOL_DEF, execScreenshot } from "./tools/screenshot.ts";
+export { ESCALATE_FINDING_TOOL_DEF, recordEscalation, type Escalation } from "./tools/escalate.ts";

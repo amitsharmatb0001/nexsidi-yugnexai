@@ -9,6 +9,7 @@ import {
   karanFindingToFinding,
   navyaFindingToFinding,
   deepikaFindingToFinding,
+  qaDispatchStaggerMs,
   type Stage5Agents,
 } from "./stage5-adversarial-qa.ts";
 import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
@@ -16,6 +17,7 @@ import type { QAResult as KaranResult } from "../../../agents/qa/karan/src/index
 import type { QAResult as NavyaResult } from "../../../agents/qa/navya/src/index.ts";
 import type { QAResult as DeepikaResult } from "../../../agents/qa/deepika/src/index.ts";
 import type { Tier3ReviewResult } from "../../../agents/tilotma/src/tier3-review.ts";
+import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 
 // Real Navya/Karan/Deepika run() calls and Tilotma's Tier 3 review hit live
 // LLMs and aren't unit-testable — per this plan's stated testing philosophy,
@@ -42,6 +44,48 @@ function makeAgents(overrides: Partial<Stage5Agents> = {}): Stage5Agents {
   };
 }
 
+// ── 0. Dispatch staggering (avoids bursting the shared Gemini token bucket) ──
+test("qaDispatchStaggerMs defaults to 4000ms when unset", () => {
+  delete process.env.QA_DISPATCH_STAGGER_MS;
+  expect(qaDispatchStaggerMs()).toBe(4000);
+});
+
+test("qaDispatchStaggerMs honors a QA_DISPATCH_STAGGER_MS override, including 0", () => {
+  process.env.QA_DISPATCH_STAGGER_MS = "1500";
+  expect(qaDispatchStaggerMs()).toBe(1500);
+  process.env.QA_DISPATCH_STAGGER_MS = "0";
+  expect(qaDispatchStaggerMs()).toBe(0);
+  delete process.env.QA_DISPATCH_STAGGER_MS;
+});
+
+test("runStage5WithAgents staggers Navya/Karan/Deepika dispatch by staggerMs instead of firing them in the same instant", async () => {
+  const startedAt: Record<string, number> = {};
+  const agents = makeAgents({
+    runNavya: async () => { startedAt.navya = Date.now(); return CLEAN_NAVYA; },
+    runKaran: async () => { startedAt.karan = Date.now(); return CLEAN_KARAN; },
+    runDeepika: async () => { startedAt.deepika = Date.now(); return CLEAN_DEEPIKA; },
+  });
+
+  await runStage5WithAgents("test-proj", STAGE4_RESULT, agents, undefined, undefined, 30);
+
+  expect(startedAt.karan! - startedAt.navya!).toBeGreaterThanOrEqual(25);
+  expect(startedAt.deepika! - startedAt.karan!).toBeGreaterThanOrEqual(25);
+});
+
+test("runStage5WithAgents dispatches all three immediately when staggerMs is omitted (default 0)", async () => {
+  const startedAt: Record<string, number> = {};
+  const agents = makeAgents({
+    runNavya: async () => { startedAt.navya = Date.now(); return CLEAN_NAVYA; },
+    runKaran: async () => { startedAt.karan = Date.now(); return CLEAN_KARAN; },
+    runDeepika: async () => { startedAt.deepika = Date.now(); return CLEAN_DEEPIKA; },
+  });
+
+  await runStage5WithAgents("test-proj", STAGE4_RESULT, agents);
+
+  expect(startedAt.karan! - startedAt.navya!).toBeLessThan(20);
+  expect(startedAt.deepika! - startedAt.karan!).toBeLessThan(20);
+});
+
 // ── 1. All three pass -> Tier 3 gets called ─────────────────────────────────
 test("runStage5WithAgents calls Tier 3 review only when Navya, Karan, and Deepika all pass", async () => {
   let tier3Called = false;
@@ -57,6 +101,46 @@ test("runStage5WithAgents calls Tier 3 review only when Navya, Karan, and Deepik
   expect(tier3Called).toBe(true);
   expect(result.pass).toBe(true);
   expect(result.findings).toEqual([]);
+});
+
+// 2026-07-26 (agent-autonomy-assessment F5): plan (spec/API contract/DB
+// schema) now flows into every QA agent as systemContext — see
+// qa-loop.test.ts for the live evidence QA needed this to stop re-flagging
+// the same false positives every round and to be able to check findings
+// against actual intent.
+const TEST_PLAN: BuildPlan = {
+  projectId: "test-proj",
+  appName: "Greenway Estates Portal",
+  appDescription: "A property management platform.",
+  designBrief: {} as any,
+  sharedTypes: "",
+  apiContract: { baseUrl: "http://localhost:3001", endpoints: [] },
+  dbSchema: { tables: [] },
+  shubhamTasks: [],
+  aanyaTasks: [],
+  pranavTasks: [],
+  independenceVerified: true,
+  buildPlanHash: "deadbeef",
+};
+
+test("runStage5WithAgents forwards a rendered systemContext from plan to every QA agent", async () => {
+  const captured: Record<string, string | undefined> = {};
+  const agents = makeAgents({
+    runNavya: async (_pid, _s4, ctx) => { captured.navya = ctx; return CLEAN_NAVYA; },
+    runKaran: async (_pid, _s4, ctx) => { captured.karan = ctx; return CLEAN_KARAN; },
+    runDeepika: async (_pid, _s4, ctx) => { captured.deepika = ctx; return CLEAN_DEEPIKA; },
+  });
+
+  await runStage5WithAgents("test-proj", STAGE4_RESULT, agents, false, TEST_PLAN);
+
+  expect(captured.navya).toContain("Greenway Estates Portal");
+  expect(captured.karan).toContain("Greenway Estates Portal");
+  expect(captured.deepika).toContain("Greenway Estates Portal");
+});
+
+test("runStage5WithAgents works with no plan (systemContext undefined) — backward compatible", async () => {
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, makeAgents(), false);
+  expect(result.pass).toBe(true);
 });
 
 // 2026-07-11: real bug found live — traced the full call graph and confirmed
@@ -373,6 +457,30 @@ test("collectCode prefixes every file with its agent label, not just the bare re
     // The exact bug from run 10 — this is what a real finding.file value
     // needs to look like for identifyFaultAgent to route it correctly.
     expect(code).not.toContain("// FILE: src/controllers/notes.ts");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 2026-07-28 (live, complex1): real bug found live — a generated frontend's
+// vendored NexUI library (frontend/vendor/nexui + nexui-react) is static
+// third-party code, not project code, and dominated collectCode's
+// MAX_CODE_CHARS budget the same way it dominated qa-loop.ts's full-coverage
+// requirement (200 vendor files vs 30 real generated frontend files on
+// complex1 — see qa-loop.test.ts's matching test for the full root cause).
+test("collectCode skips a vendored (vendor/) directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "nexsidi-collectcode-vendor-test-"));
+  const frontendDir = join(root, "frontend");
+  mkdirSync(join(frontendDir, "vendor", "nexui", "src"), { recursive: true });
+  mkdirSync(join(frontendDir, "app"), { recursive: true });
+  writeFileSync(join(frontendDir, "vendor", "nexui", "src", "button.ts"), "export const Button = 1;");
+  writeFileSync(join(frontendDir, "app", "page.tsx"), "export default function Page() {}");
+
+  try {
+    const code = collectCode([{ label: "frontend", path: frontendDir }]);
+
+    expect(code).not.toContain("vendor");
+    expect(code).toContain("// FILE: frontend/app/page.tsx");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

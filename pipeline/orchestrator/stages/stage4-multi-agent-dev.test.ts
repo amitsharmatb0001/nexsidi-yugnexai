@@ -4,7 +4,21 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hashContext, signOutput } from "@nexsidi/context-chain";
-import { getProjectKeyPair, identifyFaultAgent, identifyFaultAgents, groupFindingsByAgent, verifyAgentHandoff } from "./stage4-multi-agent-dev.ts";
+import { getProjectKeyPair, identifyFaultAgent, identifyFaultAgents, groupFindingsByAgent, agentForFile, verifyAgentHandoff, generationDispatchStaggerMs } from "./stage4-multi-agent-dev.ts";
+
+// ── generationDispatchStaggerMs (avoids bursting the shared Gemini token bucket) ──
+test("generationDispatchStaggerMs defaults to 4000ms when unset", () => {
+  delete process.env.GENERATION_DISPATCH_STAGGER_MS;
+  expect(generationDispatchStaggerMs()).toBe(4000);
+});
+
+test("generationDispatchStaggerMs honors a GENERATION_DISPATCH_STAGGER_MS override, including 0", () => {
+  process.env.GENERATION_DISPATCH_STAGGER_MS = "2000";
+  expect(generationDispatchStaggerMs()).toBe(2000);
+  process.env.GENERATION_DISPATCH_STAGGER_MS = "0";
+  expect(generationDispatchStaggerMs()).toBe(0);
+  delete process.env.GENERATION_DISPATCH_STAGGER_MS;
+});
 
 // ── getProjectKeyPair path-traversal guard (final-whole-branch-review.md F5) ──
 test("getProjectKeyPair throws on a path-traversal projectId instead of writing keys outside BUILD_DIR", () => {
@@ -44,6 +58,34 @@ test("identifyFaultAgent routes a db migration finding to pranav", () => {
 
 test("identifyFaultAgent defaults to shubham for an unrecognized path prefix", () => {
   expect(identifyFaultAgent([{ file: "docs/README.md", issue: "typo" }])).toBe("shubham");
+});
+
+// 2026-07-28 (live, complex1): real bug found live — a generated project's
+// schema file physically lives at "backend/init.sql" (inside the backend
+// output dir), not under a top-level "db/" prefix. The old backend/-prefix
+// check routed it to shubham, who is instructed to never touch schema files
+// — the same misrouted finding recurred every QA round with no way to ever
+// get fixed. See agentForFile's header comment for the full root cause.
+test("identifyFaultAgent routes a schema file living under backend/ (init.sql) to pranav, not shubham", () => {
+  expect(
+    identifyFaultAgent([{ file: "backend/init.sql", issue: "missing index on foreign key" }]),
+  ).toBe("pranav");
+});
+
+test("agentForFile routes backend/schema.ts and backend/drizzle.config.ts to pranav", () => {
+  expect(agentForFile("backend/schema.ts")).toBe("pranav");
+  expect(agentForFile("backend/drizzle.config.ts")).toBe("pranav");
+  expect(agentForFile("backend/db/migrations/0002_add_index.sql")).toBe("pranav");
+});
+
+test("agentForFile keeps a frontend file named schema.ts routed to aanya, not pranav", () => {
+  // frontend/ must win over the schema-filename pattern — a Zod validation
+  // schema file is not a database schema file just because it shares a name.
+  expect(agentForFile("frontend/lib/schema.ts")).toBe("aanya");
+});
+
+test("agentForFile still routes ordinary backend application code to shubham", () => {
+  expect(agentForFile("backend/src/controllers/tasks.ts")).toBe("shubham");
 });
 
 // identifyFaultAgents (plural) - real 2026-07-06 stress-test bug: the QA fix

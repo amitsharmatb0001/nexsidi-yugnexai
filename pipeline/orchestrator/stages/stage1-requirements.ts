@@ -28,7 +28,19 @@ export interface Stage1Result {
 }
 
 export async function runStage1(projectId: string, userInput: string): Promise<Stage1Result> {
-  const spec = await runSaanvi(projectId, userInput);
+  const saanviResult = await runSaanvi(projectId, userInput);
+  // 2026-08-05: this in-process dev/stress-test entry point (pipeline/dev-run.ts,
+  // scripts/stress-test.ts) has no human-in-the-loop signal mechanism — the
+  // real clarification pause lives in pipeline/activities/index.ts's runSaanvi
+  // activity, driven by the Temporal workflow. Throwing here surfaces the
+  // ambiguity loudly instead of silently guessing, which is the whole point.
+  if (saanviResult.status === "needs_clarification") {
+    throw new Error(
+      `[stage1] Saanvi needs clarification before it can spec this request (no human-in-the-loop path in this dev entry point):\n` +
+        saanviResult.questions.map((q) => `  - ${q}`).join("\n"),
+    );
+  }
+  const spec = saanviResult.spec;
   const plan = await runArjun(spec);
 
   const dagTasks: DagTask[] = [

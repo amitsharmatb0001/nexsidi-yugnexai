@@ -55,7 +55,18 @@ services:
     volumes:
       - ./infra/temporal-dynamicconfig.yaml:/etc/temporal/config/dynamicconfig.yaml
     healthcheck:
-      test: ["CMD", "temporal", "server", "health"]
+      # 2026-08-04: "temporal server health" is not a real subcommand on this
+      # image's CLI (it dumped the "server" group's help text with exit 1,
+      # marking the container permanently unhealthy despite the server
+      # itself working fine all session). The correct probe is "temporal
+      # operator cluster health" — but it must target the container's OWN
+      # hostname, not 127.0.0.1: confirmed live that Temporal's frontend
+      # binds to the container's assigned network identity, not loopback,
+      # so a literal 127.0.0.1 healthcheck gets "connection refused" even
+      # though the exact same server answers fine from the host and from
+      # other containers via the compose network. $(hostname) resolves to
+      # whatever Docker assigns this container at healthcheck-run time.
+      test: ["CMD-SHELL", "temporal operator cluster health --address $(hostname):7233 | grep -q SERVING"]
       interval: 10s
       timeout: 5s
       retries: 20

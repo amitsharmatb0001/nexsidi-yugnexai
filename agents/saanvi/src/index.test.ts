@@ -25,10 +25,11 @@ test("a single empty response is retried once and succeeds on the second attempt
     return { content: callCount === 1 ? "" : VALID_SPEC_JSON, modelUsed: "mistralai/mistral-nemotron" as const };
   };
 
-  const spec = await run("proj123", "build me a task app", { chat: stubChat });
+  const result = await run("proj123", "build me a task app", { chat: stubChat });
 
   expect(callCount).toBe(2);
-  expect(spec.name).toBe("Test App");
+  expect(result.status).toBe("locked");
+  if (result.status === "locked") expect(result.spec.name).toBe("Test App");
 });
 
 test("two consecutive empty responses still throw — retry is not infinite masking of a real outage", async () => {
@@ -47,4 +48,39 @@ test("a well-formed first response does not trigger a second call at all", async
   await run("proj123", "build me a task app", { chat: stubChat });
 
   expect(callCount).toBe(1);
+});
+
+// ── Clarification path (2026-08-05) ─────────────────────────────────────────
+const CLARIFICATION_JSON = JSON.stringify({
+  needsClarification: true,
+  questions: ["What kind of app is this — a tool, a marketplace, or a content site?"],
+});
+
+test("run() returns needs_clarification with the model's questions instead of guessing a spec", async () => {
+  const stubChat = async () => ({ content: CLARIFICATION_JSON, modelUsed: "mistralai/mistral-nemotron" as const });
+
+  const result = await run("proj123", "app for my thing", { chat: stubChat });
+
+  expect(result.status).toBe("needs_clarification");
+  if (result.status === "needs_clarification") {
+    expect(result.questions).toEqual(["What kind of app is this — a tool, a marketplace, or a content site?"]);
+  }
+});
+
+test("run() falls through to a normal spec when needsClarification is true but questions is empty", async () => {
+  const emptyQuestionsJson = JSON.stringify({ needsClarification: true, questions: [], ...JSON.parse(VALID_SPEC_JSON) });
+  const stubChat = async () => ({ content: emptyQuestionsJson, modelUsed: "mistralai/mistral-nemotron" as const });
+
+  const result = await run("proj123", "build me a task app", { chat: stubChat });
+
+  expect(result.status).toBe("locked");
+});
+
+test("run() ignores needsClarification when it's not the literal boolean true", async () => {
+  const weirdJson = JSON.stringify({ needsClarification: "yes", ...JSON.parse(VALID_SPEC_JSON) });
+  const stubChat = async () => ({ content: weirdJson, modelUsed: "mistralai/mistral-nemotron" as const });
+
+  const result = await run("proj123", "build me a task app", { chat: stubChat });
+
+  expect(result.status).toBe("locked");
 });

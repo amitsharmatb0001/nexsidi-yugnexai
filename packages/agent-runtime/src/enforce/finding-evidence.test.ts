@@ -52,28 +52,37 @@ test("does not double-count the same unverified file cited by multiple findings"
 });
 
 // 2026-07-11: real bug found live — Deepika's smoke test read exactly ONE
-// file out of ~15 listed, then submitted an empty findings array. The
-// evidence gate above stops it from citing a file it never read, but does
-// nothing to stop it from barely looking at all — a "clean" result from
-// reading 1/15 files isn't credible. This requires a minimum spread of
-// reading before a review can conclude, scaled down for small projects so
-// it's never an impossible bar.
-
-test("checkReviewCoverage rejects when far fewer files were read than exist", () => {
-  const result = checkReviewCoverage(1, 15);
+// file out of ~15 listed, then submitted an empty findings array.
+//
+// 2026-07-26 (agent-autonomy-assessment root-cause, live proof): the
+// original fix for that (MIN_FILES_READ = 5, flat, never scaled) turned
+// into a much worse bug at real scale. On complex1 (84 reviewable files)
+// each QA agent could legally conclude after reading 5 — 6% of the
+// codebase. Confirmed live: across 4 full QA rounds, Karan had still only
+// ever read 46/84 files, Navya and Deepika 29/84 each. A CRITICAL
+// privilege-escalation bug in authController.ts sat unreviewed for 3
+// rounds not because anything was hard to find, but because nobody had
+// opened the file yet — "new bugs every round" was really "the review
+// never finished."
+//
+// Checked Claude Code's and Codex's own real system prompts (not
+// assumption): neither uses a numeric read-count floor anywhere. Claude
+// Code's Explore.md explicitly warns it must NOT be used for review
+// because it "reads excerpts... will miss content." Claude Code's actual
+// code-review skill bounds scope to the diff, then requires COMPLETE
+// reading within that bound ("Read every hunk in the diff, line by
+// line"). NexSidi's QA has an equivalent bound already sitting unused:
+// list_files' own manifest. The fix is exactly that shape — complete
+// coverage of the bounded scope, not a percentage sample of everything.
+test("checkReviewCoverage rejects any read count short of the full file list", () => {
+  const result = checkReviewCoverage(46, 84);
   expect(result.allowed).toBe(false);
-  expect(result.reason).toContain("1 of 15");
+  expect(result.reason).toContain("46 of 84");
 });
 
-test("checkReviewCoverage allows once the minimum (5, or all files if fewer) has been read", () => {
-  expect(checkReviewCoverage(5, 15).allowed).toBe(true);
-  expect(checkReviewCoverage(15, 15).allowed).toBe(true);
-});
-
-test("checkReviewCoverage scales the requirement down for small projects — never impossible to satisfy", () => {
-  // only 3 files exist total — can't demand reading 5
-  expect(checkReviewCoverage(3, 3).allowed).toBe(true);
-  expect(checkReviewCoverage(2, 3).allowed).toBe(false);
+test("checkReviewCoverage allows only once every listed file has been read", () => {
+  expect(checkReviewCoverage(83, 84).allowed).toBe(false);
+  expect(checkReviewCoverage(84, 84).allowed).toBe(true);
 });
 
 test("checkReviewCoverage allows a review of an empty/near-empty project trivially", () => {

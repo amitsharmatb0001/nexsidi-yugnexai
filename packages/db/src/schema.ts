@@ -21,7 +21,14 @@ export const agents = pgTable("agents", {
 export const users = pgTable("users", {
   id:        uuid("id").primaryKey().defaultRandom(),
   email:     text("email").notNull(),
-  passwordHash: text("password_hash"),
+  // 2026-08-05: was nullable, matching 0001_custom_auth.sql's original
+  // expand-only ALTER — but every real registration path (apps/api/src/
+  // auth/service.ts) always provides one, and the login path already
+  // treats a missing hash as an unusable account. See
+  // 0003_password_hash_not_null.sql for the contract-half migration this
+  // pairs with; schema.ts and the live DB were drifting apart with no
+  // migration file capturing the DB's actual (correct) constraint.
+  passwordHash: text("password_hash").notNull(),
   name:      text("name").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

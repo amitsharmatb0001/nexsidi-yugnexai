@@ -2,10 +2,11 @@
 // Uses tool-calling loop: write_file → run npm install → run tsc → fix → repeat.
 // No longer does one-shot LLM generation. Agent ACTS on real tool feedback.
 
-import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
+import { resolveGeneratorRunner, type Escalation } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync, readdirSync, existsSync } from "fs";
 import { join } from "path";
 import type { BuildPlan, GeneratorTask } from "../../../arjun/src/index.ts";
+import { buildSystemContext } from "../../../arjun/src/index.ts";
 
 export interface GeneratorResult {
   success: boolean;
@@ -13,6 +14,10 @@ export interface GeneratorResult {
   outputDir: string;
   filesWritten: string[];
   errors: string[];
+  // P3 (agent-autonomy-assessment F3): findings this fix run handed off to
+  // another agent's domain instead of forcing a workaround — see
+  // tools/escalate.ts and stage5-qa-fix-loop.ts's routing of these.
+  escalations?: Escalation[];
 }
 
 export function getOutputDir(projectId: string): string {
@@ -165,22 +170,56 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
 // SAME outputDir run() already wrote to (files already exist there) with a
 // fix-focused task instead of a from-scratch build task — the agent reads
 // the affected files and edits them, it doesn't regenerate the project.
-export function buildFixTask(findings: string[]): string {
-  return `An adversarial QA review found the following issues in the backend code you already wrote. Fix ONLY these specific issues — do not rewrite unrelated files, do not refactor working code that wasn't flagged.
+// 2026-07-26 (agent-autonomy-assessment F1/F2): the old prompt said "Fix
+// ONLY these specific issues — do not refactor working code that wasn't
+// flagged" and gave no spec/contract/schema. Live proof this was the actual
+// cause of a stuck-state, not a model limit: across 6 real rounds on a
+// booking system, this exact instruction forced 3 separate point-fixes to
+// the SAME race condition (missing check -> added it; race on approve ->
+// added FOR UPDATE; duplicate insert -> added a per-user advisory lock)
+// instead of one correct locking design, and the agent could never see the
+// missing DB unique constraint that was the real root cause because the
+// schema was never shown to it. Root-cause reasoning is now instructed
+// explicitly and the full system context is included.
+export function buildFixTask(findings: string[], plan: BuildPlan): string {
+  return `An adversarial QA review found the following issues in the backend code you already wrote.
+
+${buildSystemContext(plan)}
 
 ISSUES TO FIX:
 ${findings.map((f, i) => `${i + 1}. ${f}`).join("\n")}
+
+Each finding is a SYMPTOM, not necessarily the whole problem. Before editing:
+1. Diagnose the root cause — read the full function/file the finding points
+   at, not just the cited line. Check the DB schema above: a "race condition"
+   or "invalid state" finding is very often really a missing UNIQUE/CHECK
+   constraint or FOREIGN KEY, not something application code alone can fully
+   close. If the correct fix belongs in the database schema (which you
+   cannot edit), call escalate_finding(target_agent: "pranav", ...) instead
+   of writing an application-layer workaround that can't actually close the
+   gap — a workaround here is not a fix, it's a finding QA will just report
+   again next round.
+2. Check whether the same class of issue elsewhere in your own files has the
+   same root cause (e.g. the same missing-lock pattern in a sibling
+   controller) — fix all real instances of it, not just the one cited.
+3. Stay within your own domain (backend) and don't rewrite files unrelated to
+   the root cause you diagnosed.
 
 Workflow:
 1. Use read_file to see the exact current content of each affected file
 2. Use edit_file for targeted fixes (cheaper than rewriting the whole file) — use write_file only if the fix genuinely requires touching most of the file
 3. Run "npx tsc --noEmit" (or the project's build command) to verify nothing broke
-4. Call task_complete with verification_passed: true only after verifying the fix actually addresses the issue`;
+4. Call task_complete with verification_passed: true only after verifying the fix actually addresses the root cause, not just silences the symptom`;
 }
 
 export async function runFix(plan: BuildPlan, findings: string[]): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
+  // F7 (agent-autonomy-assessment): instincts were written by the fix loop
+  // (recordInstincts, stage5-qa-fix-loop.ts) but never read by it — the one
+  // call site that most needs "you already made this mistake" had it
+  // missing. Mirrors run()'s identical prefix above.
+  const knownMistakesPrefix = await loadKnownMistakesPrefix();
 
   const result = await resolveGeneratorRunner()({
     agentName: "shubham",
@@ -190,8 +229,8 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // working replacement, qwen3-next-80b.
     fallbackModels: ["qwen/qwen3-next-80b-a3b-instruct"],
     apiKey,
-    systemPrompt: SHUBHAM_AGENT_SYSTEM_PROMPT,
-    initialMessage: buildFixTask(findings),
+    systemPrompt: knownMistakesPrefix + SHUBHAM_AGENT_SYSTEM_PROMPT,
+    initialMessage: buildFixTask(findings, plan),
     sandboxDir: outputDir,
     projectId: plan.projectId,
     // 2026-07-25 (Phase 1, full MVP upgrade): was `geminiModel:
@@ -211,6 +250,11 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     enableScreenshot: true,
     enableBrowser: true,
     enableDbQuery: true,
+    // P3 (agent-autonomy-assessment F3): only enabled on the fix path, not
+    // generation — escalation is a "this finding's real fix isn't mine"
+    // signal, which only makes sense once there's a specific finding to
+    // diagnose.
+    enableEscalation: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
     // 2026-07-25: reverted the maxIterations override for the same reason
     // as run() above — see that comment. A fix task's live-verification
@@ -229,11 +273,12 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     outputDir,
     filesWritten: result.filesWritten,
     errors: result.errors,
+    escalations: result.escalations,
   };
 }
 
 // ── Agent system prompt — agentic mode ───────────────────────────────────────
-const SHUBHAM_AGENT_SYSTEM_PROMPT = `\
+export const SHUBHAM_AGENT_SYSTEM_PROMPT = `\
 You are Shubham, a senior Express + TypeScript backend engineer.
 You have been given tools to write files and run commands directly.
 You DO NOT output text — you USE TOOLS to create the project.
@@ -267,7 +312,7 @@ STACK (non-negotiable):
 - Auth: Custom JWT authentication. You MUST write:
   1. A User database table containing email (text, unique), password_hash (text).
   2. A registration endpoint (POST /api/v1/auth/register) that hashes passwords using bcryptjs (salt rounds = 10) and saves the user.
-  3. A login endpoint (POST /api/v1/auth/login) that verifies passwords using bcryptjs and returns a signed JWT token (expires in 24h, signed with process.env.JWT_SECRET || "default_dev_secret").
+  3. A login endpoint (POST /api/v1/auth/login) that verifies passwords using bcryptjs and returns a signed JWT token (expires in 24h, signed with process.env.JWT_SECRET). Fail-closed: if JWT_SECRET is not set, throw at startup and refuse to start the server — NEVER fall back to a hardcoded string or a randomly-generated secret (a random fallback silently invalidates every session on every restart, which is a real bug just as bad as a hardcoded secret).
   4. An auth middleware (src/middleware/auth.ts) that reads the Authorization header (Bearer <token>), verifies it using jsonwebtoken, and sets req.userId.
 - DB: PostgreSQL via "pg" Pool with parameterized queries ($1, $2)
 - Security: helmet() + cors with CORS_ORIGIN env var
@@ -277,6 +322,17 @@ STATIC FILES ALREADY WRITTEN (DO NOT write these):
 - src/index.ts (entry point with helmet, cors, route mounting)
 - src/routes/index.ts (auto-generated after you write route files)
 - src/types/requests.ts (CreateTaskRequest, UpdateTaskRequest)
+
+DATABASE SCHEMA OWNERSHIP — DO NOT write any .sql file, any migration file,
+or any schema-definition file (init.sql, schema.ts, drizzle config, etc.).
+Pranav owns the database schema exclusively — it already exists at
+db/migrations/ before you start. If your code needs a schema change (a
+missing column, index, or constraint), do not create your own competing
+schema file — if you have the escalate_finding tool available (fix runs
+only), call it with target_agent: "pranav"; otherwise say so explicitly in
+your task_complete summary so it can be routed to Pranav. Your job is
+application code that reads/writes against Pranav's schema, never the
+schema itself.
 
 FILES YOU MUST WRITE:
 - src/middleware/auth.ts (custom JWT verification middleware)
@@ -382,10 +438,12 @@ DB SCHEMA VERIFICATION (optional but valuable — skip only if you are low on
 iteration budget; DO NOT start the server here, QA tests HTTP endpoints):
   d) Write a minimal docker-compose.yml mapping port 55432 on the host
      (NOT 5432 — native Postgres is already on 5432; wrong port = misleading
-     auth errors), start it with docker_compose up, apply your schema/migrations
-     using ONE run_command that runs a node script or npx ts-node, confirm the
-     expected tables exist (e.g. "SELECT table_name FROM information_schema.tables"
-     or psql with --command), then tear it down with docker_compose down.
+     auth errors), start it with docker_compose up, apply Pranav's EXISTING
+     migrations from ../db/migrations/ (never write your own .sql file — see
+     DATABASE SCHEMA OWNERSHIP above) using ONE run_command that runs a node
+     script or npx ts-node, confirm the expected tables exist (e.g. "SELECT
+     table_name FROM information_schema.tables" or psql with --command),
+     then tear it down with docker_compose down.
      All of d) must fit in ≤4 tool calls total (write compose + up + apply + down).
      DO NOT start the Express server. DO NOT make http_request calls.
      The QA stage tests live HTTP; your job is to prove the schema applies.

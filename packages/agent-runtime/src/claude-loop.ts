@@ -22,10 +22,12 @@ import {
   translateNimToolToClaudeTool,
   type ClaudeMessage,
   type ClaudeToolDef,
+  type ClaudeContentBlockParam,
 } from "@nexsidi/llm-client";
 import { runAgent, buildToolList, MAX_ITERATIONS, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
 import { join } from "path";
-import { runAgentWithGemini } from "./gemini-loop.ts";
+import { readFileSync } from "node:fs";
+import { runAgentWithGemini, screenshotImagePathFor } from "./gemini-loop.ts";
 import { execWriteFile, execReadFile, execListFiles, execEditFile, execDeleteFile } from "./tools/file.ts";
 import { execRunCommand } from "./tools/command.ts";
 import { execHttpRequest } from "./tools/http.ts";
@@ -295,7 +297,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
 
     // Execute all tool calls — same switch as loop.ts's runAgent(), reusing
     // the exact same execXxx functions.
-    const toolResultBlocks: Array<{ type: "tool_result"; tool_use_id: string; content: string }> = [];
+    const toolResultBlocks: ClaudeContentBlockParam[] = [];
     for (const call of response.toolCalls) {
       const toolName = call.name;
       const args = call.input;
@@ -422,7 +424,33 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         }
       }
 
-      toolResultBlocks.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) });
+      // 2026-07-28: real bug found live — "screenshot"/"browser_screenshot"
+      // returned only a text path; no image bytes ever reached a model, so
+      // every "visual" QA judgment was DOM/text-only (a build with sitewide
+      // corrupted-glyph text scored 7.47/10 against a 7.0 bar as direct
+      // proof — .nexsidi/sdd/agent-autonomy-assessment-2026-07-26.md, F9).
+      // Anthropic's documented shape for a tool that returns an image is a
+      // tool_result whose `content` is an array of blocks (text + image),
+      // not a bare string — see ToolResultBlockParam.content in the SDK.
+      const imagePath = screenshotImagePathFor(toolName, result);
+      if (imagePath) {
+        try {
+          const imageBytes = readFileSync(imagePath);
+          toolResultBlocks.push({
+            type: "tool_result",
+            tool_use_id: call.id,
+            content: [
+              { type: "text", text: JSON.stringify(result) },
+              { type: "image", source: { type: "base64", media_type: "image/png", data: imageBytes.toString("base64") } },
+            ],
+          });
+        } catch (err) {
+          console.error(`[${config.agentName}:claude-agent] Failed to read screenshot for vision attachment (${imagePath}): ${String(err)}`);
+          toolResultBlocks.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) });
+        }
+      } else {
+        toolResultBlocks.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) });
+      }
     }
 
     messages.push({ role: "user", content: toolResultBlocks });

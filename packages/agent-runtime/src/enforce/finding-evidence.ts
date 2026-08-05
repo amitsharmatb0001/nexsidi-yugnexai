@@ -40,22 +40,29 @@ export function checkFindingsEvidence(
 // exactly ONE file out of ~15 listed, then submitted an empty findings
 // array. checkFindingsEvidence (above) only stops a finding from citing a
 // file never read — it does nothing to stop a review that barely looked at
-// anything from confidently declaring "clean". This requires a minimum
-// spread of files read before a review can conclude, scaled down for small
-// projects so the bar is never impossible to clear.
-const MIN_FILES_READ = 5;
-
+// anything from confidently declaring "clean".
+//
+// 2026-07-26 (agent-autonomy-assessment root-cause): the original fix here
+// was a flat MIN_FILES_READ = 5, never scaled to codebase size. At real
+// scale (complex1, 84 reviewable files) that let a review conclude after
+// 6% coverage — confirmed live: a CRITICAL privilege-escalation bug sat
+// unreviewed for 3 full QA rounds because nobody had opened the file yet,
+// not because it was hard to find. Checked Claude Code's and Codex's own
+// real system prompts: neither uses a numeric read-count floor. Claude
+// Code's own code-review skill bounds scope (the diff) and then requires
+// COMPLETE reading within that bound, never a percentage sample of
+// everything. list_files' own manifest is the equivalent bound here — so
+// the correct requirement is "read all of it," not "read a fraction of it."
 export interface ReviewCoverageCheck {
   allowed: boolean;
   reason?: string;
 }
 
 export function checkReviewCoverage(filesReadCount: number, totalFilesListed: number): ReviewCoverageCheck {
-  const required = Math.min(MIN_FILES_READ, totalFilesListed);
-  if (filesReadCount < required) {
+  if (filesReadCount < totalFilesListed) {
     return {
       allowed: false,
-      reason: `You've only read ${filesReadCount} of ${totalFilesListed} files — read at least ${required} before submitting findings. A thorough review can't conclude from reading a handful of files.`,
+      reason: `You've only read ${filesReadCount} of ${totalFilesListed} files — read every listed file before submitting findings. A review that hasn't looked at a file cannot conclude that file is clean.`,
     };
   }
   return { allowed: true };

@@ -8,7 +8,7 @@ const combos: Array<{ model: string; region: string }> = [
 ];
 
 for (const { model, region } of combos) {
-  const client = new AnthropicVertex({ projectId: "ai-yugnex", region });
+  const client = new AnthropicVertex({ projectId: "ai-yug", region });
   try {
     const msg = await client.messages.create({
       model,

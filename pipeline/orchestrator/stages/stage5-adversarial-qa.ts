@@ -32,6 +32,7 @@ import {
 import type { Finding as NavyaFinding, QAResult as NavyaResult } from "../../../agents/qa/navya/src/index.ts";
 import type { Finding as DeepikaFinding, QAResult as DeepikaResult } from "../../../agents/qa/deepika/src/index.ts";
 import type { Tier3ReviewResult } from "../../../agents/tilotma/src/tier3-review.ts";
+import { buildSystemContext, type BuildPlan } from "../../../agents/arjun/src/index.ts";
 
 export interface Stage5Result {
   pass: boolean;
@@ -48,9 +49,13 @@ export interface Stage5Result {
 // stage6-deployment.ts's Stage6Deps hides Riya's real invocation details
 // behind a simple deployFn(projectId, deployTarget) seam.
 export interface Stage5Agents {
-  runNavya: (projectId: string, stage4Result: Stage4Result) => Promise<NavyaResult>;
-  runKaran: (projectId: string, stage4Result: Stage4Result) => Promise<KaranResult>;
-  runDeepika: (projectId: string, stage4Result: Stage4Result) => Promise<DeepikaResult>;
+  // F5 (agent-autonomy-assessment): systemContext is the rendered
+  // spec/API-contract/DB-schema (buildSystemContext(plan)) — see
+  // qa-loop.test.ts for why QA needs this. Tier3Review doesn't take it: it
+  // reviews the LIVE deployed app's UX/behavior, not source-level intent.
+  runNavya: (projectId: string, stage4Result: Stage4Result, systemContext?: string) => Promise<NavyaResult>;
+  runKaran: (projectId: string, stage4Result: Stage4Result, systemContext?: string) => Promise<KaranResult>;
+  runDeepika: (projectId: string, stage4Result: Stage4Result, systemContext?: string) => Promise<DeepikaResult>;
   runTier3Review: (projectId: string, stage4Result: Stage4Result) => Promise<Tier3ReviewResult>;
 }
 
@@ -73,6 +78,26 @@ export interface Stage5Agents {
 // seen a million times), prefixed only when `line` is present — a finding
 // without one still shows just the file, never a misleading ":undefined".
 // Exported for direct testing (same convention as collectCode below).
+// 2026-08-05: real 429 RESOURCE_EXHAUSTED pressure confirmed live on the
+// current GCP project — Navya/Karan/Deepika all fire in the exact same
+// instant via Promise.all below, and (per rotatedPoolForAgent's own header
+// comment in router.ts) all three still share the SAME primary pool[0] model
+// (gemini-3.1-pro-preview) even after fallback-order rotation. Staggering
+// the three dispatch calls by a few seconds spreads that initial burst
+// instead of hitting the shared per-model token bucket at the same instant.
+// Defaults to 0 (no stagger) so the existing unit tests — which assert
+// scoring/routing logic with instant stub agents — stay fast; runStage5
+// (the real entry point) passes a live, non-zero value.
+export function qaDispatchStaggerMs(): number {
+  const override = process.env.QA_DISPATCH_STAGGER_MS?.trim();
+  const parsed = override ? Number(override) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 4000;
+}
+
+function sleep(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+}
+
 export function locationPrefix(file: string | undefined, line: number | undefined): string {
   if (!file) return "";
   return line !== undefined ? `${file}:${line} — ` : `${file} — `;
@@ -114,11 +139,24 @@ export async function runStage5WithAgents(
   stage4Result: Stage4Result,
   agents: Stage5Agents,
   includeTier3 = true,
+  // F5 (agent-autonomy-assessment): optional so every existing call site
+  // (and every test using makeAgents()) stays valid — see this file's test
+  // for the live-evidence rationale.
+  plan?: BuildPlan,
+  // Defaults to 0 — see qaDispatchStaggerMs's header comment. runStage5
+  // (the real entry point) passes a live, non-zero value.
+  staggerMs = 0,
 ): Promise<Stage5Result> {
+  const systemContext = plan ? buildSystemContext(plan) : undefined;
+  const navyaPromise = agents.runNavya(projectId, stage4Result, systemContext);
+  await sleep(staggerMs);
+  const karanPromise = agents.runKaran(projectId, stage4Result, systemContext);
+  await sleep(staggerMs);
+  const deepikaPromise = agents.runDeepika(projectId, stage4Result, systemContext);
   const [navyaResult, karanResult, deepikaResult] = await Promise.all([
-    agents.runNavya(projectId, stage4Result),
-    agents.runKaran(projectId, stage4Result),
-    agents.runDeepika(projectId, stage4Result),
+    navyaPromise,
+    karanPromise,
+    deepikaPromise,
   ]);
 
   try {
@@ -175,7 +213,11 @@ const CODE_EXTENSIONS = new Set([
   ".sql", ".prisma", ".json", ".yaml", ".yml",
   ".css", ".scss", ".html", ".md",
 ]);
-const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build"]);
+// 2026-07-28 (live, complex1): "vendor" added — a vendored third-party
+// library (e.g. frontend/vendor/nexui) is static, not project code, and was
+// dominating this function's MAX_CODE_CHARS budget. See qa-loop.ts's
+// matching SKIP_DIRS comment for the full root cause and live evidence.
+const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", "vendor"]);
 const MAX_CODE_CHARS = 200_000; // bound the QA prompt payload
 
 export interface LabeledDir {
@@ -256,7 +298,14 @@ function walkDir(root: string, dir: string, label: string, chunks: string[]): vo
  * runRealLiveRetest explicitly passes true, since IT runs after a real
  * deploy and points Tier 3 at the actual live URL.
  */
-export async function runStage5(projectId: string, stage4Result: Stage4Result, includeTier3 = false): Promise<Stage5Result> {
+export async function runStage5(
+  projectId: string,
+  stage4Result: Stage4Result,
+  includeTier3 = false,
+  // F5 (agent-autonomy-assessment): threaded through to buildSystemContext
+  // for every QA agent — see this file's test for the live evidence.
+  plan?: BuildPlan,
+): Promise<Stage5Result> {
   const [{ runExploring: runNavyaReal }, karanModule, { runExploring: runDeepikaReal }, { runTier3Review: runTier3ReviewReal }] =
     await Promise.all([
       import("../../../agents/qa/navya/src/index.ts"),
@@ -272,11 +321,11 @@ export async function runStage5(projectId: string, stage4Result: Stage4Result, i
   ];
 
   const agents: Stage5Agents = {
-    runNavya: (pid, s4) => runNavyaReal(pid, labeledDirs(s4)),
-    runKaran: (pid, s4) => runKaranReal(pid, labeledDirs(s4)),
-    runDeepika: (pid, s4) => runDeepikaReal(pid, labeledDirs(s4)),
+    runNavya: (pid, s4, ctx) => runNavyaReal(pid, labeledDirs(s4), undefined, ctx),
+    runKaran: (pid, s4, ctx) => runKaranReal(pid, labeledDirs(s4), undefined, ctx),
+    runDeepika: (pid, s4, ctx) => runDeepikaReal(pid, labeledDirs(s4), undefined, ctx),
     runTier3Review: (pid, s4) => runTier3ReviewReal(pid, s4.frontendOutputDir),
   };
 
-  return runStage5WithAgents(projectId, stage4Result, agents, includeTier3);
+  return runStage5WithAgents(projectId, stage4Result, agents, includeTier3, plan, qaDispatchStaggerMs());
 }

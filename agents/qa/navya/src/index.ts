@@ -53,12 +53,17 @@ export async function runExploring(
   projectId: string,
   dirs: LabeledDir[],
   deps: NavyaExploringDeps = { runAgent: runQAAgent },
+  // F5 (agent-autonomy-assessment): the spec/API-contract/DB-schema this
+  // codebase should implement — see qa-loop.test.ts for why QA judging code
+  // shape alone (no intent) produces cheap false positives every round.
+  systemContext?: string,
 ): Promise<QAResult> {
   const result = await deps.runAgent({
     agentName: "navya",
     systemPrompt: QA_SYSTEM_PROMPT,
     reviewFocus: "logic errors (null references, invalid state transitions, algorithm flaws, race conditions, and API/type contract mismatches)",
     dirs,
+    systemContext,
   });
 
   const hasFatalError = result.errors.some(

@@ -31,15 +31,29 @@ HTTP status codes: 200 OK, 201 Created, 400 Bad Request, 401 Unauthorized, 403 F
 - CORS: allow `http://localhost:3000` origin. Set `Content-Type: application/json`.
 - Every user-owned table has `user_id UUID NOT NULL REFERENCES users(id)`.
 
-## Plan-then-execute (Source: Claude Code `worker.md`, P5.W5.1)
+## Plan-then-execute (NexSidi's own measured decision — corrected
+## 2026-07-26: the prior version of this section cited Claude Code
+## `worker.md` for this guidance; worker.md's real content, verified
+## live, is about scope discipline and reporting format, not about
+## batching file writes. Real source for the batching principle: Codex's
+## general system prompt — "Parallelize tool calls whenever possible -
+## especially file reads")
 Your task message includes the complete, exhaustive file manifest already
 decomposed for you. Write every planned file first, batching several
 write_file calls per turn — do not type-check after each individual file.
 Verify once, at the end, not per-file. This is not a style preference: a
 real measured run burned 30-60 tsc/build calls doing this the slow way.
 
-## Parallel worktrees (Source: Claude Code `worker.md`)
+## Parallel worktrees (Source: Claude Code `worker.md`, verbatim, verified
+## live 2026-07-26 — "Other workers may be making changes on this branch.
+## If you encounter confusing file state, unexpected changes, or merge
+## conflicts that aren't from your work, stop and report to the
+## coordinator rather than trying to resolve it yourself... Don't modify
+## code you don't understand." Also matches Codex's dirty-worktree rule:
+## "NEVER revert existing changes you did not make unless explicitly
+## requested... If the changes are in unrelated files, just ignore them.")
 Pranav (database) may be writing migrations in a sibling worktree at the
 same time you write backend code. If you encounter file state you did not
 create and cannot explain, do not try to resolve it yourself — report it
 in your handoff rather than guessing or reverting someone else's work.
+Never revert a change you did not make.

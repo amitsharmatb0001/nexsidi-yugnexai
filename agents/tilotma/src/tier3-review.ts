@@ -20,11 +20,56 @@
 // self-review. A single call with two prompted turns was considered and
 // rejected specifically because it would undermine the independence the
 // pattern exists to provide.
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { runAgentEscalated } from "@nexsidi/agent-runtime";
+import { runAgentEscalated, MAX_ITERATIONS } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS } from "@nexsidi/llm-client";
 import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
+
+// 2026-07-27 (live, complex1): real gap found live — the shared default
+// MAX_ITERATIONS (40) let the reality-checker spend its entire budget
+// reading real pages and taking screenshots, then run out before ever
+// rendering a verdict (confirmed via the raw log: iteration 40 was
+// mid-screenshot, task_complete never called). Same root-cause pattern as
+// agent-runtime's qa-loop.ts computeQaMaxIterations — a fixed budget that
+// doesn't scale with real app size — applied here to Tier-3's page-by-page
+// review instead of QA's file-by-file review.
+const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "vendor"]);
+
+export function countAppPages(frontendOutputDir: string): number {
+  let count = 0;
+  const walk = (dir: string) => {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const full = join(dir, entry);
+      let stat;
+      try {
+        stat = statSync(full);
+      } catch {
+        continue;
+      }
+      if (stat.isDirectory()) walk(full);
+      else if (entry === "page.tsx" || entry === "page.ts") count++;
+    }
+  };
+  walk(frontendOutputDir);
+  return count;
+}
+
+// Budget: a few iterations per real page (navigate, screenshot, sometimes
+// interact — complex1's 9 pages consumed all 40 iterations reading files
+// plus 2 screenshots, well short of a verdict), plus a fixed baseline for
+// setup/investigation/rendering the final verdict. Floored at the shared
+// default so small/simple apps are unaffected.
+export function computeTier3MaxIterations(pageCount: number): number {
+  return Math.max(MAX_ITERATIONS, pageCount * 6 + 25);
+}
 
 // Both passes use runAgentEscalated (Task 15), not plain runAgent: NIM/
 // open-source (deepseek-v4-pro) runs first and is used whenever it succeeds
@@ -66,6 +111,11 @@ export async function runTier3Review(
   const screenshotDir = join(SCREENSHOT_ROOT, projectId).replace(/\\/g, "/");
   mkdirSync(join(process.cwd(), screenshotDir), { recursive: true });
 
+  // 2026-07-27 (live, complex1): both stages walk the SAME frontend, so one
+  // page count drives both budgets — a 9-page app needs more room for both
+  // the evidence sweep and the reality-check re-sweep, not just one of them.
+  const maxIterations = computeTier3MaxIterations(countAppPages(frontendOutputDir));
+
   // ── Stage 1: Evidence Collector ─────────────────────────────────────────
   const stage1 = await runAgentEscalated({
     agentName: "tilotma-evidence-collector",
@@ -78,6 +128,7 @@ export async function runTier3Review(
     enableBrowser: true,   // 2026-07-11: real interactive QA (navigate/click/fill/console-errors/computed-style) via the Node browser worker — replaces the single-shot screenshot tool
     enableHttpTools: true,
     enableDbQuery: true,   // read-only data-round-trip verification
+    maxIterations,
   });
 
   const stage1Findings = parseFindings(stage1.summary);
@@ -93,6 +144,7 @@ export async function runTier3Review(
     projectId,
     enableScreenshot: true,
     enableHttpTools: true,
+    maxIterations,
   });
 
   const stage2Findings = parseFindings(stage2.summary);
@@ -122,6 +174,13 @@ You DRIVE the app with real browser tools. Do NOT assume anything works — clic
 it, fill it, read it, and check the DB. Default-assume issues exist; a first
 pass that reports zero issues has not looked hard enough.
 
+Base every judgment on what browser_get_text/browser_element_exists/
+browser_screenshot actually return — visible page state — never on what the
+source code or file structure implies should be there. Something can compile
+clean and still render broken. (Source: Codex's control-in-app-browser skill,
+verified live 2026-07-26 — "Base interactions on visible page state from the
+DOM and screenshots rather than source order.")
+
 Tools available to you:
 - browser_navigate {url}: open a page. It returns the HTTP status and the FINAL
   url — if the app redirects (e.g. to /sign-in) that is reported here.
@@ -137,7 +196,12 @@ Tools available to you:
   forms. After a click, use browser_current_url to confirm it navigated correctly
   (no 404, redirect went where expected).
 - browser_screenshot {outputPath}: capture the CURRENT page for visual judgment
-  of layout/rendering. Save under the folder given in the task message.
+  of layout/rendering. Save under the folder given in the task message. The actual
+  image is attached to your NEXT turn — LOOK AT IT. Check for things text-only
+  checks cannot catch: corrupted/garbled glyphs, misaligned or overlapping
+  elements, broken images, illegible contrast, layout that doesn't match what
+  browser_get_text implies. A page that reads correctly in browser_get_text can
+  still be visually broken — judge the pixels, not just the DOM text.
 - http_request: hit the BACKEND api url directly to confirm endpoints respond.
 - db_query {query}: run a READ-ONLY SELECT against the app's database to confirm
   data (e.g. required tables/columns exist; after creating something, that a row
@@ -159,6 +223,11 @@ Your workflow:
      "Online" badge visible unconditionally — these should only appear after a
      real API check. Report as a finding if a status badge appears on first load
      without any API call having been made.
+   - CORRUPTED/GARBLED TEXT IN THE SCREENSHOT IMAGE ITSELF: look at the actual
+     attached image, not just browser_get_text's extracted DOM string — a
+     font/encoding bug can render wrong or mangled glyphs even when the
+     underlying text is correct. Report as a finding if the image shows garbled
+     characters anywhere.
    Use browser_computed_style on key elements to check spacing/typography concretely.
 3. Exercise the primary flow as far as you can: click primary buttons/links,
    fill visible forms, and after each action check browser_current_url +
@@ -230,6 +299,13 @@ each claim against your OWN fresh evidence before agreeing with any of it.
 You have the same tools as Stage 1: browser_navigate, browser_console_errors,
 browser_get_text, browser_element_exists, browser_computed_style, browser_click,
 browser_fill, browser_current_url, browser_screenshot, http_request, db_query.
+Every browser_screenshot's actual image is attached to your next turn — you must
+look at it, not just call it and move on. A page can read correctly in
+browser_get_text's extracted DOM text while being visually broken (corrupted
+glyphs, overlapping elements, a form rendered off-screen) — that gap is exactly
+what a past run got wrong: a build with sitewide corrupted-glyph text ("Meñu",
+"Sıqn In") passed every check and scored 7.47/10 because nothing ever actually
+looked at a pixel. You are the check that closes that gap.
 
 Be skeptical by default. Default to "NEEDS WORK" unless your own evidence
 overwhelmingly supports "READY" — rubber-stamping Stage 1 without re-checking is
@@ -244,6 +320,10 @@ AUTOMATIC BLOCKING FINDINGS — These ALWAYS produce VERDICT: NEEDS_WORK, never 
   a human-readable date (e.g., "13 Jul 2026") is expected. Users should never see ISO format.
 - An unconditional status badge ("Connected", "API Connected", "Online") that appears on first
   load without an actual runtime check confirming the service is up.
+- Corrupted, garbled, or mojibake text visible in a screenshot's IMAGE (wrong glyphs,
+  boxes/tofu characters, mangled accented letters) even if browser_get_text extracts the
+  intended string correctly — a font/encoding bug that only shows up visually is still a
+  real, blocking defect. Look at the actual screenshot image for this, not the DOM text.
 
 Specifically:
 1. Re-drive the app yourself: navigate the pages, check browser_console_errors

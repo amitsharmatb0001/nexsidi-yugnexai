@@ -37,6 +37,25 @@ import { assertValidIdentifier } from "../checkpoint.ts";
 import type { Dag } from "../types.ts";
 import { extractBackendContract, saveContract } from "./contract-extractor.ts";
 
+// 2026-08-05: with GENERATOR_TIER=gemini and PIPELINE_TIER=gemini both set
+// (this project's .env), Pranav and Shubham both route through Gemini's
+// "generation" tier pool (router.ts) — dispatching them in the exact same
+// instant via Promise.all below fires two calls at the shared pool[0] model
+// at once, on top of whatever else is drawing from that model's shared
+// per-minute token bucket. Same fix as stage5-adversarial-qa.ts's
+// qaDispatchStaggerMs: a short stagger before the second call spreads the
+// initial burst. Defaults to 0 so this doesn't slow down anything that
+// doesn't opt in via the env var.
+export function generationDispatchStaggerMs(): number {
+  const override = process.env.GENERATION_DISPATCH_STAGGER_MS?.trim();
+  const parsed = override ? Number(override) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 4000;
+}
+
+function sleep(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+}
+
 export interface Stage4Result {
   backendOutputDir: string;
   frontendOutputDir: string;
@@ -48,22 +67,41 @@ export interface Finding {
   issue: string;
 }
 
+// 2026-07-28 (live, complex1): real bug found live — a generated project's
+// actual output layout puts the DB schema file at "backend/init.sql" (inside
+// the backend output dir, per Shubham's own system prompt: "DATABASE SCHEMA
+// OWNERSHIP ... init.sql, schema.ts, drizzle config ... already exists at
+// db/migrations/ before you start" — the ownership rule and the physical
+// path are two different things), not under a top-level "db/" prefix as this
+// file's routing previously assumed. Deepika kept reporting the SAME missing-
+// index finding on backend/init.sql every QA round because agentForFile
+// routed it to shubham (who is correctly instructed to NEVER touch schema
+// files and escalate instead) — a structural dead end that looked like an
+// oscillating/stuck bug but was actually a misrouted finding. Recognize
+// schema files by name/pattern wherever they physically live, not only by a
+// "db/" path prefix.
+const SCHEMA_FILE_PATTERN = /(^|\/)(init\.sql|schema\.ts|drizzle\.config\.\w+)$|\.sql$|(^|\/)migrations\//i;
+
 // Fault isolation: route a finding to the ONE agent responsible, by file path
 // prefix — not a blind full-regenerate. Deterministic and unit-testable on
 // its own; Stage 5 (adversarial QA) is the real caller.
 export function identifyFaultAgent(findings: Finding[]): string {
-  const file = findings[0]?.file ?? "";
-  if (file.startsWith("backend/")) return "shubham";
-  if (file.startsWith("frontend/")) return "aanya";
-  if (file.startsWith("db/")) return "pranav";
-  return "shubham"; // default to backend if path doesn't match a known prefix
+  return agentForFile(findings[0]?.file ?? "");
 }
 
-function agentForFile(file: string): string {
-  if (file.startsWith("backend/")) return "shubham";
+// Exported so callers outside this file's own fix loop (Stage 6's live
+// post-deploy retest) route findings to the SAME agent Stage 5 would —
+// two independent copies of this logic is exactly how the db/ vs
+// backend/init.sql mismatch above went unnoticed for as long as it did.
+export function agentForFile(file: string): string {
+  // frontend/ always wins first — a frontend file named e.g. "schema.ts"
+  // (a Zod validation schema, not a DB schema) must never be misrouted to
+  // pranav just because SCHEMA_FILE_PATTERN matches its basename.
   if (file.startsWith("frontend/")) return "aanya";
   if (file.startsWith("db/")) return "pranav";
-  return "shubham"; // same fallback as identifyFaultAgent
+  if (file.startsWith("backend/") && SCHEMA_FILE_PATTERN.test(file)) return "pranav";
+  if (file.startsWith("backend/")) return "shubham";
+  return "shubham"; // default to backend if path doesn't match a known prefix
 }
 
 // Real 2026-07-06 stress-test bug: the QA fix loop used identifyFaultAgent's
@@ -275,8 +313,13 @@ export async function runStage4(
   const keys = getProjectKeyPair(projectId);
 
   // DAG: db-schema (Pranav) and backend-scaffold (Shubham) don't depend on
-  // each other's in-progress files — safe to run in parallel.
-  const [pranavResult, shubhamResult] = await Promise.all([runPranav(plan), runShubham(plan)]);
+  // each other's in-progress files — safe to run in parallel. Staggered
+  // (see generationDispatchStaggerMs above) so both don't hit the shared
+  // Gemini "generation" pool in the same instant.
+  const pranavPromise = runPranav(plan);
+  await sleep(generationDispatchStaggerMs());
+  const shubhamPromise = runShubham(plan);
+  const [pranavResult, shubhamResult] = await Promise.all([pranavPromise, shubhamPromise]);
 
   // Verify Pranav's output is intact before treating it as valid input to
   // whatever consumes it downstream (Shubham's DB access code assumes this

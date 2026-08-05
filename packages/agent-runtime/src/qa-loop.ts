@@ -35,6 +35,17 @@ export { detectStuckLoop };
 
 export const QA_MAX_ITERATIONS = 30;
 
+// 2026-07-26 (agent-autonomy-assessment root-cause, follow-on): full
+// coverage (checkReviewCoverage) now requires reading every listed file —
+// a flat 30-iteration cap made that structurally impossible on a
+// real-size project. Budget: one iteration per file read, plus list_files
+// (1), submit_findings (1), and slack for re-reads/thinking-only turns
+// (10) — floored at the original QA_MAX_ITERATIONS so small projects are
+// unaffected.
+export function computeQaMaxIterations(totalFiles: number): number {
+  return Math.max(QA_MAX_ITERATIONS, totalFiles + 12);
+}
+
 export interface LabeledDir {
   label: string; // "backend" | "frontend" — must match identifyFaultAgent's prefix check
   path: string;
@@ -60,6 +71,12 @@ export interface QAAgentConfig {
   systemPrompt: string;
   reviewFocus: string; // e.g. "security vulnerabilities (OWASP-style)"
   dirs: LabeledDir[];
+  // F5 (agent-autonomy-assessment): the spec/API-contract/DB-schema this
+  // codebase is supposed to implement — a plain rendered string (not a
+  // BuildPlan type) so this package never depends on agents/arjun. Callers
+  // build it with arjun's buildSystemContext(plan). Optional so existing
+  // callers/tests keep working unchanged.
+  systemContext?: string;
 }
 
 export interface QAAgentResult {
@@ -69,7 +86,11 @@ export interface QAAgentResult {
 }
 
 const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".sql", ".prisma", ".json", ".yaml", ".yml", ".css", ".scss", ".html", ".md"]);
-const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build"]);
+// 2026-07-28 (live, complex1): "vendor" added — see listLabeledFiles' test
+// header comment. A vendored third-party library folder is static, not
+// project code, and re-reading it every round to satisfy full coverage was
+// the dominant cost behind a real 35+ minute live-retest wall-clock.
+const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", "vendor"]);
 const READ_FILE_CHAR_LIMIT = 8000;
 
 // Exported for direct unit testing without touching the filesystem-walking
@@ -114,6 +135,42 @@ export function resolveLabeledFile(dirs: LabeledDir[], labeledPath: string): str
   return null;
 }
 
+// 2026-08-03: real cost problem found live — a single QA round (Navya/Karan/
+// Deepika, each reading dozens of files one at a time via read_file) ran to
+// ~7.8M tokens, because every read_file call is a full round-trip that
+// resends the ENTIRE growing conversation history as input. Batching several
+// files into ONE call cuts the round-trip count (and therefore the number of
+// times history gets resent) without reducing coverage — pure logic
+// extracted so it's directly testable without mocking the LLM loop, matching
+// this file's own convention (detectStuckLoop, checkReviewCoverage, etc.).
+export interface ReadLabeledFilesResult {
+  output: string;
+  readPaths: string[];
+}
+
+export function readLabeledFiles(dirs: LabeledDir[], paths: string[]): ReadLabeledFilesResult {
+  const chunks: string[] = [];
+  const readPaths: string[] = [];
+  for (const path of paths) {
+    const abs = path ? resolveLabeledFile(dirs, path) : null;
+    if (!abs || !existsSync(abs)) {
+      chunks.push(`// FILE: ${path}\n[not found — use list_files to see valid paths]`);
+      continue;
+    }
+    try {
+      let content = readFileSync(abs, "utf-8");
+      if (content.length > READ_FILE_CHAR_LIMIT) {
+        content = content.slice(0, READ_FILE_CHAR_LIMIT) + `\n...[truncated, ${content.length - READ_FILE_CHAR_LIMIT} more chars]`;
+      }
+      readPaths.push(path);
+      chunks.push(`// FILE: ${path}\n${content}`);
+    } catch (err) {
+      chunks.push(`// FILE: ${path}\n[read failed: ${String(err)}]`);
+    }
+  }
+  return { output: chunks.join("\n\n"), readPaths };
+}
+
 const QA_TOOL_DEFS: NimToolDef[] = [
   {
     type: "function",
@@ -127,11 +184,29 @@ const QA_TOOL_DEFS: NimToolDef[] = [
     type: "function",
     function: {
       name: "read_file",
-      description: "Read a file by its labeled path (from list_files' output, e.g. 'backend/src/controllers/tasks.ts'). You MUST read a file before citing it in a finding — findings citing an unread file are rejected.",
+      description: "Read a file by its labeled path (from list_files' output, e.g. 'backend/src/controllers/tasks.ts'). You MUST read a file before citing it in a finding — findings citing an unread file are rejected. Prefer read_files when you need more than one file — it costs one iteration instead of several.",
       parameters: {
         type: "object",
         properties: { path: { type: "string", description: "Labeled path from list_files" } },
         required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_files",
+      description: "Read MULTIPLE files by their labeled paths in a single call — costs one iteration (and one round of resent history) instead of one per file. Use this instead of repeated read_file calls whenever you already know several files you need (e.g. right after list_files). Each file's content is returned separately, clearly delimited.",
+      parameters: {
+        type: "object",
+        properties: {
+          paths: {
+            type: "array",
+            items: { type: "string" },
+            description: "Labeled paths from list_files — batch as many as you reasonably need (3-10 at a time is typical).",
+          },
+        },
+        required: ["paths"],
       },
     },
   },
@@ -164,6 +239,24 @@ const QA_TOOL_DEFS: NimToolDef[] = [
   },
 ];
 
+// Pure/testable — see qa-loop.test.ts for the live evidence this closes
+// (F5, agent-autonomy-assessment): QA reviewing code with no spec/contract/
+// schema re-flagged the same false-positive finding every round because it
+// had no way to judge scale/intent, and could never report "this doesn't
+// match what was asked for."
+export function buildQaInitialMessage(reviewFocus: string, systemContext: string | undefined): string {
+  const contextBlock = systemContext ? `${systemContext}\n\n` : "";
+  return (
+    `${contextBlock}Review this codebase for ${reviewFocus}. Call list_files first to see every file, then ` +
+    `read EVERY file listed — submit_findings will be rejected until you have read all of them, not a ` +
+    `sample. Use read_files to batch several files (3-10) per call instead of read_file one at a time — each ` +
+    `call costs a full round-trip of resent history, so batching cuts cost and iterations substantially with ` +
+    `no loss of coverage. A file you haven't opened may hold the most serious issue; reading most of the ` +
+    `codebase and concluding "clean" is exactly how real bugs go unreported. You must read a file before you ` +
+    `can cite it in a finding. Call submit_findings when done (empty findings array if you found nothing).`
+  );
+}
+
 export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> {
   const tools: GeminiToolDef[] = QA_TOOL_DEFS.map(translateNimToolToGeminiTool);
   const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt });
@@ -172,11 +265,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
     { role: "system", content: systemPrompt },
     {
       role: "user",
-      content:
-        `Review this codebase for ${config.reviewFocus}. Call list_files first to see every file, then ` +
-        `read_file on the files relevant to your review — read broadly, not just one file, before concluding. ` +
-        `You must read a file before you can cite it in a finding, and submit_findings will be rejected if you've ` +
-        `barely looked at the codebase. Call submit_findings when done (empty findings array if you found nothing).`,
+      content: buildQaInitialMessage(config.reviewFocus, config.systemContext),
     },
   ];
 
@@ -184,9 +273,13 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
   const errors: string[] = [];
   const recentCallSignatures: string[] = [];
   let iterations = 0;
-  let totalFilesListed = 0;
+  // Computed upfront (not lazily on the first list_files call) since the
+  // iteration cap must scale with the real file count from the start —
+  // see computeQaMaxIterations.
+  let totalFilesListed = listLabeledFiles(config.dirs).length;
+  const effectiveMaxIterations = computeQaMaxIterations(totalFilesListed);
 
-  while (iterations < QA_MAX_ITERATIONS) {
+  while (iterations < effectiveMaxIterations) {
     iterations++;
 
     // 2026-07-24 (W0.3): proactive compaction — checked before the call it
@@ -202,7 +295,12 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
       // of the un-tiered geminiChatWithTools(messages, tools) call this used
       // to make — which silently defaulted every real GAN review to
       // gemini-3.5-flash regardless of the TIER_POOLS config.
-      response = await routeToolsWithFallback("qa", messages, tools);
+      // 2026-07-28: agentName rotates each agent's FALLBACK order so
+      // Navya/Karan/Deepika (genuinely parallel, per CLAUDE.md's own
+      // "different models = 120 RPM effective capacity" design) don't all
+      // collide on the SAME fallback model's shared rate limit when the
+      // pool's shared primary is exhausted — see rotatedPoolForAgent.
+      response = await routeToolsWithFallback("qa", messages, tools, { agentName: config.agentName });
       if (iterations === 1) {
         console.log(`[${config.agentName}:qa-loop] model=${response.modelUsed}`);
       }
@@ -229,7 +327,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
     const turnSignature = response.toolCalls.map((c) => `${c.name}:${JSON.stringify(c.input)}`).join("|");
     recentCallSignatures.push(turnSignature);
     if (detectStuckLoop(recentCallSignatures)) {
-      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${QA_MAX_ITERATIONS}-iteration cap.`;
+      const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${effectiveMaxIterations}-iteration cap.`;
       console.log(`[${config.agentName}:qa-loop] ${reason}`);
       errors.push(reason);
       const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles);
@@ -267,6 +365,13 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
           } catch (err) {
             result = { status: "error", summary: `read_file failed: ${String(err)}` };
           }
+          break;
+        }
+        case "read_files": {
+          const paths = (call.input as { paths?: string[] }).paths ?? [];
+          const { output, readPaths } = readLabeledFiles(config.dirs, paths);
+          for (const path of readPaths) readFiles.add(path);
+          result = { status: "success", summary: `Read ${paths.length} file(s)`, output };
           break;
         }
         case "submit_findings": {

@@ -29,6 +29,15 @@ import { runStage6 } from "../orchestrator/stages/stage6-deployment.ts";
 // differently — npm install between them would make a naive full-tree
 // hash produce false-positive rollbacks).
 import { recordHandoff, verifyHandoff } from "./context-chain-activities.ts";
+// Phase 5 (full agentic upgrade): Firecrawl's page-fetch capability existed
+// but was reachable ONLY from agents/planner/src/index.ts. Saanvi is a
+// one-shot agentChat caller, not a tool-calling agent loop (unlike
+// Aanya/Shubham/QA), so the fetch_url TOOL wired into loop.ts/gemini-loop.ts
+// never reaches her — a user saying "build me a site like
+// https://example.com" had that URL sit as inert text. extractFirstUrl +
+// execFetchUrl below inject the real fetched content into her prompt the
+// same way getAttachmentsContext already injects uploaded file content.
+import { execFetchUrl } from "../../packages/agent-runtime/src/tools/research.ts";
 import { agentChat }               from "@nexsidi/llm-client";
 import { db, projects, qaResults, stuckStateLog } from "@nexsidi/db";
 import { eq, and } from "drizzle-orm";
@@ -38,6 +47,7 @@ import { join } from "path";
 import { execSync, spawnSync } from "child_process";
 import type { ProjectSpec } from "../../agents/saanvi/src/index.ts";
 import type { BuildPlan }   from "../../agents/arjun/src/index.ts";
+import type { DesignBrief } from "../../agents/vanya/src/index.ts";
 
 // ── In-process cache (activities run in same Temporal worker process)
 const specCache = new Map<string, ProjectSpec>();
@@ -74,6 +84,29 @@ function getAttachmentsContext(projectId: string): string {
   }
 }
 
+// Pure — no network, no I/O. Requires an explicit http(s):// protocol so a
+// bare company name that happens to look like a domain (e.g. "our company
+// is called nextech.com") is never mistaken for a real reference URL.
+export function extractFirstUrl(text: string): string | null {
+  const match = text.match(/https?:\/\/\S+/);
+  if (!match) return null;
+  // Strip trailing prose punctuation (comma, period, closing quote/paren)
+  // that regularly follows a URL in a sentence but isn't part of it.
+  return match[0].replace(/[.,;:!?)'"]+$/, "");
+}
+
+async function getReferencedUrlContext(userRequest: string): Promise<string> {
+  const url = extractFirstUrl(userRequest);
+  if (!url) return "";
+
+  const result = await execFetchUrl({ url });
+  if (result.status !== "success" || !result.output) {
+    console.warn(`[activity:saanvi] could not fetch referenced URL ${url}: ${result.summary}`);
+    return "";
+  }
+  return `\n\n=== REFERENCED PAGE (${url}) ===\n${result.output}\n`;
+}
+
 // ── Planner fast path: check if build-plan.json was pre-generated ───────────────
 export async function checkBuildPlanExists(projectId: string): Promise<boolean> {
   const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
@@ -85,21 +118,53 @@ export async function checkBuildPlanExists(projectId: string): Promise<boolean> 
   return false;
 }
 
+export interface SaanviActivityResult {
+  status: "locked" | "needs_clarification";
+  questions?: string[];
+}
+
 // ── Stage 1: Requirements → locked ProjectSpec ─────────────────────────────────
-export async function runSaanvi(projectId: string, userRequest?: string): Promise<void> {
+// 2026-08-05: previously always locked a spec, guessing at anything unclear
+// (root cause: agents/saanvi/src/index.ts's run() had no way to signal
+// ambiguity — see its header comment). Now returns a result the workflow
+// checks: on "needs_clarification" it pauses for a human answer (via
+// askAndWait in pipeline/workflows/project-build.ts) and re-invokes this same
+// activity with `clarificationAnswer` appended to the original request,
+// rather than writing spec.json/recording the handoff. `clarificationAnswer`
+// is appended, not substituted — Saanvi sees the full original request PLUS
+// the answer, so it isn't re-deriving context it already had.
+export async function runSaanvi(
+  projectId: string,
+  userRequest?: string,
+  clarificationAnswer?: string,
+): Promise<SaanviActivityResult> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
     if (userRequest) writeCacheFile(projectId, "user-request.txt", userRequest);
     const req  = userRequest ?? readUserRequest(projectId);
     const attachmentsContext = getAttachmentsContext(projectId);
-    const enrichedReq = req + attachmentsContext;
-    const spec = await runSaanviAgent(projectId, enrichedReq);
+    // Phase 5: "build me a site like https://..." — fetch what the user
+    // actually referenced instead of letting the URL sit as inert text.
+    // Fails open (empty string) on any error; real requirements gathering
+    // must not block on an external fetch.
+    const urlContext = await getReferencedUrlContext(req);
+    const answerContext = clarificationAnswer
+      ? `\n\n=== CLARIFICATION (user's answer to your previous question(s)) ===\n${clarificationAnswer}\n`
+      : "";
+    const enrichedReq = req + attachmentsContext + urlContext + answerContext;
+    const result = await runSaanviAgent(projectId, enrichedReq);
+    if (result.status === "needs_clarification") {
+      console.log(`[activity:saanvi] needs clarification for ${projectId} — ${result.questions.length} question(s)`);
+      return { status: "needs_clarification", questions: result.questions };
+    }
+    const spec = result.spec;
     specCache.set(projectId, spec);
     writeCacheFile(projectId, "spec.json", JSON.stringify(spec, null, 2));
     // Patent Claim 1/7: hash + sign the locked spec as it's handed to Arjun.
     await recordHandoff(projectId, "saanvi", "arjun", spec);
     console.log(`[activity:saanvi] spec locked for ${projectId} — ${spec.features.length} features`);
+    return { status: "locked" };
   } finally {
     clearInterval(hb);
   }
@@ -141,6 +206,21 @@ export async function runArjun(projectId: string): Promise<void> {
   } finally {
     clearInterval(hb);
   }
+}
+
+// 2026-08-05: real gap found live — Vanya generates a DesignBrief (mood,
+// palette, typography, layoutConcept) inside Arjun's run(), and it flows
+// straight into BuildPlan with ZERO human visibility: `apps/` has no page
+// that ever shows it, and the existing "await_spec_approval" gate only
+// exposes spec.name/description/features (see stage1-requirements.ts's own
+// header comment) — the user approves a feature list having never seen the
+// colors/typography/layout direction about to be built. Root-caused via the
+// same "check what's true, don't assume" discipline as the redeploy/spec-
+// compliance fixes above. Minimal, additive: reads the SAME build-plan.json
+// runArjun already writes; doesn't change runArjun's own contract.
+export async function getDesignBrief(projectId: string): Promise<DesignBrief> {
+  const plan = planCache.get(projectId) ?? readCacheFile<BuildPlan>(projectId, "build-plan.json");
+  return plan.designBrief;
 }
 
 interface PlannerSimplePlan {
@@ -481,7 +561,7 @@ export async function markProjectFailed(
 // fault isolation + instinct memory. Replaced the degenerate one-shot
 // runQaAgent scorer as the QA path new workflow runs take (that scorer
 // and its callers were deleted 2026-07-25 — see audit-2026-07-25.md).
-function buildStage4Result(projectId: string): { backendOutputDir: string; frontendOutputDir: string; filesWritten: string[] } {
+export function buildStage4Result(projectId: string): { backendOutputDir: string; frontendOutputDir: string; filesWritten: string[] } {
   const buildDir = getBuildDir(projectId);
   return {
     backendOutputDir: join(buildDir, "backend"),
@@ -498,11 +578,30 @@ function buildStage4Result(projectId: string): { backendOutputDir: string; front
 // this boundary, so including it adds no signal — only cost. Filtered here,
 // not in collectFiles itself, so this scoping is local to the one caller
 // that needs it.
-function filterSourceManifest(stage4Result: { backendOutputDir: string; frontendOutputDir: string; filesWritten: string[] }) {
-  const EXCLUDE = /(^|\/)(node_modules|\.next|dist)(\/|$)/;
+//
+// 2026-07-26 (live, simple1): deliberately DROPS backendOutputDir/
+// frontendOutputDir from the returned (and therefore hashed) object.
+// Root-caused via mtime forensics on a real rollback — no file in the build
+// dir changed between recordHandoff and verifyHandoff, so the false-positive
+// hash mismatch could only have come from the two raw absolute paths, which
+// are environment-dependent (drive-letter case, slash direction, trailing
+// slash, how BUILD_DIR got resolved in whichever process ran the activity)
+// and carry no information about whether the actual SOURCE QA reviewed
+// changed. Only the relative, filtered, sorted file list is what Claim 3
+// needs to detect real tampering.
+export function filterSourceManifest(stage4Result: { backendOutputDir: string; frontendOutputDir: string; filesWritten: string[] }) {
+  // 2026-08-05 (live, verify361300): real rollback root-caused — Riya's
+  // deploy step runs `git init && git add -A && git commit` (agents/riya/
+  // src/index.ts) as the normal "GitHub repo" deliverable. buildStage4Result
+  // does a LIVE directory rescan on every call, so when stage6's own retry
+  // (or a Temporal activity retry) re-invokes verifyHandoff after Riya's
+  // FIRST attempt already ran git init, the rescan now sees .git/* files
+  // that weren't present when recordDeployHandoffActivity snapshotted the
+  // manifest — a false-positive mismatch against the pipeline's OWN
+  // artifact, not tampering. .git is generated deploy output, not reviewed
+  // source, exactly like node_modules/.next/dist above — same exclusion logic.
+  const EXCLUDE = /(^|\/)(node_modules|\.next|dist|\.git)(\/|$)|\.tsbuildinfo$|(^|\/)(package-lock\.json|bun\.lock|bun\.lockb|yarn\.lock|pnpm-lock\.yaml)$/;
   return {
-    backendOutputDir: stage4Result.backendOutputDir,
-    frontendOutputDir: stage4Result.frontendOutputDir,
     filesWritten: stage4Result.filesWritten.filter((f) => !EXCLUDE.test(f)).sort(),
   };
 }
@@ -524,12 +623,19 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
     console.log(
       `[activity:qa-fix-loop] pass=${result.pass} stuck=${result.stuck ?? false} iterations=${result.iterations} findings=${result.findings.length}`,
     );
-    if (result.pass) {
-      // Patent Claim 1/7: QA is handing off a VERIFIED-GOOD codebase to
-      // deploy — record it now, at the moment it becomes true, not
-      // speculatively before QA has actually passed.
-      await recordHandoff(projectId, "qa-gan", "deploy", filterSourceManifest(stage4Result));
-    }
+    // 2026-08-04 (live, final838491 — 2nd occurrence, root-caused): recording
+    // the handoff HERE used to cause a real, reproducible false-positive
+    // hash mismatch. The post-QA compile-check step (project-build.ts) runs
+    // AFTER this point and BEFORE deploy's verifyHandoff — it's a legitimate
+    // pipeline step, not tampering, but it can still touch the build
+    // directory (npm install if node_modules is stale, a killed/retried tsc
+    // process). Two live runs hit this exact race. Recording is now done by
+    // recordDeployHandoffActivity, called from the workflow AFTER compile-
+    // check settles and BEFORE the deploy-approval wait — late enough to
+    // avoid the compile-check race, early enough that the (potentially long)
+    // human-approval wait is still covered by real tamper detection, unlike
+    // collapsing record immediately against verify (which would make the
+    // check a tautology — nothing could ever be caught).
     return {
       pass: result.pass,
       stuck: result.stuck ?? false,
@@ -539,6 +645,18 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
   } finally {
     clearInterval(hb);
   }
+}
+
+// 2026-08-04 (live, final838491): split out of runQAFixLoopActivity so the
+// snapshot is taken AFTER the post-QA compile-check settles (project-build.ts
+// calls this between the compile-check retry loop and the deploy-approval
+// wait), not at the instant QA passes. See runQAFixLoopActivity's header
+// comment for the full root cause. Patent Claim 1/7: still records the exact
+// codebase about to be trusted for deploy — just at a point that isn't racing
+// a routine, expected pipeline step.
+export async function recordDeployHandoffActivity(projectId: string): Promise<void> {
+  const stage4Result = buildStage4Result(projectId);
+  await recordHandoff(projectId, "qa-gan", "deploy", filterSourceManifest(stage4Result));
 }
 
 // ── Stage 6 (P1): deploy + re-run adversarial QA against the LIVE deployed
@@ -569,7 +687,7 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function getPlan(projectId: string): BuildPlan {
+export function getPlan(projectId: string): BuildPlan {
   return planCache.get(projectId) ?? readCacheFile<BuildPlan>(projectId, "build-plan.json");
 }
 

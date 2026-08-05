@@ -21,7 +21,20 @@ CREATE TABLE IF NOT EXISTS users (
   email       TEXT NOT NULL,
   created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_users_clerk_id ON users (clerk_id);
+-- 2026-08-05: guarded — migrate.ts has no applied-migrations tracking table,
+-- it re-runs every .sql file unconditionally on every invocation (see its
+-- own header comment). clerk_id was fully dropped from the live platform DB
+-- at some point outside these migration files (see 0004_drop_clerk_id.sql,
+-- which now formally completes that drop) — an unguarded CREATE INDEX on a
+-- column that no longer exists broke every subsequent replay of this file,
+-- permanently, on this environment. This guard makes 0000 replayable
+-- regardless of whether clerk_id currently exists.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'clerk_id') THEN
+    CREATE INDEX IF NOT EXISTS idx_users_clerk_id ON users (clerk_id);
+  END IF;
+END $$;
 
 -- Projects
 CREATE TABLE IF NOT EXISTS projects (

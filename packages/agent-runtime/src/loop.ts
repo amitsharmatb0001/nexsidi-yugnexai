@@ -15,6 +15,8 @@ import { execRunCommand, COMMAND_TOOL_DEF } from "./tools/command.ts";
 import { execHttpRequest, HTTP_TOOL_DEF } from "./tools/http.ts";
 import { execDockerCompose, DOCKER_TOOL_DEF } from "./tools/docker.ts";
 import { execWebSearch, WEB_SEARCH_TOOL_DEF } from "./tools/websearch.ts";
+import { execFetchUrl, FETCH_URL_TOOL_DEF } from "./tools/research.ts";
+import { recordEscalation, ESCALATE_FINDING_TOOL_DEF, type Escalation } from "./tools/escalate.ts";
 import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
 import { BrowserToolset, BROWSER_TOOL_DEFS, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
 import { execDbQuery, DB_QUERY_TOOL_DEF } from "./tools/db.ts";
@@ -51,6 +53,15 @@ export interface AgentRunConfig {
   enableDockerTools?: boolean; // Riya only
   enableHttpTools?: boolean;   // Shubham verification
   enableWebSearch?: boolean;   // fact-checking / package verification
+  // Phase 5 (full agentic upgrade): reading ONE specific known page (a
+  // user-referenced company site, a design reference) — complements
+  // enableWebSearch, which answers open questions via Gemini grounding
+  // rather than extracting one exact URL's full content.
+  enableWebFetch?: boolean;
+  // P3 (agent-autonomy-assessment F3): lets a fix agent hand a finding off
+  // to the agent that actually owns the layer where the fix belongs,
+  // instead of forcing a workaround in its own domain. See tools/escalate.ts.
+  enableEscalation?: boolean;
   enableScreenshot?: boolean;  // visual QA
   enableBrowser?: boolean;     // interactive live-app QA (navigate/click/fill/console-errors/computed-style) — Tilotma Tier 3
   enableDbQuery?: boolean;     // read-only DB verification (data-round-trip checks) — Tilotma Tier 3
@@ -102,6 +113,13 @@ export interface AgentRunResult {
   // times; "cannot_finish" = any other non-success exit (max iterations,
   // agent stopped without task_complete, transport failures).
   escalationReason?: "three_strikes" | "cannot_finish";
+  // P3 (agent-autonomy-assessment F3): findings this run handed off to
+  // another agent's domain via escalate_finding — see tools/escalate.ts.
+  // Optional (matches escalationReason's convention above) — absent means
+  // "this run never called escalate_finding" (its enableEscalation was off,
+  // or it never had a reason to escalate), not "empty on purpose". Callers
+  // that care read `result.escalations ?? []`.
+  escalations?: Escalation[];
 }
 
 // Exported for the same reason as MAX_ITERATIONS above — claude-loop.ts
@@ -235,6 +253,8 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
     ...(config.enableHttpTools ? [HTTP_TOOL_DEF] : []),
     ...(config.enableDockerTools ? [DOCKER_TOOL_DEF] : []),
     ...(config.enableWebSearch ? [WEB_SEARCH_TOOL_DEF] : []),
+    ...(config.enableWebFetch ? [FETCH_URL_TOOL_DEF] : []),
+    ...(config.enableEscalation ? [ESCALATE_FINDING_TOOL_DEF] : []),
     ...(config.enableScreenshot ? [SCREENSHOT_TOOL_DEF] : []),
     ...(config.enableBrowser ? BROWSER_TOOL_DEFS : []),
     ...(config.enableDbQuery ? [DB_QUERY_TOOL_DEF] : []),
@@ -468,6 +488,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   };
 
   const filesWritten: string[] = [];
+  const escalations: Escalation[] = [];
   const errors: string[] = [];
   const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
   let iterations = 0;
@@ -599,7 +620,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     if (sanitizedToolCalls.length === 0) {
       if (choice.finish_reason === "stop") {
         console.log(`[${config.agentName}:agent] Model stopped without task_complete — treating as done`);
-        return { success: false, summary: choice.message.content ?? "no content", filesWritten, iterations, errors: [...errors, "Agent stopped without calling task_complete"], escalationReason: "cannot_finish" };
+        return { success: false, summary: choice.message.content ?? "no content", filesWritten, iterations, errors: [...errors, "Agent stopped without calling task_complete"], escalationReason: "cannot_finish", escalations };
       }
       continue;
     }
@@ -610,7 +631,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
       const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${effectiveMaxIterations}-iteration cap.`;
       console.log(`[${config.agentName}:agent] ${reason}`);
       await saveHistory();
-      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish" };
+      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish", escalations };
     }
 
     // Execute all tool calls
@@ -735,6 +756,13 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           emitEvent({ type: "tool_result", tool: "web_search", status: result.status, summary: result.summary });
           break;
         }
+        case "fetch_url": {
+          const fetchArgs = args as { url: string; timeout_ms?: number };
+          emitEvent({ type: "tool_call", tool: "fetch_url", input: { url: fetchArgs.url } });
+          result = await execFetchUrl(fetchArgs);
+          emitEvent({ type: "tool_result", tool: "fetch_url", status: result.status, summary: result.summary });
+          break;
+        }
         case "screenshot": {
           const ssArgs = args as { url: string; outputPath: string };
           emitEvent({ type: "tool_call", tool: "screenshot", input: ssArgs });
@@ -787,6 +815,14 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           }
           break;
         }
+        case "escalate_finding": {
+          const a = args as { target_agent: string; finding: string; reason: string };
+          const { escalation, result: escalationResult } = recordEscalation(a);
+          escalations.push(escalation);
+          console.log(`[${config.agentName}:agent] Escalated finding to ${escalation.targetAgent}: ${escalation.reason.slice(0, 100)}`);
+          result = escalationResult;
+          break;
+        }
         case "task_complete": {
           const a = args as { summary: string; files_written: string[]; verification_passed: boolean };
           // Phase 5 Task 3: default-FAIL completion gate — rejected without
@@ -817,6 +853,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
             filesWritten: [...filesWritten, ...(a.files_written ?? [])].filter((v, i, arr) => arr.indexOf(v) === i),
             iterations,
             errors,
+            escalations,
             ...(a.verification_passed ? {} : { escalationReason: "cannot_finish" as const }),
           };
         }
@@ -872,6 +909,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     iterations,
     errors: exhaustedThreeStrikes ? errors : [...errors, "Max iterations exceeded"],
     escalationReason: exhaustedThreeStrikes ? "three_strikes" : "cannot_finish",
+    escalations,
   };
   } finally {
     console.log = originalLog;
