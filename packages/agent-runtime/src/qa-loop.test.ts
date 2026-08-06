@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listLabeledFiles, resolveLabeledFile, readLabeledFiles, detectStuckLoop, buildQaInitialMessage, computeQaMaxIterations, stripThinkingBlock, type LabeledDir } from "./qa-loop.ts";
+import { listLabeledFiles, resolveLabeledFile, readLabeledFiles, detectStuckLoop, buildQaInitialMessage, computeQaMaxIterations, stripThinkingBlock, extractFindingsFromHistory, type LabeledDir } from "./qa-loop.ts";
 
 let root: string;
 let dirs: LabeledDir[];
@@ -120,6 +120,68 @@ test("stripThinkingBlock leaves plain JSON (no thinking block) unchanged", () =>
 test("stripThinkingBlock only strips a LEADING thinking block, not one embedded mid-string", () => {
   const raw = '{"findings": [{"detail": "mentions <thinking> literally in the text"}]}';
   expect(stripThinkingBlock(raw)).toBe(raw);
+});
+
+// 2026-08-06: real bug found live (project 88d7b375eaef) — Karan's fallback
+// extraction hit "SyntaxError: JSON Parse error: Unexpected EOF" (a genuinely
+// truncated LLM response, not the <thinking>-wrapping case above) and the old
+// catch block silently returned [], indistinguishable from "reviewed cleanly,
+// no findings." extractFindingsFromHistory now retries once, and on a second
+// failure pushes into the caller-supplied `errors` array instead of
+// swallowing — Navya/Karan/Deepika's existing hasFatalError check turns any
+// non-benign errors[] entry into a synthetic "review did not complete"
+// finding, so a real extraction failure now blocks the QA gate instead of
+// silently passing it.
+// Dependency-injected stub (matches this codebase's own convention — see
+// Vanya's `deps: VanyaDeps = { chat: agentChat }`) rather than mock.module,
+// which registers globally for the whole bun test process and leaked into
+// packages/llm-client/src/gemini.test.ts's own direct-import test for the
+// real geminiChat — a real bug found while first writing this test.
+function stubChat(responses: string[]): { chat: (msgs: unknown[]) => Promise<{ content: string }>; callCount: () => number } {
+  let calls = 0;
+  return {
+    chat: async () => {
+      const content = responses[calls] ?? responses.at(-1) ?? "";
+      calls++;
+      return { content };
+    },
+    callCount: () => calls,
+  };
+}
+
+test("extractFindingsFromHistory retries once on unparseable content, then succeeds", async () => {
+  const { chat, callCount } = stubChat(["not valid json{{{", '{"findings": [{"severity": "HIGH", "category": "x", "detail": "y", "file": "backend/src/index.ts"}]}']);
+  const errors: string[] = [];
+  const findings = await extractFindingsFromHistory(
+    [{ role: "user", content: "review this" } as any],
+    "karan",
+    new Set(["backend/src/index.ts"]),
+    errors,
+    chat as any,
+  );
+  expect(callCount()).toBe(2);
+  expect(findings).toHaveLength(1);
+  expect(errors).toHaveLength(0);
+});
+
+test("extractFindingsFromHistory pushes a non-benign error (not silent []) when both attempts are unparseable", async () => {
+  const { chat, callCount } = stubChat(["not valid json{{{", "still not valid json{{{"]);
+  const errors: string[] = [];
+  const findings = await extractFindingsFromHistory(
+    [{ role: "user", content: "review this" } as any],
+    "karan",
+    new Set(["backend/src/index.ts"]),
+    errors,
+    chat as any,
+  );
+  expect(callCount()).toBe(2);
+  expect(findings).toEqual([]);
+  expect(errors).toHaveLength(1);
+  // Must NOT match the benign-pattern excludes karan/navya/deepika's wrappers
+  // check for, or a real failure would still be misread as a clean pass.
+  expect(errors[0]).not.toContain("Max iterations");
+  expect(errors[0]).not.toContain("stopped without calling submit_findings");
+  expect(errors[0]).not.toContain("Stuck:");
 });
 
 test("computeQaMaxIterations never drops below the original 30 for small projects", () => {

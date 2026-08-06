@@ -13,6 +13,7 @@
 import {
   routeToolsWithFallback,
   translateNimToolToGeminiTool,
+  geminiChat,
   type GeminiMessage,
   type GeminiToolDef,
   type GeminiPart,
@@ -330,7 +331,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
     if (response.toolCalls.length === 0) {
       if (response.stopReason === "STOP" || response.stopReason === null) {
         console.log(`[${config.agentName}:qa-loop] Agent stopped without calling submit_findings. Running fallback parser...`);
-        const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles);
+        const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles, errors);
         return { findings: fallbackFindings, iterations, errors };
       }
       continue;
@@ -342,7 +343,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
       const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${effectiveMaxIterations}-iteration cap.`;
       console.log(`[${config.agentName}:qa-loop] ${reason}`);
       errors.push(reason);
-      const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles);
+      const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles, errors);
       return { findings: fallbackFindings, iterations, errors };
     }
 
@@ -417,19 +418,53 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
   }
 
   console.log(`[${config.agentName}:qa-loop] Max iterations reached without submit_findings. Running fallback parser...`);
-  const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles);
+  const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles, errors);
   return { findings: fallbackFindings, iterations, errors };
 }
 
-async function extractFindingsFromHistory(
+export async function extractFindingsFromHistory(
   messages: GeminiMessage[],
   agentName: string,
   readFiles: ReadonlySet<string>,
+  errors: string[],
+  chat: typeof geminiChat = geminiChat,
 ): Promise<Finding[]> {
-  try {
-    const { geminiChat } = await import("@nexsidi/llm-client");
+  // 2026-08-06: real bug found live (project 88d7b375eaef) — a genuinely
+  // truncated/malformed LLM response here (JSON.parse "Unexpected EOF", not
+  // the <thinking>-wrapping case stripThinkingBlock already fixes) hit the
+  // catch below and silently returned [], which is INDISTINGUISHABLE from a
+  // real "agent reviewed the code and found nothing" outcome once it reaches
+  // Navya/Karan/Deepika's wrapper — a QA integrity hole for a gate whose
+  // entire job is catching real bugs. One retry (same "retry once on
+  // empty/unparseable" convention as Saanvi/Arjun/Vanya) before giving up;
+  // on a second failure, push into `errors` instead of swallowing — the
+  // three QA wrappers' existing hasFatalError check already turns a non-
+  // benign errors[] entry into a synthetic "review did not complete"
+  // CRITICAL finding, so this makes extraction failure visibly block the
+  // gate instead of quietly passing it.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await attemptExtraction(messages, agentName, readFiles, chat);
+    } catch (err) {
+      if (attempt === 2) {
+        const msg = `[${agentName}] fallback findings extraction failed after retry: ${String(err)}`;
+        console.error(msg);
+        errors.push(msg);
+        return [];
+      }
+      console.error(`[qa-loop] Fallback findings extraction failed (attempt ${attempt}) — retrying once:`, err);
+    }
+  }
+  return [];
+}
 
-    const chatMessages: any[] = [];
+async function attemptExtraction(
+  messages: GeminiMessage[],
+  agentName: string,
+  readFiles: ReadonlySet<string>,
+  chat: typeof geminiChat,
+): Promise<Finding[]> {
+  const chatMessages: any[] = [];
     for (const m of messages) {
       if (m.role === "system") {
         chatMessages.push({ role: "system", content: m.content });
@@ -481,7 +516,7 @@ async function extractFindingsFromHistory(
         `If the agent did not identify any actual issues or if the review was clean/empty, output: {"findings": []}.`,
     });
 
-    const response = await geminiChat(chatMessages);
+    const response = await chat(chatMessages);
     // 2026-08-05: real bug found live (project 09bf2f89ca43) — this call
     // replays the FULL original QA agent conversation, including its
     // system-prompt role message (see the loop above: `if (m.role ===
@@ -495,15 +530,11 @@ async function extractFindingsFromHistory(
     // actually reported. stripThinkingBlock mirrors the same extraction
     // gemini-loop.ts/claude-loop.ts/loop.ts already use for logging, applied
     // here to actually remove it before parsing.
-    const trimmed = stripThinkingBlock(response.content.trim()).trim();
-    const fenceMatch = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/);
-    const cleanJsonText = fenceMatch ? fenceMatch[1]! : trimmed;
-    const parsed = JSON.parse(cleanJsonText) as { findings?: Finding[] };
-    const extracted = parsed.findings ?? [];
+  const trimmed = stripThinkingBlock(response.content.trim()).trim();
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/);
+  const cleanJsonText = fenceMatch ? fenceMatch[1]! : trimmed;
+  const parsed = JSON.parse(cleanJsonText) as { findings?: Finding[] };
+  const extracted = parsed.findings ?? [];
 
-    return extracted.filter(f => !f.file || readFiles.has(f.file));
-  } catch (err) {
-    console.error(`[qa-loop] Fallback findings extraction failed:`, err);
-    return [];
-  }
+  return extracted.filter(f => !f.file || readFiles.has(f.file));
 }
