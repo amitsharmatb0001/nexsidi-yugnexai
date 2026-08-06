@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 
 const TEST_PROJECT = "test-gateway-proj";
-const BUILD_DIR = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
 
 test("readGatewayDecision returns null when no decision file exists yet", async () => {
   expect(await readGatewayDecision(TEST_PROJECT, "02-gateway")).toBeNull();

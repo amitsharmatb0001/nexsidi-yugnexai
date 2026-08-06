@@ -154,7 +154,7 @@ export async function runLiveRetestStub(projectId: string, appUrl: string): Prom
 async function readProjectSpec(projectId: string): Promise<ProjectSpec> {
   const { readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   const specPath = join(buildDir, projectId, "spec.json");
   return JSON.parse(readFileSync(specPath, "utf-8")) as ProjectSpec;
 }
@@ -539,7 +539,7 @@ export async function runStage6(
       const { join } = await import("node:path");
       const { buildMismatchObservations, appendInstinctObservations } = await import("../../../packages/agent-runtime/src/instinct-observer.ts");
       
-      const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+      const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
       const submissionsPath = join(buildDir, projectId, "qa-submissions.json");
       if (existsSync(submissionsPath)) {
         const submissions = JSON.parse(readFileSync(submissionsPath, "utf-8"));
@@ -639,7 +639,7 @@ export async function runStage6(
       const { join } = await import("node:path");
       const { buildMismatchObservations, appendInstinctObservations } = await import("../../../packages/agent-runtime/src/instinct-observer.ts");
       
-      const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+      const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
       const submissionsPath = join(buildDir, projectId, "qa-submissions.json");
       if (existsSync(submissionsPath)) {
         const submissions = JSON.parse(readFileSync(submissionsPath, "utf-8"));

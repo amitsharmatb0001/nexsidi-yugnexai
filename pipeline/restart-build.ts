@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 const projectId = process.argv[2] ?? "7e1ab88dc56a";
 
 // Read the user request from the build dir
-const buildDir = "C:/tmp/nexsidi-builds";
+const buildDir = "E:/tmp/nexsidi-builds";
 let userRequest: string;
 try {
   userRequest = readFileSync(`${buildDir}/${projectId}/user-request.txt`, "utf-8");

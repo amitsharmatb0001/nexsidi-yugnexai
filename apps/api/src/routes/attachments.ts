@@ -35,7 +35,7 @@ attachmentsRouter.post("/:projectId", async (c) => {
       return c.json({ error: "No files provided" }, 400);
     }
 
-    const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+    const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
     const attachmentsDir = join(buildDir, projectId, "attachments");
     mkdirSync(attachmentsDir, { recursive: true });
 

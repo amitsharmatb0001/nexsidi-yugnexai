@@ -19,7 +19,7 @@ export function assertValidIdentifier(name: string, label: "projectId" | "stage"
 function checkpointPath(projectId: string, stage: string): string {
   assertValidIdentifier(projectId, "projectId");
   assertValidIdentifier(stage, "stage");
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   return join(buildDir, projectId, "checkpoints", `${stage}.json`);
 }
 

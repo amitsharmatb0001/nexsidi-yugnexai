@@ -11,8 +11,8 @@ import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 // runStage5 + Shubham/Aanya's runFix.
 
 const STAGE4_RESULT: Stage4Result = {
-  backendOutputDir: "C:/tmp/nexsidi-builds/test-proj/backend",
-  frontendOutputDir: "C:/tmp/nexsidi-builds/test-proj/frontend",
+  backendOutputDir: "E:/tmp/nexsidi-builds/test-proj/backend",
+  frontendOutputDir: "E:/tmp/nexsidi-builds/test-proj/frontend",
   filesWritten: ["backend/src/index.ts", "frontend/app/page.tsx"],
 };
 

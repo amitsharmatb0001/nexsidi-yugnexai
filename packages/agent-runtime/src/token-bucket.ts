@@ -55,7 +55,7 @@ export class SharedTokenBucket {
   private readonly maxRequestsPerMinute = 40; // NIM's actual RPM limit
 
   constructor() {
-    const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+    const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
     this.filePath = join(buildDir, "shared-token-bucket.json");
     this.lock = new FileLock(buildDir);
   }

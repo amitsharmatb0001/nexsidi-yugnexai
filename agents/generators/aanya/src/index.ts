@@ -14,7 +14,7 @@ import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
 
 export function getOutputDir(projectId: string): string {
-  return join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId, "frontend");
+  return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, "frontend");
 }
 
 // 2026-07-08: see agents/generators/shubham/src/index.ts's identical helper

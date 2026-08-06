@@ -24,7 +24,7 @@ if (!projectId || !userInput) {
   process.exit(1);
 }
 
-const BUILD_DIR = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
 const GATE_STAGES = ["02-gateway", "03-ui-preview"];
 const AUTO_APPROVE_POLL_MS = 3_000;
 

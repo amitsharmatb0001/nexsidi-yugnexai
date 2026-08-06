@@ -102,7 +102,7 @@ wsRouter.get(
 
     return {
       onOpen(_, ws) {
-        const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+        const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
         const logPath   = join(buildDir, projectId, "logs", "pipeline.log");
         const eventsPath = join(buildDir, projectId, "logs", "events.jsonl");
 
@@ -183,7 +183,7 @@ wsRouter.get("/screenshots/:projectId", upgradeWebSocket((c) => {
     onOpen(_, ws) {
       const { readdirSync, readFileSync, existsSync } = require("fs");
       const screenshotDir = join(
-        process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds",
+        process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds",
         projectId,
         "screenshots",
       );

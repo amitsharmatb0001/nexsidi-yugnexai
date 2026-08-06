@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 
 const TEST_PROJECT = "test-checkpoint-proj";
-const BUILD_DIR = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
 
 test("writeCheckpoint then readCheckpoint returns the same data", () => {
   writeCheckpoint(TEST_PROJECT, "01-requirements", { specId: "abc123", done: true });

@@ -20,7 +20,7 @@ function commitAgentWithGit(agentFilePath: string, agentName: string): void {
 }
 
 export async function runMetaSupervisor(projectId: string, deps: MetaSupervisorDeps = {}): Promise<void> {
-  const buildDir = deps.buildDir ?? process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = deps.buildDir ?? process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   const repositoryRoot = deps.repositoryRoot ?? process.cwd();
   const chat = deps.chat ?? geminiChat;
   const commitAgent = deps.commitAgent ?? commitAgentWithGit;

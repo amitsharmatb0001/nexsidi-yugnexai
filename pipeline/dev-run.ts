@@ -13,7 +13,7 @@ import { runPipeline } from "./orchestrator/run.ts";
 const PROJECT_ID = "dev-taskmanager-001";
 const USER_INPUT =
   "Build me a task manager — sign up, add tasks with due dates, check them off";
-const BUILD_DIR = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
 const RESUME = process.argv.includes("--resume");
 const TIMEOUT_MS = 60 * 60 * 1000; // 60 min hard cap — NIM generators + Gemini QA
 

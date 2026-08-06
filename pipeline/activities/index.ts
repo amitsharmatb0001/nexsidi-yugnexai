@@ -55,7 +55,7 @@ const specCache = new Map<string, ProjectSpec>();
 const planCache = new Map<string, BuildPlan>();
 
 function getAttachmentsContext(projectId: string): string {
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   const attachmentsDir = join(buildDir, projectId, "attachments");
   if (!existsSync(attachmentsDir)) return "";
 
@@ -110,7 +110,7 @@ async function getReferencedUrlContext(userRequest: string): Promise<string> {
 
 // ── Planner fast path: check if build-plan.json was pre-generated ───────────────
 export async function checkBuildPlanExists(projectId: string): Promise<boolean> {
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   const planPath = join(buildDir, projectId, "build-plan.json");
   for (let i = 0; i < 10; i++) {
     if (existsSync(planPath)) return true;
@@ -446,7 +446,7 @@ export async function runCompileCheck(
 
 // ── WS event publisher — appends to events.jsonl, tailed by /ws/pipeline/:id ─
 function appendEvent(projectId: string, event: Record<string, unknown>): void {
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   const logsDir = join(buildDir, projectId, "logs");
   try {
     mkdirSync(logsDir, { recursive: true });

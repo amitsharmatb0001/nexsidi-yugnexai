@@ -74,13 +74,13 @@ export function extractBackendContract(backendDir: string): string {
 }
 
 export function saveContract(projectId: string, contract: string): void {
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   const projectBuildDir = join(buildDir, projectId);
   writeFileSync(join(projectBuildDir, "api-contract.md"), contract, "utf-8");
 }
 
 export function loadAndInjectContract(projectId: string, basePrompt: string): string {
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   const contractPath = join(buildDir, projectId, "api-contract.md");
   if (existsSync(contractPath)) {
     const contract = readFileSync(contractPath, "utf-8");

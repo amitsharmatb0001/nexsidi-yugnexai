@@ -17,8 +17,8 @@ import type { DeployResult } from "../../../agents/riya/src/index.ts";
 // live-retest step are replaced with injected stubs (Stage6Deps).
 
 const STAGE4_RESULT: Stage4Result = {
-  backendOutputDir: "C:/tmp/nexsidi-builds/test-proj/backend",
-  frontendOutputDir: "C:/tmp/nexsidi-builds/test-proj/frontend",
+  backendOutputDir: "E:/tmp/nexsidi-builds/test-proj/backend",
+  frontendOutputDir: "E:/tmp/nexsidi-builds/test-proj/frontend",
   filesWritten: ["backend/src/index.ts", "frontend/app/page.tsx"],
 };
 

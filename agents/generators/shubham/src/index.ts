@@ -21,7 +21,7 @@ export interface GeneratorResult {
 }
 
 export function getOutputDir(projectId: string): string {
-  return join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId, "backend");
+  return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, "backend");
 }
 
 // Scan src/routes/ for *.routes.ts files and generate src/routes/index.ts that

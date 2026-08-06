@@ -25,8 +25,8 @@ import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 // covered here, via injected stub agent results (Stage5Agents).
 
 const STAGE4_RESULT: Stage4Result = {
-  backendOutputDir: "C:/tmp/nexsidi-builds/test-proj/backend",
-  frontendOutputDir: "C:/tmp/nexsidi-builds/test-proj/frontend",
+  backendOutputDir: "E:/tmp/nexsidi-builds/test-proj/backend",
+  frontendOutputDir: "E:/tmp/nexsidi-builds/test-proj/frontend",
   filesWritten: ["backend/src/index.ts", "frontend/app/page.tsx"],
 };
 

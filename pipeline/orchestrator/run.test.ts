@@ -6,7 +6,7 @@ import { join } from "path";
 import type { GatewayDecision } from "./types.ts";
 
 const TEST_PROJECT = "test-orchestrator-proj";
-const BUILD_DIR = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
 
 function cleanup(): void {
   rmSync(join(BUILD_DIR, TEST_PROJECT), { recursive: true, force: true });
@@ -43,7 +43,7 @@ test("runPipelineWithStages checkpoints after each stage and stops at an unappro
     },
     stage3: async () => {
       calls.push("stage3");
-      return { locked: true, outputDir: "C:/tmp/nexsidi-builds/test-orchestrator-proj/frontend" };
+      return { locked: true, outputDir: "E:/tmp/nexsidi-builds/test-orchestrator-proj/frontend" };
     },
   });
 
@@ -76,7 +76,7 @@ test("runPipelineWithStages lets stage3 run when stage2 decides proceed", async 
     },
     stage3: async () => {
       calls.push("stage3");
-      return { locked: true, outputDir: "C:/tmp/nexsidi-builds/test-orchestrator-proj/frontend" };
+      return { locked: true, outputDir: "E:/tmp/nexsidi-builds/test-orchestrator-proj/frontend" };
     },
     // Stage 3 locked -> the pipeline continues into 4-6; these stubs exist
     // only so this test's stage1-3 assertions aren't disturbed by that.
@@ -99,7 +99,7 @@ test("runPipelineWithStages lets stage3 run when stage2 decides proceed", async 
   expect(readCheckpoint(TEST_PROJECT, "02-gateway")).toEqual({ decision: "proceed" });
   expect(readCheckpoint(TEST_PROJECT, "03-ui-preview")).toEqual({
     locked: true,
-    outputDir: "C:/tmp/nexsidi-builds/test-orchestrator-proj/frontend",
+    outputDir: "E:/tmp/nexsidi-builds/test-orchestrator-proj/frontend",
   });
 
   cleanup();

@@ -158,7 +158,7 @@ interface KeyPaths {
 // pipeline run) the per-project signing keypair described above.
 export function getProjectKeyPair(projectId: string): KeyPaths {
   assertValidIdentifier(projectId, "projectId");
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   const keysDir = join(buildDir, projectId, "keys");
   const privateKeyPath = join(keysDir, "private.pem");
   const publicKeyPath = join(keysDir, "public.pem");

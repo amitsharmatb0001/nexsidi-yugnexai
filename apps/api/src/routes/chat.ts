@@ -26,7 +26,7 @@ function normalizeProjectId(raw: string): string {
 
 export const chatRouter = new Hono();
 
-const BUILD_DIR = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
 
 // ── POST /api/chat — send a message and receive streaming reply ───────────────
 // Stable UUID for unauthenticated users — DB userId column requires UUID format

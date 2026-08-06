@@ -10,7 +10,7 @@ import { readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 
 const projectId = process.argv[2] ?? "nextech10";
-const buildDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId);
+const buildDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
 
 const plan = JSON.parse(readFileSync(join(buildDir, "build-plan.json"), "utf-8"));
 

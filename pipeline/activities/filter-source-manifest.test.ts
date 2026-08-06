@@ -76,8 +76,8 @@ test("filterSourceManifest excludes a tsconfig.tsbuildinfo file written by a pos
 // affect the hash Claim 3 uses to detect real tampering.
 test("filterSourceManifest's hashed output is identical across differently-formatted (but equivalent) absolute build-dir paths", () => {
   const a = filterSourceManifest({
-    backendOutputDir: "C:/tmp/nexsidi-builds/simple1/backend",
-    frontendOutputDir: "C:/tmp/nexsidi-builds/simple1/frontend",
+    backendOutputDir: "E:/tmp/nexsidi-builds/simple1/backend",
+    frontendOutputDir: "E:/tmp/nexsidi-builds/simple1/frontend",
     filesWritten: stage4Result.filesWritten,
   });
   const b = filterSourceManifest({

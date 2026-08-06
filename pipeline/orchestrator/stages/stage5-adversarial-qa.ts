@@ -162,7 +162,7 @@ export async function runStage5WithAgents(
   try {
     const { writeFileSync, mkdirSync } = await import("node:fs");
     const { join } = await import("node:path");
-    const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+    const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
     const projectBuildDir = join(buildDir, projectId);
     mkdirSync(projectBuildDir, { recursive: true });
     const submissionsPath = join(projectBuildDir, "qa-submissions.json");

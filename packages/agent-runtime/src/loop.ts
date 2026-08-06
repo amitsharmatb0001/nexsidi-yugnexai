@@ -296,7 +296,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   const emitEvent = (event: Record<string, unknown>) => {
     if (!config.projectId) return;
     try {
-      const logDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", config.projectId!, "logs");
+      const logDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", config.projectId!, "logs");
       const { mkdirSync, appendFileSync } = require("fs");
       mkdirSync(logDir, { recursive: true });
       appendFileSync(
@@ -310,7 +310,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   if (config.projectId) {
     const logToFile = (msg: string) => {
       try {
-        const logDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", config.projectId!, "logs");
+        const logDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", config.projectId!, "logs");
         const { mkdirSync, appendFileSync } = require("fs");
         mkdirSync(logDir, { recursive: true });
         appendFileSync(join(logDir, "pipeline.log"), `${new Date().toISOString()} [${config.agentName}] ${msg}\n`, "utf-8");
@@ -377,7 +377,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   let messages: NimMessage[] = [];
   let loadedFromDb = false;
 
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   const localHistoryPath = config.projectId
     ? join(buildDir, config.projectId, `history-${config.agentName}.json`)
     : null;

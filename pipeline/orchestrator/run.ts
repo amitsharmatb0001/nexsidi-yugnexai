@@ -263,7 +263,7 @@ async function runTypescriptBuildGate(
   const { spawnSync } = await import("child_process");
   const { existsSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const buildDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId);
+  const buildDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
 
   for (const svc of ["backend", "frontend"] as const) {
     const dir = join(buildDir, svc);
@@ -320,7 +320,7 @@ export async function runPipeline(projectId: string, userInput: string): Promise
   const { appendFileSync, mkdirSync } = await import("node:fs");
   const { join } = await import("node:path");
 
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   const logDir = join(buildDir, projectId);
   mkdirSync(logDir, { recursive: true });
   const logFilePath = join(logDir, "run.log");

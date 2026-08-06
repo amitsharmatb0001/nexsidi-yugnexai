@@ -100,7 +100,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   if (config.projectId) {
     const logToFile = (msg: string) => {
       try {
-        const logDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", config.projectId!, "logs");
+        const logDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", config.projectId!, "logs");
         const { mkdirSync, appendFileSync } = require("fs");
         mkdirSync(logDir, { recursive: true });
         appendFileSync(join(logDir, "pipeline.log"), `${new Date().toISOString()} [${config.agentName}:claude] ${msg}\n`, "utf-8");
@@ -121,7 +121,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   const emitEvent = (event: Record<string, unknown>) => {
     if (!config.projectId) return;
     try {
-      const logDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", config.projectId!, "logs");
+      const logDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", config.projectId!, "logs");
       const { mkdirSync, appendFileSync } = require("fs");
       mkdirSync(logDir, { recursive: true });
       appendFileSync(

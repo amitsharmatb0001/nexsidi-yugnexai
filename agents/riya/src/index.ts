@@ -457,7 +457,7 @@ export async function run(
 ): Promise<DeployResult> {
   resolveDeployTarget(deployTarget);
 
-  const buildDir = join(process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds", projectId);
+  const buildDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
   mkdirSync(buildDir, { recursive: true });
 
   // 2026-07-12: real deploy blocker found live (stress-pro run) — the frontend

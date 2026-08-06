@@ -22,14 +22,14 @@ function assertValidIdentifier(name: string, label: "projectId" | "stage"): void
 function requestPath(projectId: string, stage: string): string {
   assertValidIdentifier(projectId, "projectId");
   assertValidIdentifier(stage, "stage");
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   return join(buildDir, projectId, "gateway", `${stage}.request.json`);
 }
 
 function decisionPath(projectId: string, stage: string): string {
   assertValidIdentifier(projectId, "projectId");
   assertValidIdentifier(stage, "stage");
-  const buildDir = process.env.BUILD_DIR ?? "C:/tmp/nexsidi-builds";
+  const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   return join(buildDir, projectId, "gateway", `${stage}.decision.json`);
 }
 
