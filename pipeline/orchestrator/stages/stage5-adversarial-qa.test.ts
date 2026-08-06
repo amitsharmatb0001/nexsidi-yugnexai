@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -18,6 +18,25 @@ import type { QAResult as NavyaResult } from "../../../agents/qa/navya/src/index
 import type { QAResult as DeepikaResult } from "../../../agents/qa/deepika/src/index.ts";
 import type { Tier3ReviewResult } from "../../../agents/tilotma/src/tier3-review.ts";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
+
+const source = readFileSync(new URL("./stage5-adversarial-qa.ts", import.meta.url), "utf-8");
+
+// 2026-08-06: real bug found live (project bae438767bed) — runStage5's real
+// labeledDirs() only ever passed "backend" and "frontend" to Navya/Karan/
+// Deepika, never "db" — so a "missing index" finding could NEVER be
+// verified against Pranav's actual migrations, only guessed at from the
+// controller's query pattern. Deepika kept re-flagging the identical
+// finding as unresolved after Pranav had already fixed it 8 separate times,
+// because she structurally could not see the file where the fix lived.
+// identifyFaultAgent (stage4-multi-agent-dev.ts) already had
+// file.startsWith("db/") -> "pranav" routing — a half-wired feature whose
+// only source never actually produced a db/-prefixed finding. Source-string
+// check (mirrors the established pattern for this file's real wiring, which
+// dynamically imports live agents and isn't unit-testable directly).
+test("runStage5's real labeledDirs includes a 'db' label pointing at Pranav's real output directory", () => {
+  expect(source).toContain('{ label: "db", path: getPranavOutputDir(projectId) }');
+  expect(source).toContain('import { getOutputDir as getPranavOutputDir }');
+});
 
 // Real Navya/Karan/Deepika run() calls and Tilotma's Tier 3 review hit live
 // LLMs and aren't unit-testable — per this plan's stated testing philosophy,

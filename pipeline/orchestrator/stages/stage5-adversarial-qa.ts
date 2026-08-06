@@ -24,6 +24,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import { identifyFaultAgent, type Finding, type Stage4Result } from "./stage4-multi-agent-dev.ts";
+import { getOutputDir as getPranavOutputDir } from "../../../agents/generators/pranav/src/index.ts";
 import {
   scoreSecurityFindings,
   type QAResult as KaranResult,
@@ -315,9 +316,21 @@ export async function runStage5(
     ]);
   const runKaranReal = karanModule.runExploring;
 
+  // 2026-08-06: real bug found live (project bae438767bed) — QA never had
+  // "db" in scope here at all, only backend/frontend, so a "missing index"
+  // finding could NEVER be verified against the actual schema — Deepika saw
+  // only the controller's query pattern, never Pranav's real migrations,
+  // and kept re-flagging the same finding as CRITICAL after it had already
+  // been fixed 8 separate times. identifyFaultAgent (stage4-multi-agent-
+  // dev.ts) already had file.startsWith("db/") -> "pranav" routing logic —
+  // a half-wired feature whose source (this labeled-dirs list) never
+  // actually produced a db/-prefixed finding for it to route. Adding the
+  // real migrations directory closes the loop: QA can now actually check
+  // whether the index exists before flagging it missing.
   const labeledDirs = (s4: Stage4Result): LabeledDir[] => [
     { label: "backend", path: s4.backendOutputDir },
     { label: "frontend", path: s4.frontendOutputDir },
+    { label: "db", path: getPranavOutputDir(projectId) },
   ];
 
   const agents: Stage5Agents = {
