@@ -117,3 +117,16 @@ test("VANYA_SYSTEM_PROMPT explicitly warns against the well-known AI-generated d
   expect(VANYA_SYSTEM_PROMPT).toContain("Purple-to-blue gradient");
   expect(VANYA_SYSTEM_PROMPT).toMatch(/Inter or Space Grotesk/i);
 });
+
+// 2026-08-06 (live, project 88d7b375eaef): real bug found live — given a
+// spec whose description said "deep midnight blue (#0B1021) background with
+// off-white (#F8F9FA) content", Vanya correctly copied both exact hex
+// values into the palette but SWAPPED their roles (labeled the off-white
+// color "background", the midnight blue "ink") — producing a light theme
+// when a dark one was explicitly specified. Caught live via the design-
+// approval gate's reject-and-retry loop; this asserts the prompt fix that
+// closes the gap is actually present, not just described in a commit.
+test("VANYA_SYSTEM_PROMPT instructs preserving the spec's literal color-to-role pairing when one is given", () => {
+  expect(VANYA_SYSTEM_PROMPT).toContain("REQUIREMENT, not a suggestion");
+  expect(VANYA_SYSTEM_PROMPT).toContain("SWAPPED their roles");
+});

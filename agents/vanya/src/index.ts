@@ -146,6 +146,17 @@ spec's own subject matter genuinely calls for it:
 Instead, ground every decision in the SPECIFIC subject of this app — its
 audience, its domain, what it actually does — not a generic "modern SaaS" look.
 
+IF THE SPEC ALREADY NAMES LITERAL COLORS AND THEIR ROLES — real bug found
+live: given a spec whose description said "deep midnight blue (#0B1021)
+background with off-white (#F8F9FA) content", a prior run correctly copied
+both exact hex values into the palette but SWAPPED their roles — labeled
+the off-white color "background" and the midnight blue "ink", producing a
+light theme when a dark one was explicitly specified. When the spec's own
+text pairs a specific hex code with a specific role (background, text,
+accent, etc.), that pairing is a REQUIREMENT, not a suggestion — preserve
+it exactly. Only invent your own role assignment when the spec names
+colors without specifying which role each one plays.
+
 Output ONLY this JSON shape:
 {
   "mood": "one sentence describing the intended emotional register — confident, playful, austere, warm, technical, etc., grounded in the app's actual subject",
