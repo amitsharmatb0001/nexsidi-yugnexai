@@ -89,9 +89,9 @@ afterEach(() => {
   rmSync(sandboxDir, { recursive: true, force: true });
 });
 
-test("execRunCommand records command_output evidence on success when given a ledger", () => {
+test("execRunCommand records command_output evidence on success when given a ledger", async () => {
   const ledger = createEvidenceLedger();
-  const result = execRunCommand(sandboxDir, { command: "node -e \"console.log('test')\"" }, ledger);
+  const result = await execRunCommand(sandboxDir, { command: "node -e \"console.log('test')\"" }, ledger);
   expect(result.status).toBe("success");
   expect(ledger.hasFreshEvidence()).toBe(true);
   const records = ledger.consume();
@@ -100,15 +100,15 @@ test("execRunCommand records command_output evidence on success when given a led
   expect(records[0]!.ref).toContain("node");
 });
 
-test("execRunCommand records NO evidence when the command fails, even with a ledger", () => {
+test("execRunCommand records NO evidence when the command fails, even with a ledger", async () => {
   const ledger = createEvidenceLedger();
-  const result = execRunCommand(sandboxDir, { command: "not-a-real-command-xyz" }, ledger);
+  const result = await execRunCommand(sandboxDir, { command: "not-a-real-command-xyz" }, ledger);
   expect(result.status).toBe("error");
   expect(ledger.hasFreshEvidence()).toBe(false);
 });
 
-test("execRunCommand works exactly as before when no ledger is passed (existing call sites unaffected)", () => {
-  const result = execRunCommand(sandboxDir, { command: "node -e \"console.log('test')\"" });
+test("execRunCommand works exactly as before when no ledger is passed (existing call sites unaffected)", async () => {
+  const result = await execRunCommand(sandboxDir, { command: "node -e \"console.log('test')\"" });
   expect(result.status).toBe("success");
 });
 

@@ -53,12 +53,68 @@ test("the real failure line at the tail survives truncation even with a huge mid
 // run_command('rm ...'), repeated failed npx/tsc attempts) because every
 // npm/npx/tsc-family command failed instantly on Windows. This test exercises
 // the REAL spawn path (no mocking) so a regression here fails loudly.
-test("execRunCommand actually runs npm-family commands on this platform (not ENOENT)", () => {
+test("execRunCommand actually runs npm-family commands on this platform (not ENOENT)", async () => {
+  const sandboxDir = mkdtempSync(join(tmpdir(), "nexsidi-command-test-"));
+  try {
+    const result = await execRunCommand(sandboxDir, { command: "npm --version" });
+    expect(result.status).toBe("success");
+    expect(result.summary).not.toContain("ENOENT");
+  } finally {
+    rmSync(sandboxDir, { recursive: true, force: true });
+  }
+});
+
+// 2026-08-06: real bug found live (project d749afe43d9c, root-cause traced
+// in full in docker.ts — this is the identical bug class, fixed the same
+// way). execRunCommand used spawnSync, which blocks Node's ENTIRE event
+// loop for the child process's full duration — every agent's run_command
+// tool call (npm install, tsc --noEmit, npm run build, all commonly taking
+// well past a few seconds) risked starving the calling Temporal activity's
+// heartbeat and triggering a false-positive context-chain violation that
+// kills the whole workflow. Converted to async spawn; these tests prove the
+// event loop stays free during a real command, not just that the function
+// happens to return a Promise.
+test("execRunCommand returns a Promise, not a synchronous result — the actual regression this fix closes", async () => {
   const sandboxDir = mkdtempSync(join(tmpdir(), "nexsidi-command-test-"));
   try {
     const result = execRunCommand(sandboxDir, { command: "npm --version" });
-    expect(result.status).toBe("success");
-    expect(result.summary).not.toContain("ENOENT");
+    expect(result).toBeInstanceOf(Promise);
+    // Await before cleanup — the child process still holds the cwd handle
+    // open on Windows until it exits; deleting the directory while it's
+    // still running (unawaited) throws EBUSY.
+    await result;
+  } finally {
+    rmSync(sandboxDir, { recursive: true, force: true });
+  }
+});
+
+test("execRunCommand does not block the event loop — a timer scheduled before the call still fires while it's running", async () => {
+  let timerFired = false;
+  const timer = setTimeout(() => { timerFired = true; }, 10);
+
+  const sandboxDir = mkdtempSync(join(tmpdir(), "nexsidi-command-test-"));
+  try {
+    // "npm --version" is fast, but a real spawnSync call still blocks the
+    // event loop for its full (short) duration — a 10ms timer scheduled
+    // beforehand only fires during the call if the loop was genuinely free
+    // to run it, not just because the command itself was quick.
+    await execRunCommand(sandboxDir, { command: "npm --version" });
+  } finally {
+    rmSync(sandboxDir, { recursive: true, force: true });
+  }
+
+  expect(timerFired).toBe(true);
+  clearTimeout(timer);
+});
+
+test("execRunCommand reports a timeout as a distinct error, not a false 'succeeded'", async () => {
+  const sandboxDir = mkdtempSync(join(tmpdir(), "nexsidi-command-test-"));
+  try {
+    // 1ms timeout — no real command can answer that fast, forcing the
+    // SIGKILL timeout path deterministically.
+    const result = await execRunCommand(sandboxDir, { command: "npm --version", timeout_ms: 1 });
+    expect(result.status).toBe("error");
+    expect(result.summary).toContain("timeout");
   } finally {
     rmSync(sandboxDir, { recursive: true, force: true });
   }

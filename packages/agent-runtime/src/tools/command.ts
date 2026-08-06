@@ -1,4 +1,4 @@
-import { spawnSync } from "child_process";
+import { spawn } from "child_process";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
 import type { EvidenceLedger } from "../enforce/evidence.ts";
@@ -58,6 +58,24 @@ export function resolveCommandExecutable(
     : command;
 }
 
+// 2026-08-06: real bug found live (project d749afe43d9c, via
+// packages/agent-runtime/src/tools/docker.ts's identical fix, commit
+// fe3f2ab) — this used spawnSync, which blocks Node's ENTIRE event loop for
+// the full child-process duration. This is the SINGLE execution path shared
+// by every agent (Shubham, Aanya, Pranav, Riya, Navya, Karan, Deepika) via
+// the "run_command" tool case in loop.ts/gemini-loop.ts/claude-loop.ts — a
+// slow npm install, a large tsc --noEmit, or a long build (some already use
+// timeout_ms up to 120000ms, close to genAct's 3-minute heartbeatTimeout in
+// pipeline/workflows/project-build.ts) risked the exact same failure chain
+// docker.ts's comment traces in full: blocked event loop -> missed
+// heartbeat -> Temporal times out and retries the activity -> the retry's
+// context-chain re-verification sees a manifest already modified by
+// attempt 1's still-running blocked call -> a false-positive hash mismatch
+// that rollbackAndEscalate treats as tampering and kills the whole
+// workflow, while the original blocked call keeps running as an orphan.
+// Converted to async spawn (event-based stdout/stderr accumulation, SIGKILL
+// on timeout) for the same reason and via the same pattern as docker.ts.
+//
 // Phase 5 Task 2: ledger is optional so existing call sites (loop.ts,
 // claude-loop.ts, gemini-loop.ts, and every pre-existing test) keep
 // compiling and passing unchanged. Only a SUCCESSFUL run is evidence — a
@@ -66,57 +84,88 @@ export function execRunCommand(
   cwd: string,
   args: { command: string; timeout_ms?: number },
   ledger?: EvidenceLedger,
-): ToolResult {
+): Promise<ToolResult> {
   const parts = args.command.trim().split(/\s+/);
   const cmd = parts[0];
   if (!cmd) {
-    return { status: "error", summary: "Empty command" };
+    return Promise.resolve({ status: "error", summary: "Empty command" });
   }
   const cmdArgs = parts.slice(1);
 
   const validationError = validateCommand(args.command);
   if (validationError) {
-    return {
+    return Promise.resolve({
       status: "error",
       summary: `Command blocked: ${validationError}`,
       next_actions: ["Use only allowlisted commands: npm, npx, bun, tsc, node, git, ls, cat"],
-    };
+    });
   }
 
   const timeout = Math.min(args.timeout_ms ?? 120_000, 300_000);
 
-  try {
-    const result = spawnSync(resolveCommandExecutable(cmd), cmdArgs, {
-      cwd,
-      encoding: "utf-8",
-      timeout,
-      env: buildSandboxEnv({ FORCE_COLOR: "0", NPM_CONFIG_FUND: "false", NPM_CONFIG_AUDIT: "false" }),
+  return new Promise<ToolResult>((resolve) => {
+    let child;
+    try {
+      child = spawn(resolveCommandExecutable(cmd), cmdArgs, {
+        cwd,
+        env: buildSandboxEnv({ FORCE_COLOR: "0", NPM_CONFIG_FUND: "false", NPM_CONFIG_AUDIT: "false" }),
+      });
+    } catch (err) {
+      resolve({
+        status: "error",
+        summary: `run_command threw: ${String(err)}`,
+        next_actions: ["Check if the command exists", "Verify the working directory is correct"],
+      });
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let spawnError: unknown;
+    child.stdout?.on("data", (d) => { stdout += d; });
+    child.stderr?.on("data", (d) => { stderr += d; });
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeout);
+
+    child.on("error", (err) => {
+      spawnError = err;
     });
 
-    const stdout = truncateOutput(result.stdout ?? "", 1000, 5000);
-    const stderr = truncateOutput(result.stderr ?? "", 1000, 5000);
-    const combined = [stdout, stderr].filter(Boolean).join("\n").trim();
-    const success = result.status === 0;
+    child.on("close", (code) => {
+      clearTimeout(timer);
 
-    if (success) ledger?.record("command_output", `${args.command} -> exited 0`);
+      if (spawnError) {
+        resolve({
+          status: "error",
+          summary: `run_command threw: ${String(spawnError)}`,
+          next_actions: ["Check if the command exists", "Verify the working directory is correct"],
+        });
+        return;
+      }
 
-    return {
-      status: success ? "success" : "error",
-      summary: success
-        ? `'${args.command}' exited 0`
-        : `'${args.command}' exited ${result.status ?? "timeout"}`,
-      output: combined || "(no output)",
-      next_actions: success
-        ? []
-        : ["Read the output above carefully", "Fix the specific error mentioned", "Re-run the command"],
-    };
-  } catch (err) {
-    return {
-      status: "error",
-      summary: `run_command threw: ${String(err)}`,
-      next_actions: ["Check if the command exists", "Verify the working directory is correct"],
-    };
-  }
+      const truncStdout = truncateOutput(stdout, 1000, 5000);
+      const truncStderr = truncateOutput(stderr, 1000, 5000);
+      const combined = [truncStdout, truncStderr].filter(Boolean).join("\n").trim();
+      const success = !timedOut && code === 0;
+
+      if (success) ledger?.record("command_output", `${args.command} -> exited 0`);
+
+      resolve({
+        status: success ? "success" : "error",
+        summary: success
+          ? `'${args.command}' exited 0`
+          : `'${args.command}' exited ${timedOut ? "timeout" : code}`,
+        output: combined || "(no output)",
+        next_actions: success
+          ? []
+          : ["Read the output above carefully", "Fix the specific error mentioned", "Re-run the command"],
+      });
+    });
+  });
 }
 
 export const COMMAND_TOOL_DEF: NimToolDef = {

@@ -341,7 +341,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         case "run_command": {
           const commandArgs = args as { command: string; timeout_ms?: number };
           emitEvent({ type: "tool_call", tool: "run_command", input: commandArgs });
-          result = execRunCommand(config.sandboxDir, commandArgs, ledger);
+          result = await execRunCommand(config.sandboxDir, commandArgs, ledger);
           emitEvent({ type: "tool_result", tool: "run_command", status: result.status, summary: result.summary, output: (result.output ?? "").slice(0, 500) });
           if (result.status === "error" && config.enableWebSearch) {
             const errorSnippet = (result.output ?? result.summary ?? "").slice(0, 150);
