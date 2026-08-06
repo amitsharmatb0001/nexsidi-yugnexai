@@ -270,11 +270,40 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
   ];
 }
 
+// 2026-08-06: real bug found live (project bae438767bed) — qwen/qwen3-next-
+//80b-a3b-instruct returns a permanent HTTP 410 Gone (NIM's own response:
+// "reached its end of life on 2026-07-27T00:00:00Z"), and its circuit
+// breaker never recovers because every retry hits the identical dead
+// endpoint. It's configured as the PRIMARY model for tilotma/saanvi/navya/
+// neha and a fallback for most other agents (packages/llm-client/src/
+// types.ts's AGENT_MODELS/AGENT_MODEL_FALLBACKS) — every one of those
+// agents' first attempt is a guaranteed, wasted circuit-breaker-open
+// failure before falling through to a working model. This directly caused
+// Tilotma's Tier-3 evidence-collector to burn its entire 61-iteration
+// budget without ever reaching a verdict on this exact project. The
+// existing prefix-based allowlist below can't express "this one specific
+// model is dead" — qwen/ as a provider is fine, only this one model isn't
+// — so this is a separate, explicit exclusion list for individually-EOL
+// models, checked before the provider-prefix filter. Update AGENT_MODELS/
+// AGENT_MODEL_FALLBACKS directly too when a workable replacement is found;
+// this list is a safety net that survives even if a config edit misses a
+// reference, not a substitute for fixing the config.
+const KNOWN_DEAD_MODELS = new Set([
+  "qwen/qwen3-next-80b-a3b-instruct", // HTTP 410 Gone, EOL 2026-07-27
+]);
+
 export function sanitizeModelChain(models: string[]): string[] {
   const allowedPrefixes = ["google/", "mistralai/", "meta/", "qwen/", "nvidia/"];
   const allowedExact = ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash"];
 
   return models
+    .filter((m) => {
+      if (KNOWN_DEAD_MODELS.has(m)) {
+        console.warn(`[model-routing] Dropping known-dead model "${m}" (permanent 410 — see KNOWN_DEAD_MODELS)`);
+        return false;
+      }
+      return true;
+    })
     .map((m) => {
       if (m.startsWith("anthropic/") || m.includes("claude") || m.includes("vertex")) {
         console.warn(`[model-routing] Replacing disallowed model "${m}" with "google/gemini-3.5-flash"`);
