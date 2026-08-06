@@ -532,7 +532,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "docker_compose": {
-          result = execDockerCompose(config.sandboxDir, args as { action: "up" | "down" | "logs" | "ps"; service?: string; timeout_ms?: number });
+          result = await execDockerCompose(config.sandboxDir, args as { action: "up" | "down" | "logs" | "ps"; service?: string; timeout_ms?: number });
           break;
         }
         case "web_search": {

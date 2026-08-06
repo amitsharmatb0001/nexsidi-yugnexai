@@ -363,7 +363,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         case "docker_compose": {
           const dockerArgs = args as { action: "up" | "down" | "logs" | "ps"; service?: string; timeout_ms?: number };
           emitEvent({ type: "tool_call", tool: "docker_compose", input: dockerArgs });
-          result = execDockerCompose(config.sandboxDir, dockerArgs);
+          result = await execDockerCompose(config.sandboxDir, dockerArgs);
           emitEvent({ type: "tool_result", tool: "docker_compose", status: result.status, summary: result.summary });
           break;
         }
