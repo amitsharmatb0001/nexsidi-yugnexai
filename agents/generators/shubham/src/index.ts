@@ -434,19 +434,40 @@ HARD GATE (must pass — these are reliable and required):
      suppress with an any-cast or a ts-ignore comment).
   c) run_command "npm run build" — exits 0.
 
-DB SCHEMA VERIFICATION (optional but valuable — skip only if you are low on
-iteration budget; DO NOT start the server here, QA tests HTTP endpoints):
-  d) Write a minimal docker-compose.yml mapping port 55432 on the host
-     (NOT 5432 — native Postgres is already on 5432; wrong port = misleading
-     auth errors), start it with docker_compose up, apply Pranav's EXISTING
-     migrations from ../db/migrations/ (never write your own .sql file — see
-     DATABASE SCHEMA OWNERSHIP above) using ONE run_command that runs a node
-     script or npx ts-node, confirm the expected tables exist (e.g. "SELECT
-     table_name FROM information_schema.tables" or psql with --command),
-     then tear it down with docker_compose down.
-     All of d) must fit in ≤4 tool calls total (write compose + up + apply + down).
-     DO NOT start the Express server. DO NOT make http_request calls.
-     The QA stage tests live HTTP; your job is to prove the schema applies.
+LIVE AUTH-BOUNDARY VERIFICATION (required whenever this app has ANY protected
+route — skip only for a fully public API with zero requireAuth routes; if you
+skip, say so explicitly in your task_complete summary and why):
+  d) Write a minimal docker-compose.yml mapping Postgres to port 55432 on the
+     host (NOT 5432 — native Postgres is already on 5432; wrong port =
+     misleading auth errors) AND your own backend service, built from the
+     Dockerfile already in this project (do not write a second one) mapped to
+     a free host port. Start it with docker_compose up, apply Pranav's
+     EXISTING migrations from ../db/migrations/ (never write your own .sql
+     file — see DATABASE SCHEMA OWNERSHIP above), then use http_request to
+     PROVE — not assume — the auth boundary actually works:
+       - Call a protected/mutating route with NO Authorization header.
+         It MUST return 401/403 — if it returns 200/201 or a 500, that route
+         is either missing requireAuth or crashing before the check runs;
+         fix the actual code, do not adjust the test to match.
+       - Register or log in via your own auth endpoint to get a real token,
+         then call the SAME route WITH that token. It must succeed.
+       - If a route is intentionally public (e.g. the reservation/contact
+         form this app's spec described as auth:false), confirm it still
+         works with NO token — a public route silently requiring auth is
+         also a bug, just the opposite direction.
+     Tear down with docker_compose down when finished.
+     Budget ≤8 tool calls total (write compose + up + migrate + 3-4 requests +
+     down). This is NOT the same check QA does — Navya/Karan/Deepika read
+     source text and infer whether a route looks protected; they have no
+     http_request tool and cannot actually call it. This step is the only
+     point in the entire pipeline that PROVES the auth boundary behaves as
+     written, on the code you just wrote, before anyone else ever sees it.
+     2026-08-06: a prior version of this protocol started the Express server
+     natively on the host and was removed after repeated Windows server-start
+     failures burned 7+ iterations per run. Running the server inside Docker
+     instead (the same mechanism Riya's real deploy already uses successfully)
+     avoids that specific failure mode — this is not the same approach,
+     don't assume it has the same problem.
 
 PRODUCTION SECURITY — this app may be hosted publicly on day 0; it must not be
 trivially hacked. Beyond the SQL/IDOR/validation rules above, ensure ALL of:

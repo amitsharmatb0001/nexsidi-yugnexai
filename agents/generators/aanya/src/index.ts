@@ -99,7 +99,7 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // stage begins), not concurrently with it.
     geminiTier: "design",
     // http tools so Aanya still self-verifies (npm install + next build +
-    // typecheck). Live UI is Tier 3.
+    // typecheck).
     enableHttpTools: true,
     enableWebSearch: true,
     // Phase 5 (full agentic upgrade): read the FULL content of a specific
@@ -109,6 +109,14 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     enableWebFetch: true,
     enableScreenshot: true,
     enableBrowser: true,
+    // 2026-08-06: real gap found live — "Live UI is Tier 3" (this comment,
+    // previously) meant Aanya NEVER checked whether its own nav links
+    // actually navigate anywhere, whether a page renders its expected
+    // content, or anything beyond "does it compile." Tier 3 (Tilotma) does
+    // check this, but only on the fully deployed app, minutes/hours later —
+    // not Aanya verifying its own work before handing it off. See CLICK-
+    // THROUGH NAVIGATION VERIFICATION below for what this now requires.
+    enableDockerTools: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
     // 2026-07-25: raised to 60. Measured live in nextech7: Aanya hit the
     // 40-iteration default exactly while still running npx next build to fix
@@ -197,6 +205,7 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // P3 (agent-autonomy-assessment F3): mirrors Shubham's identical flag —
     // see that file for the full rationale.
     enableEscalation: true,
+    enableDockerTools: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
     // 2026-07-25: reverted the maxIterations override — see run() above.
   });
@@ -309,7 +318,45 @@ Your workflow:
    batched pass (edit_file for small changes — cheaper than rewriting the
    whole file), THEN rebuild ONCE more to confirm — do not rebuild after
    fixing a single error in isolation.
-6. When build passes: call task_complete with verification_passed: true
+6. Once the build passes: do the CLICK-THROUGH NAVIGATION VERIFICATION below.
+7. Only after both pass: call task_complete with verification_passed: true
+
+CLICK-THROUGH NAVIGATION VERIFICATION (required whenever you wrote more than
+one page/route — skip only for a genuine single-page app, and say so in your
+task_complete summary if you skip it):
+"npx next build" proves the code compiles. It proves NOTHING about whether
+clicking your own nav links actually goes where they say, or whether a page
+renders real content instead of a blank screen or a thrown error. That gap is
+exactly what this closes — you are the one person who can verify it before
+anyone else ever sees this code.
+  a) Write a minimal Dockerfile (disposable — for this check only; Riya
+     writes the real deployment one later, do not treat this as final) and a
+     docker-compose.yml that builds this project and maps it to a free host
+     port. Start it with docker_compose up.
+     Do NOT use run_command to start the server directly ("npm run dev",
+     "next start", etc.) — run_command waits for the process to EXIT before
+     returning, and a server never exits on its own, so that call will hang
+     until it times out. Docker's "up -d" returns once the container is
+     confirmed running, which is why this works and a bare run_command does not.
+  b) browser_navigate to the running app's root URL. Use browser_get_text to
+     confirm real page content rendered (not a blank page, not a Next.js
+     error overlay) and browser_console_errors to confirm zero JS errors.
+  c) For EVERY nav link you wrote (header/footer/sidebar — wherever you put
+     primary navigation): browser_click it, then browser_current_url to
+     confirm it actually navigated to the URL that link is supposed to point
+     to — not back to home, not to a 404, not to a different page than its
+     label says. A "Contact" link that lands anywhere but your contact page
+     is a real bug, not a formality — fix the href/route, don't adjust what
+     you consider "close enough."
+  d) browser_get_text on at least one page beyond the homepage to confirm it
+     shows real content matching what you were asked to build (not
+     placeholder/lorem text, not an empty state where content should be).
+  e) docker_compose down to tear down when finished.
+  Budget ≤10 tool calls total for a-e. This is NOT the same check Tier 3
+  (Tilotma) does — Tier 3 runs after full deployment, minutes or hours later,
+  auditing the finished product; this is you verifying the code you JUST
+  wrote actually behaves the way it looks like it should, before it ever
+  reaches that stage.
 
 STACK (non-negotiable):
 - Next.js 16.2 / TypeScript / React 19
