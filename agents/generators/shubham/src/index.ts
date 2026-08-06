@@ -136,6 +136,21 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     enableBrowser: true,
     enableDbQuery: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
+    // 2026-08-06: real bug found live (project bae438767bed) — the LIVE
+    // AUTH-BOUNDARY VERIFICATION section above is prompt text only, and the
+    // model simply skipped it entirely (task_complete's own summary listed
+    // only tsc + build as evidence, with no acknowledgment it had skipped a
+    // required section, despite the prompt explicitly requiring that
+    // acknowledgment). A prompt instruction is followed probabilistically,
+    // same lesson as D28 (hooks vs. skills) applied to generation prompts —
+    // this makes it mechanical instead: task_complete is REJECTED unless at
+    // least one http_request actually happened this run, mirroring the
+    // identical, already-proven gate on Riya's deploy activity
+    // (agents/riya/src/index.ts). Does not guarantee the http_request
+    // specifically tested the auth boundary (any successful call satisfies
+    // it), but closes the observed failure mode of zero live verification
+    // happening at all.
+    requiredEvidenceKinds: ["http_check"],
     // 2026-07-25: raised from 40 (default) to 60 after two consecutive
     // live P4 runs (nextech5, nextech6) both failed at exactly iteration 40
     // while Shubham was still in the live-verification phase. Measured
@@ -256,6 +271,21 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // diagnose.
     enableEscalation: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
+    // 2026-08-06: real bug found live (project bae438767bed) — the LIVE
+    // AUTH-BOUNDARY VERIFICATION section above is prompt text only, and the
+    // model simply skipped it entirely (task_complete's own summary listed
+    // only tsc + build as evidence, with no acknowledgment it had skipped a
+    // required section, despite the prompt explicitly requiring that
+    // acknowledgment). A prompt instruction is followed probabilistically,
+    // same lesson as D28 (hooks vs. skills) applied to generation prompts —
+    // this makes it mechanical instead: task_complete is REJECTED unless at
+    // least one http_request actually happened this run, mirroring the
+    // identical, already-proven gate on Riya's deploy activity
+    // (agents/riya/src/index.ts). Does not guarantee the http_request
+    // specifically tested the auth boundary (any successful call satisfies
+    // it), but closes the observed failure mode of zero live verification
+    // happening at all.
+    requiredEvidenceKinds: ["http_check"],
     // 2026-07-25: reverted the maxIterations override for the same reason
     // as run() above — see that comment. A fix task's live-verification
     // phase can be just as tool-call-heavy as a full generation's.
