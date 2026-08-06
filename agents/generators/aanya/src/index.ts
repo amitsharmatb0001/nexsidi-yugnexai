@@ -234,7 +234,7 @@ export function stripDevDependencies(packageJsonContent: string): string {
 }
 
 // ── Vendor NexUI into the generated project ───────────────────────────────────
-function vendorNexui(outputDir: string): void {
+export function vendorNexui(outputDir: string): void {
   const vendorDir = join(outputDir, "vendor");
   mkdirSync(vendorDir, { recursive: true });
 
@@ -251,6 +251,26 @@ function vendorNexui(outputDir: string): void {
     cpSync(nexuiReactSrc, join(vendorDir, "nexui-react"), { recursive: true,
       filter: (src) => !src.includes("node_modules") });
     stripVendoredPackageJsonDevDeps(join(vendorDir, "nexui-react", "package.json"));
+  }
+
+  // 2026-08-06: real bug found live (project 88d7b375eaef) — NexUI's own CSS
+  // (nexui-base.css) declares @font-face src url('../fonts/NexuiSans-*.woff2')
+  // etc., relative to vendor/nexui/css/. Next.js's Turbopack bundles that
+  // @import'd CSS and resolves the relative url() to a root-relative
+  // "/fonts/<file>.woff2" — but nothing in the generated app serves that path,
+  // since only files under public/ are exposed at the app root and vendor/
+  // isn't public/. Every NexUI font 404'd, the browser fell through the whole
+  // stack to a fallback, and the resulting mismatch between Next's font-metric
+  // overrides (calibrated for the intended custom faces) and the actual
+  // fallback rendering produced visibly corrupted/overlapping glyphs — caught
+  // live by Tilotma's Stage 2 reality-checker (mojibake like "Email" ->
+  // "Es ail"). Fix: also copy the font files to public/fonts/ so Next's static
+  // file serving actually answers the request the bundled CSS makes.
+  const nexuiFontsSrc = join(nexuiSrc, "fonts");
+  if (existsSync(nexuiFontsSrc)) {
+    const publicFontsDir = join(outputDir, "public", "fonts");
+    mkdirSync(publicFontsDir, { recursive: true });
+    cpSync(nexuiFontsSrc, publicFontsDir, { recursive: true });
   }
 }
 

@@ -23,8 +23,25 @@ export function checkCompletion(
   // not a shell command, this is the equivalent of
   // requiredVerificationCommands.
   requiredEvidenceKinds: EvidenceKind[] = [],
+  // 2026-08-06: real bug found live (project 88d7b375eaef) — this gate's
+  // unconditional "verificationPassed must be true" rule is correct for
+  // GENERATOR agents (false always means "my own work isn't done yet, keep
+  // going"), but Tilotma's Stage 2 reality-checker is an EVALUATOR: its
+  // prompt explicitly instructs "Set it false if [verdict is NEEDS_WORK]"
+  // (tier3-review.ts's REALITY_CHECKER_PROMPT) because a confirmed real bug
+  // in the app under review is a legitimate, complete, terminal finding —
+  // not an unfinished task. The gate rejected that honest false, forcing the
+  // agent to resubmit with verificationPassed flipped to true and the
+  // IDENTICAL finding text (no new evidence, no fix attempt in between) —
+  // it coerced a false-positive pass, and the app deployed with a confirmed,
+  // documented, unresolved bug (corrupted NexUI fonts causing mojibake text)
+  // because Tier3ReviewResult.pass reads directly off this flag. Evaluator
+  // callers now opt in via allowFailedVerification — evidence requirements
+  // below still apply (you must show your work either way), only the
+  // outcome of that work is no longer forced to be "success."
+  allowFailedVerification = false,
 ): CompletionCheck {
-  if (!claim.verificationPassed) {
+  if (!claim.verificationPassed && !allowFailedVerification) {
     return {
       allowed: false,
       reason: "Completion rejected: verification_passed must be true after the required checks succeed.",

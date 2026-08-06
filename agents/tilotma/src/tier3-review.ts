@@ -145,6 +145,18 @@ export async function runTier3Review(
     enableScreenshot: true,
     enableHttpTools: true,
     maxIterations,
+    // 2026-08-06: real bug found live (project 88d7b375eaef) — this agent is
+    // an EVALUATOR, not a generator: REALITY_CHECKER_PROMPT explicitly
+    // instructs "Set it false if [verdict is NEEDS_WORK]" because a
+    // confirmed real bug in the app under review is a legitimate, complete
+    // finding, not unfinished work. Without this flag, the shared
+    // completion gate (built for generators, where false always means "keep
+    // going") rejected that honest false and forced the agent to resubmit
+    // with verification_passed flipped to true and the IDENTICAL finding
+    // text — no new evidence, no fix — coercing a false-positive pass that
+    // let a confirmed, documented bug (corrupted NexUI fonts, 404ing from
+    // the wrong path) deploy undetected. See completion-gate.ts.
+    allowFailedVerification: true,
   });
 
   const stage2Findings = parseFindings(stage2.summary);

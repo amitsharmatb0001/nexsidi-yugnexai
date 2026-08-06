@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
-import { buildAgentPrompt, buildAgentTask, stripDevDependencies, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask } from "./index.ts";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildAgentPrompt, buildAgentTask, stripDevDependencies, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui } from "./index.ts";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { FALLBACK_BRIEF } from "../../../vanya/src/index.ts";
 
@@ -55,6 +58,40 @@ test("stripDevDependencies is a no-op when devDependencies is already absent", (
   const pkg = JSON.stringify({ name: "x", version: "1.0.0" });
   const result = JSON.parse(stripDevDependencies(pkg));
   expect(result).toEqual({ name: "x", version: "1.0.0" });
+});
+
+// 2026-08-06: real bug found live (project 88d7b375eaef) — NexUI's own CSS
+// declares @font-face src url('../fonts/NexuiSans-*.woff2') relative to
+// vendor/nexui/css/, but Next.js's Turbopack bundles that CSS and resolves
+// the relative url() to a root-relative "/fonts/<file>" that nothing served
+// (only public/ is exposed at the app root). Every custom font 404'd and the
+// resulting fallback-font/metric mismatch rendered visibly corrupted glyphs
+// (caught live by Tilotma's reality-checker: "Email" -> "Es ail"). Confirmed
+// live: copying the fonts into public/fonts/ and rebuilding the container
+// made every font request 200 and the corruption disappeared.
+test("vendorNexui copies NexUI's font files into public/fonts so Next.js actually serves them", () => {
+  const nexuiDir = mkdtempSync(join(tmpdir(), "nexsidi-nexui-publish-test-"));
+  const outputDir = mkdtempSync(join(tmpdir(), "nexsidi-aanya-output-test-"));
+  try {
+    mkdirSync(join(nexuiDir, "nexui", "fonts"), { recursive: true });
+    writeFileSync(join(nexuiDir, "nexui", "fonts", "NexuiSans-Regular.woff2"), "fake-font-bytes");
+    mkdirSync(join(nexuiDir, "nexui", "css"), { recursive: true });
+    writeFileSync(join(nexuiDir, "nexui", "package.json"), JSON.stringify({ name: "@yugnex/nexui" }));
+
+    const previous = process.env.NEXUI_DIR;
+    process.env.NEXUI_DIR = nexuiDir;
+    try {
+      vendorNexui(outputDir);
+    } finally {
+      if (previous === undefined) delete process.env.NEXUI_DIR;
+      else process.env.NEXUI_DIR = previous;
+    }
+
+    expect(existsSync(join(outputDir, "public", "fonts", "NexuiSans-Regular.woff2"))).toBe(true);
+  } finally {
+    rmSync(nexuiDir, { recursive: true, force: true });
+    rmSync(outputDir, { recursive: true, force: true });
+  }
 });
 
 test("stripDevDependencies preserves formatting-independent JSON validity on malformed input", () => {

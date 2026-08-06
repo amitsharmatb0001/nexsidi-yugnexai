@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, afterAll, mock } from "bun:test";
 import {
   extractSpecColors,
   extractRequiredFormFields,
@@ -6,8 +6,10 @@ import {
   checkFormFieldCompliance,
   checkSpecCompliance,
   checkStackConformance,
+  runSpecComplianceCheck,
   toFindings,
 } from "./spec-compliance.ts";
+import type { ProjectSpec } from "../../../agents/saanvi/src/index.ts";
 
 // Real spec.json this check was root-caused against (verify361300) — Saanvi
 // correctly named exact colors in the description; the live site rendered
@@ -77,6 +79,57 @@ test("checkColorCompliance passes vacuously when the spec named no literal color
 test("checkColorCompliance is case-insensitive when comparing live values against spec colors", () => {
   const result = checkColorCompliance(["#3B82F6"], { "--nx-accent": "#3b82f6" });
   expect(result.pass).toBe(true);
+});
+
+// 2026-08-06: real bug found live (project 88d7b375eaef) — the browser
+// worker's getComputedStyle handler always adds a __rect: {x,y,width,height}
+// object alongside the requested CSS custom properties, for callers that
+// also need bounding-box info. runSpecComplianceCheck fed the raw
+// styles object straight into checkColorCompliance, which does
+// Object.values(...).map(v => v.trim()) assuming every value is a string —
+// __rect's object value has no .trim, so this threw "TypeError: v.trim is
+// not a function" on every single run, and stage6's fail-open catch
+// silently skipped the check entirely instead of surfacing the real bug.
+test("runSpecComplianceCheck strips the browser worker's __rect bounding-box field before color-checking, instead of crashing on it", async () => {
+  mock.module("../../../packages/agent-runtime/src/browser/client.ts", () => ({
+    BrowserSession: class {
+      async send(action: string) {
+        if (action === "navigate") return {};
+        if (action === "getComputedStyle") {
+          return {
+            styles: {
+              "--nx-bg-base": "#0A0E1A",
+              "--nx-accent": "#3B82F6",
+              __rect: { x: 0, y: 0, width: 100, height: 50 },
+            },
+          };
+        }
+        if (action === "evaluate") return { value: [] };
+        return {};
+      }
+      async close() {}
+    },
+  }));
+  try {
+    const spec: ProjectSpec = {
+      projectId: "p1",
+      name: "Test",
+      description: REAL_DESCRIPTION,
+      appType: "web",
+      features: [],
+      auth: { provider: "custom", features: [] },
+      apiEndpoints: [],
+      dbTables: [],
+      successCriteria: [],
+      lockedAt: new Date().toISOString(),
+      specHash: "deadbeef",
+    };
+    const result = await runSpecComplianceCheck(spec, "http://localhost:3201");
+    expect(result.pass).toBe(true);
+    expect(result.violations).toEqual([]);
+  } finally {
+    mock.restore();
+  }
 });
 
 // ── checkFormFieldCompliance ──────────────────────────────────────────────────

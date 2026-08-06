@@ -565,6 +565,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
             { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed },
             config.requiredVerificationCommands,
             config.requiredEvidenceKinds,
+            config.allowFailedVerification,
           );
           if (!check.allowed) {
             console.log(`[${config.agentName}:gemini-agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);

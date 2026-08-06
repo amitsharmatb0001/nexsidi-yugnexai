@@ -97,3 +97,40 @@ test("requiredEvidenceKinds and requiredVerificationCommands compose — both mu
   expect(result.allowed).toBe(false);
   if (!result.allowed) expect(result.reason).toContain("http_check");
 });
+
+// 2026-08-06: real bug found live (project 88d7b375eaef) — Tilotma's Stage 2
+// reality-checker (an EVALUATOR, not a generator) is explicitly prompted to
+// "Set it false if [verdict is NEEDS_WORK]" when it confirms a real bug in
+// the app under review — a legitimate, complete finding. The gate rejected
+// that honest false unconditionally, forcing the agent to resubmit with the
+// flag flipped to true and the identical finding text (no new evidence, no
+// fix), coercing a false-positive pass that let a confirmed, documented bug
+// deploy. allowFailedVerification opts an evaluator OUT of the "must be
+// true" rule while still enforcing every other evidence requirement.
+test("allowFailedVerification lets an honest verification_passed=false through when evidence exists", () => {
+  const ledger = createEvidenceLedger();
+  ledger.record("http_check", "GET http://localhost:3201 -> 200");
+  const result = checkCompletion(ledger, { ...CLAIM, verificationPassed: false }, [], [], true);
+  expect(result).toEqual({ allowed: true });
+});
+
+test("allowFailedVerification does not waive the OTHER evidence requirements — no evidence still rejects", () => {
+  const ledger = createEvidenceLedger();
+  const result = checkCompletion(ledger, { ...CLAIM, verificationPassed: false }, [], [], true);
+  expect(result.allowed).toBe(false);
+  if (!result.allowed) expect(result.reason).toContain("no verification evidence");
+});
+
+test("allowFailedVerification defaults to false — existing generator callers are unaffected", () => {
+  const ledger = createEvidenceLedger();
+  ledger.record("command_output", "npx tsc --noEmit -> exited 0");
+  const result = checkCompletion(ledger, { ...CLAIM, verificationPassed: false });
+  expect(result.allowed).toBe(false);
+  if (!result.allowed) expect(result.reason).toContain("verification_passed must be true");
+});
+
+test("allowFailedVerification=true still allows a genuine true completion", () => {
+  const ledger = createEvidenceLedger();
+  ledger.record("command_output", "npx tsc --noEmit -> exited 0");
+  expect(checkCompletion(ledger, CLAIM, [], [], true)).toEqual({ allowed: true });
+});

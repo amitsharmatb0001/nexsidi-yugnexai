@@ -79,6 +79,13 @@ export interface AgentRunConfig {
   // requiredVerificationCommands (exact command-string matching) can't
   // express at all. See EvidenceLedger.hasEvidenceOfKind.
   requiredEvidenceKinds?: EvidenceKind[];
+  // 2026-08-06: see completion-gate.ts's checkCompletion comment — lets an
+  // EVALUATOR agent (Tilotma's reality-checker) honestly report
+  // verification_passed=false as a complete, terminal "I checked and found
+  // real bugs" finding, instead of the gate coercing it into a false
+  // positive. Default false preserves the existing must-be-true behavior
+  // for every generator agent (Shubham/Aanya/Pranav/Riya).
+  allowFailedVerification?: boolean;
   subagentDepth?: number; // 0 = top-level agent; 1 = inside a spawn_subagent call. Capped at 1.
   // 2026-07-25 (P5.W5.5): per-run override of MAX_ITERATIONS. The shared
   // constant stays a generous ceiling for agents that legitimately need it
@@ -835,6 +842,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
             { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed },
             config.requiredVerificationCommands,
             config.requiredEvidenceKinds,
+            config.allowFailedVerification,
           );
           if (!check.allowed) {
             console.log(`[${config.agentName}:agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);

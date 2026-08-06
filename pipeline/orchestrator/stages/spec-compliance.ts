@@ -219,8 +219,17 @@ export async function runSpecComplianceCheck(
         "--nx-text",
         "--nx-border",
       ],
-    })) as { styles: Record<string, string> | null };
-    const cssVars = cssResult.styles ?? {};
+    })) as { styles: (Record<string, string> & { __rect?: unknown }) | null };
+    // 2026-08-06: real bug found live (project 88d7b375eaef) — the browser
+    // worker's getComputedStyle handler (worker.mjs) always adds a __rect:
+    // {x,y,width,height} object alongside the requested string props, for
+    // callers that need bounding-box info too. checkColorCompliance assumes
+    // every value in cssVars is a string (Object.values(...).map(v =>
+    // v.trim())) — __rect's object value has no .trim, so this crashed with
+    // "TypeError: v.trim is not a function" on EVERY run, and stage6's
+    // fail-open catch silently skipped the whole spec-compliance check
+    // instead of surfacing a real code bug as a real code bug.
+    const { __rect: _rect, ...cssVars } = cssResult.styles ?? {};
 
     const formFieldsByPath: Record<string, string[]> = {};
     const contactEndpoint = spec.apiEndpoints.find((e) => /contact/i.test(e.path));
