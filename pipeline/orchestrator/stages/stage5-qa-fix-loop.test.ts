@@ -1,7 +1,27 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { runQAFixLoopWithDeps, inferInstinctDomain, parseDebateDecision, type QAFixDeps } from "./stage5-qa-fix-loop.ts";
 import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
+
+const source = readFileSync(new URL("./stage5-qa-fix-loop.ts", import.meta.url), "utf-8");
+
+// 2026-08-06: real bug found live (project bae438767bed) — runQAFixLoop's
+// real DI wiring called each agent's exported runFix() DIRECTLY, with no
+// quota-retry wrapper at all. A shared-pool quota exhaustion hitting all
+// three fix calls simultaneously (they run concurrently) failed every one
+// of them outright within a handful of iterations — nowhere near their
+// iteration caps — and the whole workflow escalated as "stuck" over
+// findings that weren't actually hard to fix. See quota-retry.ts's header
+// comment for the full trace. Source-string check (mirrors
+// generator-failure.test.ts's identical pattern for the initial-generation
+// path) since exercising the real dynamic-imported agent modules end to
+// end would need mocking three separate module imports.
+test("runQAFixLoop wraps all three fix calls (Shubham, Aanya, Pranav) with runGeneratorWithQuotaRetry", () => {
+  expect(source).toContain("runGeneratorWithQuotaRetry(() => fixShubhamReal(p, findings))");
+  expect(source).toContain("runGeneratorWithQuotaRetry(() => fixAanyaReal(p, findings))");
+  expect(source).toContain("runGeneratorWithQuotaRetry(() => fixPranavReal(p, findings))");
+});
 
 // A6 (full-system audit, Phase C): run.ts's own comment documented the gap
 // this closes — "a fault-isolated re-fix-and-retest loop ... is NOT

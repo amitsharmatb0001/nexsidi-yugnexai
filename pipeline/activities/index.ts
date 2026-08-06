@@ -280,30 +280,21 @@ export function generatorFailure(agentName: string, errors: string[]): never {
   });
 }
 
-const GENERATOR_QUOTA_RETRY_BACKOFF_MS = 90_000;
-const MAX_GENERATOR_QUOTA_RETRIES = 2;
-
-// Mirrors stage6-deployment.ts's deployWithQuotaRetry: retries the WHOLE
-// generator call (not just the failed step) with a backoff wait, but ONLY
-// when the failure is quota-exhaustion-shaped — any other failure reason
-// returns immediately, unchanged from before, so generatorFailure still
-// fails fast on a genuine bug.
-async function runGeneratorWithQuotaRetry<T extends { success: boolean; errors: string[] }>(
-  attempt: () => Promise<T>,
-  sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-): Promise<T> {
-  let result = await attempt();
-  let retries = 0;
-  while (!result.success && isQuotaExhaustionError(result.errors) && retries < MAX_GENERATOR_QUOTA_RETRIES) {
-    retries++;
-    console.log(
-      `[generator] failed on LLM quota/circuit-breaker exhaustion — waiting ${GENERATOR_QUOTA_RETRY_BACKOFF_MS}ms for recovery before retry ${retries}/${MAX_GENERATOR_QUOTA_RETRIES}`,
-    );
-    await sleepFn(GENERATOR_QUOTA_RETRY_BACKOFF_MS);
-    result = await attempt();
-  }
-  return result;
-}
+// 2026-08-06: real bug found live (project bae438767bed) — this retry
+// wrapper was only ever wired into runShubham/runAanya/runPranav (initial
+// generation, below). stage5-qa-fix-loop.ts's DI wiring called each agent's
+// exported runFix() DIRECTLY, with no retry wrapper at all — when a shared-
+// pool quota exhaustion hit all three generators' FIX rounds simultaneously
+// (entirely plausible: they run concurrently via Promise.all and share the
+// same NIM/Gemini model pools), all three failed outright within a handful
+// of iterations (nowhere near their iteration caps), the fix-loop saw zero
+// improvement, and the whole workflow escalated as "stuck" — not because
+// the findings were hard to fix, but because this retry mechanism was never
+// extended to the FIX path. Moved to its own module (quota-retry.ts) so
+// stage5-qa-fix-loop.ts can wrap its three fix calls with the identical
+// retry behavior without index.ts <-> stage5-qa-fix-loop.ts becoming a
+// circular import (index.ts already imports runQAFixLoop from there).
+import { runGeneratorWithQuotaRetry } from "./quota-retry.ts";
 
 // ── Stage 3a–c: code generators (run in parallel from workflow) ───────────────
 export async function runShubham(projectId: string): Promise<void> {

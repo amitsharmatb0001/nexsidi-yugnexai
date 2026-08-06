@@ -32,6 +32,7 @@ import { groupFindingsByAgent, type Stage4Result, type Finding } from "./stage4-
 import { runStage5, type Stage5Result } from "./stage5-adversarial-qa.ts";
 import type { InstinctDomain } from "@nexsidi/db";
 import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
+import { runGeneratorWithQuotaRetry } from "../../activities/quota-retry.ts";
 
 export interface QAFixLoopResult extends Stage5Result {
   iterations: number; // total QA passes run (initial + retests)
@@ -413,16 +414,24 @@ export async function runQAFixLoop(
     // QAFixDeps.runStage5's 3rd positional slot instead of runStage5's own
     // 3rd slot (includeTier3).
     runStage5: (pid, s4, p) => runStage5(pid, s4, false, p),
+    // 2026-08-06: real bug found live (project bae438767bed) — a shared-pool
+    // quota exhaustion hitting all three fix calls simultaneously (they run
+    // concurrently) used to fail every one of them outright within a
+    // handful of iterations, with no retry at all, escalating the whole
+    // workflow as "stuck" when the actual findings weren't hard to fix at
+    // all. Wrapped with the same quota-aware retry the initial generation
+    // path already had (pipeline/activities/index.ts's runShubham/runAanya/
+    // runPranav) — see quota-retry.ts's header comment for the full trace.
     fixShubham: async (p, findings) => {
-      const r = await fixShubhamReal(p, findings);
+      const r = await runGeneratorWithQuotaRetry(() => fixShubhamReal(p, findings));
       return { success: r.success, escalations: r.escalations };
     },
     fixAanya: async (p, findings) => {
-      const r = await fixAanyaReal(p, findings);
+      const r = await runGeneratorWithQuotaRetry(() => fixAanyaReal(p, findings));
       return { success: r.success, escalations: r.escalations };
     },
     fixPranav: async (p, findings) => {
-      const r = await fixPranavReal(p, findings);
+      const r = await runGeneratorWithQuotaRetry(() => fixPranavReal(p, findings));
       return { success: r.success };
     },
     conductPeerDebate: conductPeerDebateReal,
