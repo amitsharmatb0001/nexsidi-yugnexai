@@ -471,10 +471,22 @@ skip, say so explicitly in your task_complete summary and why):
      host (NOT 5432 — native Postgres is already on 5432; wrong port =
      misleading auth errors) AND your own backend service, built from the
      Dockerfile already in this project (do not write a second one) mapped to
-     a free host port. Start it with docker_compose up, apply Pranav's
-     EXISTING migrations from ../db/migrations/ (never write your own .sql
-     file — see DATABASE SCHEMA OWNERSHIP above), then use http_request to
-     PROVE — not assume — the auth boundary actually works:
+     a free host port. To load Pranav's EXISTING schema into this throwaway
+     Postgres, mount the REAL migrations directory as Postgres's own native
+     init directory — do NOT copy, recreate, or summarize the schema into a
+     new file of your own (init.sql, schema.sql, or anything else): that
+     creates a duplicate that silently drifts out of sync with Pranav's
+     actual migrations the moment he adds an index or column, and QA will
+     keep citing your stale copy forever even after the real schema is
+     fixed. In your postgres service definition:
+       volumes:
+         - ../db/migrations:/docker-entrypoint-initdb.d:ro
+     Postgres runs every .sql file in that directory once, in filename
+     order, on first container startup — this is the standard postgres
+     Docker image behavior, needs no script of your own, and is always the
+     exact same file Pranav owns, never a copy. Start it with docker_compose
+     up, then use http_request to PROVE — not assume — the auth boundary
+     actually works:
        - Call a protected/mutating route with NO Authorization header.
          It MUST return 401/403 — if it returns 200/201 or a 500, that route
          is either missing requireAuth or crashing before the check runs;
