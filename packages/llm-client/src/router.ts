@@ -145,9 +145,22 @@ export async function agentChat(
 
 export type GeminiTier = "plan" | "design" | "qa" | "generation" | "a2a" | "user";
 
+// 2026-08-09: real gap found live, TWICE (project meridianbk1, meridianbk2)
+// — "design" was the ONLY tier missing gemini-3.5-flash as a fallback.
+// Confirmed both times: when gemini-3.1-pro-preview AND gemini-3.6-flash
+// were both circuit-broken simultaneously, Aanya's integration call had
+// ZERO remaining option and killed the whole workflow — while every other
+// tier (plan/qa above, generation below) already includes 3.5-flash as
+// exactly this kind of last-resort fallback, and it's been the single most
+// reliably-available model across this entire session's live testing.
+// Appending it here doesn't change the deliberate pro-model-first ordering
+// (design still leads with 3.1-pro-preview for quality, see the comment on
+// Aanya's geminiTier config) — it only adds a third rung so a fully-
+// exhausted pool degrades to "finish with a lesser model" instead of
+// "fail the entire pipeline."
 const TIER_POOLS: Record<GeminiTier, string[]> = {
   plan:       ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"],
-  design:     ["gemini-3.1-pro-preview", "gemini-3.6-flash"],
+  design:     ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"],
   qa:         ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"],
   generation: ["gemini-3.6-flash", "gemini-3.5-flash"],
   a2a:        ["gemini-2.5-flash-lite", "gemini-3.5-flash"],

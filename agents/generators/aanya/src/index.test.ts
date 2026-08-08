@@ -221,3 +221,20 @@ test("buildAgentTask still works for a plan with no features (backward compatibl
   const task = buildAgentTask({ ...FIX_TEST_PLAN, features: [] }, "preview");
   expect(task).toContain("PROJECT:");
 });
+
+// 2026-08-08: explicit user request — every generated app's footer must
+// carry a YugNex attribution watermark (the REAL logo, provided by the
+// user at E:/ai yug/logo/YugNex_Transparent.png, trimmed+resized via sharp
+// and embedded as a data URI — see YUGNEX_LOGO_DATA_URI's header comment
+// for why a data URI over a copied file) + "Developed & Managed by
+// YugNex™" + a trademark-property note. Separate from and not in
+// conflict with rule 10's ban on internal TOOLING names (NexSidi/NexUI/
+// @yugnex) — "YugNex" here is the company name, a legitimate attribution.
+test("buildAgentPrompt instructs adding the real YugNex logo + watermark text to the footer, with the TM symbol and a trademark note", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).toContain("YUGNEX WATERMARK");
+  expect(prompt).toContain("Developed & Managed by YugNex™");
+  expect(prompt).toContain("YugNex™ is a trademark of YugNex Technology (OPC) Private Limited.");
+  expect(prompt).toContain("data:image/png;base64,");
+  expect(prompt).toContain("alt=\"YugNex\"");
+});

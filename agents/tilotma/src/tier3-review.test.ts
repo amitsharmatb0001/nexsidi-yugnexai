@@ -1,8 +1,24 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseFindings, buildEvidenceCollectorTask, buildRealityCheckerTask, countAppPages, computeTier3MaxIterations } from "./tier3-review.ts";
+
+// 2026-08-06: real bug found live (project bae438767bed) — both Tier-3
+// stages are evidence-only (their prompts only ever instruct "verify and
+// report", never "fix"), but write_file/run_command were unconditionally
+// available to every agent regardless of role, and the reality-checker used
+// them for 4 rounds of self-repair across its entire budget instead of
+// reporting the bug it found — producing zero findings for Stage 6 to route.
+// readOnly (see loop.ts) closes this; a source check is the cheapest way to
+// confirm neither runAgentEscalated call in runTier3Review regresses to
+// omitting it, since exercising the real agent loop isn't unit-testable here.
+test("both Tier-3 stages run readOnly — neither is a fix pass", () => {
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "tier3-review.ts"), "utf-8");
+  const readOnlyOccurrences = source.match(/readOnly:\s*true/g) ?? [];
+  expect(readOnlyOccurrences.length).toBe(2);
+});
 
 test("parseFindings extracts a well-formed FINDINGS block", () => {
   const summary = `FINDINGS:

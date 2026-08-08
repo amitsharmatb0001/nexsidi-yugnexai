@@ -18,7 +18,7 @@ import {
   type GeminiPart,
   type GeminiTier,
 } from "@nexsidi/llm-client";
-import { runAgent, buildToolList, evaluateCommandStrike, MAX_ITERATIONS, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
+import { runAgent, buildToolList, evaluateCommandStrike, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
 import { compactGeminiHistory } from "./compaction.ts";
 import { createStrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
@@ -352,11 +352,22 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       }
     } catch (err) {
       if (isUnrecoverableGeminiError(err)) {
+        // 2026-08-07: real bug found live (project bae438767bed, redeploy #3)
+        // — this branch pushed to `errors` (in-memory only, never printed)
+        // and broke silently. The reality-checker's whole turn vanished from
+        // the log between "Iteration 2" and "Saved conversation history"
+        // with zero trace of why, costing real debugging time to reverse-
+        // engineer from source. Every OTHER error branch in this loop
+        // console.logs before acting; this one and the pool-exhausted one
+        // below didn't. Logging first is the fix — the abort behavior itself
+        // was already correct.
+        console.error(`[${config.agentName}:gemini-agent] Gemini call failed on iteration ${iterations} with an unrecoverable error — aborting early instead of retrying: ${String(err)}`);
         errors.push(`Gemini call failed on iteration ${iterations} with an unrecoverable error — aborting early instead of retrying: ${String(err)}`);
         abortedOnUnrecoverableError = true;
         break;
       }
       if (isAllPoolModelsExhaustedError(err)) {
+        console.error(`[${config.agentName}:gemini-agent] Gemini call failed on iteration ${iterations} — every model in the pool is circuit-broken, aborting early instead of grinding to MAX_ITERATIONS on a call that cannot succeed as-is: ${String(err)}`);
         errors.push(`Gemini call failed on iteration ${iterations} — every model in the pool is circuit-broken, aborting early instead of grinding to MAX_ITERATIONS on a call that cannot succeed as-is: ${String(err)}`);
         abortedOnUnrecoverableError = true;
         break;
@@ -483,7 +494,9 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
 
       let result: Record<string, any>;
 
-      switch (toolName) {
+      if (config.readOnly && READONLY_BLOCKED_TOOLS.has(toolName)) {
+        result = readOnlyToolBlockedResult(toolName);
+      } else switch (toolName) {
         case "write_file": {
           const r = execWriteFile(config.sandboxDir, args as { path: string; content: string });
           if (r.status === "success") filesWritten.push((args as { path: string }).path);

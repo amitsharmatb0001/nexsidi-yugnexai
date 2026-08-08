@@ -40,6 +40,68 @@ export function resolveGeminiLocation(): string {
   return override ? override : "global";
 }
 
+// 2026-08-07: real, live-confirmed finding (project bae438767bed) — the
+// "global" endpoint hit a genuine RESOURCE_EXHAUSTED 429 window twice in one
+// session, each time outlasting the full retry budget available to it
+// (fetchGeminiWithRetry's local backoff AND stage6's 90s×2 quota-retry).
+// scripts/probe-vertex-regions.ts sent the SAME request across every real
+// Vertex region: most 404 (gemini-3.5-flash isn't published there for this
+// project — not a quota signal at all), but asia-southeast1 DOES serve this
+// model and was NOT rate-limited while global was, at the same moment —
+// confirming this is a region-scoped, self-clearing rate window with its own
+// independent quota bucket, not a project-wide ceiling. Falling over to it
+// on a 429 avoids the wait entirely, same "don't wait out an unavailable
+// resource when a working alternative is one hop away" reasoning
+// fastFailOn429 already applies at the MODEL-pool level (see its header
+// comment above) — this is that same idea one level up, at the LOCATION
+// level. Empty string is an explicit opt-out (no fallback attempted).
+export function resolveGeminiFallbackLocation(): string | undefined {
+  const override = process.env.GEMINI_FALLBACK_LOCATION;
+  if (override === "") return undefined;
+  return override?.trim() ? override.trim() : "asia-southeast1";
+}
+
+// Tries `primaryLocation` first; on a 429 (and only a 429 — RESOURCE_EXHAUSTED
+// is transient, other failures are not location-shaped) retries the SAME
+// logical request against resolveGeminiFallbackLocation(), if one is
+// configured and differs from the primary. `body.cachedContent` (if present)
+// is dropped on the fallback attempt — a Vertex context cache is bound to
+// the location it was created in, so reusing the handle against a different
+// location would just 400.
+export async function fetchGeminiWithLocationFallback(
+  model: string,
+  primaryLocation: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+  logPrefix: string,
+  callerFastFailOn429?: boolean,
+): Promise<{ res: Response; location: string }> {
+  const fallbackLocation = resolveGeminiFallbackLocation();
+  const hasFallback = fallbackLocation !== undefined && fallbackLocation !== primaryLocation;
+
+  const primaryRes = await fetchGeminiWithRetry(
+    endpointFor(model, primaryLocation, "generateContent"),
+    { method: "POST", headers, body: JSON.stringify(body), signal },
+    logPrefix,
+    { fastFailOn429: callerFastFailOn429 || hasFallback },
+  );
+
+  if (primaryRes.status !== 429 || !hasFallback) {
+    return { res: primaryRes, location: primaryLocation };
+  }
+
+  console.log(`[${logPrefix}] ${primaryLocation} returned 429 — retrying against fallback location "${fallbackLocation}" instead of waiting on a rate-limited endpoint`);
+  const { cachedContent: _dropped, ...bodyWithoutCache } = body as Record<string, unknown> & { cachedContent?: string };
+  const fallbackRes = await fetchGeminiWithRetry(
+    endpointFor(model, fallbackLocation!, "generateContent"),
+    { method: "POST", headers, body: JSON.stringify(bodyWithoutCache), signal },
+    logPrefix,
+    { fastFailOn429: callerFastFailOn429 },
+  );
+  return { res: fallbackRes, location: fallbackLocation! };
+}
+
 // 2026-08-05: 50 was carried over from NIM's per-model limit with no direct
 // evidence for Gemini/Vertex — two consecutive live runs on this brand-new
 // project (ai-yug) hit real RESOURCE_EXHAUSTED 429s on solo, non-concurrent
@@ -368,12 +430,15 @@ export async function geminiChat(
 
   try {
     const token = await getAccessToken();
-    const res = await fetchGeminiWithRetry(endpointFor(model, location, "generateContent"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    }, "gemini:geminiChat", { fastFailOn429: opts?.fastFailOn429 });
+    const { res } = await fetchGeminiWithLocationFallback(
+      model,
+      location,
+      body,
+      { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      controller.signal,
+      "gemini:geminiChat",
+      opts?.fastFailOn429,
+    );
 
     if (!res.ok) {
       const errBody = await res.text();
@@ -469,12 +534,15 @@ export async function geminiChatWithTools(
 
   try {
     const token = await getAccessToken();
-    const res = await fetchGeminiWithRetry(endpointFor(model, location, "generateContent"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    }, "gemini:geminiChatWithTools", { fastFailOn429: opts?.fastFailOn429 });
+    const { res } = await fetchGeminiWithLocationFallback(
+      model,
+      location,
+      body,
+      { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      controller.signal,
+      "gemini:geminiChatWithTools",
+      opts?.fastFailOn429,
+    );
 
     if (!res.ok) {
       const errBody = await res.text();

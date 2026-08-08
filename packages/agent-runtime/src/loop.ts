@@ -106,6 +106,44 @@ export interface AgentRunConfig {
   // same tier as Shubham (backend boilerplate). Unset = "generation"
   // (unchanged behavior).
   geminiTier?: string;
+  // 2026-08-06: real bug found live (project bae438767bed) — Tilotma's
+  // reality-checker (an EVALUATOR per D26/its own prompt: "verify Stage 1's
+  // claims... call task_complete", never told to fix anything) has
+  // write_file/write_files/edit_file/delete_file/run_command/docker_compose
+  // available anyway, because loop.ts grants FILE_TOOL_DEFS + COMMAND_TOOL_DEF
+  // unconditionally to every agent regardless of role. Confirmed live: it used
+  // them to attempt 4 rounds of self-repair on a shadow-DOM font bug across
+  // its full 61-iteration budget, never called task_complete, and produced
+  // ZERO parseable findings — the one deliverable its role exists for. D26
+  // ("no Write tools" for evaluators) was documented but never mechanically
+  // enforced for this role. When true, buildToolList() below omits every
+  // mutating tool from what the model is even offered, and the loops'
+  // execution switch refuses one if it somehow still arrives (defense in
+  // depth) — the agent is redirected to report the issue as a finding
+  // instead, which is the actual job of an evaluator.
+  readOnly?: boolean;
+}
+
+// Tool names buildToolList() omits, and the execution switch in loop.ts/
+// gemini-loop.ts/claude-loop.ts refuses, when config.readOnly is set.
+export const READONLY_BLOCKED_TOOLS = new Set([
+  "write_file",
+  "write_files",
+  "edit_file",
+  "delete_file",
+  "run_command",
+  "docker_compose",
+]);
+
+export function readOnlyToolBlockedResult(toolName: string): Record<string, unknown> {
+  return {
+    status: "error",
+    error:
+      `${toolName} is disabled for this agent — it is a read-only evaluator, not a fixer. ` +
+      `Do not attempt to edit files, rebuild, or run commands to fix what you find. ` +
+      `Report the issue as a FINDING in your task_complete summary instead — the generator ` +
+      `agent that owns this file will fix it in a separate, dedicated pass.`,
+  };
 }
 
 export interface AgentRunResult {
@@ -254,11 +292,14 @@ export async function evaluateCommandStrike(
 }
 
 export function buildToolList(config: AgentRunConfig): NimToolDef[] {
+  const fileTools = config.readOnly
+    ? FILE_TOOL_DEFS.filter((t) => !READONLY_BLOCKED_TOOLS.has(t.function.name))
+    : FILE_TOOL_DEFS;
   return [
-    ...FILE_TOOL_DEFS,
-    COMMAND_TOOL_DEF,
+    ...fileTools,
+    ...(config.readOnly ? [] : [COMMAND_TOOL_DEF]),
     ...(config.enableHttpTools ? [HTTP_TOOL_DEF] : []),
-    ...(config.enableDockerTools ? [DOCKER_TOOL_DEF] : []),
+    ...(config.enableDockerTools && !config.readOnly ? [DOCKER_TOOL_DEF] : []),
     ...(config.enableWebSearch ? [WEB_SEARCH_TOOL_DEF] : []),
     ...(config.enableWebFetch ? [FETCH_URL_TOOL_DEF] : []),
     ...(config.enableEscalation ? [ESCALATE_FINDING_TOOL_DEF] : []),
@@ -687,7 +728,9 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
       let result: Record<string, any>;
 
-      switch (toolName) {
+      if (config.readOnly && READONLY_BLOCKED_TOOLS.has(toolName)) {
+        result = readOnlyToolBlockedResult(toolName);
+      } else switch (toolName) {
         case "write_file": {
           const writeArgs = args as { path: string; content: string };
           emitEvent({ type: "tool_call", tool: "write_file", input: { path: writeArgs.path, bytes: writeArgs.content.length } });

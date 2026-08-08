@@ -153,6 +153,7 @@
       "name": "@nexsidi/agent-vanya",
       "version": "0.1.0",
       "dependencies": {
+        "@nexsidi/agent-runtime": "workspace:*",
         "@nexsidi/llm-client": "workspace:*",
       },
     },

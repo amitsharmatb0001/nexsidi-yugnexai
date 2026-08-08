@@ -15,7 +15,7 @@
 import type { instincts } from "./schema.ts";
 
 export type Confidence = "0.3" | "0.5" | "0.7" | "0.9";
-export type InstinctDomain = "code-style" | "security" | "performance" | "testing" | "architecture";
+export type InstinctDomain = "code-style" | "security" | "performance" | "testing" | "architecture" | "design" | "content";
 
 // 2026-07-24 (P3.W3.3), extended 2026-07-25 (P5.W5.2): originally just the
 // domains inferInstinctDomain (stage5-qa-fix-loop.ts) actually PRODUCES from
@@ -27,7 +27,20 @@ export type InstinctDomain = "code-style" | "security" | "performance" | "testin
 // so it must be reachable here, or those two seeds are write-only —
 // repeating the exact bug this array was created to fix. "testing" stays
 // excluded: nothing writes to it yet, seeded or QA-inferred.
-export const REACHABLE_INSTINCT_DOMAINS: InstinctDomain[] = ["security", "performance", "architecture", "code-style"];
+//
+// 2026-08-08: real gap found live (project bae438767bed, direct user
+// request) — the ENTIRE qualitative review path (Tilotma's Tier 3
+// reality-checker, System B's live-eval) had zero connection to instinct
+// memory: not the wrong domain, no domain existed at all for "this design
+// is generic" or "this content lacks real substance," and nothing on that
+// path ever called recordInstinct regardless. "design" is added here
+// alongside the real writer in live-eval.ts (see runLiveEval) — same rule
+// as above: a domain only belongs in this array once something real
+// writes to it. "content" is added to the InstinctDomain TYPE (below) to
+// mark real intent, but deliberately excluded here — nothing writes to it
+// yet, and adding it to this array now would be the exact write-only/dead
+// domain this comment's own history already warns against repeating.
+export const REACHABLE_INSTINCT_DOMAINS: InstinctDomain[] = ["security", "performance", "architecture", "code-style", "design"];
 
 export interface InstinctInput {
   agentName: string;

@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
-import { run, validateDesignBrief, formatDesignBriefForPrompt, FALLBACK_BRIEF, VANYA_SYSTEM_PROMPT, type DesignBrief } from "./index.ts";
+import { run, validateDesignBrief, formatDesignBriefForPrompt, buildVanyaTask, FALLBACK_BRIEF, VANYA_SYSTEM_PROMPT, type DesignBrief, type VanyaDeps } from "./index.ts";
 import type { ProjectSpec } from "../../saanvi/src/index.ts";
+import type { AgentRunResult } from "@nexsidi/agent-runtime";
 
 // Vanya did not exist before this file (P3.W3.1, full agentic upgrade,
 // 2026-07-24) — confirmed via repo-wide grep during this session's
@@ -8,6 +9,12 @@ import type { ProjectSpec } from "../../saanvi/src/index.ts";
 // step: takes a locked spec, produces a concrete design brief (palette,
 // typography, layout, mood), so Aanya has something specific to implement
 // instead of improvising from a one-paragraph requirements description.
+//
+// 2026-08-08: rewritten from a raw one-shot agentChat() call (no tools) to
+// runAgentEscalated (the real agent loop, with enableWebSearch) — see
+// index.ts's header comment for the full "produced one generic brief,
+// never researched anything, never got its own skill doctrine" root cause.
+// These tests now stub deps.runAgent (an AgentRunResult), not deps.chat.
 
 const TEST_SPEC: ProjectSpec = {
   projectId: "proj123",
@@ -34,43 +41,72 @@ const VALID_BRIEF: DesignBrief = {
   layoutConcept: "Dense grid with generous padding.",
 };
 
-test("a well-formed first response does not trigger a second call at all", async () => {
-  let callCount = 0;
-  const stubChat = async () => {
-    callCount++;
-    return { content: JSON.stringify(VALID_BRIEF), modelUsed: "qwen2.5-coder:7b-instruct-q4_K_M" as const };
+function agentResult(summary: string): AgentRunResult & { escalated: boolean } {
+  return { success: true, summary, filesWritten: [], iterations: 3, errors: [], escalated: false };
+}
+
+test("a well-formed agent result produces the parsed brief, no fallback", async () => {
+  let calls = 0;
+  const deps: VanyaDeps = {
+    runAgent: async () => { calls++; return agentResult(JSON.stringify(VALID_BRIEF)); },
   };
-  const brief = await run(TEST_SPEC, { chat: stubChat });
-  expect(callCount).toBe(1);
+  const brief = await run(TEST_SPEC, deps);
+  expect(calls).toBe(1);
   expect(brief.mood).toBe("Confident and technical");
 });
 
-test("a single empty response is retried once and succeeds on the second attempt", async () => {
-  let callCount = 0;
-  const stubChat = async () => {
-    callCount++;
-    return { content: callCount === 1 ? "" : JSON.stringify(VALID_BRIEF), modelUsed: "qwen2.5-coder:7b-instruct-q4_K_M" as const };
+test("a brief wrapped in a markdown fence still parses correctly", async () => {
+  const deps: VanyaDeps = {
+    runAgent: async () => agentResult(`Here is my brief:\n\`\`\`json\n${JSON.stringify(VALID_BRIEF)}\n\`\`\``),
   };
-  const brief = await run(TEST_SPEC, { chat: stubChat });
-  expect(callCount).toBe(2);
+  const brief = await run(TEST_SPEC, deps);
   expect(brief.palette).toHaveLength(3);
 });
 
 // Deliberately DIFFERENT from Saanvi's contract: a locked spec is a hard
 // blocking requirement (two failures -> throw), but design is an
-// enrichment that must not block generation entirely — two failures fall
-// back to a real, specific, non-generic brief rather than crashing the
-// whole pipeline over a design-brief LLM call.
-test("two consecutive empty/unparseable responses fall back to FALLBACK_BRIEF instead of throwing", async () => {
-  const stubChat = async () => ({ content: "", modelUsed: "qwen2.5-coder:7b-instruct-q4_K_M" as const });
-  const brief = await run(TEST_SPEC, { chat: stubChat });
+// enrichment that must not block generation entirely — any failure mode
+// falls back to a real, specific, non-generic brief rather than crashing
+// the whole pipeline over a design-brief step.
+test("an agent run that throws falls back to FALLBACK_BRIEF instead of propagating", async () => {
+  const deps: VanyaDeps = {
+    runAgent: async () => { throw new Error("all pool models exhausted"); },
+  };
+  const brief = await run(TEST_SPEC, deps);
+  expect(brief).toEqual(FALLBACK_BRIEF);
+});
+
+test("an unparseable summary falls back to FALLBACK_BRIEF instead of throwing", async () => {
+  const deps: VanyaDeps = {
+    runAgent: async () => agentResult("I looked at some sites but ran out of budget before producing a brief."),
+  };
+  const brief = await run(TEST_SPEC, deps);
   expect(brief).toEqual(FALLBACK_BRIEF);
 });
 
 test("a malformed JSON response (wrong shape) falls back to FALLBACK_BRIEF rather than propagating a broken brief", async () => {
-  const stubChat = async () => ({ content: JSON.stringify({ mood: "ok" }), modelUsed: "qwen2.5-coder:7b-instruct-q4_K_M" as const });
-  const brief = await run(TEST_SPEC, { chat: stubChat });
+  const deps: VanyaDeps = {
+    runAgent: async () => agentResult(JSON.stringify({ mood: "ok" })),
+  };
+  const brief = await run(TEST_SPEC, deps);
   expect(brief).toEqual(FALLBACK_BRIEF);
+});
+
+test("run() passes enableWebSearch and readOnly to the agent config", async () => {
+  let captured: any;
+  const deps: VanyaDeps = {
+    runAgent: async (config: any) => { captured = config; return agentResult(JSON.stringify(VALID_BRIEF)); },
+  };
+  await run(TEST_SPEC, deps);
+  expect(captured.enableWebSearch).toBe(true);
+  expect(captured.readOnly).toBe(true);
+  expect(captured.agentName).toBe("vanya");
+});
+
+test("buildVanyaTask includes the app name, description, and features", () => {
+  const task = buildVanyaTask(TEST_SPEC);
+  expect(task).toContain("NexTech");
+  expect(task).toContain("A B2B software company site");
 });
 
 test("validateDesignBrief accepts a well-formed brief", () => {
@@ -129,4 +165,18 @@ test("VANYA_SYSTEM_PROMPT explicitly warns against the well-known AI-generated d
 test("VANYA_SYSTEM_PROMPT instructs preserving the spec's literal color-to-role pairing when one is given", () => {
   expect(VANYA_SYSTEM_PROMPT).toContain("REQUIREMENT, not a suggestion");
   expect(VANYA_SYSTEM_PROMPT).toContain("SWAPPED their roles");
+});
+
+// 2026-08-08: real gap found live, explicit user request (project
+// bae438767bed) — this agent had zero research capability and produced one
+// uniform look for the whole app. These assert the fixes are present in
+// the actual prompt text, not just described in a commit.
+test("VANYA_SYSTEM_PROMPT instructs using web_search to research the app's real domain", () => {
+  expect(VANYA_SYSTEM_PROMPT).toMatch(/web_search/i);
+  expect(VANYA_SYSTEM_PROMPT).toContain("Ground your decisions in something researched");
+});
+
+test("VANYA_SYSTEM_PROMPT instructs per-page emphasis variation instead of one uniform look everywhere", () => {
+  expect(VANYA_SYSTEM_PROMPT).toMatch(/reads as templated/i);
+  expect(VANYA_SYSTEM_PROMPT).toMatch(/emphasis shifts by page/i);
 });

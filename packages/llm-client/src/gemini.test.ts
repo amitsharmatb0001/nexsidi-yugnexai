@@ -4,8 +4,10 @@ import {
   isRetryableGeminiStatus,
   geminiRetryDelayMs,
   fetchGeminiWithRetry,
+  fetchGeminiWithLocationFallback,
   resolveGeminiModel,
   resolveGeminiLocation,
+  resolveGeminiFallbackLocation,
   resolveGeminiRpmLimit,
   translateNimToolToGeminiTool,
   partsToText,
@@ -231,6 +233,122 @@ test("fetchGeminiWithRetry still retries a 503 with backoff even when fastFailOn
     expect(calls).toBe(2); // 503 still retried once
   } finally {
     global.fetch = originalFetch;
+    delete process.env.GEMINI_RETRY_BASE_DELAY_MS;
+  }
+});
+
+test("resolveGeminiFallbackLocation defaults to asia-southeast1 when unset", () => {
+  delete process.env.GEMINI_FALLBACK_LOCATION;
+  expect(resolveGeminiFallbackLocation()).toBe("asia-southeast1");
+});
+
+test("resolveGeminiFallbackLocation honors an override, and empty string opts out", () => {
+  process.env.GEMINI_FALLBACK_LOCATION = "europe-west4";
+  expect(resolveGeminiFallbackLocation()).toBe("europe-west4");
+  process.env.GEMINI_FALLBACK_LOCATION = "";
+  expect(resolveGeminiFallbackLocation()).toBeUndefined();
+  delete process.env.GEMINI_FALLBACK_LOCATION;
+});
+
+// 2026-08-07: real, live-confirmed finding (project bae438767bed) — see
+// resolveGeminiFallbackLocation's header comment. A 429 on "global" twice
+// outlasted the full retry budget available to it; a probe against every
+// real Vertex region confirmed asia-southeast1 independently serves this
+// model and was NOT rate-limited at the same moment. These tests cover the
+// fallback wiring itself (pure — mocked fetch only, no real auth/network).
+test("fetchGeminiWithLocationFallback falls over to the fallback location on a 429 from the primary", async () => {
+  process.env.GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || "test-project";
+  const originalFetch = global.fetch;
+  const urlsHit: string[] = [];
+  global.fetch = (async (url: string) => {
+    urlsHit.push(url);
+    if (url.includes("/locations/global/")) return new Response("rate limited", { status: 429 });
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }) as unknown as typeof fetch;
+
+  try {
+    const { res, location } = await fetchGeminiWithLocationFallback(
+      "gemini-3.5-flash", "global", { contents: [] }, {}, new AbortController().signal, "test",
+    );
+    expect(res.status).toBe(200);
+    expect(location).toBe("asia-southeast1");
+    expect(urlsHit.some((u) => u.includes("/locations/global/"))).toBe(true);
+    expect(urlsHit.some((u) => u.includes("/locations/asia-southeast1/"))).toBe(true);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("fetchGeminiWithLocationFallback drops cachedContent on the fallback attempt — a cache handle is location-bound", async () => {
+  process.env.GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || "test-project";
+  const originalFetch = global.fetch;
+  const bodiesSent: string[] = [];
+  global.fetch = (async (url: string, init: RequestInit) => {
+    bodiesSent.push(String(init.body));
+    if (url.includes("/locations/global/")) return new Response("rate limited", { status: 429 });
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }) as unknown as typeof fetch;
+
+  try {
+    await fetchGeminiWithLocationFallback(
+      "gemini-3.5-flash", "global", { contents: [], cachedContent: "projects/x/locations/global/cachedContents/y" },
+      {}, new AbortController().signal, "test",
+    );
+    expect(bodiesSent[0]).toContain("cachedContent");
+    expect(bodiesSent[1]).not.toContain("cachedContent");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("fetchGeminiWithLocationFallback does not fall back when no fallback location is configured (explicit opt-out)", async () => {
+  process.env.GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || "test-project";
+  process.env.GEMINI_FALLBACK_LOCATION = "";
+  // No fallback exists, so this correctly falls through to the ordinary
+  // retry-with-backoff path (same as any non-pooled caller) rather than
+  // fast-failing — keep the test fast without changing that real behavior.
+  process.env.GEMINI_RETRY_BASE_DELAY_MS = "1";
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = (async () => {
+    calls++;
+    return new Response("rate limited", { status: 429 });
+  }) as unknown as typeof fetch;
+
+  try {
+    const { res, location } = await fetchGeminiWithLocationFallback(
+      "gemini-3.5-flash", "global", { contents: [] }, {}, new AbortController().signal, "test",
+    );
+    expect(res.status).toBe(429);
+    expect(location).toBe("global");
+    expect(calls).toBe(4); // ordinary retry loop, no fallback to short-circuit it
+  } finally {
+    global.fetch = originalFetch;
+    delete process.env.GEMINI_FALLBACK_LOCATION;
+    delete process.env.GEMINI_RETRY_BASE_DELAY_MS;
+  }
+});
+
+test("fetchGeminiWithLocationFallback does not fall back when the primary location equals the fallback location", async () => {
+  process.env.GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT || "test-project";
+  process.env.GEMINI_FALLBACK_LOCATION = "global";
+  process.env.GEMINI_RETRY_BASE_DELAY_MS = "1";
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = (async () => {
+    calls++;
+    return new Response("rate limited", { status: 429 });
+  }) as unknown as typeof fetch;
+
+  try {
+    const { location } = await fetchGeminiWithLocationFallback(
+      "gemini-3.5-flash", "global", { contents: [] }, {}, new AbortController().signal, "test",
+    );
+    expect(location).toBe("global");
+    expect(calls).toBe(4); // same reasoning as above
+  } finally {
+    global.fetch = originalFetch;
+    delete process.env.GEMINI_FALLBACK_LOCATION;
     delete process.env.GEMINI_RETRY_BASE_DELAY_MS;
   }
 });

@@ -22,9 +22,13 @@
 // single evaluator's judgment, not a debate.
 import { runAgentEscalated } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS } from "@nexsidi/llm-client";
+import type { InstinctDomain } from "@nexsidi/db";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
+import { countAppPages, computeTier3MaxIterations } from "./tier3-review.ts";
+import { runWithQuotaWatchAndResume } from "../../../pipeline/activities/quota-retry.ts";
+import { summarizeFindingToInstinctRule } from "../../../pipeline/orchestrator/stages/stage5-qa-fix-loop.ts";
 
 export interface LiveEvalScores {
   designQuality: number;
@@ -93,8 +97,38 @@ export function parseLiveEvalScores(summary: string): LiveEvalScores | null {
   return { designQuality, originality, craft, functionality };
 }
 
+// 2026-08-08: real gap found live, explicit user request (project
+// bae438767bed) — this whole qualitative review path had ZERO connection
+// to instinct memory. recordInstinct (packages/db/src/instincts.ts) was
+// only ever called from the STATIC QA fix-loop (stage5-qa-fix-loop.ts) —
+// a low design/originality score here, the exact class of finding that
+// caught Northgate's generic content, had nowhere to go and nothing ever
+// learned from it. ONE injectable seam covering summarize+write together
+// (not split into two DI points) — same granularity as recordInstincts in
+// stage5-qa-fix-loop.ts, which also calls summarizeFindingToInstinctRule
+// internally rather than exposing it separately. Splitting it into two
+// hooks looked cleaner but left the summarize call (a REAL LLM request,
+// no DI seam of its own) unstubbable — confirmed live: it hung an existing
+// test for 5s until timeout. One seam means a test overriding it skips
+// both the summarization AND the write in a single fast no-op.
+export type RecordDesignInstinctFn = (findingText: string) => Promise<void>;
+
+async function defaultRecordDesignInstinct(findingText: string): Promise<void> {
+  try {
+    const { recordInstinct } = await import("@nexsidi/db");
+    const summarized = await summarizeFindingToInstinctRule(findingText, "vanya");
+    // Attributed to "vanya" (not the evaluator that found it) — same
+    // convention as stage5-qa-fix-loop.ts's recordInstincts, which credits
+    // the agent whose OUTPUT needs correcting, not the QA agent that caught it.
+    await recordInstinct("vanya", "design" as InstinctDomain, summarized.trigger, summarized.action);
+  } catch (err) {
+    console.log(`[live-eval] recordInstinct failed (non-fatal, memory is an enrichment): ${String(err)}`);
+  }
+}
+
 export interface LiveEvalDeps {
   runAgent: typeof runAgentEscalated;
+  recordDesignInstinct?: RecordDesignInstinctFn;
 }
 
 export async function runLiveEval(
@@ -109,16 +143,46 @@ export async function runLiveEval(
   const screenshotDir = join(SCREENSHOT_ROOT, projectId).replace(/\\/g, "/");
   mkdirSync(join(process.cwd(), screenshotDir), { recursive: true });
 
-  const result = await deps.runAgent({
-    agentName: "tilotma-live-eval",
-    model: AGENT_MODELS.tilotma,
-    apiKey,
-    systemPrompt: LIVE_EVAL_SYSTEM_PROMPT,
-    initialMessage: buildLiveEvalTask(projectId, appUrl, screenshotDir),
-    sandboxDir: frontendOutputDir,
-    projectId,
-    enableBrowser: true,
-  });
+  // 2026-08-07: real bug found live (project bae438767bed, redeploy #5) —
+  // this call used the shared MAX_ITERATIONS default (40) with no scaling,
+  // the exact gap computeTier3MaxIterations was built to close for Tier 3's
+  // two stages (see its header comment: "a fixed budget that doesn't scale
+  // with real app size"). Confirmed live: hit iteration 40 still reading
+  // component source (SignUpForm.tsx, SignInForm.tsx, vendor primitives)
+  // with no task_complete — the whole live-eval pass was lost, and Stage 6
+  // logged "No specific findings to route" for a judge that never actually
+  // rendered a verdict, same failure shape Tier 3 already had. Same fix:
+  // scale by real page count instead of a flat cap.
+  const maxIterations = computeTier3MaxIterations(countAppPages(frontendOutputDir));
+
+  // 2026-08-07: explicit user request, live (project bae438767bed) — this
+  // call had zero quota retry; a single 429/pool-exhaustion aborted the
+  // whole pass with no recovery, the exact failure observed live right
+  // after the maxIterations fix above landed. See runWithQuotaWatchAndResume's
+  // header comment in pipeline/activities/quota-retry.ts for the full
+  // "watch every 5 min, resume once healthy" reasoning.
+  const result = await runWithQuotaWatchAndResume(() =>
+    deps.runAgent({
+      agentName: "tilotma-live-eval",
+      model: AGENT_MODELS.tilotma,
+      apiKey,
+      systemPrompt: LIVE_EVAL_SYSTEM_PROMPT,
+      initialMessage: buildLiveEvalTask(projectId, appUrl, screenshotDir),
+      sandboxDir: frontendOutputDir,
+      projectId,
+      enableBrowser: true,
+      maxIterations,
+      // 2026-08-07: same D26 reasoning as Tier 3's readOnly (see loop.ts) —
+      // this is a JUDGE, not a fixer. Its own prompt only ever lists browser_*
+      // tools as "available to you," but write_file/run_command are granted
+      // to every agent unconditionally regardless of role unless explicitly
+      // blocked. Closing this preventively here too, not just reactively
+      // after observing the same misuse — a design/originality judge going
+      // off-script to "fix" what it's scoring is the identical failure mode
+      // that cost the reality-checker its entire budget twice this session.
+      readOnly: true,
+    }),
+  );
 
   const scores = parseLiveEvalScores(result.summary);
   if (!scores) {
@@ -134,6 +198,21 @@ export async function runLiveEval(
   }
 
   const score = calculateLiveScore(scores);
+
+  // 2026-08-08: the actual write — see RecordDesignInstinctFn's header
+  // comment above for the full "this path had zero connection to memory"
+  // gap. Scoped to designQuality/originality specifically: those are the
+  // two dimensions CLAUDE.md's own rubric weights highest (0.35 each)
+  // BECAUSE they're where generic AI output shows up (see
+  // LIVE_EVAL_SYSTEM_PROMPT's own framing) — craft/functionality failures
+  // are usually fundamentals bugs, a different class already covered by
+  // System A. Non-fatal by construction: defaultRecordDesignInstinct
+  // swallows its own errors, so a memory-write failure never affects the
+  // score/verdict returned to the caller.
+  if (scores.designQuality < LIVE_PASS_THRESHOLD || scores.originality < LIVE_PASS_THRESHOLD) {
+    await (deps.recordDesignInstinct ?? defaultRecordDesignInstinct)(result.summary);
+  }
+
   return { pass: score >= LIVE_PASS_THRESHOLD, score, scores, summary: result.summary };
 }
 

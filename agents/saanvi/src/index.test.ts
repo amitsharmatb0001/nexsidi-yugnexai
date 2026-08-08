@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { run } from "./index.ts";
+import { run, SAANVI_SYSTEM_PROMPT } from "./index.ts";
 
 // Full-system audit A7: one empty/unparseable NIM response used to crash
 // the ENTIRE pipeline outright — stress-test run 9 died 12 seconds in when
@@ -83,4 +83,31 @@ test("run() ignores needsClarification when it's not the literal boolean true", 
   const result = await run("proj123", "build me a task app", { chat: stubChat });
 
   expect(result.status).toBe("locked");
+});
+
+// 2026-08-08: real gap found live, explicit user request (project
+// bae438767bed) — "build a client portal for Northgate Consulting" was
+// clear enough to spec confidently (portal type, pages, auth all
+// inferable), so the OLD vagueness-only clarification rule never fired.
+// Saanvi invented three generic, interchangeable service names instead of
+// asking what Northgate actually offers — the direct root cause of the
+// delivered app reading as generic. This asserts the SEPARATE
+// business-specifics trigger is actually present in the prompt, not just
+// described in a commit — the real behavior (does the model actually ask)
+// isn't unit-testable without a live LLM call, same limitation as every
+// other prompt-content assertion in this codebase (see vanya/index.test.ts's
+// equivalent tests for VANYA_SYSTEM_PROMPT).
+test("SAANVI_SYSTEM_PROMPT instructs asking for real business specifics, separately from the vagueness-only trigger", () => {
+  expect(SAANVI_SYSTEM_PROMPT).toContain("WHEN TO ASK FOR REAL BUSINESS SPECIFICS");
+  expect(SAANVI_SYSTEM_PROMPT).toContain("SEPARATE trigger from vagueness");
+  expect(SAANVI_SYSTEM_PROMPT).toMatch(/fabricated business identity/i);
+});
+
+test("SAANVI_SYSTEM_PROMPT explicitly names the Northgate-style failure mode: structural clarity is not real content", () => {
+  expect(SAANVI_SYSTEM_PROMPT).toMatch(/NOT the same as having REAL\s*\n?\s*CONTENT/i);
+  expect(SAANVI_SYSTEM_PROMPT).toContain("do NOT invent plausible-sounding generic service names");
+});
+
+test("SAANVI_SYSTEM_PROMPT still allows skipping the business-specifics question when there is no real company behind the app", () => {
+  expect(SAANVI_SYSTEM_PROMPT).toMatch(/no real\s*\n?\s*external business behind the app/i);
 });

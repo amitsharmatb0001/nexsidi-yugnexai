@@ -24,7 +24,7 @@ import {
   type ClaudeToolDef,
   type ClaudeContentBlockParam,
 } from "@nexsidi/llm-client";
-import { runAgent, buildToolList, MAX_ITERATIONS, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
+import { runAgent, buildToolList, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
 import { join } from "path";
 import { readFileSync } from "node:fs";
 import { runAgentWithGemini, screenshotImagePathFor } from "./gemini-loop.ts";
@@ -306,7 +306,9 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
 
       let result: Record<string, any>;
 
-      switch (toolName) {
+      if (config.readOnly && READONLY_BLOCKED_TOOLS.has(toolName)) {
+        result = readOnlyToolBlockedResult(toolName);
+      } else switch (toolName) {
         case "write_file": {
           const writeArgs = args as { path: string; content: string };
           emitEvent({ type: "tool_call", tool: "write_file", input: { path: writeArgs.path, bytes: writeArgs.content.length } });

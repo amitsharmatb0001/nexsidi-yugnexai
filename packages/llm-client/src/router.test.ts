@@ -76,9 +76,15 @@ test("poolForTier collapses to a single-model pool when an explicit override is 
 // (Vision/Mission) from the generated manifest as a direct result. "a2a" is
 // the new cheap agent-to-agent coordination tier, kept off the reasoning
 // pools entirely.
+// 2026-08-09: real gap found live, twice (project meridianbk1, meridianbk2)
+// — "design" was the only tier missing gemini-3.5-flash as a last-resort
+// fallback; when both its models were circuit-broken simultaneously, Aanya
+// had zero remaining option and the whole workflow failed. Pro-model-first
+// ordering is unchanged (still leads with 3.1-pro-preview for quality) —
+// 3.5-flash is appended as a third rung, matching every other tier.
 test("poolForTier: plan and design use the pro-thinking pool, not flash-lite", () => {
   expect(poolForTier("plan")).toEqual(["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"]);
-  expect(poolForTier("design")).toEqual(["gemini-3.1-pro-preview", "gemini-3.6-flash"]);
+  expect(poolForTier("design")).toEqual(["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"]);
 });
 
 test("poolForTier: a2a uses the cheap flash-lite pool, same tier as user", () => {
@@ -174,6 +180,10 @@ test("rotatedPoolForAgent still contains every model from the tier's pool — no
   expect([...rotated].sort()).toEqual([...pool].sort());
 });
 
+// 2026-08-09: was "design" — no longer a valid fixture for this test since
+// the design-tier-fallback fix above grew it to 3 models (which DOES
+// rotate). "a2a" stays a genuine 2-model pool, preserving this test's
+// actual intent (small pools don't rotate) instead of weakening it.
 test("rotatedPoolForAgent returns the pool unchanged for a 2-model (or smaller) tier — nothing to rotate", () => {
-  expect(rotatedPoolForAgent("design", "aanya")).toEqual(poolForTier("design"));
+  expect(rotatedPoolForAgent("a2a", "aanya")).toEqual(poolForTier("a2a"));
 });

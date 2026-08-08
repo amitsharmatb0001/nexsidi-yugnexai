@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { runAgentEscalated, MAX_ITERATIONS } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS } from "@nexsidi/llm-client";
 import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
+import { runWithQuotaWatchAndResume } from "../../../pipeline/activities/quota-retry.ts";
 
 // 2026-07-27 (live, complex1): real gap found live — the shared default
 // MAX_ITERATIONS (40) let the reality-checker spend its entire budget
@@ -117,47 +118,77 @@ export async function runTier3Review(
   const maxIterations = computeTier3MaxIterations(countAppPages(frontendOutputDir));
 
   // ── Stage 1: Evidence Collector ─────────────────────────────────────────
-  const stage1 = await runAgentEscalated({
-    agentName: "tilotma-evidence-collector",
-    model: AGENT_MODELS.tilotma,
-    apiKey,
-    systemPrompt: EVIDENCE_COLLECTOR_PROMPT,
-    initialMessage: buildEvidenceCollectorTask(projectId, appUrl, backendUrl, screenshotDir),
-    sandboxDir: frontendOutputDir,
-    projectId,
-    enableBrowser: true,   // 2026-07-11: real interactive QA (navigate/click/fill/console-errors/computed-style) via the Node browser worker — replaces the single-shot screenshot tool
-    enableHttpTools: true,
-    enableDbQuery: true,   // read-only data-round-trip verification
-    maxIterations,
-  });
+  // 2026-08-07: explicit user request, live (project bae438767bed) — this
+  // call had ZERO quota retry before this: a single 429 aborted the whole
+  // stage. runWithQuotaWatchAndResume closes that gap (see its header
+  // comment in pipeline/activities/quota-retry.ts) — re-running this exact
+  // call is always safe (no partial state to lose), so "picking up where it
+  // left off" is just re-invoking it once models are confirmed healthy.
+  const stage1 = await runWithQuotaWatchAndResume(() =>
+    runAgentEscalated({
+      agentName: "tilotma-evidence-collector",
+      model: AGENT_MODELS.tilotma,
+      apiKey,
+      systemPrompt: EVIDENCE_COLLECTOR_PROMPT,
+      initialMessage: buildEvidenceCollectorTask(projectId, appUrl, backendUrl, screenshotDir),
+      sandboxDir: frontendOutputDir,
+      projectId,
+      enableBrowser: true,   // 2026-07-11: real interactive QA (navigate/click/fill/console-errors/computed-style) via the Node browser worker — replaces the single-shot screenshot tool
+      enableHttpTools: true,
+      enableDbQuery: true,   // read-only data-round-trip verification
+      maxIterations,
+      // 2026-08-06: see readOnly's definition in loop.ts — this is Stage 1 of
+      // a two-stage EVIDENCE review, not a fix pass. Without this, write_file/
+      // run_command are silently available (loop.ts grants them to every
+      // agent unconditionally) and nothing in this prompt forbids using them.
+      readOnly: true,
+    }),
+  );
 
   const stage1Findings = parseFindings(stage1.summary);
 
   // ── Stage 2: Reality Checker — a genuinely separate agent run ───────────
-  const stage2 = await runAgentEscalated({
-    agentName: "tilotma-reality-checker",
-    model: AGENT_MODELS.tilotma,
-    apiKey,
-    systemPrompt: REALITY_CHECKER_PROMPT,
-    initialMessage: buildRealityCheckerTask(projectId, appUrl, backendUrl, screenshotDir, stage1Findings),
-    sandboxDir: frontendOutputDir,
-    projectId,
-    enableScreenshot: true,
-    enableHttpTools: true,
-    maxIterations,
-    // 2026-08-06: real bug found live (project 88d7b375eaef) — this agent is
-    // an EVALUATOR, not a generator: REALITY_CHECKER_PROMPT explicitly
-    // instructs "Set it false if [verdict is NEEDS_WORK]" because a
-    // confirmed real bug in the app under review is a legitimate, complete
-    // finding, not unfinished work. Without this flag, the shared
-    // completion gate (built for generators, where false always means "keep
-    // going") rejected that honest false and forced the agent to resubmit
-    // with verification_passed flipped to true and the IDENTICAL finding
-    // text — no new evidence, no fix — coercing a false-positive pass that
-    // let a confirmed, documented bug (corrupted NexUI fonts, 404ing from
-    // the wrong path) deploy undetected. See completion-gate.ts.
-    allowFailedVerification: true,
-  });
+  // 2026-08-07: same runWithQuotaWatchAndResume wrapping as Stage 1 above —
+  // this is the exact call that hit "all pool models exhausted" live on
+  // project bae438767bed with no recovery path, forcing a manual re-run.
+  const stage2 = await runWithQuotaWatchAndResume(() =>
+    runAgentEscalated({
+      agentName: "tilotma-reality-checker",
+      model: AGENT_MODELS.tilotma,
+      apiKey,
+      systemPrompt: REALITY_CHECKER_PROMPT,
+      initialMessage: buildRealityCheckerTask(projectId, appUrl, backendUrl, screenshotDir, stage1Findings),
+      sandboxDir: frontendOutputDir,
+      projectId,
+      enableScreenshot: true,
+      enableHttpTools: true,
+      maxIterations,
+      // 2026-08-06: real bug found live (project 88d7b375eaef) — this agent is
+      // an EVALUATOR, not a generator: REALITY_CHECKER_PROMPT explicitly
+      // instructs "Set it false if [verdict is NEEDS_WORK]" because a
+      // confirmed real bug in the app under review is a legitimate, complete
+      // finding, not unfinished work. Without this flag, the shared
+      // completion gate (built for generators, where false always means "keep
+      // going") rejected that honest false and forced the agent to resubmit
+      // with verification_passed flipped to true and the IDENTICAL finding
+      // text — no new evidence, no fix — coercing a false-positive pass that
+      // let a confirmed, documented bug (corrupted NexUI fonts, 404ing from
+      // the wrong path) deploy undetected. See completion-gate.ts.
+      allowFailedVerification: true,
+      // 2026-08-06: real bug found live (project bae438767bed) — with
+      // write_file/run_command silently available (see loop.ts's readOnly),
+      // this agent spent its ENTIRE 61-iteration budget on 4 rounds of
+      // self-repair on a font bug it correctly found, instead of reporting it
+      // and calling task_complete. It never produced a verdict — Stage 6's fix
+      // loop then saw zero parseable findings ("No specific findings to route")
+      // and silently exited, masking a real, confirmed, blocking bug as if
+      // nothing had been found. This agent's ONLY deliverable is a FINDINGS
+      // list + READY/NEEDS_WORK verdict; fixing is Aanya/Shubham/Pranav's job
+      // in the routed fix-loop that runs AFTER this verdict, via their own
+      // proper build+restart pipeline (see agents/generators/aanya/shubham).
+      readOnly: true,
+    }),
+  );
 
   const stage2Findings = parseFindings(stage2.summary);
 

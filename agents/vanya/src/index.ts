@@ -16,7 +16,23 @@
 // system a human design lead would hand a developer before they write a
 // single component. Wired into Arjun's run() (agents/arjun/src/index.ts)
 // so BuildPlan.designBrief reaches Aanya alongside the API contract.
-import { agentChat } from "@nexsidi/llm-client";
+//
+// 2026-08-08: real gap found live, explicit user request (project
+// bae438767bed) — this file was a single raw one-shot agentChat() call
+// with NO tools at all, fed nothing but the spec's own paragraph. It could
+// not research anything, and — separately — never went through the shared
+// agent loop, so it never got assembleSystemPrompt's skill-doctrine
+// injection either (no vanya.md existed to load anyway; see
+// packages/agent-runtime/skills/vanya.md, added alongside this rewrite).
+// Confirmed live: this produced one uniform, generic palette+typeface pair
+// applied identically to every page, the direct root cause behind a
+// delivered app scoring 9.15/10 on a live-quality check while still
+// looking, in the user's own words, "like a jr dev build." Rewritten to
+// run through runAgentEscalated (the real loop) with enableWebSearch, so
+// Vanya can ground decisions in something researched rather than guessed,
+// and so its doctrine actually loads.
+import { runAgentEscalated } from "@nexsidi/agent-runtime";
+import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import type { ProjectSpec } from "../../saanvi/src/index.ts";
 
 export interface DesignBrief {
@@ -27,44 +43,66 @@ export interface DesignBrief {
 }
 
 export interface VanyaDeps {
-  chat: typeof agentChat;
+  runAgent: typeof runAgentEscalated;
 }
 
-// A7 (established pattern — Saanvi/Arjun/QA agents): one retry on an
-// empty/unparseable response before falling back. Design is NOT optional
-// the way instinct memory is (Aanya genuinely needs SOME concrete brief to
-// avoid slop), so the fallback below is a real, specific, non-generic
-// brief in its own right — not an empty object — chosen deliberately to
-// NOT be one of the well-known AI-default looks either (see FALLBACK_BRIEF).
+// Design is NOT optional the way instinct memory is (Aanya genuinely needs
+// SOME concrete brief to avoid slop), so the fallback below is a real,
+// specific, non-generic brief in its own right — not an empty object —
+// chosen deliberately to NOT be one of the well-known AI-default looks
+// either (see FALLBACK_BRIEF). Any failure mode (unparseable output, the
+// agent loop exhausting its iteration budget, an escalation failure) falls
+// back to it rather than blocking generation entirely — the retry logic
+// that used to live here manually is now runAgentEscalated's own job
+// (NIM-path retry, one-time Claude escalation), so this function only
+// needs to handle "the whole call didn't produce a usable brief."
+const VANYA_MAX_ITERATIONS = 15;
+
 export async function run(
   spec: ProjectSpec,
-  deps: VanyaDeps = { chat: agentChat },
+  deps: VanyaDeps = { runAgent: runAgentEscalated },
 ): Promise<DesignBrief> {
   const apiKey = process.env.NIM_API_KEY ?? "";
-  const messages = [
-    { role: "system" as const, content: VANYA_SYSTEM_PROMPT },
-    {
-      role: "user" as const,
-      content: `App name: ${spec.name}\nDescription: ${spec.description}\nFeatures: ${spec.features.map((f) => f.name ?? JSON.stringify(f)).join(", ")}\n\nOutput ONLY the JSON object. No markdown, no prose.`,
-    },
-  ];
 
-  let rawResult: unknown;
+  let result;
   try {
-    const { content } = await deps.chat("vanya", messages, apiKey);
-    rawResult = parseJson(content);
-  } catch (firstErr) {
-    console.log(`[vanya] first attempt failed (${String(firstErr)}) — retrying once`);
-    try {
-      const { content } = await deps.chat("vanya", messages, apiKey);
-      rawResult = parseJson(content);
-    } catch (secondErr) {
-      console.log(`[vanya] second attempt also failed (${String(secondErr)}) — using fallback brief, not blocking generation on this`);
-      return FALLBACK_BRIEF;
-    }
+    result = await deps.runAgent({
+      agentName: "vanya",
+      model: AGENT_MODELS.vanya,
+      fallbackModels: FALLBACK_CHAIN.vanya,
+      apiKey,
+      systemPrompt: VANYA_SYSTEM_PROMPT,
+      initialMessage: buildVanyaTask(spec),
+      sandboxDir: process.cwd(),
+      enableWebSearch: true,
+      // Same D26 reasoning applied to Tier 3/live-eval elsewhere this
+      // session — a design-brief step is planning, not fixing. It never
+      // writes project files (Aanya implements the brief, not Vanya).
+      readOnly: true,
+      maxIterations: VANYA_MAX_ITERATIONS,
+    });
+  } catch (err) {
+    console.log(`[vanya] agent run failed (${String(err)}) — using fallback brief, not blocking generation on this`);
+    return FALLBACK_BRIEF;
+  }
+
+  const rawResult = parseJson(result.summary);
+  if (rawResult === undefined) {
+    console.log(`[vanya] could not parse a brief from the agent's output — using fallback brief, not blocking generation on this`);
+    return FALLBACK_BRIEF;
   }
 
   return validateDesignBrief(rawResult) ? rawResult : FALLBACK_BRIEF;
+}
+
+export function buildVanyaTask(spec: ProjectSpec): string {
+  return `App name: ${spec.name}
+Description: ${spec.description}
+Features: ${spec.features.map((f) => f.name ?? JSON.stringify(f)).join(", ")}
+
+Research this app's actual domain per your system prompt before deciding on a
+brief, then end task_complete's summary with EXACTLY the JSON object your
+system prompt specifies — no markdown fence, no prose after it.`;
 }
 
 // Exported for direct testing — a malformed/incomplete response must fall
@@ -115,6 +153,8 @@ Layout concept: ${brief.layoutConcept}
 Every primary Button/accent element uses the "accent" color above. Every surface uses "paper"/"ink" per theme. Do not introduce colors outside this palette.`;
 }
 
+// Returns undefined (not a throw) on failure — the caller's job is deciding
+// what "no usable brief" means (FALLBACK_BRIEF), not this pure parser's.
 function parseJson(text: string): unknown {
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
   if (fenceMatch?.[1]) {
@@ -125,7 +165,7 @@ function parseJson(text: string): unknown {
   if (start !== -1 && end > start) {
     try { return JSON.parse(text.slice(start, end + 1)); } catch { /* fall through */ }
   }
-  throw new Error(`[vanya] Could not parse JSON from LLM output: ${text.slice(0, 200)}`);
+  return undefined;
 }
 
 export const VANYA_SYSTEM_PROMPT = `\
@@ -134,6 +174,12 @@ a CONCRETE design brief — the same compact token system a human design lead
 would hand a developer before they write a single component. Your output is
 implemented literally, not treated as inspiration — every value must be
 specific and usable as-is.
+
+RESEARCH BEFORE YOU DECIDE. Use web_search to look up 1-3 real reference points
+for this app's actual domain — what does a real business in this exact
+industry look like, what visual conventions does this market genuinely use.
+Ground your decisions in something researched, not a template guess at
+"professional" or "modern." You are read-only — you do not write files.
 
 AVOID THESE WELL-KNOWN AI-GENERATED DEFAULTS — do not reach for them unless the
 spec's own subject matter genuinely calls for it:
@@ -157,13 +203,26 @@ accent, etc.), that pairing is a REQUIREMENT, not a suggestion — preserve
 it exactly. Only invent your own role assignment when the spec names
 colors without specifying which role each one plays.
 
-Output ONLY this JSON shape:
+ONE UNIFORM LOOK APPLIED TO EVERY PAGE READS AS TEMPLATED, EVEN WHEN EACH PAGE
+IS COMPETENTLY BUILT. Your layoutConcept must describe how visual EMPHASIS
+shifts by page purpose within the same system — a marketing/landing page
+carries more weight (persuasion), an auth page carries less (speed, low
+friction), a dashboard carries a different kind again (density, scannability).
+Same palette and type family throughout; different emphasis per page type.
+
+Call task_complete when done. End its "summary" with EXACTLY this JSON shape
+and nothing after it — no markdown fence, no trailing prose:
 {
   "mood": "one sentence describing the intended emotional register — confident, playful, austere, warm, technical, etc., grounded in the app's actual subject",
   "palette": [
     {"name": "string (e.g. 'ink', 'accent', 'surface')", "hex": "#RRGGBB"}
   ],
   "typography": {"display": "a specific named typeface for headings", "body": "a specific named typeface for body text"},
-  "layoutConcept": "one to two sentences describing the layout system — grid density, card treatment, spacing rhythm"
+  "layoutConcept": "one to two sentences describing the layout system — grid density, card treatment, spacing rhythm, and how emphasis shifts by page type"
 }
-palette must have 4-6 entries with real, distinct hex values (not near-duplicates) — include at minimum a background, a text/ink color, a primary accent, and a border/muted color. Name typefaces specifically (e.g. "Fraunces", "IBM Plex Sans") — never "sans-serif" or "a modern font".`;
+palette must have 4-6 entries with real, distinct hex values (not near-duplicates) — include at minimum a background, a text/ink color, a primary accent, and a border/muted color. Name typefaces specifically (e.g. "Fraunces", "IBM Plex Sans") — never "sans-serif" or "a modern font".
+
+BE EFFICIENT — you have a limited tool-call budget. 1-3 web_search calls, brief
+reasoning, then call task_complete. Reaching the budget without calling
+task_complete means your brief is LOST and generation falls back to a generic
+default, so wrap up in time.`;

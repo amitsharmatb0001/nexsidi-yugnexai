@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": { "typecheck": "tsc --noEmit" },
   "dependencies": {
+    "@nexsidi/agent-runtime": "workspace:*",
     "@nexsidi/llm-client": "workspace:*"
   }
 }

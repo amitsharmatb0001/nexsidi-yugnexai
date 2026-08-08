@@ -113,6 +113,36 @@ test("runLiveEval computes pass/score from the agent's parsed summary", async ()
   expect(result.scores).toEqual({ designQuality: 8, originality: 8, craft: 8, functionality: 8 });
 });
 
+// 2026-08-07: real bug found live (project bae438767bed, redeploy #5) —
+// runLiveEval used the shared MAX_ITERATIONS default (40) with no scaling
+// to real app size, and hit the cap mid-investigation (reading component
+// source) with no task_complete, losing the whole evaluation pass. Same
+// class of bug as Tier 3's computeTier3MaxIterations fix; same fix here.
+// Also verifies readOnly (D26 — a judge is not a fixer, see loop.ts).
+test("runLiveEval scales maxIterations by real page count and runs readOnly", async () => {
+  let capturedConfig: any;
+  const deps: LiveEvalDeps = {
+    runAgent: async (config: any) => {
+      capturedConfig = config;
+      return {
+        success: true,
+        summary: "DESIGN_QUALITY: 8\nORIGINALITY: 8\nCRAFT: 8\nFUNCTIONALITY: 8",
+        filesWritten: [],
+        iterations: 5,
+        errors: [],
+        escalated: false,
+      };
+    },
+  };
+  await runLiveEval("diagproj", "http://localhost:3200", "/tmp/nonexistent-frontend-dir", deps);
+  expect(capturedConfig.readOnly).toBe(true);
+  // countAppPages returns 0 for a missing dir (see tier3-review.test.ts) —
+  // computeTier3MaxIterations(0) still floors at the shared default, so this
+  // asserts the wiring is live, not a specific number tied to a fixture.
+  expect(typeof capturedConfig.maxIterations).toBe("number");
+  expect(capturedConfig.maxIterations).toBeGreaterThanOrEqual(40);
+});
+
 // D25-style default-FAIL: an unparseable evaluation must never silently
 // read as a passing score.
 test("runLiveEval defaults to FAIL when the agent's summary has no parseable score block", async () => {
@@ -142,10 +172,71 @@ test("runLiveEval fails a low-scoring (slop) evaluation even when the agent run 
       errors: [],
       escalated: false,
     }),
+    // A low design/originality score triggers the instinct-memory write
+    // path (see runLiveEval) — stub it so this test doesn't make a real
+    // LLM call via the un-stubbable summarizeFindingToInstinctRule.
+    recordDesignInstinct: async () => {},
   };
   const result = await runLiveEval("diagproj", "http://localhost:3200", "/tmp/frontend", deps);
   expect(result.pass).toBe(false);
   expect(result.score).toBeLessThan(LIVE_PASS_THRESHOLD);
+});
+
+// 2026-08-08: real gap found live, explicit user request (project
+// bae438767bed) — this whole qualitative review path had zero connection
+// to instinct memory before this fix; recordInstinct was only ever called
+// from the static QA fix-loop. These tests confirm the write actually
+// fires on a low score and is skipped on a good one.
+test("runLiveEval records a design instinct when designQuality or originality scores below the pass threshold", async () => {
+  const recorded: string[] = [];
+  const deps: LiveEvalDeps = {
+    runAgent: async () => ({
+      success: true,
+      summary: "DESIGN_QUALITY: 3\nORIGINALITY: 2\nCRAFT: 6\nFUNCTIONALITY: 7",
+      filesWritten: [],
+      iterations: 5,
+      errors: [],
+      escalated: false,
+    }),
+    recordDesignInstinct: async (findingText) => { recorded.push(findingText); },
+  };
+  await runLiveEval("diagproj", "http://localhost:3200", "/tmp/frontend", deps);
+  expect(recorded.length).toBe(1);
+  expect(recorded[0]).toContain("DESIGN_QUALITY");
+});
+
+test("runLiveEval does NOT record a design instinct when the score passes", async () => {
+  const recorded: string[] = [];
+  const deps: LiveEvalDeps = {
+    runAgent: async () => ({
+      success: true,
+      summary: "DESIGN_QUALITY: 8\nORIGINALITY: 8\nCRAFT: 8\nFUNCTIONALITY: 8",
+      filesWritten: [],
+      iterations: 5,
+      errors: [],
+      escalated: false,
+    }),
+    recordDesignInstinct: async (findingText) => { recorded.push(findingText); },
+  };
+  await runLiveEval("diagproj", "http://localhost:3200", "/tmp/frontend", deps);
+  expect(recorded.length).toBe(0);
+});
+
+test("runLiveEval does NOT record a design instinct when only craft/functionality are low but design/originality pass", async () => {
+  const recorded: string[] = [];
+  const deps: LiveEvalDeps = {
+    runAgent: async () => ({
+      success: true,
+      summary: "DESIGN_QUALITY: 8\nORIGINALITY: 8\nCRAFT: 3\nFUNCTIONALITY: 4",
+      filesWritten: [],
+      iterations: 5,
+      errors: [],
+      escalated: false,
+    }),
+    recordDesignInstinct: async (findingText) => { recorded.push(findingText); },
+  };
+  await runLiveEval("diagproj", "http://localhost:3200", "/tmp/frontend", deps);
+  expect(recorded.length).toBe(0);
 });
 
 test("runLiveEval rejects an invalid projectId before calling the agent (assertValidIdentifier)", async () => {

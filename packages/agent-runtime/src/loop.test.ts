@@ -17,6 +17,28 @@ test("buildToolList includes web_search and screenshot when enabled", () => {
   expect(names).toContain("screenshot");
 });
 
+// 2026-08-06: real bug found live (project bae438767bed) — Tilotma's
+// reality-checker (an evaluator, never told to fix anything) had
+// write_file/run_command available anyway because these were granted
+// unconditionally, and used them for 4 rounds of self-repair across its
+// entire iteration budget instead of reporting the bug it found — producing
+// zero findings for Stage 6 to route. readOnly closes this: the model must
+// never even see the mutating tools as an option.
+test("buildToolList omits every mutating tool when readOnly is set, even with enableDockerTools", () => {
+  const tools = buildToolList({
+    agentName: "x", model: "moonshotai/kimi-k2.6", apiKey: "k", systemPrompt: "s",
+    initialMessage: "m", sandboxDir: "/tmp", enableDockerTools: true, readOnly: true,
+  } as any);
+  const names = tools.map(t => t.function.name);
+  for (const blocked of ["write_file", "write_files", "edit_file", "delete_file", "run_command", "docker_compose"]) {
+    expect(names).not.toContain(blocked);
+  }
+  // read-only tools must still be present
+  expect(names).toContain("read_file");
+  expect(names).toContain("list_files");
+  expect(names).toContain("task_complete");
+});
+
 // Full-system audit T1/L1: an unparseable tool_call.function.arguments
 // string that survives into `messages` history poisons every subsequent
 // NIM request — confirmed via stress-test run 5, where the SAME JSON parse
