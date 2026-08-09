@@ -266,14 +266,7 @@ function verifyDbWriteReadRoundTrip(
 // instead of guessing a shape. Simple regex parse, not a full TS parser:
 // Arjun's own interfaces are always flat `field: type;` lists (verified
 // against real generated shared-types.ts across projects tonight).
-export function buildPayloadForRequestType(
-  sharedTypesSource: string,
-  typeName: string,
-  marker: string,
-): Record<string, unknown> | null {
-  const typeMatch = sharedTypesSource.match(new RegExp(`interface\\s+${typeName}\\s*\\{([^}]*)\\}`));
-  if (!typeMatch) return null;
-  const body = typeMatch[1] ?? "";
+function fieldsToPayload(body: string, marker: string): Record<string, unknown> | null {
   const fieldRegex = /(\w+)\??\s*:\s*([^;]+);/g;
   const payload: Record<string, unknown> = {};
   let match: RegExpExecArray | null;
@@ -285,11 +278,160 @@ export function buildPayloadForRequestType(
     const type = (fieldType ?? "").trim();
     const lowerName = fieldName.toLowerCase();
     if (lowerName.includes("email")) payload[fieldName] = `verify+${marker}@example.com`;
+    // 2026-08-09: real bug found live (project meridianbk4, follow-on to the
+    // inline-literal fix above) — an "appointment_date: string" field got
+    // the raw marker string as its value, which fails any real backend's
+    // date-format validation ("Invalid appointment_date format") even once
+    // the field is present at all. A near-future ISO date always passes
+    // Date.parse-style validation, matching the actual real-world value a
+    // real user's date picker would send.
+    else if (lowerName.includes("date")) payload[fieldName] = new Date(Date.now() + 86_400_000).toISOString();
     else if (type.includes("number")) payload[fieldName] = 1;
     else if (type.includes("boolean")) payload[fieldName] = true;
     else payload[fieldName] = marker;
   }
   return foundAny ? payload : null;
+}
+
+// 2026-08-09: real bug found live (project meridianbk4) — Arjun's own
+// api-contract.json doesn't always set requestType to a named interface
+// reference; POST /api/v1/appointments had
+// requestType: "{ service_id: string; appointment_date: string }" — an
+// inline TS object-literal type written directly in the contract, not a
+// name to look up in shared-types.ts. The named-interface regex below can
+// never match that (there's no "interface { ... } { ... }" to find), so it
+// silently returned null, fell back to the generic {title: marker} payload,
+// and reported a false "deploy failed" (400 "service_id: Required,
+// appointment_date: Required") on an app that genuinely worked — confirmed
+// live: real register -> login -> book appointment with the correct field
+// shape succeeded with a real 201. An inline literal always starts with "{"
+// once trimmed; its field list is parsed directly with the same
+// fieldsToPayload logic used for a named interface's body, no shared-types.ts
+// lookup needed since the shape is already fully spelled out in typeName.
+export function buildPayloadForRequestType(
+  sharedTypesSource: string,
+  typeName: string,
+  marker: string,
+): Record<string, unknown> | null {
+  const trimmed = typeName.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    // fieldsToPayload's regex requires a trailing ";" per field — an inline
+    // literal's last field has none before the closing "}" (unlike a named
+    // interface's body, which always does; see fieldsToPayload's own
+    // callers). Append one so the last field isn't silently dropped.
+    let body = trimmed.slice(1, -1).trim();
+    if (body && !body.endsWith(";")) body += ";";
+    return fieldsToPayload(body, marker);
+  }
+  const typeMatch = sharedTypesSource.match(new RegExp(`interface\\s+${typeName}\\s*\\{([^}]*)\\}`));
+  if (!typeMatch) return null;
+  return fieldsToPayload(typeMatch[1] ?? "", marker);
+}
+
+// 2026-08-09: real bug found live (project meridianbk4, direct follow-on to
+// the inline-literal fix above) — a "_id"-suffixed field derived by
+// fieldsToPayload gets the raw marker string as its value, which fails
+// format validation on any backend that actually checks (a real UUID-format
+// regex, in this project's case). Even a syntactically-valid-but-nonexistent
+// UUID would then fail a foreign-key existence check ("Service not found")
+// — a real user's own booking flow always sends an id fetched from a real
+// GET list endpoint first, never a guessed value. Heuristic: "service_id"
+// -> try GET /api/v1/services (pluralized) then GET /api/v1/service; take
+// the first item's `id` from whatever array is found, unwrapping a
+// {data:[...]} / {items:[...]} envelope if present. Returns null (payload
+// keeps its placeholder) when no matching list endpoint exists or the list
+// is empty — additive only, never worse than today's behavior.
+// Searches an unknown-shaped JSON value for the first array it contains, up
+// to 2 levels deep (top-level array; a value's array; a value's value's
+// array — covers both a bare list response and Express's {success, data:
+// {resource: [...]}} envelope convention wrapping a named-key object).
+function findFirstArray(value: unknown, depth = 2): unknown[] | undefined {
+  if (Array.isArray(value)) return value;
+  if (depth <= 0 || typeof value !== "object" || value === null) return undefined;
+  for (const v of Object.values(value as Record<string, unknown>)) {
+    const found = findFirstArray(v, depth - 1);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+export async function resolveForeignKeyId(
+  fieldName: string,
+  endpoints: Array<{ method: string; path: string; auth?: boolean }>,
+  backendUrl: string,
+  token: string,
+): Promise<string | null> {
+  if (!fieldName.endsWith("_id")) return null;
+  const resource = fieldName.slice(0, -3);
+  const pluralResource = resource.endsWith("s") ? resource : `${resource}s`;
+  const candidatePaths = new Set([`/api/v1/${pluralResource}`, `/api/v1/${resource}`]);
+  const listEp = endpoints.find((e) => e.method === "GET" && !e.path.includes("{") && candidatePaths.has(e.path));
+  if (!listEp) return null;
+  try {
+    const headers: Record<string, string> = {};
+    if (listEp.auth) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(`${backendUrl}${listEp.path}`, { headers });
+    if (!res.ok) return null;
+    const body = (await res.json()) as unknown;
+    // 2026-08-09: real bug found live (project meridianbk4) — the actual
+    // response shape is double-wrapped ({"success":true,"data":{"services":
+    // [...]}} — Express's own {success, data} envelope convention wrapping
+    // ANOTHER named-key object, not a bare array under either level). A
+    // single level of Object.values-searching only checked [true, {services:
+    // [...]}] — neither value IS an array, so it always returned undefined
+    // and every "_id" field silently kept its unresolvable placeholder.
+    // findFirstArray searches up to 2 levels deep to match this real shape.
+    const list = findFirstArray(body);
+    const first = list?.[0] as Record<string, unknown> | undefined;
+    const id = first?.id;
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+// Extracted from verifyLiveAuthenticatedRoundTrip (2026-08-09) so
+// verifyAllResourceCrud below can share the exact same real-user auth flow
+// instead of duplicating it — behavior unchanged from what this file already
+// verified live.
+async function registerAndLoginTestUser(backendUrl: string): Promise<{ token: string } | { error: string }> {
+  const email = `verify+${Date.now()}@example.com`;
+  const password = `StrongPass123!${Date.now()}`;
+  // 2026-07-25 (Phase 7, full MVP upgrade): real bug found live on
+  // nextech10's own deploy — this call never sent `name`, which every
+  // generated app's registerSchema requires (Saanvi's locked spec always
+  // includes it — confirmed in the actual generated
+  // backend/src/controllers/auth.controller.ts). This smoke test would
+  // 400 with "Required" on EVERY correctly-generated app, reporting a
+  // false "stuck"/"failed" deploy verdict regardless of whether the app
+  // actually works — confirmed by hand: the real browser flow (real
+  // sign-up form, real fields) succeeded with 201 Created against the
+  // exact same running backend this check reported as failing.
+  const name = "NexSidi Verification";
+
+  const regRes = await fetch(`${backendUrl}/api/v1/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, name }),
+  });
+  if (!regRes.ok) {
+    return { error: `custom register failed: returned ${regRes.status}: ${(await regRes.text()).slice(0, 200)}` };
+  }
+
+  const loginRes = await fetch(`${backendUrl}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!loginRes.ok) {
+    return { error: `custom login failed: returned ${loginRes.status}: ${(await loginRes.text()).slice(0, 200)}` };
+  }
+
+  const loginBody = (await loginRes.json()) as Record<string, unknown>;
+  const data = (loginBody.data ?? loginBody) as Record<string, unknown>;
+  const token = (data.token ?? loginBody.token) as string | undefined;
+  if (!token) return { error: "Login response did not contain token" };
+  return { token };
 }
 
 export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backendUrl: string): Promise<{ ok: boolean; reason: string }> {
@@ -320,45 +462,9 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
   const deleteEp = endpoints.find((e) => e.method === "DELETE" && e.auth && e.path.includes("{id}"));
 
   try {
-    const email = `verify+${Date.now()}@example.com`;
-    const password = `StrongPass123!${Date.now()}`;
-
-    // 2026-07-25 (Phase 7, full MVP upgrade): real bug found live on
-    // nextech10's own deploy — this call never sent `name`, which every
-    // generated app's registerSchema requires (Saanvi's locked spec always
-    // includes it — confirmed in the actual generated
-    // backend/src/controllers/auth.controller.ts). This smoke test would
-    // 400 with "Required" on EVERY correctly-generated app, reporting a
-    // false "stuck"/"failed" deploy verdict regardless of whether the app
-    // actually works — confirmed by hand: the real browser flow (real
-    // sign-up form, real fields) succeeded with 201 Created against the
-    // exact same running backend this check reported as failing.
-    const name = "NexSidi Verification";
-
-    // Register custom auth user
-    const regRes = await fetch(`${backendUrl}/api/v1/auth/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, name }),
-    });
-    if (!regRes.ok) {
-      return { ok: false, reason: `custom register failed: returned ${regRes.status}: ${(await regRes.text()).slice(0, 200)}` };
-    }
-
-    // Login custom auth user
-    const loginRes = await fetch(`${backendUrl}/api/v1/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    if (!loginRes.ok) {
-      return { ok: false, reason: `custom login failed: returned ${loginRes.status}: ${(await loginRes.text()).slice(0, 200)}` };
-    }
-
-    const loginBody = (await loginRes.json()) as Record<string, unknown>;
-    const data = (loginBody.data ?? loginBody) as Record<string, unknown>;
-    const token = (data.token ?? loginBody.token) as string | undefined;
-    if (!token) return { ok: false, reason: "Login response did not contain token" };
+    const auth = await registerAndLoginTestUser(backendUrl);
+    if ("error" in auth) return { ok: false, reason: auth.error };
+    const { token } = auth;
 
     const marker = `nexsidi-e2e-verify-${Date.now()}`;
     // 2026-08-03: derive the real payload shape from shared-types.ts instead
@@ -373,6 +479,21 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
       ? buildPayloadForRequestType(sharedTypesSource, requestType, marker)
       : null;
     const createPayload = dynamicPayload ?? { title: marker };
+
+    // 2026-08-09: real bug found live (project meridianbk4, direct follow-on
+    // to the inline-literal fix above) — once a "_id"-suffixed field was
+    // actually included in the payload, it still 400'd ("Invalid UUID format
+    // for service_id") because its value was the raw marker string, not a
+    // real id. A real user's own booking flow always sends an id it fetched
+    // from a real GET list call first (e.g. GET /api/v1/services), never a
+    // guessed value — resolveForeignKeyId does the same before the create
+    // call, for every "_id" field the payload derivation produced.
+    for (const [fieldName, value] of Object.entries(createPayload)) {
+      if (!fieldName.endsWith("_id") || typeof value !== "string") continue;
+      const resolved = await resolveForeignKeyId(fieldName, endpoints, backendUrl, token);
+      if (resolved) (createPayload as Record<string, unknown>)[fieldName] = resolved;
+    }
+
     const createRes = await fetch(`${backendUrl}${createEp.path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -434,6 +555,182 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
   } catch (err) {
     return { ok: true, reason: `skipping round-trip verification: ${String(err).split("\n")[0]}` };
   }
+}
+
+// The real docker-exec-backed row lookup verifyAllResourceCrud uses by
+// default. Derives its own cid/user/dbName from buildDir's docker-compose.yml
+// the same way applyMigrationsToDeployedDb does (self-contained, no shared
+// state threaded through run()). Returns null on any docker/psql problem or
+// when the row genuinely doesn't exist — the caller can't tell those apart,
+// which is correct: either way, this function can't confirm the row is
+// there, so it must be treated as a finding rather than silently passed.
+function makeRealDbRowLookup(buildDir: string): (table: string, id: string) => Record<string, unknown> | null {
+  const composePath = join(buildDir, "docker-compose.yml");
+  const sh = (cmd: string, input?: string) =>
+    execSync(cmd, { input, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+  let cid = "";
+  let user = "";
+  let dbName = "";
+  try {
+    cid = sh(`docker compose -f "${composePath}" ps -q postgres`);
+    user = sh(`docker exec ${cid} printenv POSTGRES_USER`) || "postgres";
+    dbName = sh(`docker exec ${cid} printenv POSTGRES_DB`) || user;
+  } catch {
+    cid = "";
+  }
+  return (table: string, id: string) => {
+    if (!cid || !/^[a-zA-Z0-9_]+$/.test(table) || !/^[a-zA-Z0-9-]+$/.test(id)) return null;
+    try {
+      const cols = sh(
+        `docker exec ${cid} psql -U ${user} -d ${dbName} -tA -c ` +
+          `"SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='${table}'"`,
+      ).split("\n").map((l) => l.trim()).filter(Boolean);
+      if (cols.length === 0) return null;
+      const out = sh(`docker exec ${cid} psql -U ${user} -d ${dbName} -tA -F '|' -c "SELECT ${cols.join(",")} FROM ${table} WHERE id = '${id}'"`);
+      if (!out) return null;
+      const values = out.split("|");
+      const row: Record<string, unknown> = {};
+      cols.forEach((c, i) => { row[c] = values[i]; });
+      return row;
+    } catch {
+      return null;
+    }
+  };
+}
+
+// 2026-08-09: real gap found live (project meridianbk4) — Riya's live
+// verification only ever checked ONE hardcoded resource (the first auth:true
+// POST endpoint found). See this file's test suite header comment for the
+// full trace. Groups api-contract.json's endpoints by resource (first path
+// segment after /api/v1/, skipping auth/*) and exercises every declared CRUD
+// verb per resource, with a real DB check (via getDbRow, defaulting to a
+// real docker-exec lookup) after every mutation — never trusting an HTTP 2xx
+// alone. Returns one specific finding per failed step, not a single pass/
+// fail for the whole deploy.
+export async function verifyAllResourceCrud(
+  buildDir: string,
+  backendUrl: string,
+  getDbRow?: (table: string, id: string) => Record<string, unknown> | null,
+): Promise<{ ok: boolean; findings: string[] }> {
+  const contractPath = join(buildDir, "api-contract.json");
+  if (!existsSync(contractPath)) return { ok: false, findings: ["api-contract.json not found — cannot discover endpoints"] };
+  let endpoints: Array<{ method: string; path: string; auth?: boolean; requestType?: string }>;
+  try {
+    endpoints = (JSON.parse(readFileSync(contractPath, "utf-8")).endpoints ?? []) as typeof endpoints;
+  } catch (err) {
+    return { ok: false, findings: [`api-contract.json unreadable: ${String(err)}`] };
+  }
+
+  const dbRow = getDbRow ?? makeRealDbRowLookup(buildDir);
+  const findings: string[] = [];
+
+  const resources = new Map<string, typeof endpoints>();
+  for (const ep of endpoints) {
+    const seg = ep.path.replace(/^\/api\/v1\//, "").split("/")[0];
+    if (!seg || seg === "auth") continue;
+    resources.set(seg, [...(resources.get(seg) ?? []), ep]);
+  }
+  if (resources.size === 0) return { ok: true, findings: [] };
+
+  const auth = await registerAndLoginTestUser(backendUrl);
+  if ("error" in auth) return { ok: false, findings: [auth.error] };
+  const { token } = auth;
+  const sharedTypesPath = join(buildDir, "shared-types.ts");
+  const sharedTypesSource = existsSync(sharedTypesPath) ? readFileSync(sharedTypesPath, "utf-8") : "";
+
+  for (const [resource, eps] of resources) {
+    const createEp = eps.find((e) => e.method === "POST" && !e.path.includes("{"));
+    if (!createEp) continue; // read-only resource — nothing to verify at this layer, matches verifyLiveAuthenticatedRoundTrip's precedent
+
+    try {
+      const marker = `nexsidi-crud-verify-${Date.now()}`;
+      const dynamicPayload = createEp.requestType && createEp.requestType !== "null"
+        ? buildPayloadForRequestType(sharedTypesSource, createEp.requestType, marker)
+        : null;
+      const createPayload = (dynamicPayload ?? { title: marker }) as Record<string, unknown>;
+      for (const [fieldName, value] of Object.entries(createPayload)) {
+        if (!fieldName.endsWith("_id") || typeof value !== "string") continue;
+        const resolved = await resolveForeignKeyId(fieldName, endpoints, backendUrl, token);
+        if (resolved) createPayload[fieldName] = resolved;
+      }
+
+      const createRes = await fetch(`${backendUrl}${createEp.path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(createPayload),
+      });
+      if (createRes.status === 403) continue; // role-gated, not broken — matches verifyLiveAuthenticatedRoundTrip's precedent
+      if (!createRes.ok) {
+        findings.push(`${resource}: POST ${createEp.path} returned ${createRes.status}: ${(await createRes.text()).slice(0, 150)}`);
+        continue;
+      }
+      const createBody = (await createRes.json()) as Record<string, unknown>;
+      const created = (createBody.data ?? createBody) as Record<string, unknown>;
+      const createdId = created.id as string | undefined;
+      if (!createdId) {
+        findings.push(`${resource}: create response has no id: ${JSON.stringify(createBody).slice(0, 150)}`);
+        continue;
+      }
+
+      if (!dbRow(resource, createdId)) {
+        findings.push(`${resource}: create ${createEp.path} returned success but the row did not persist to the database (id=${createdId})`);
+        continue; // no real row to update/delete against
+      }
+
+      const listEp = eps.find((e) => e.method === "GET" && !e.path.includes("{"));
+      if (listEp) {
+        const listRes = await fetch(`${backendUrl}${listEp.path}`, { headers: { Authorization: `Bearer ${token}` } });
+        if (!listRes.ok || !(await listRes.text()).includes(createdId)) {
+          findings.push(`${resource}: GET ${listEp.path} did not include the newly created record (id=${createdId})`);
+        }
+      }
+
+      const updateEp = eps.find((e) => (e.method === "PATCH" || e.method === "PUT") && e.path.includes("{"));
+      if (updateEp) {
+        const updateMarker = `${marker}-updated`;
+        const updatePayload = (updateEp.requestType && updateEp.requestType !== "null"
+          ? buildPayloadForRequestType(sharedTypesSource, updateEp.requestType, updateMarker)
+          : { title: updateMarker }) as Record<string, unknown>;
+        const updateRes = await fetch(`${backendUrl}${updateEp.path.replace("{id}", createdId)}`, {
+          method: updateEp.method,
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(updatePayload),
+        });
+        if (updateRes.status === 403) {
+          // role-gated — not a finding, matches the create-path precedent
+        } else if (!updateRes.ok) {
+          findings.push(`${resource}: ${updateEp.method} ${updateEp.path} returned ${updateRes.status}`);
+        } else {
+          const afterUpdate = dbRow(resource, createdId);
+          const changedFieldReflected = afterUpdate
+            ? Object.entries(updatePayload).some(([k, v]) => String(afterUpdate[k]) === String(v))
+            : false;
+          if (!changedFieldReflected) {
+            findings.push(`${resource}: ${updateEp.method} ${updateEp.path} returned success but the DB row did not persist the change`);
+          }
+        }
+      }
+
+      const deleteEp = eps.find((e) => e.method === "DELETE" && e.path.includes("{"));
+      if (deleteEp) {
+        const deleteRes = await fetch(`${backendUrl}${deleteEp.path.replace("{id}", createdId)}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (deleteRes.status === 403) {
+          // role-gated — not a finding
+        } else if (!deleteRes.ok) {
+          findings.push(`${resource}: DELETE ${deleteEp.path} returned ${deleteRes.status}`);
+        } else if (dbRow(resource, createdId)) {
+          findings.push(`${resource}: DELETE ${deleteEp.path} returned success but the row is still in the database (id=${createdId})`);
+        }
+      }
+    } catch (err) {
+      findings.push(`${resource}: verification error: ${String(err).split("\n")[0]}`);
+    }
+  }
+
+  return { ok: findings.length === 0, findings };
 }
 
 // 2026-07-28 (live, complex1): real gap found live — a POST-FIX redeploy
@@ -536,6 +833,23 @@ export async function run(
     console.log(`[riya] live authenticated round-trip OK: ${roundTrip.reason}`);
   }
 
+  // 2026-08-09: real gap found live (project meridianbk4) — the roundTrip
+  // check above only ever verifies ONE hardcoded resource. Every OTHER
+  // resource's full CRUD surface (does a form submission actually reach the
+  // DB, does an update actually persist, does a delete actually remove the
+  // row) had nothing checking it — see verifyAllResourceCrud's header
+  // comment for the concrete instance this closes. Only attempted after the
+  // single-resource roundTrip already passed (no point iterating every
+  // resource against a backend already known to be broken).
+  const crudCheck = roundTrip.ok
+    ? await verifyAllResourceCrud(buildDir, backendUrl)
+    : { ok: true, findings: [] }; // not a separate failure — roundTrip.ok already covers this case
+  if (!crudCheck.ok) {
+    for (const finding of crudCheck.findings) console.warn(`[riya] CRUD verification finding: ${finding}`);
+  } else if (roundTrip.ok) {
+    console.log(`[riya] full CRUD verification OK — every resource's create/read/update/delete confirmed against the real database`);
+  }
+
   // Archive to GitHub (fire-and-forget, errors non-fatal)
   const githubRepo = await archiveToGitHub(projectId, buildDir).catch(() => null);
 
@@ -546,7 +860,7 @@ export async function run(
   // real user's data round-trip, is NOT a functional delivery — even if the
   // agent's health checks passed. Persistence + a real auth round-trip are the
   // whole point.
-  const deploySucceeded = result.success && migrationOk && roundTrip.ok;
+  const deploySucceeded = result.success && migrationOk && roundTrip.ok && crudCheck.ok;
 
   await db
     .update(projects)
@@ -560,6 +874,7 @@ export async function run(
   const errors = [...result.errors];
   if (!migrationOk) errors.push("Deployed database has no tables (migrations did not apply) — app cannot persist data");
   if (!roundTrip.ok) errors.push(`Live authenticated round-trip failed: ${roundTrip.reason}`);
+  if (!crudCheck.ok) errors.push(...crudCheck.findings.map((f) => `CRUD verification: ${f}`));
 
   return { success: deploySucceeded, appUrl, backendUrl, githubRepo, errors };
 }

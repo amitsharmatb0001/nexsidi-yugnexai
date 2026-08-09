@@ -28,6 +28,24 @@ test("preview mode prompt instructs mock data, no real API calls", () => {
   expect(prompt).not.toContain("Bearer token from useAuth().getToken()");
 });
 
+// 2026-08-09: real bug found live (project meridianbk4) — the LAYOUT
+// PATTERNS section gave one literal, copy-pasteable page skeleton (nav ->
+// maxWidth:1200 container -> auto-fill card grid) in every single
+// generation prompt, regardless of Vanya's actual per-project
+// layoutConcept (already passed via formatDesignBriefForPrompt in
+// buildAgentTask — this was never a missing-data problem, it was a
+// competing-instruction problem). Confirmed live across 4 separate
+// meridianbk projects: colors and fonts genuinely varied per Vanya's
+// brief, but the underlying DOM structure converged on this one example
+// every time — a concrete, checkable contributor to "every generated app
+// looks the same" despite the per-project design-brief work already
+// being real and working for color/typography.
+test("system prompt derives page structure from layoutConcept instead of offering a fixed skeleton example to copy", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).toContain("Layout concept");
+  expect(prompt).not.toContain('gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))"');
+});
+
 test("integrate mode prompt instructs real API wiring", () => {
   const prompt = buildAgentPrompt("integrate");
   expect(prompt).toContain("read the 'token' cookie");

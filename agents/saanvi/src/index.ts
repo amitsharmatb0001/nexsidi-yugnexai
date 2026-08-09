@@ -191,6 +191,36 @@ services/differentiators in the user's own words, OR there is no real
 external business behind the app at all (a personal tool, an internal
 utility, a generic SaaS product with no company identity to represent).
 
+WHEN TO ASK ABOUT SELF-MANAGEMENT AND DISPLAY PREFERENCES — a THIRD trigger,
+separate from both above:
+2026-08-09: real gap found live — a product-based business (sells physical
+items: helmets, lights, tubes) and a service-based business (books repair
+appointments) were both never asked whether THEY want to manage that data
+themselves after this ships, or whether a developer will always update it
+for them. The SCOPE CONTROL rule below correctly forbids INVENTING an admin/
+management area the user never asked for — but "the user never asked for it"
+and "the user was never asked whether they want it" are different things. A
+normal user does not know to request "an admin dashboard" by that name; they
+only know their own business. If this request represents a product-based or
+service-based business with data that plausibly changes over time
+(inventory, services offered, prices, bookings, submitted contact/inquiry
+messages) and the request doesn't already say who manages that data, ask
+(using the same needsClarification shape): "After this launches, do you want
+a way to add/edit/remove your own [products/services/prices/etc.] yourself,
+or will a developer always make those updates for you?" A "no, a developer
+will always update this" answer is a completely valid answer — it means do
+NOT add a management area, exactly like today's default. Only a "yes"
+answer authorizes adding one; per SCOPE CONTROL below, that explicit yes
+counts as the user's own explicit request, the same as naming it in the
+original prompt would.
+For a SERVICE business specifically, also ask in the same round: "Should
+your prices be shown publicly on the site, or should visitors contact you
+for a quote?" — do not silently pick one.
+Skip this trigger entirely when: the app has no changing business-owned
+data at all (a personal tool, a purely informational site with fixed
+content, an internal utility), or the request already states who manages
+the data and how pricing should be shown.
+
 Output a single JSON object (no markdown fences, no prose outside the object) matching this schema:
 
 {
@@ -257,7 +287,8 @@ REFERENCE APPS FOR TIER 3-4:
 
 SCOPE CONTROL — highest priority rule:
 Build ONLY the features and pages listed in the user request. Do NOT add features not explicitly requested.
-NEVER add without explicit mention in the request: admin dashboard, invoice system, CRM, payment gateway,
+NEVER add without explicit mention in the request, or an explicit "yes" answer to the self-management
+question above: admin dashboard, invoice system, CRM, payment gateway,
 project tracker, analytics, multi-user roles, booking calendar, client portal, reporting screens.
 The build plan tells you exactly what to build — treat it as a contract, not a starting point for expansion.
 
@@ -271,6 +302,14 @@ CONTENT EXTRACTION:
 - Services list: copy every service name verbatim. Never write "etc." — if it was not named, it is not in the spec.
 - If the build plan has designNotes, copy the color palette, tone, and visual direction directly into the spec description.
 - Populate feature descriptions with real content from the user's description — never placeholder text.
+- If the request includes a "=== USER UPLOADED ATTACHMENTS ===" section, treat its content as REAL,
+  authoritative source material — extract exact service names, prices, copy, and brand details from it
+  the same way you extract them from the build plan. Never paraphrase it into something more generic;
+  a document the user handed you is stronger grounding than anything you could invent.
+- A short user-written request is a starting point to enrich, not a ceiling — expand it into a full,
+  ambitious spec per this file's own "planner is ambitious" philosophy, but every enriched detail must
+  be additive grounding in what THIS user actually said (their industry, their named specifics, their
+  attachments), never a generic template unrelated to their actual words.
 
 FEATURE EXPANSION (only for what was requested):
 - A "landing page" request → Hero + Features section + CTA + Contact form with backend

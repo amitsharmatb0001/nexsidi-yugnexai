@@ -243,6 +243,31 @@ DECISION: VALID   or   DECISION: FALSE_POSITIVE`;
   return results.filter((f): f is Finding => f !== null);
 }
 
+// 2026-08-09: real bug found live (project meridianbk4) — both debate call
+// sites used to gate on `!result.pass`. A single HIGH finding makes an
+// agent's own severity-weighted score pass (100-10=90 >= 85), so
+// result.pass was already true and debate never ran at all — even though
+// debate exists specifically to independently verify findings like this
+// (conductPeerDebateReal's own prompt has a hardcoded guardrail citing an
+// earlier near-identical route-mismatch dismissal). Confirmed live: Navya
+// precisely identified a route mount mismatch ("/appointment" instead of
+// the contracted "/appointments") that 404s every booking request — scored
+// HIGH, the aggregate technically "passed", and it shipped broken because
+// debate never got a look. Debate now runs whenever there ARE findings,
+// regardless of the aggregate verdict, and a debate-CONFIRMED
+// CRITICAL/HIGH finding forces pass=false even over an already-passing
+// score. A confirmed MEDIUM/LOW finding does NOT override pass — tolerating
+// that is the entire point of the >=85 threshold, not a gap to close.
+async function applyDebateVerdict(result: Stage5Result, deps: QAFixDeps): Promise<Stage5Result> {
+  if (!deps.conductPeerDebate || result.findings.length === 0) return result;
+  const debated = await deps.conductPeerDebate(result.findings);
+  if (debated.length === 0) {
+    return { ...result, findings: debated, pass: true };
+  }
+  const hasBlockingFinding = debated.some((f) => f.issue.includes("/CRITICAL]") || f.issue.includes("/HIGH]"));
+  return { ...result, findings: debated, pass: hasBlockingFinding ? false : result.pass };
+}
+
 /**
  * Pure orchestration core — DI-testable, no live LLM calls. Runs QA, and on
  * failure, fixes the fault-isolated agent's code and retests, up to
@@ -254,13 +279,7 @@ export async function runQAFixLoopWithDeps(
   stage4Result: Stage4Result,
   deps: QAFixDeps,
 ): Promise<QAFixLoopResult> {
-  let result = await deps.runStage5(projectId, stage4Result, plan);
-  if (!result.pass && deps.conductPeerDebate && result.findings.length > 0) {
-    result.findings = await deps.conductPeerDebate(result.findings);
-    if (result.findings.length === 0) {
-      result.pass = true;
-    }
-  }
+  let result = await applyDebateVerdict(await deps.runStage5(projectId, stage4Result, plan), deps);
 
   let iterations = 1;
   let previousFindingCount = result.findings.length;
@@ -370,13 +389,7 @@ export async function runQAFixLoopWithDeps(
       }
     }
 
-    result = await deps.runStage5(projectId, stage4Result, plan);
-    if (!result.pass && deps.conductPeerDebate && result.findings.length > 0) {
-      result.findings = await deps.conductPeerDebate(result.findings);
-      if (result.findings.length === 0) {
-        result.pass = true;
-      }
-    }
+    result = await applyDebateVerdict(await deps.runStage5(projectId, stage4Result, plan), deps);
     iterations++;
 
     const currentFindingCount = result.findings.length;

@@ -272,6 +272,42 @@ test("runStage5WithAgents passes Karan's gate when findings are minor (severity-
   expect(result.pass).toBe(true);
 });
 
+// 2026-08-09: real bug found live (project meridianbk4) — a single HIGH
+// finding (10-point penalty, 100-10=90 >= 85) makes an agent's own `passed`
+// field true, and when every agent individually passes this way the
+// includeTier3=false branch returned {pass: true, findings: []} — the
+// finding was DISCARDED entirely, never reaching qa-fix-loop's debate step,
+// even though debate exists specifically to catch exactly this class of
+// finding (see stage5-qa-fix-loop.ts's conductPeerDebateReal comment: a
+// near-identical route-mismatch finding was already dismissed by debate
+// once before). Confirmed live: Navya precisely identified
+// "/appointment" mounted instead of the contracted "/appointments" (and
+// "/catalog" instead of flattened "/services"+"/products") — a HIGH finding
+// that 404s every booking/shop request — and the app shipped broken because
+// this finding never even got a chance to be debated. The fix: still
+// surface findings when the aggregate technically passes, so qa-fix-loop can
+// give them an independent debate-based check instead of arithmetic
+// silently discarding them.
+test("runStage5WithAgents still surfaces findings even when the aggregate technically passes (single HIGH, 90 >= 85)", async () => {
+  const agents = makeAgents({
+    runNavya: async (): Promise<NavyaResult> => ({
+      agent: "navya",
+      score: 90,
+      passed: true,
+      findings: [{ severity: "HIGH", category: "api-route-mismatch", detail: "appointmentRouter mounted at /appointment instead of /appointments", file: "backend/src/routes/index.ts" }],
+    }),
+  });
+
+  // includeTier3=false matches the real pre-deployment gate call path
+  // (stage5-qa-fix-loop.ts's runStage5 wrapper always passes false here —
+  // Tier 3 needs a live-deployed app, which doesn't exist yet pre-deploy).
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents, false);
+
+  expect(result.pass).toBe(true); // aggregate score still passes — unchanged
+  expect(result.findings.length).toBe(1); // but the finding is no longer silently discarded
+  expect(result.findings[0]?.issue).toContain("api-route-mismatch");
+});
+
 // ── 3. Navya or Deepika below 85 -> fails even if Karan is clean ───────────
 test("runStage5WithAgents fails when Navya is below 85, even with a clean Karan", async () => {
   const agents = makeAgents({

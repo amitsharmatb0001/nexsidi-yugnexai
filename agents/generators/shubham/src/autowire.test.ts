@@ -46,3 +46,40 @@ test("is fail-safe when the routes dir does not exist", () => {
   rmSync(join(dir, "src"), { recursive: true, force: true });
   expect(() => autoWireRoutes(dir)).not.toThrow();
 });
+
+// 2026-08-09: real bug found live (project meridianbk4) — QA (Navya) kept
+// flagging the same route-mismatch finding (backend mounted "/appointment"
+// singular, frontend/contract expected plural "/appointments") because
+// Shubham's fix loop hand-edits the mount path in routes/index.ts, verifies
+// it live, calls task_complete — and then runFix() unconditionally called
+// autoWireRoutes AGAIN, which mechanically re-derives every mount path from
+// the *.routes.ts filename and silently reverted the fix every single time.
+// Confirmed live: 3 consecutive "verified: true" fix passes, same finding
+// re-flagged 3 times. autoWireRoutes must leave already-wired route files
+// alone — its job is only to wire in a route file that was never mounted at
+// all (the original bug this function fixed), not to enforce one specific
+// mount-path convention forever.
+test("does not revert a hand-tuned mount path when the route file is already wired", () => {
+  writeFileSync(join(dir, "src", "routes", "appointment.routes.ts"), "export default {};");
+  writeFileSync(
+    join(dir, "src", "routes", "index.ts"),
+    'import { Router } from "express";\nimport appointmentRouter from "./appointment.routes";\n\nconst router = Router();\n\nrouter.use("/appointments", appointmentRouter);\n\nexport default router;\n'
+  );
+  autoWireRoutes(dir);
+  const idx = routesIndex();
+  expect(idx).toContain('router.use("/appointments", appointmentRouter);');
+  expect(idx).not.toContain('router.use("/appointment", appointmentRouter);');
+});
+
+test("still wires in a genuinely new route file even when others are already hand-tuned", () => {
+  writeFileSync(join(dir, "src", "routes", "appointment.routes.ts"), "export default {};");
+  writeFileSync(join(dir, "src", "routes", "catalog.routes.ts"), "export default {};");
+  writeFileSync(
+    join(dir, "src", "routes", "index.ts"),
+    'import { Router } from "express";\nimport appointmentRouter from "./appointment.routes";\n\nconst router = Router();\n\nrouter.use("/appointments", appointmentRouter);\n\nexport default router;\n'
+  );
+  autoWireRoutes(dir);
+  const idx = routesIndex();
+  expect(idx).toContain('import catalogRouter from "./catalog.routes";');
+  expect(idx).toContain('router.use("/catalog", catalogRouter);');
+});

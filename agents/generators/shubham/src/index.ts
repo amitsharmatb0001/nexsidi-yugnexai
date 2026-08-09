@@ -3,7 +3,7 @@
 // No longer does one-shot LLM generation. Agent ACTS on real tool feedback.
 
 import { resolveGeneratorRunner, type Escalation } from "@nexsidi/agent-runtime";
-import { mkdirSync, writeFileSync, readdirSync, existsSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "fs";
 import { join } from "path";
 import type { BuildPlan, GeneratorTask } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
@@ -24,12 +24,18 @@ export function getOutputDir(projectId: string): string {
   return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, "backend");
 }
 
-// Scan src/routes/ for *.routes.ts files and generate src/routes/index.ts that
-// imports and mounts each one at "/<resource>" (e.g. tasks.routes.ts, whose
-// handlers use relative paths "/" and "/:id", mounts at "/tasks" so the full
-// path under the app's "/api/v1" prefix is /api/v1/tasks). Deterministic and
-// fail-safe. Exported for unit testing. If there are no route files, the empty
-// placeholder is left as-is.
+// Scan src/routes/ for *.routes.ts files and make sure each one is imported
+// and mounted in src/routes/index.ts. A never-wired route file (the original
+// bug this function fixes: "every generated API was dead") is mounted at
+// "/<resource>" (e.g. tasks.routes.ts mounts at "/tasks"). A route file that
+// is ALREADY imported in index.ts is left completely alone, including its
+// mount path — this runs after every fix-loop pass too (runFix, below), and
+// the fix loop hand-tunes mount paths in this exact file (e.g. singular
+// "/appointment" -> plural "/appointments" to match the API contract).
+// Mechanically re-deriving every path from the filename on every call
+// silently reverted those fixes every time (found live, project
+// meridianbk4: the same route-mismatch QA finding recurred 3 times because
+// of this). Deterministic and fail-safe. Exported for unit testing.
 export function autoWireRoutes(backendDir: string): void {
   const routesDir = join(backendDir, "src", "routes");
   try {
@@ -39,18 +45,59 @@ export function autoWireRoutes(backendDir: string): void {
       .sort();
     if (routeFiles.length === 0) return;
 
-    const importLines: string[] = ['import { Router } from "express";'];
-    const mountLines: string[] = ["", "const router = Router();", ""];
-    for (const file of routeFiles) {
-      const resource = file.replace(/\.routes\.ts$/, "");          // "tasks"
-      const ident = resource.replace(/[^a-zA-Z0-9]/g, "_") + "Router"; // "tasksRouter"
-      importLines.push(`import ${ident} from "./${resource}.routes";`);
-      mountLines.push(`router.use("/${resource}", ${ident});`);
+    const indexPath = join(routesDir, "index.ts");
+    const existing = existsSync(indexPath) ? readFileSync(indexPath, "utf-8") : "";
+    const isWired = (file: string) => existing.includes(`./${file.replace(/\.routes\.ts$/, "")}.routes"`);
+    const missing = routeFiles.filter((f) => !isWired(f));
+
+    if (existing && missing.length === 0) return; // everything already wired — don't touch hand-tuned mounts
+
+    const importLine = (file: string) => {
+      const resource = file.replace(/\.routes\.ts$/, "");
+      const ident = resource.replace(/[^a-zA-Z0-9]/g, "_") + "Router";
+      return { resource, ident, importLine: `import ${ident} from "./${resource}.routes";`, mountLine: (r: string, i: string) => `router.use("/${r}", ${i});` };
+    };
+
+    if (!existing || missing.length === routeFiles.length) {
+      // Nothing wired yet (fresh generation or empty placeholder) — build from scratch.
+      const importLines: string[] = ['import { Router } from "express";'];
+      const mountLines: string[] = ["", "const router = Router();", ""];
+      for (const file of routeFiles) {
+        const { resource, ident, importLine: imp, mountLine } = importLine(file);
+        importLines.push(imp);
+        mountLines.push(mountLine(resource, ident));
+      }
+      mountLines.push("", "export default router;", "");
+      writeFileSync(indexPath, importLines.join("\n") + "\n" + mountLines.join("\n"), "utf-8");
+      console.log(`[shubham] auto-wired ${routeFiles.length} route file(s) into routes/index.ts: ${routeFiles.join(", ")}`);
+      return;
     }
-    mountLines.push("", "export default router;", "");
-    const content = importLines.join("\n") + "\n" + mountLines.join("\n");
-    writeFileSync(join(routesDir, "index.ts"), content, "utf-8");
-    console.log(`[shubham] auto-wired ${routeFiles.length} route file(s) into routes/index.ts: ${routeFiles.join(", ")}`);
+
+    // Mixed state: some route files already wired (possibly hand-tuned),
+    // some genuinely new — append only the new ones, touch nothing else.
+    let content = existing;
+    const newImports: string[] = [];
+    const newMounts: string[] = [];
+    for (const file of missing) {
+      const { resource, ident, importLine: imp, mountLine } = importLine(file);
+      newImports.push(imp);
+      newMounts.push(mountLine(resource, ident));
+    }
+    const routerImportMatch = content.match(/import \{ Router \} from "express";\n/);
+    if (routerImportMatch?.index !== undefined) {
+      const insertAt = routerImportMatch.index + routerImportMatch[0].length;
+      content = content.slice(0, insertAt) + newImports.join("\n") + "\n" + content.slice(insertAt);
+    } else {
+      content = newImports.join("\n") + "\n" + content;
+    }
+    const exportMatch = content.match(/export default router;/);
+    if (exportMatch?.index !== undefined) {
+      content = content.slice(0, exportMatch.index) + newMounts.join("\n") + "\n" + content.slice(exportMatch.index);
+    } else {
+      content += "\n" + newMounts.join("\n") + "\n";
+    }
+    writeFileSync(indexPath, content, "utf-8");
+    console.log(`[shubham] auto-wired ${missing.length} new route file(s) into routes/index.ts (preserved existing mounts): ${missing.join(", ")}`);
   } catch (err) {
     console.warn(`[shubham] autoWireRoutes skipped: ${String(err)}`);
   }

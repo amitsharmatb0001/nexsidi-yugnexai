@@ -100,10 +100,13 @@ test("persistent file fallback works when database throws", async () => {
     turn = 0;
     const result = await runAgent({
       agentName: "shubham",
-      // Deliberately invalid — see mcp/integration.test.ts's identical
-      // assertion for why (exercises the runtime's own disallowed-model
-      // handling, not a real model to add to ModelId).
-      model: "mock-model" as ModelId,
+      // 2026-08-09: "google/" prefix required — sanitizeModelChain now gets
+      // a fail-fast empty-chain guard (real bug found live: an unprefixed
+      // model sanitized to empty and silently fell through to the
+      // disallowed value anyway instead of failing). nimChatWithTools is
+      // fully mocked above and ignores the model string entirely — this is
+      // a placeholder, not a real model to add to ModelId.
+      model: "google/mock-model" as ModelId,
       apiKey: "key",
       systemPrompt: "prompt",
       initialMessage: "start",

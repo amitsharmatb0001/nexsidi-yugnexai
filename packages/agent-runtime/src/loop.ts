@@ -584,6 +584,25 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   const modelChain: ModelId[] = sanitizeModelChain([config.model, ...(config.fallbackModels ?? [])]) as ModelId[];
   let modelIdx = 0;
 
+  // 2026-08-09: real bug found live (project meridianbk4) — when every
+  // model in the chain gets sanitized away (Riya's own config: model
+  // "moonshotai/kimi-k2.6", no fallbackModels at all — a provider
+  // sanitizeModelChain deliberately drops), modelChain is []. The main loop
+  // below reads `modelChain[modelIdx] ?? config.model` — with an empty
+  // array that `??` silently falls through to the ORIGINAL, just-sanitized-
+  // away config.model, defeating the entire point of sanitizing: every NIM
+  // call in this run was guaranteed to hit the disallowed model anyway,
+  // burning MAX_CONSECUTIVE_TRANSPORT_FAILURES (5) worth of real network
+  // round-trips — 1-2 minutes wasted on every single Riya deploy attempt —
+  // before runAgentEscalated's cannot_finish path finally kicked in. Failing
+  // immediately here reaches the exact same escalation outcome without the
+  // wasted retries.
+  if (modelChain.length === 0) {
+    const reason = `No usable model in the chain for ${config.agentName} after sanitization (configured: ${[config.model, ...(config.fallbackModels ?? [])].join(", ")}) — every candidate was filtered out.`;
+    console.log(`[${config.agentName}:agent] ${reason}`);
+    return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish", escalations };
+  }
+
   // L3 (full-system audit): `iterations` now counts real model turns only.
   // Previously incremented at the TOP of the loop, so every transport
   // failure + sleep(5s) cycle also consumed the main budget — stress-test

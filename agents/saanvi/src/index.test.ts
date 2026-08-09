@@ -111,3 +111,40 @@ test("SAANVI_SYSTEM_PROMPT explicitly names the Northgate-style failure mode: st
 test("SAANVI_SYSTEM_PROMPT still allows skipping the business-specifics question when there is no real company behind the app", () => {
   expect(SAANVI_SYSTEM_PROMPT).toMatch(/no real\s*\n?\s*external business behind the app/i);
 });
+
+// 2026-08-09: real gap found live (project meridianbk4) — a product-based
+// business (sells helmets/lights/tubes) and a service-based business (books
+// repair appointments) were never asked whether THEY want to manage their
+// own data after launch, or how they want pricing displayed. The existing
+// SCOPE CONTROL rule correctly forbids INVENTING an admin/management area
+// nobody asked for — but a normal user doesn't know to request "an admin
+// dashboard" by that name; they only know their own business. This is a
+// THIRD, separate ask-don't-guess trigger (parallel to the two above),
+// with an explicit carve-out in SCOPE CONTROL so the two rules don't
+// contradict each other: a "yes" answer to this question counts as the
+// user's own explicit request, exactly like naming it in the original
+// prompt would.
+test("SAANVI_SYSTEM_PROMPT asks whether the business wants to self-manage its own data, as a third separate trigger", () => {
+  expect(SAANVI_SYSTEM_PROMPT).toMatch(/WHEN TO ASK ABOUT SELF-MANAGEMENT/i);
+  expect(SAANVI_SYSTEM_PROMPT).toContain("THIRD trigger");
+  expect(SAANVI_SYSTEM_PROMPT).toMatch(/add\/edit\/remove your own/i);
+});
+
+test("SAANVI_SYSTEM_PROMPT asks a service business how they want pricing displayed, not just data-management", () => {
+  expect(SAANVI_SYSTEM_PROMPT).toMatch(/prices be shown publicly[\s\S]*?contact you[\s\S]*?for a quote/i);
+});
+
+test("SAANVI_SYSTEM_PROMPT's self-management trigger explicitly allows a 'no' answer — not a hardcoded default to always building it", () => {
+  expect(SAANVI_SYSTEM_PROMPT).toMatch(/is a\s*\n?\s*completely valid answer/i);
+});
+
+test("SCOPE CONTROL's admin-dashboard ban has an explicit carve-out for an explicit yes to the self-management question", () => {
+  const scopeControlIdx = SAANVI_SYSTEM_PROMPT.indexOf("SCOPE CONTROL — highest priority rule");
+  expect(scopeControlIdx).toBeGreaterThan(-1);
+  const scopeControlSection = SAANVI_SYSTEM_PROMPT.slice(scopeControlIdx, scopeControlIdx + 400);
+  expect(scopeControlSection).toMatch(/explicit mention in the request, or an explicit\s*\n?\s*"yes" answer to the self-management/i);
+});
+
+test("SAANVI_SYSTEM_PROMPT instructs treating uploaded attachment content as real grounding, same as build-plan content", () => {
+  expect(SAANVI_SYSTEM_PROMPT).toMatch(/USER UPLOADED ATTACHMENTS/);
+});

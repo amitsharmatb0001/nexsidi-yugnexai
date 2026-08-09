@@ -117,6 +117,79 @@ test("passes on the first QA run -> no fix is ever called, iterations is 1", asy
   expect(result.iterations).toBe(1);
 });
 
+// 2026-08-09: real bug found live (project meridianbk4) — debate only ran
+// `if (!result.pass && ...)`. A single HIGH finding makes an agent's own
+// severity-weighted score pass (100-10=90 >= 85), so `result.pass` was
+// already true and debate never got a chance to independently verify the
+// finding — even though debate's own prompt has explicit guardrails for
+// exactly this class of finding (see conductPeerDebateReal's comment: an
+// earlier near-identical route-mismatch finding was dismissed by debate
+// once already). Confirmed live: Navya precisely identified a route mount
+// mismatch ("/appointment" instead of "/appointments") that 404s every
+// booking request — scored HIGH, aggregate technically "passed", shipped
+// broken. Fix: debate now runs whenever there ARE findings regardless of
+// the aggregate pass/fail verdict, and a debate-CONFIRMED CRITICAL/HIGH
+// finding overrides a technically-passing score. A debate-confirmed
+// MEDIUM/LOW finding does NOT override pass — that tolerance is what the
+// >=85 threshold is actually for; only findings serious enough to be
+// tagged HIGH/CRITICAL by the QA agent itself force a fix cycle.
+test("a debate-CONFIRMED HIGH finding overrides an aggregate score that already passed", async () => {
+  let fixCalled = false;
+  const alreadyPassingWithHighFinding: Stage5Result = {
+    pass: true, // aggregate severity-weighted score already cleared 85
+    findings: [{ file: "backend/src/routes/index.ts", issue: "[logic/HIGH] route mounted at /appointment instead of /appointments" }],
+  };
+  const deps: QAFixDeps = {
+    runStage5: async () => (fixCalled ? passResult() : alreadyPassingWithHighFinding),
+    fixShubham: async () => {
+      fixCalled = true;
+      return { success: true };
+    },
+    fixAanya: async () => ({ success: true }),
+    conductPeerDebate: async (findings) => findings, // debate confirms every finding as-is (VALID)
+  };
+
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(fixCalled).toBe(true); // the finding was NOT silently discarded — a fix cycle actually ran
+  expect(result.pass).toBe(true); // and the retest genuinely passes afterward
+});
+
+test("a debate-CONFIRMED MEDIUM/LOW finding does NOT override an aggregate score that already passed (tolerated noise)", async () => {
+  let fixCalled = false;
+  const deps: QAFixDeps = {
+    runStage5: async () => ({
+      pass: true,
+      findings: [{ file: "backend/src/routes/tasks.routes.ts", issue: "[performance/LOW] verbose error message leaks stack trace" }],
+    }),
+    fixShubham: async () => {
+      fixCalled = true;
+      return { success: true };
+    },
+    fixAanya: async () => ({ success: true }),
+    conductPeerDebate: async (findings) => findings, // debate confirms the finding, but it's only LOW
+  };
+
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(fixCalled).toBe(false); // LOW-severity noise is tolerated, exactly as the >=85 threshold intends
+  expect(result.pass).toBe(true);
+});
+
+test("debate REFUTING every finding still flips pass to true even when the aggregate had already failed", async () => {
+  const deps: QAFixDeps = {
+    runStage5: async () => failResult(1, "shubham"),
+    fixShubham: async () => ({ success: true }),
+    fixAanya: async () => ({ success: true }),
+    conductPeerDebate: async () => [], // debate drops every finding as a false positive
+  };
+
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(result.pass).toBe(true);
+  expect(result.iterations).toBe(1); // never entered the fix loop — debate ran on the initial result
+});
+
 test("fails once, faultAgent is shubham -> fixShubham is called, then re-passes on retest", async () => {
   let qaCallCount = 0;
   const captured: { findings: string[] } = { findings: [] };

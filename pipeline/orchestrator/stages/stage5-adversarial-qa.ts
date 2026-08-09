@@ -186,17 +186,28 @@ export async function runStage5WithAgents(
   const security = scoreSecurityFindings(karanResult.findings);
   const allPass = security.pass && navyaResult.passed && deepikaResult.passed;
 
+  // 2026-08-09: real bug found live (project meridianbk4) — this used to
+  // build `findings` only inside the `!allPass` branch and return
+  // `findings: []` whenever the aggregate technically passed. A single HIGH
+  // finding (100-10=90 >= 85) makes an individual agent's own `passed` field
+  // true, so a genuinely broken, debate-confirmable finding (route
+  // mismatch, 404s core booking/shop flows) was silently discarded here,
+  // never even reaching qa-fix-loop's debate step. Building the findings
+  // list unconditionally — before the allPass branch — lets that step give
+  // every finding an independent debate-based check regardless of whether
+  // the severity-weighted arithmetic alone already "passed" it.
+  const findings: Finding[] = [
+    ...karanResult.findings.map(karanFindingToFinding),
+    ...navyaResult.findings.map(navyaFindingToFinding),
+    ...deepikaResult.findings.map(deepikaFindingToFinding),
+  ];
+
   if (!allPass) {
-    const findings: Finding[] = [
-      ...karanResult.findings.map(karanFindingToFinding),
-      ...navyaResult.findings.map(navyaFindingToFinding),
-      ...deepikaResult.findings.map(deepikaFindingToFinding),
-    ];
     return { pass: false, findings, faultAgent: identifyFaultAgent(findings) };
   }
 
   if (!includeTier3) {
-    return { pass: true, findings: [] };
+    return { pass: true, findings };
   }
 
   const tier3 = await agents.runTier3Review(projectId, stage4Result);

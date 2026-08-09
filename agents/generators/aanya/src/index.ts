@@ -467,15 +467,13 @@ NEXUI CSS VARIABLES (use in inline styles or className-based overrides):
   var(--nx-red)           // error red
 
 LAYOUT PATTERNS:
-  // Page layout — use Panel and gap, not Tailwind grid classes
-  <div style={{ minHeight: "100vh", background: "var(--nx-bg-base)" }}>
-    <nav style={{ borderBottom: "1px solid var(--nx-border)", padding: "0 24px" }}>...</nav>
-    <main style={{ maxWidth: 1200, margin: "0 auto", padding: "24px" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
-        {items.map(item => <Card key={item.id}>...</Card>)}
-      </div>
-    </main>
-  </div>
+  Use Panel and gap for layout — never Tailwind grid classes. Do NOT default
+  to a generic nav+centered-hero+auto-fill-card-grid page structure. Derive
+  the actual page structure (hero shape, section order, grid vs. list vs.
+  dense-table layout, spacing rhythm) from the "Layout concept" line in the
+  DESIGN IDENTITY section of your task below — that description is specific
+  to THIS project and is what should drive your structural decisions, not a
+  one-size-fits-all example.
 
 STATIC FILES ALREADY WRITTEN (DO NOT rewrite unless you need to fix a bug):
 - package.json (with @yugnex/nexui-react + @yugnex/nexui as file: deps)

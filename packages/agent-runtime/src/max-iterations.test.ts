@@ -59,7 +59,13 @@ test("config.maxIterations overrides the default MAX_ITERATIONS cap for this run
   try {
     const result = await runAgent({
       agentName: "test-agent",
-      model: "mock-model" as any,
+      // 2026-08-09: "google/" prefix required — sanitizeModelChain now gets
+      // a fail-fast empty-chain guard (real bug found live: Riya's own
+      // config sanitized to empty and silently fell through to the
+      // disallowed model anyway). A bare "mock-model" has no allowed
+      // provider prefix and would be dropped before ever reaching the
+      // mocked nimChatWithTools below — not a real model to add to ModelId.
+      model: "google/mock-model" as any,
       apiKey: "x",
       systemPrompt: "test",
       initialMessage: "test",
