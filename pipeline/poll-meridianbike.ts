@@ -3,7 +3,7 @@ import { projects, agentConversations } from "@nexsidi/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { Client, Connection } from "@temporalio/client";
 
-const projectId = "meridianbk3";
+const projectId = "meridianbk4";
 
 const proj = await db.select().from(projects).where(eq(projects.id, projectId));
 const p = proj[0];
@@ -48,7 +48,7 @@ try {
   workflowStatus = `CHECK_FAILED: ${String(err).slice(0, 100)}`;
 }
 
-// 2026-08-09: real gap found live, TWICE — both meridianbk1 and meridianbk3
+// 2026-08-09: real gap found live, TWICE — both meridianbk1 and meridianbk4
 // sat idle for hours at the SAME approveSpecSignal human-approval gate
 // (pipeline/workflows/project-build.ts's await_spec_approval), and neither
 // the DB-artifact polling above nor the raw workflow RUNNING/FAILED status

@@ -5,9 +5,9 @@ const client = new Client({ connection: conn });
 
 const handle = await client.workflow.start("projectBuildWorkflow", {
   taskQueue: "nexsidi-pipeline",
-  workflowId: "project-build-meridianbk3",
+  workflowId: "project-build-meridianbk4",
   args: [
-    "meridianbk3",
+    "meridianbk4",
     "Build a website for Meridian Bike Co, a boutique bicycle repair and " +
       "retail shop. Services: tune-ups ($45), wheel truing ($25), brake and " +
       "gear adjustment ($35), flat tire repair ($15). We also sell a small " +
