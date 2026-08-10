@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAgentPrompt, buildAgentTask, stripDevDependencies, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui, countPlannedPages } from "./index.ts";
+import { buildAgentPrompt, buildAgentTask, stripDevDependencies, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui, countPlannedPages, writeStaticScaffold } from "./index.ts";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { FALLBACK_BRIEF } from "../../../vanya/src/index.ts";
 
@@ -21,6 +21,40 @@ const FIX_TEST_PLAN: BuildPlan = {
   independenceVerified: true,
   buildPlanHash: "deadbeef",
 };
+
+// 2026-08-10: real bug found live (project rivhdw1, mid-generation, direct
+// observation) — the scaffold wrote a real, correctly-written Next.js
+// middleware function (checks the "token" cookie, redirects unauthenticated
+// requests) to the WRONG filename: "proxy.ts". Next.js 16.2 only recognizes
+// "middleware.ts" as its routing middleware convention — a file named
+// proxy.ts is just an inert, unused file the framework never invokes,
+// silently disabling server-side auth redirect for every generated app
+// (client-side redirects were the only real gate). Worse: the prompt's own
+// Rule 8 explicitly told Aanya "NEVER create a middleware.ts file... Next.js
+// rejects having both proxy.ts and middleware.ts present" — a confident but
+// FALSE claim (verified directly this session: Next.js simply never routes
+// requests through proxy.ts at all, request logs confirmed only
+// middleware.ts receives traffic). This bug had already been "fixed" once
+// per-project via an expensive QA round-trip (Navya flags it, Aanya renames
+// it) on an EARLIER project (freshtst1) — but the fix was never applied to
+// the SOURCE (this scaffold + prompt), so every NEW project paid the same
+// round-trip cost again. This test locks in the real fix at the source.
+test("writeStaticScaffold writes the auth middleware to middleware.ts, not proxy.ts (the real Next.js 16.2 convention)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aanya-scaffold-"));
+  try {
+    writeStaticScaffold(FIX_TEST_PLAN, dir);
+    expect(existsSync(join(dir, "middleware.ts"))).toBe(true);
+    expect(existsSync(join(dir, "proxy.ts"))).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("system prompt correctly requires middleware.ts and forbids proxy.ts, not the reverse", () => {
+  const prompt = buildAgentPrompt("integrate");
+  expect(prompt).not.toMatch(/NEVER create a middleware\.ts file/i);
+  expect(prompt).toMatch(/middleware\.ts/);
+});
 
 // 2026-08-10: real gap found live (user request) — the CLICK-THROUGH
 // NAVIGATION VERIFICATION section (and its new VISUAL QUALITY CHECK step)

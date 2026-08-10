@@ -256,17 +256,46 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     clarificationHistory.push(`Q: What would you like changed about the spec/design?\nA: ${feedback}`);
   }
 
-  // ── Stage 3: Parallel code generation ───────────────────────────────────
+  // ── Stage 3: Parallel code generation, retried in-place on an explicit
+  // human decision instead of unconditionally terminating the workflow ────
+  // 2026-08-10: real bug found live (project rivhdw1) — a generator hitting
+  // its own max-iterations cap (generatorFailure(), nonRetryable: true —
+  // correct: Temporal retrying the identical prompt/budget would just hit
+  // the same wall again) had NO surrounding handling at this level at all.
+  // Promise.all's rejection propagated straight out of the workflow
+  // function with no catch, killing the ENTIRE workflow execution — the
+  // exact "unconditional termination, no resume path" bug already fixed
+  // for the QA/compile/deploy escalations below, just never covered here.
+  // A generator's own conversation history is persisted and reloaded on
+  // each run() call (confirmed live: "[aanya:gemini-agent] Loaded existing
+  // conversation history..."), so simply retrying picks up from where it
+  // left off with a fresh iteration budget, not a blind restart.
   state.stage = "generate";
-  const needs = await act.checkPlanNeeds(projectId);
-  const genPromises: Promise<void>[] = [genAct.runAanya(projectId)];
-  if (needs.shubham) {
-    genPromises.push(genAct.runShubham(projectId));
+  for (;;) {
+    const needs = await act.checkPlanNeeds(projectId);
+    const genPromises: Promise<void>[] = [genAct.runAanya(projectId)];
+    if (needs.shubham) {
+      genPromises.push(genAct.runShubham(projectId));
+    }
+    if (needs.pranav) {
+      genPromises.push(genAct.runPranav(projectId));
+    }
+    try {
+      await Promise.all(genPromises);
+      break;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.log(`[workflow] Stage 3 generation failed: ${reason}`);
+      const retry = patched("generation-retry-signal-v1")
+        ? await escalateAndAwaitRetryDecision("generation_failed")
+        : false;
+      if (!retry) {
+        await act.markProjectFailed(projectId, "generation_failed");
+        return;
+      }
+      console.log(`[workflow] retrying Stage 3 generation after a human retry decision`);
+    }
   }
-  if (needs.pranav) {
-    genPromises.push(genAct.runPranav(projectId));
-  }
-  await Promise.all(genPromises);
 
   // ── Stage 3b: TypeScript compile gate (before QA — fail fast) ────────────
   state.stage = "compile_check";

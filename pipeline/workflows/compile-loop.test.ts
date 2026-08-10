@@ -77,3 +77,29 @@ test("every escalation site awaits a retry decision before persisting failure, f
   expect(source).toContain("escalateAndAwaitRetryDecision(deployResult.stuck ? \"deploy_stuck\" : \"deploy_failed\")");
   expect(source).toContain('await act.markProjectFailed(projectId, deployResult.stuck ? "deploy_stuck" : "deploy_failed")');
 });
+
+// 2026-08-10: real bug found live (project rivhdw1) — Stage 3 (parallel
+// generation) had NO handling at all for a generator activity failure
+// (e.g. generatorFailure()'s max-iterations-exceeded, deliberately
+// nonRetryable so Temporal doesn't blindly retry the identical prompt/
+// budget). Promise.all's rejection propagated straight out of the
+// workflow function with zero catch — killing the ENTIRE workflow
+// execution outright, the exact "unconditional termination, no resume
+// path" class of bug the three escalations above were already fixed for,
+// just never extended to cover generation itself. Confirmed live: Aanya's
+// max-iterations failure on rivhdw1 terminated the whole workflow with no
+// way to resume the same run.
+test("Stage 3 generation failures are caught and retried via the same escalation pattern, not left to kill the whole workflow", () => {
+  const source = readFileSync(new URL("./project-build.ts", import.meta.url), "utf-8");
+
+  expect(source).toContain('escalateAndAwaitRetryDecision("generation_failed")');
+  expect(source).toContain('await act.markProjectFailed(projectId, "generation_failed")');
+  const escalateCall = 'escalateAndAwaitRetryDecision("generation_failed")';
+  const failCall = 'await act.markProjectFailed(projectId, "generation_failed")';
+  expect(source.indexOf(escalateCall)).toBeLessThan(source.indexOf(failCall));
+  // Promise.all(genPromises) must be wrapped in a try/catch, not called bare
+  // — a bare call with no surrounding try means the rejection was never
+  // actually caught by anything, regardless of what escalation code exists
+  // elsewhere in the file.
+  expect(source).toMatch(/try\s*\{\s*await Promise\.all\(genPromises\);/);
+});

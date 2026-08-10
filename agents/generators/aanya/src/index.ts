@@ -530,7 +530,8 @@ STATIC FILES ALREADY WRITTEN (DO NOT rewrite unless you need to fix a bug):
 - package.json (with @yugnex/nexui-react + @yugnex/nexui as file: deps)
 - app/layout.tsx (NexuiProvider wrapper)
 - app/globals.css (NexUI token imports, base reset — NO @apply Tailwind directives)
-- proxy.ts (custom JWT cookie-based auth middleware for Next.js 16.2)
+- middleware.ts (custom JWT cookie-based auth middleware for Next.js 16.2 —
+  this IS the real, framework-recognized filename; do not rename it)
 - next.config.ts
 - tsconfig.json
 
@@ -548,12 +549,13 @@ CRITICAL RULES:
 5. Error states: always show a readable error message in the UI
 6. Loading states: use Spinner while fetching
 7. Empty states: show a helpful message when the list is empty
-8. NEVER create a middleware.ts file — Next.js 16.2 auth middleware is
-   proxy.ts (already written, see above). Next.js rejects having both
-   proxy.ts and middleware.ts present. If "npx next build" fails and you
-   suspect a middleware conflict, use delete_file to remove any
-   middleware.ts you may have created — do not try run_command('rm ...'),
-   rm is not in the shell allowlist.
+8. NEVER create a proxy.ts file — Next.js 16.2 auth middleware MUST be named
+   middleware.ts (already written, see above; this is the real, framework-
+   recognized convention — a file named proxy.ts is silently never invoked
+   by Next.js at all, which disables server-side auth redirect entirely).
+   If you see a proxy.ts file for any reason, use delete_file to remove it
+   and make sure middleware.ts has the real logic — do not try
+   run_command('rm ...'), rm is not in the shell allowlist.
 9. DATE DISPLAY: NEVER render raw ISO date strings to users. Any field that is a
    date (dueDate, createdAt, updatedAt, etc.) MUST be formatted before display.
    Use: new Date(dateStr).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -810,7 +812,7 @@ export default nextConfig;
 `;
 }
 
-function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
+export function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
   const backendPort = plan.apiContract.baseUrl?.match(/:(\d+)/)?.[1] ?? "3001";
 
   const files: Array<{ path: string; content: string }> = [
@@ -943,8 +945,18 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 `,
     },
     {
-      // Next.js 16.2 auth middleware is proxy.ts, not middleware.ts
-      path: "proxy.ts",
+      // 2026-08-10: real bug found live (project rivhdw1) — this used to
+      // write "proxy.ts". Next.js 16.2 ONLY recognizes "middleware.ts" as
+      // its routing-middleware convention (confirmed directly this
+      // session: real request logs show traffic only ever reaches a file
+      // named middleware.ts — "proxy.ts" is just an inert file the
+      // framework never invokes). The old comment here ("Next.js rejects
+      // having both proxy.ts and middleware.ts present") was never true —
+      // Next.js simply ignores proxy.ts entirely. This silently disabled
+      // server-side auth redirect on every generated app (client-side
+      // redirects were the only real gate) until a QA round caught it,
+      // per-project, every single time. Fixed at the source instead.
+      path: "middleware.ts",
       content: `import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
