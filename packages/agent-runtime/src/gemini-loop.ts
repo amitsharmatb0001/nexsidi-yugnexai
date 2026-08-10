@@ -557,7 +557,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "screenshot": {
-          result = await execScreenshot(args as { url: string; outputPath: string });
+          result = await execScreenshot(args as { url: string; outputPath: string }, ledger);
           break;
         }
         case "escalate_finding": {
@@ -579,6 +579,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
             config.requiredVerificationCommands,
             config.requiredEvidenceKinds,
             config.allowFailedVerification,
+            config.requiredEvidenceCounts,
           );
           if (!check.allowed) {
             console.log(`[${config.agentName}:gemini-agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);
@@ -663,7 +664,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
         default: {
           if (browserToolset && BROWSER_TOOL_NAMES.has(toolName)) {
-            result = await browserToolset.exec(toolName, args as Record<string, unknown>);
+            result = await browserToolset.exec(toolName, args as Record<string, unknown>, ledger);
           } else {
             result = { status: "error", summary: `Unknown tool: ${toolName}` };
           }

@@ -36,6 +36,24 @@ async function loadKnownMistakesPrefix(): Promise<string> {
 }
 
 
+// 2026-08-10: real gap found live (user request) — making "visual_check" a
+// mechanically required evidence kind (completion-gate.ts has no override
+// path) for EVERY project would hard-block a genuine single-page app
+// forever, since the prompt's own VISUAL QUALITY CHECK step explicitly
+// allows skipping for that case. Counts distinct "page.tsx" files across
+// aanyaTasks' outputFiles — the real App Router signal for "how many pages
+// does this project have," not a guess — so the gate only applies when a
+// screenshot review is actually possible to satisfy honestly.
+export function countPlannedPages(plan: BuildPlan): number {
+  const pageFiles = new Set<string>();
+  for (const task of plan.aanyaTasks ?? []) {
+    for (const file of task.outputFiles ?? []) {
+      if (/page\.tsx$/.test(file)) pageFiles.add(file);
+    }
+  }
+  return pageFiles.size;
+}
+
 // ── Main entry ────────────────────────────────────────────────────────────────
 // mode "preview": Stage 3 UI-only build shown to the user for design approval
 //                 before any backend exists — mock data only, no fetch() calls.
@@ -117,7 +135,21 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // not Aanya verifying its own work before handing it off. See CLICK-
     // THROUGH NAVIGATION VERIFICATION below for what this now requires.
     enableDockerTools: true,
+    // 2026-08-10: for the UI-BASED CRUD SELF-CHECK (integrate mode only —
+    // harmless to enable unconditionally in preview mode too, since there's
+    // no reason for her to call it there and the prompt never tells her
+    // to). Lets her confirm a form submission actually changed the
+    // database, not just that the UI re-rendered optimistically.
+    enableDbQuery: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
+    // 2026-08-10: mechanically blocks task_complete without at least one
+    // real screenshot review this run — same enforcement pattern as
+    // Shubham's requiredEvidenceKinds(["http_check"]), for the same reason
+    // (a prompt instruction alone is followed probabilistically). Scoped to
+    // multi-page projects only (see countPlannedPages's header comment) so
+    // a genuine single-page app, which the prompt explicitly allows to skip
+    // this step, is never hard-blocked with no way to satisfy the gate.
+    requiredEvidenceKinds: countPlannedPages(plan) > 1 ? (["visual_check"] as const) : [],
     // 2026-07-25: raised to 60. Measured live in nextech7: Aanya hit the
     // 40-iteration default exactly while still running npx next build to fix
     // proxy.ts + portal dashboard import issues. Pattern: ~32 write iterations
@@ -202,11 +234,16 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     enableWebFetch: true,
     enableScreenshot: true,
     enableBrowser: true,
+    // 2026-08-10: same rationale as run() above — needed if a fix touches a
+    // form's data-persistence behavior.
+    enableDbQuery: true,
     // P3 (agent-autonomy-assessment F3): mirrors Shubham's identical flag —
     // see that file for the full rationale.
     enableEscalation: true,
     enableDockerTools: true,
     requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
+    // 2026-08-10: same gate as run() above — see its comment.
+    requiredEvidenceKinds: countPlannedPages(plan) > 1 ? (["visual_check"] as const) : [],
     // 2026-07-25: reverted the maxIterations override — see run() above.
   });
 
@@ -364,12 +401,26 @@ anyone else ever sees this code.
   d) browser_get_text on at least one page beyond the homepage to confirm it
      shows real content matching what you were asked to build (not
      placeholder/lorem text, not an empty state where content should be).
-  e) docker_compose down to tear down when finished.
-  Budget ≤10 tool calls total for a-e. This is NOT the same check Tier 3
+  e) VISUAL QUALITY CHECK (required, not optional — task_complete is
+     mechanically blocked without it): call browser_screenshot on at least
+     the homepage. Then actually LOOK at the returned image before deciding
+     it's fine — this is a real judgment step, not a formality:
+       - Text renders as real glyphs, not overlapping/garbled/mojibake
+         characters (a font that 404'd and fell back produces exactly this —
+         if you see it, the fix is almost always a missing static asset, not
+         a CSS change).
+       - Spacing is consistent: no text touching its container edge, no
+         two elements overlapping, no visibly broken alignment.
+       - The page looks like a coherent design, not unstyled/default HTML.
+     If anything looks wrong, fix it and re-screenshot before moving on —
+     do not hand off a visual defect for someone else to notice later.
+  f) docker_compose down to tear down when finished.
+  Budget ≤12 tool calls total for a-f. This is NOT the same check Tier 3
   (Tilotma) does — Tier 3 runs after full deployment, minutes or hours later,
   auditing the finished product; this is you verifying the code you JUST
   wrote actually behaves the way it looks like it should, before it ever
-  reaches that stage.
+  reaches that stage. Catching it here costs one extra tool call; catching it
+  at Tier 3 costs a full deploy-review-report-refix-redeploy cycle.
 
 STACK (non-negotiable):
 - Next.js 16.2 / TypeScript / React 19
@@ -520,7 +571,7 @@ CRITICAL RULES:
     (YugNex Technology (OPC) Private Limited) — a legitimate attribution, NOT
     the internal tooling names rule 10 hides. This is the REAL company logo
     (not a placeholder) — use this exact img tag verbatim, do not redraw it:
-    <img src="${YUGNEX_LOGO_DATA_URI}" alt="YugNex" width="69" height="48" style="height:24px;width:auto;opacity:0.75" />
+    <img src="${YUGNEX_LOGO_DATA_URI}" alt="YugNex" width="69" height="48" style={{ height: "24px", width: "auto", opacity: 0.75 }} />
     Footer structure, e.g.:
     © 2026 TaskFlow. All rights reserved.
     [the img tag above] Developed & Managed by YugNex™
@@ -556,6 +607,49 @@ MODE: INTEGRATE (post-approval — wire the locked preview to the real backend)
 - API calls: fetch() with Bearer token read from the 'token' cookie (document.cookie parse or a helper). Include as "Authorization: Bearer <token>" header.
 - Do NOT change layout or visual design from the locked preview — only replace
   mock data with real fetch calls (plus the loading/error states around them).
+
+UI-BASED CRUD SELF-CHECK (required whenever you wired a create/edit/delete
+form to a real endpoint — this is DIFFERENT from Shubham's own API-level
+CRUD check: he proves the ENDPOINT works via raw http_request; you must
+prove the FORM actually calls it correctly, with the right payload shape,
+and the UI actually reflects what really happened — a form that "looks
+right" can still send the wrong field names or silently swallow an error):
+  a) Boot the same throwaway Docker environment pattern Shubham/Riya use
+     (or reuse a running one from your CLICK-THROUGH NAVIGATION
+     VERIFICATION above if it's still up) with the real backend + Postgres.
+  b) For EVERY create/edit/delete form you built, actually USE it through
+     the browser tools — browser_navigate to the page, browser_fill each
+     real input, browser_click the real submit button. Do NOT call
+     http_request directly to simulate this — that only proves the API
+     works (Shubham's job), not that your form is wired to it correctly.
+  c) After submit, verify BOTH sides, not just "the button click didn't
+     error":
+       - UI side: browser_get_text (or browser_element_exists) confirms the
+         new/changed data actually appears where a user would expect to see
+         it (a list, a detail view, a success toast) — not just that no
+         error was thrown.
+       - DATA side: db_query the real table to confirm the row genuinely
+         exists with the field values you actually typed into the form —
+         not just that the UI shows a success state. A form that shows
+         "Saved!" while the fetch() call actually failed silently (wrong
+         endpoint, wrong payload shape, an uncaught promise rejection) is a
+         real, serious bug this step exists to catch.
+  d) If you built an edit form: fill it with a real change, submit, then
+     db_query to confirm the DATABASE ROW changed — not just that the UI
+     re-rendered with the new value (a form can update its own local state
+     optimistically without the API call actually succeeding).
+  e) If you built a delete action AND no other resource in the api-contract
+     references this resource via an "_id" field, use it, then db_query to
+     confirm the row is gone. Skip the delete check for a resource other
+     resources reference — deleting your own seed data would falsely break
+     a LATER create step that needed to reference it (this exact mistake
+     was found and fixed live in Riya's own post-deploy checker; the same
+     caution applies here).
+  Budget: roughly 4-5 tool calls per form (navigate, fill fields, submit,
+  UI check, db_query check). This closes a real gap: Shubham proving the
+  API works and you proving the UI compiles/renders are each necessary but
+  NEITHER alone proves a real user can actually create/edit/delete data
+  through your interface — this step is the only place that does.
 `;
 
 export function buildAgentPrompt(mode: "preview" | "integrate"): string {

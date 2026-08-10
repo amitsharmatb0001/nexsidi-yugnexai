@@ -86,6 +86,12 @@ export interface AgentRunConfig {
   // positive. Default false preserves the existing must-be-true behavior
   // for every generator agent (Shubham/Aanya/Pranav/Riya).
   allowFailedVerification?: boolean;
+  // 2026-08-10: requiredEvidenceKinds only checks PRESENCE (satisfied by ONE
+  // call) — too weak for "verify every resource, not just one," the gap
+  // that let Shubham self-test a single endpoint's auth boundary and claim
+  // done while every other resource's CRUD chain went unverified until QA
+  // or a live deploy caught it later. See completion-gate.ts's checkCompletion.
+  requiredEvidenceCounts?: Partial<Record<EvidenceKind, number>>;
   subagentDepth?: number; // 0 = top-level agent; 1 = inside a spawn_subagent call. Capped at 1.
   // 2026-07-25 (P5.W5.5): per-run override of MAX_ITERATIONS. The shared
   // constant stays a generous ceiling for agents that legitimately need it
@@ -864,7 +870,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         case "screenshot": {
           const ssArgs = args as { url: string; outputPath: string };
           emitEvent({ type: "tool_call", tool: "screenshot", input: ssArgs });
-          result = await execScreenshot(ssArgs);
+          result = await execScreenshot(ssArgs, ledger);
           emitEvent({ type: "tool_result", tool: "screenshot", status: result.status, summary: result.summary, outputPath: ssArgs.outputPath });
           break;
         }
@@ -934,6 +940,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
             config.requiredVerificationCommands,
             config.requiredEvidenceKinds,
             config.allowFailedVerification,
+            config.requiredEvidenceCounts,
           );
           if (!check.allowed) {
             console.log(`[${config.agentName}:agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);
@@ -970,7 +977,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
               result = { status: "error", summary: `MCP tool execution failed: ${String(err)}` };
             }
           } else if (browserToolset && BROWSER_TOOL_NAMES.has(toolName)) {
-            result = await browserToolset.exec(toolName, args as Record<string, unknown>);
+            result = await browserToolset.exec(toolName, args as Record<string, unknown>, ledger);
           } else {
             result = { status: "error", summary: `Unknown tool: ${toolName}` };
           }

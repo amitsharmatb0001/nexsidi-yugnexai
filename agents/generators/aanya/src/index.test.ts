@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAgentPrompt, buildAgentTask, stripDevDependencies, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui } from "./index.ts";
+import { buildAgentPrompt, buildAgentTask, stripDevDependencies, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui, countPlannedPages } from "./index.ts";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { FALLBACK_BRIEF } from "../../../vanya/src/index.ts";
 
@@ -21,6 +21,39 @@ const FIX_TEST_PLAN: BuildPlan = {
   independenceVerified: true,
   buildPlanHash: "deadbeef",
 };
+
+// 2026-08-10: real gap found live (user request) — the CLICK-THROUGH
+// NAVIGATION VERIFICATION section (and its new VISUAL QUALITY CHECK step)
+// explicitly says "skip only for a genuine single-page app." Making
+// visual_check a mechanically REQUIRED evidence kind for every project,
+// with no way to tell single-page from multi-page, would hard-block a
+// legitimate single-page app forever (completion-gate.ts's
+// requiredEvidenceKinds check has no override path). countPlannedPages
+// counts distinct "page.tsx" files across aanyaTasks' outputFiles — the
+// same real signal the App Router convention Aanya is already required to
+// follow — so run()/runFix() can require visual_check only when it's
+// actually possible to satisfy it honestly.
+test("countPlannedPages counts distinct page.tsx files across aanyaTasks, not raw task count", () => {
+  const plan: BuildPlan = {
+    ...FIX_TEST_PLAN,
+    aanyaTasks: [
+      { description: "home", outputFiles: ["app/page.tsx"] },
+      { description: "auth", outputFiles: ["app/(auth)/sign-in/page.tsx", "app/(auth)/sign-up/page.tsx"] },
+      { description: "shared component", outputFiles: ["components/Header.tsx"] },
+    ],
+  };
+  expect(countPlannedPages(plan)).toBe(3);
+});
+
+test("countPlannedPages returns 1 for a genuine single-page app", () => {
+  const plan: BuildPlan = {
+    ...FIX_TEST_PLAN,
+    aanyaTasks: [
+      { description: "home", outputFiles: ["app/page.tsx"] },
+    ],
+  };
+  expect(countPlannedPages(plan)).toBe(1);
+});
 
 test("preview mode prompt instructs mock data, no real API calls", () => {
   const prompt = buildAgentPrompt("preview");
@@ -255,4 +288,19 @@ test("buildAgentPrompt instructs adding the real YugNex logo + watermark text to
   expect(prompt).toContain("YugNex™ is a trademark of YugNex Technology (OPC) Private Limited.");
   expect(prompt).toContain("data:image/png;base64,");
   expect(prompt).toContain("alt=\"YugNex\"");
+});
+
+// 2026-08-10: real bug found live (project freshtst1) — the watermark's
+// example <img> tag used `style="height:24px;width:auto;opacity:0.75"` — a
+// plain HTML string attribute. That's invalid JSX (React requires `style` to
+// be an object, `style={{...}}`); Aanya faithfully copied the invalid
+// example verbatim, and "npx next build" failed on it every single time,
+// costing a full extra fix-and-rebuild cycle to self-correct (confirmed
+// live: Aanya diagnosed and fixed it, but that's a wasted round-trip this
+// prompt itself caused). The example must be syntactically valid JSX so
+// there's nothing to copy-paste wrong.
+test("the watermark example uses a valid JSX style object, not an invalid HTML-style string attribute", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toMatch(/style="height:24px/);
+  expect(prompt).toContain('style={{ height: "24px", width: "auto", opacity: 0.75 }}');
 });

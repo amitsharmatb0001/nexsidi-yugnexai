@@ -58,6 +58,17 @@ export const approveDeploySignal = defineSignal<[boolean]>("approveDeploySignal"
 // stage raised it. Reused by Saanvi's clarification loop; available to any
 // future stuck-agent escalation without new signal plumbing.
 export const answerClarificationSignal = defineSignal<[string]>("answerClarificationSignal");
+// 2026-08-10: real gap found live (freshtst1) — every stuck-state/compile-
+// repair-limit/deploy-failed escalation below used to call escalateTilotma
+// (which only writes a "needs_review" status flag — see its own header
+// comment, this IS the documented-but-unbuilt D16 "blocking HITL gate") and
+// then `return`. For a Temporal workflow, `return` means the execution
+// COMPLETES — permanently. There was no way to resume the SAME workflow run
+// after root-causing and fixing the underlying issue; the only option was a
+// throwaway script calling the stage function directly, bypassing the
+// workflow (and losing its state/history) entirely. true = retry the stage
+// that just got stuck; false = abandon (matches today's behavior exactly).
+export const retryStageSignal = defineSignal<[boolean]>("retryStageSignal");
 
 // ─── Pipeline State ────────────────────────────────────────────────────────
 export interface PipelineState {
@@ -138,6 +149,28 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   setHandler(approveDeploySignal, (approved) => {
     deployApproved = approved;
   });
+
+  // 2026-08-10: paired with retryStageSignal above — a stuck-state escalation
+  // waits (bounded — D16's "blocking gate, timeout defined" pattern; a stuck
+  // pipeline must not hold a Temporal workflow open forever with zero
+  // resolution) for an explicit human retry-or-abandon decision instead of
+  // unconditionally terminating. Reset to null before each wait so a stale
+  // decision from a PRIOR escalation can never be misread as the answer to
+  // THIS one — same convention as clarificationAnswer below.
+  let retryDecision: boolean | null = null;
+  setHandler(retryStageSignal, (retry) => {
+    retryDecision = retry;
+  });
+  async function escalateAndAwaitRetryDecision(reason: string): Promise<boolean> {
+    retryDecision = null;
+    await act.escalateTilotma(projectId, reason, state);
+    const decided = await condition(() => retryDecision !== null, "24 hours");
+    if (!decided) {
+      console.log(`[workflow] escalation "${reason}" got no human retry decision within 24h — treating as abandon`);
+      return false;
+    }
+    return retryDecision === true;
+  }
 
   // 2026-08-05: generic pause-and-ask primitive. Sets pendingQuestions
   // (visible via getPipelineState), blocks until answerClarificationSignal
@@ -266,11 +299,14 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   // an HTTP status code. patched() so any workflow already in flight when
   // this deploys keeps replaying its original (pre-unification) code path.
   if (patched("unify-real-gan-and-deploy-v1")) {
+    // ── Stage 5: the real GAN, retried in-place on an explicit human
+    // decision instead of unconditionally terminating the workflow ────────
     state.stage = "qa";
-    const qaResult = await orchestratorAct.runQAFixLoopActivity(projectId);
-    state.iteration = qaResult.iterations;
+    for (;;) {
+      const qaResult = await orchestratorAct.runQAFixLoopActivity(projectId);
+      state.iteration = qaResult.iterations;
+      if (qaResult.pass) break;
 
-    if (!qaResult.pass) {
       // The GAN's own internal loop already exhausted its fix attempts or
       // hit its own stuck-detection (findings count stopped improving) —
       // don't re-litigate that here, just escalate with the evidence.
@@ -279,32 +315,51 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       // numeric score to log here — logStuckState's shape predates this
       // unification and is kept only for its audit-trail row.
       await act.logStuckState(projectId, qaResult.iterations, 0, 0);
-      await act.escalateTilotma(projectId, "stuck_state", state);
-      return;
+      const retry = patched("stuck-state-retry-signal-v1")
+        ? await escalateAndAwaitRetryDecision("stuck_state")
+        : false;
+      if (!retry) {
+        await act.markProjectFailed(projectId, "stuck_state");
+        return;
+      }
+      console.log(`[workflow] retrying Stage 5 QA after a human retry decision`);
     }
 
     // Deterministic safety net the GAN doesn't run itself: confirm the code
     // still compiles before handing off to deploy. Same bounded-retry shape
-    // as the pre-QA gate above.
+    // as the pre-QA gate above, also retried in-place on a human decision.
     state.stage = "compile_check";
-    let postQaCompile = await act.runCompileCheck(projectId);
-    let timeoutRetries = 0;
-    while (!postQaCompile.pass && postQaCompile.timedOut && timeoutRetries < 3) {
-      timeoutRetries++;
-      console.log(`[workflow] post-QA compile check timed out (retry ${timeoutRetries}/3), rerunning directly`);
-      postQaCompile = await act.runCompileCheck(projectId);
-    }
-    let postQaCompileFailures = 0;
-    while (!postQaCompile.pass) {
-      postQaCompileFailures += 1;
-      if (shouldStopCompileRepair(postQaCompileFailures, MAX_POST_QA_COMPILE_FAILURES)) {
-        state.stage = "error";
+    for (;;) {
+      let postQaCompile = await act.runCompileCheck(projectId);
+      let timeoutRetries = 0;
+      while (!postQaCompile.pass && postQaCompile.timedOut && timeoutRetries < 3) {
+        timeoutRetries++;
+        console.log(`[workflow] post-QA compile check timed out (retry ${timeoutRetries}/3), rerunning directly`);
+        postQaCompile = await act.runCompileCheck(projectId);
+      }
+      let postQaCompileFailures = 0;
+      let exhausted = false;
+      while (!postQaCompile.pass) {
+        postQaCompileFailures += 1;
+        if (shouldStopCompileRepair(postQaCompileFailures, MAX_POST_QA_COMPILE_FAILURES)) {
+          exhausted = true;
+          break;
+        }
+        await genAct.runCodeFix(projectId, state.iteration, `compile_error:\n${postQaCompile.errors}`);
+        postQaCompile = await act.runCompileCheck(projectId);
+      }
+      if (!exhausted) break;
+
+      state.stage = "error";
+      const retry = patched("stuck-state-retry-signal-v1")
+        ? await escalateAndAwaitRetryDecision("compile_repair_limit")
+        : false;
+      if (!retry) {
         await act.markProjectFailed(projectId, "compile_repair_limit");
-        await act.escalateTilotma(projectId, "compile_repair_limit", state);
         return;
       }
-      await genAct.runCodeFix(projectId, state.iteration, `compile_error:\n${postQaCompile.errors}`);
-      postQaCompile = await act.runCompileCheck(projectId);
+      state.stage = "compile_check";
+      console.log(`[workflow] retrying post-QA compile repair after a human retry decision`);
     }
 
     // 2026-08-04 (live, final838491 — 2nd occurrence, root-caused): the
@@ -321,14 +376,23 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     state.stage = "await_deploy_approval";
     await condition(() => deployApproved);
 
-    // ── Stage 6: deploy + live-browser retest ──────────────────────────────
+    // ── Stage 6: deploy + live-browser retest, retried in-place on an
+    // explicit human decision ───────────────────────────────────────────
     state.stage = "deliver";
-    const deployResult = await orchestratorAct.runDeployWithLiveRetest(projectId);
-    if (!deployResult.success) {
+    for (;;) {
+      const deployResult = await orchestratorAct.runDeployWithLiveRetest(projectId);
+      if (deployResult.success) break;
+
       state.stage = "error";
-      await act.markProjectFailed(projectId, deployResult.stuck ? "deploy_stuck" : "deploy_failed");
-      await act.escalateTilotma(projectId, "deploy_failed", state);
-      return;
+      const retry = patched("stuck-state-retry-signal-v1")
+        ? await escalateAndAwaitRetryDecision(deployResult.stuck ? "deploy_stuck" : "deploy_failed")
+        : false;
+      if (!retry) {
+        await act.markProjectFailed(projectId, deployResult.stuck ? "deploy_stuck" : "deploy_failed");
+        return;
+      }
+      state.stage = "deliver";
+      console.log(`[workflow] retrying Stage 6 deploy after a human retry decision`);
     }
 
     state.stage = "done";

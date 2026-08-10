@@ -66,6 +66,22 @@ test("all three evidence kinds are accepted", () => {
   expect(ledger.consume()).toHaveLength(3);
 });
 
+// 2026-08-10: real gap found live (user request) — hasEvidenceOfKind is
+// boolean ("was this kind seen at all"), satisfied by ONE call. That's the
+// right bar for "did you verify at all" but too weak for "did you verify
+// BREADTH" (every resource's CRUD, not just one endpoint). countOfKind lets
+// a caller require a MINIMUM count, not just presence — see Shubham's
+// generator config for the concrete use (requiredEvidenceCounts).
+test("countOfKind counts how many records of a given kind were recorded", () => {
+  const ledger = createEvidenceLedger();
+  ledger.record("http_check", "POST /a -> 201");
+  ledger.record("http_check", "GET /a -> 200");
+  ledger.record("command_output", "npm test -> exited 0");
+  expect(ledger.countOfKind("http_check")).toBe(2);
+  expect(ledger.countOfKind("command_output")).toBe(1);
+  expect(ledger.countOfKind("file_read")).toBe(0);
+});
+
 test("recognizes only the required successful verification command", () => {
   const ledger = createEvidenceLedger();
   ledger.record("command_output", "node -v -> exited 0");

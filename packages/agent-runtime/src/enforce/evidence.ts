@@ -6,7 +6,13 @@
 // bash verify-gate hook in nexsidi-master-workflow, but per-run and typed
 // instead of a shared file.
 
-export type EvidenceKind = "command_output" | "file_read" | "http_check";
+// 2026-08-10: "visual_check" added — real gap found live (user request): a
+// generator with screenshot/browser tools enabled could claim task_complete
+// having never actually looked at a rendered page, same class of hole
+// "http_check" closed for "claims done with zero live verification." See
+// tools/screenshot.ts and tools/browser.ts's browser_screenshot for where
+// this gets recorded.
+export type EvidenceKind = "command_output" | "file_read" | "http_check" | "visual_check";
 
 export interface EvidenceRecord {
   kind: EvidenceKind;
@@ -25,6 +31,11 @@ export interface EvidenceLedger {
   // lets a caller require a specific evidence KIND regardless of which
   // exact tool call produced it.
   hasEvidenceOfKind(kind: EvidenceKind): boolean;
+  // 2026-08-10: "was this kind seen at all" is satisfied by ONE call — the
+  // right bar for "did you verify at all," too weak for "did you verify
+  // BREADTH" (e.g. every resource's CRUD, not just one endpoint). Lets a
+  // caller require a minimum COUNT, not just presence.
+  countOfKind(kind: EvidenceKind): number;
   consume(): EvidenceRecord[];
 }
 
@@ -51,6 +62,9 @@ export function createEvidenceLedger(): EvidenceLedger {
     },
     hasEvidenceOfKind(kind) {
       return records.some((record) => record.kind === kind);
+    },
+    countOfKind(kind) {
+      return records.filter((record) => record.kind === kind).length;
     },
     consume() {
       const current = records;

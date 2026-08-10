@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { buildFixTask, renderTaskManifest, SHUBHAM_AGENT_SYSTEM_PROMPT } from "./index.ts";
+import { buildFixTask, renderTaskManifest, SHUBHAM_AGENT_SYSTEM_PROMPT, countTestableResources } from "./index.ts";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 
 // A6 (full-system audit, Phase C): Stage 5 QA findings previously went
@@ -37,6 +37,39 @@ const FIX_TEST_PLAN: BuildPlan = {
   independenceVerified: true,
   buildPlanHash: "deadbeef",
 };
+
+// 2026-08-10: real gap found live (user request) — Shubham's self-check
+// mechanical gate was "requiredEvidenceKinds: ['http_check']", satisfied by
+// testing ONE endpoint. Every other resource's CRUD chain went unverified
+// until QA or a live deploy round-trip caught it later (or didn't — see the
+// path-param bug just found in Riya's verifier, silently inert all
+// session). countTestableResources counts distinct resources (grouped by
+// first path segment after /api/v1/, excluding auth) that have a real
+// create endpoint — the same grouping convention as Riya's
+// verifyAllResourceCrud, kept as a separate local function rather than an
+// import from agents/riya (Shubham generates code Riya later deploys/
+// verifies — importing from riya into shubham would be a backwards
+// dependency direction).
+test("countTestableResources counts distinct resources with a create endpoint, ignoring auth and read-only resources", () => {
+  const plan: BuildPlan = {
+    ...FIX_TEST_PLAN,
+    apiContract: {
+      baseUrl: "http://localhost:3001",
+      endpoints: [
+        { method: "POST", path: "/api/v1/auth/register", description: "", auth: false, requestType: "null", responseType: "null", errorCodes: [] },
+        { method: "POST", path: "/api/v1/classes", description: "", auth: true, requestType: "{ name: string }", responseType: "null", errorCodes: [] },
+        { method: "GET", path: "/api/v1/classes/:id", description: "", auth: true, requestType: "null", responseType: "null", errorCodes: [] },
+        { method: "POST", path: "/api/v1/sessions", description: "", auth: true, requestType: "{ class_id: string }", responseType: "null", errorCodes: [] },
+        { method: "GET", path: "/api/v1/reports", description: "", auth: true, requestType: "null", responseType: "null", errorCodes: [] },
+      ],
+    },
+  };
+  expect(countTestableResources(plan)).toBe(2); // classes, sessions — NOT auth, NOT the read-only reports resource
+});
+
+test("countTestableResources returns 0 for a project with no resources needing CRUD testing", () => {
+  expect(countTestableResources(FIX_TEST_PLAN)).toBe(0);
+});
 
 test("buildFixTask numbers each finding", () => {
   const task = buildFixTask(

@@ -277,7 +277,14 @@ function fieldsToPayload(body: string, marker: string): Record<string, unknown> 
     if (!fieldName) continue;
     const type = (fieldType ?? "").trim();
     const lowerName = fieldName.toLowerCase();
+    // 2026-08-10: reordered — the declared TYPE is a more reliable signal
+    // than a name substring, so number/boolean must be checked BEFORE the
+    // name-based date heuristic below. Otherwise a field like
+    // "runtime_minutes: number" (contains "time" as a substring but is
+    // genuinely numeric) would incorrectly get a date string instead of 1.
     if (lowerName.includes("email")) payload[fieldName] = `verify+${marker}@example.com`;
+    else if (type.includes("number")) payload[fieldName] = 1;
+    else if (type.includes("boolean")) payload[fieldName] = true;
     // 2026-08-09: real bug found live (project meridianbk4, follow-on to the
     // inline-literal fix above) — an "appointment_date: string" field got
     // the raw marker string as its value, which fails any real backend's
@@ -285,9 +292,21 @@ function fieldsToPayload(body: string, marker: string): Record<string, unknown> 
     // the field is present at all. A near-future ISO date always passes
     // Date.parse-style validation, matching the actual real-world value a
     // real user's date picker would send.
-    else if (lowerName.includes("date")) payload[fieldName] = new Date(Date.now() + 86_400_000).toISOString();
-    else if (type.includes("number")) payload[fieldName] = 1;
-    else if (type.includes("boolean")) payload[fieldName] = true;
+    // 2026-08-10: real bug found live (freshtst1) — "start_time" and
+    // "scheduled_at" are just as common as "*date*" for a timestamp field,
+    // and neither contains the literal substring "date". They fell through
+    // to the generic marker-string branch below, which a real backend
+    // correctly 400'd ("Valid start_time ISO date string is required").
+    else if (lowerName.includes("date") || lowerName.includes("time") || lowerName.endsWith("_at")) {
+      // 2026-08-10 (follow-on, same live run): a naive single fixed offset
+      // gave "start_time" and "end_time" the EXACT same value, which a real
+      // backend correctly rejected ("start_time must be earlier than
+      // end_time"). A field whose name suggests it's the END of a range
+      // gets a later offset than one that doesn't, so start < end holds for
+      // any reasonably-named pair without needing to match them up.
+      const isEndish = /^end(_|$)|_end(_|$)/i.test(lowerName);
+      payload[fieldName] = new Date(Date.now() + 86_400_000 + (isEndish ? 3_600_000 : 0)).toISOString();
+    }
     else payload[fieldName] = marker;
   }
   return foundAny ? payload : null;
@@ -355,6 +374,67 @@ function findFirstArray(value: unknown, depth = 2): unknown[] | undefined {
   return undefined;
 }
 
+// 2026-08-10: real bug found live (freshtst1) — verifyAllResourceCrud's
+// create-response unwrap only peeled ONE level ({data: {...}} -> {...}),
+// but the real generated backend's shape was ONE level deeper:
+// {"success":true,"data":{"class":{"id":...,"name":...}}} — Express's
+// {success,data} envelope wrapping ANOTHER named-key object, the exact same
+// double-envelope convention findFirstArray already had to handle for LIST
+// responses, just never fixed for the single-object CREATE case. A
+// genuinely successful create (real id, real row) was misreported as
+// "response has no id" because created.id was undefined — the id was at
+// created.class.id. Searches up to 2 levels deep for the first object
+// carrying a string `id` field, so it doesn't need to guess the exact
+// resource-singular key name.
+function findFirstObjectWithId(value: unknown, depth = 2): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.id === "string") return obj;
+  if (depth <= 0) return undefined;
+  for (const v of Object.values(obj)) {
+    const found = findFirstObjectWithId(v, depth - 1);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+// 2026-08-10: real bug found live (user request, while researching a
+// separate task) — every path-parameter check in this file used the
+// literal string "{" (i.e. an "{id}" convention), but RestEndpoint.path's
+// OWN doc comment (agents/arjun/src/index.ts) documents the actual,
+// canonical convention as Express-style ":id" (e.g.
+// "/api/v1/tasks/:id") — confirmed directly against a real generated
+// api-contract.json ("/api/v1/classes/:id"). This meant `.includes("{")`
+// NEVER matched any real contract's update/delete/get-by-id endpoints —
+// updateEp/deleteEp/getByIdEp were always undefined, so PATCH/PUT/DELETE
+// verification silently never ran against any real project, ever. It read
+// as "no findings" (success) because the check itself never executed, not
+// because the app was actually verified. Every existing test used the same
+// wrong "{id}" convention in its fixtures, which is exactly why this was
+// never caught. Supports both conventions going forward — ":id" is primary
+// (matches reality), "{id}" kept as a defensive fallback.
+function hasPathParam(path: string): boolean {
+  return /:[a-zA-Z_][a-zA-Z0-9_]*/.test(path) || path.includes("{");
+}
+function substitutePathParam(path: string, id: string): string {
+  return path.replace(/:[a-zA-Z_][a-zA-Z0-9_]*/g, id).replace(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, id);
+}
+
+// 2026-08-10: real bug found live (freshtst1) — the old inline heuristic
+// (`resource.endsWith("s") ? resource : resource+"s"`) treated "class" as
+// ALREADY plural because the singular word itself happens to end in the
+// letter "s" (a false friend — "class" is singular, "classes" is plural).
+// It looked up "/api/v1/class", never found it (the real endpoint is
+// "/api/v1/classes"), and silently gave up — leaving "class_id" as an
+// unresolvable marker string, 400ing every downstream create. Proper
+// English pluralization: words ending in a sibilant (s/x/z/ch/sh) take
+// "es", not a bare "s". Extracted as a shared function (was inlined only
+// in resolveForeignKeyId) so verifyAllResourceCrud's dependency detection
+// below uses the identical rule instead of a second, driftable copy.
+function pluralize(resource: string): string {
+  return /[sxz]$/i.test(resource) || /[cs]h$/i.test(resource) ? `${resource}es` : `${resource}s`;
+}
+
 export async function resolveForeignKeyId(
   fieldName: string,
   endpoints: Array<{ method: string; path: string; auth?: boolean }>,
@@ -363,9 +443,9 @@ export async function resolveForeignKeyId(
 ): Promise<string | null> {
   if (!fieldName.endsWith("_id")) return null;
   const resource = fieldName.slice(0, -3);
-  const pluralResource = resource.endsWith("s") ? resource : `${resource}s`;
+  const pluralResource = pluralize(resource);
   const candidatePaths = new Set([`/api/v1/${pluralResource}`, `/api/v1/${resource}`]);
-  const listEp = endpoints.find((e) => e.method === "GET" && !e.path.includes("{") && candidatePaths.has(e.path));
+  const listEp = endpoints.find((e) => e.method === "GET" && !hasPathParam(e.path) && candidatePaths.has(e.path));
   if (!listEp) return null;
   try {
     const headers: Record<string, string> = {};
@@ -394,8 +474,8 @@ export async function resolveForeignKeyId(
 // verifyAllResourceCrud below can share the exact same real-user auth flow
 // instead of duplicating it — behavior unchanged from what this file already
 // verified live.
-async function registerAndLoginTestUser(backendUrl: string): Promise<{ token: string } | { error: string }> {
-  const email = `verify+${Date.now()}@example.com`;
+async function registerAndLoginTestUser(backendUrl: string, role?: string): Promise<{ token: string } | { error: string }> {
+  const email = `verify+${role ?? "user"}+${Date.now()}@example.com`;
   const password = `StrongPass123!${Date.now()}`;
   // 2026-07-25 (Phase 7, full MVP upgrade): real bug found live on
   // nextech10's own deploy — this call never sent `name`, which every
@@ -409,10 +489,18 @@ async function registerAndLoginTestUser(backendUrl: string): Promise<{ token: st
   // exact same running backend this check reported as failing.
   const name = "NexSidi Verification";
 
+  // 2026-08-10: `role` is optional and ONLY included when explicitly
+  // requested (verifyAllResourceCrud's admin-fallback below) — every
+  // existing caller (verifyLiveAuthenticatedRoundTrip, the base identity in
+  // verifyAllResourceCrud) keeps registering a plain default-role user
+  // exactly as before. Relies on this app's own documented admin-bootstrap
+  // path (auth.controller.ts: role:"admin" is allowed when no admin exists
+  // yet) — real contract, not a guess; see the register-endpoint read that
+  // found it live on freshtst1.
   const regRes = await fetch(`${backendUrl}/api/v1/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, name }),
+    body: JSON.stringify(role ? { email, password, name, role } : { email, password, name }),
   });
   if (!regRes.ok) {
     return { error: `custom register failed: returned ${regRes.status}: ${(await regRes.text()).slice(0, 200)}` };
@@ -444,8 +532,8 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
     return { ok: false, reason: `api-contract.json unreadable: ${String(err)}` };
   }
 
-  const createEp = endpoints.find((e) => e.method === "POST" && e.auth && !e.path.includes("{"));
-  const getByIdEp = endpoints.find((e) => e.method === "GET" && e.auth && e.path.includes("{id}"));
+  const createEp = endpoints.find((e) => e.method === "POST" && e.auth && !hasPathParam(e.path));
+  const getByIdEp = endpoints.find((e) => e.method === "GET" && e.auth && hasPathParam(e.path));
   // 2026-07-26 (live, simple1): a project whose locked spec asked for
   // sign-in/sign-up but no protected resource to create (e.g. a small
   // business site with only a public contact form) has NO authenticated
@@ -459,7 +547,7 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
   if (!createEp) {
     return { ok: true, reason: "no authenticated POST endpoint in api-contract.json — nothing to verify at this layer, skipping" };
   }
-  const deleteEp = endpoints.find((e) => e.method === "DELETE" && e.auth && e.path.includes("{id}"));
+  const deleteEp = endpoints.find((e) => e.method === "DELETE" && e.auth && hasPathParam(e.path));
 
   try {
     const auth = await registerAndLoginTestUser(backendUrl);
@@ -536,7 +624,7 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
     );
 
     if (getByIdEp) {
-      const readRes = await fetch(`${backendUrl}${getByIdEp.path.replace("{id}", createdId)}`, {
+      const readRes = await fetch(`${backendUrl}${substitutePathParam(getByIdEp.path, createdId)}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!readRes.ok) return { ok: false, reason: `read-back ${getByIdEp.path} returned ${readRes.status} — the write didn't actually persist` };
@@ -548,7 +636,7 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
     }
 
     if (deleteEp) {
-      await fetch(`${backendUrl}${deleteEp.path.replace("{id}", createdId)}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+      await fetch(`${backendUrl}${substitutePathParam(deleteEp.path, createdId)}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
     }
 
     return { ok: true, reason: `real user round-trip confirmed: created via ${createEp.path}, data persisted and read back correctly` };
@@ -581,12 +669,48 @@ function makeRealDbRowLookup(buildDir: string): (table: string, id: string) => R
   return (table: string, id: string) => {
     if (!cid || !/^[a-zA-Z0-9_]+$/.test(table) || !/^[a-zA-Z0-9-]+$/.test(id)) return null;
     try {
-      const cols = sh(
+      let resolvedTable = table;
+      let cols = sh(
         `docker exec ${cid} psql -U ${user} -d ${dbName} -tA -c ` +
-          `"SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='${table}'"`,
+          `"SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='${resolvedTable}'"`,
       ).split("\n").map((l) => l.trim()).filter(Boolean);
-      if (cols.length === 0) return null;
-      const out = sh(`docker exec ${cid} psql -U ${user} -d ${dbName} -tA -F '|' -c "SELECT ${cols.join(",")} FROM ${table} WHERE id = '${id}'"`);
+      if (cols.length === 0) {
+        // 2026-08-10: real bug found live (freshtst1) — the REST resource
+        // path segment doesn't always match the DB table name 1:1. A real
+        // generated app used "yoga_classes" as the table backing the
+        // "/api/v1/classes" resource (a legitimate domain-specific naming
+        // choice, not a defect), so an exact-name lookup for "classes"
+        // found nothing and a genuinely successful, persisted write was
+        // misreported as "did not persist to the database". Falls back to
+        // a suffix match (table_name LIKE '%_classes') — only when it
+        // resolves to EXACTLY ONE table (an ambiguous or absent match
+        // can't be safely guessed, and stays a real finding).
+        // resolvedTable comes from information_schema.tables itself (a
+        // trusted source), so it's safe to interpolate into the SQL below.
+        const candidates = sh(
+          `docker exec ${cid} psql -U ${user} -d ${dbName} -tA -c ` +
+            `"SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE '%_${resolvedTable}'"`,
+        ).split("\n").map((l) => l.trim()).filter(Boolean);
+        if (candidates.length !== 1) return null;
+        resolvedTable = candidates[0]!;
+        cols = sh(
+          `docker exec ${cid} psql -U ${user} -d ${dbName} -tA -c ` +
+            `"SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='${resolvedTable}'"`,
+        ).split("\n").map((l) => l.trim()).filter(Boolean);
+        if (cols.length === 0) return null;
+      }
+      // 2026-08-10: real bug found live (freshtst1) — execSync on Windows
+      // runs through cmd.exe, which does NOT treat '...' as a quoting
+      // pair (unlike POSIX shells). `-F '|'` broke the entire command:
+      // cmd.exe saw a bare `|` and tried to PIPE the truncated
+      // "...-F '" output into a new command starting with "' -c ...",
+      // failing with "''' is not recognized as an internal or external
+      // command" — so EVERY row lookup silently returned null (caught by
+      // the try/catch below) regardless of whether the row actually
+      // existed. Confirmed live: the exact row this misreported as
+      // "did not persist" was sitting in the table the whole time.
+      // Double quotes are valid cmd.exe quoting, so "|" (not '|') fixes it.
+      const out = sh(`docker exec ${cid} psql -U ${user} -d ${dbName} -tA -F "|" -c "SELECT ${cols.join(",")} FROM ${resolvedTable} WHERE id = '${id}'"`);
       if (!out) return null;
       const values = out.split("|");
       const row: Record<string, unknown> = {};
@@ -638,8 +762,67 @@ export async function verifyAllResourceCrud(
   const sharedTypesPath = join(buildDir, "shared-types.ts");
   const sharedTypesSource = existsSync(sharedTypesPath) ? readFileSync(sharedTypesPath, "utf-8") : "";
 
-  for (const [resource, eps] of resources) {
-    const createEp = eps.find((e) => e.method === "POST" && !e.path.includes("{"));
+  // 2026-08-10: real gap found live (freshtst1) — a resource whose create
+  // endpoint is role-gated (only admins can create classes/sessions) used to
+  // be silently skipped on 403, which starved every DOWNSTREAM resource that
+  // depends on it (bookings need a real session_id) of anything to
+  // reference — misreporting the downstream resource as broken when the
+  // real gap was this verifier never trying an elevated identity. Lazily
+  // registers a second admin identity ONLY when a 403 is actually hit,
+  // reusing this app's own documented admin-bootstrap path (register with
+  // role: "admin" — allowed when no admin exists yet).
+  let adminToken: string | null = null;
+  let adminAttempted = false;
+  async function getAdminToken(): Promise<string | null> {
+    if (adminAttempted) return adminToken;
+    adminAttempted = true;
+    const adminAuth = await registerAndLoginTestUser(backendUrl, "admin");
+    if (!("error" in adminAuth)) adminToken = adminAuth.token;
+    return adminToken;
+  }
+
+  // Process resources whose create payload has the FEWEST foreign-key
+  // ("_id"-suffixed) fields first. Not a full topological sort — a real
+  // dependency-ordering heuristic that directly fixes the observed case:
+  // parent resources (0 FKs, e.g. classes) get created and seeded into the
+  // DB before resources that reference them (sessions -> class_id, bookings
+  // -> session_id), so resolveForeignKeyId has something real to find
+  // instead of an empty list.
+  const fkCount = (eps: typeof endpoints): number => {
+    const createEp = eps.find((e) => e.method === "POST" && !hasPathParam(e.path));
+    if (!createEp?.requestType || createEp.requestType === "null") return 0;
+    const payload = buildPayloadForRequestType(sharedTypesSource, createEp.requestType, "sort-probe") ?? {};
+    return Object.keys(payload).filter((k) => k.endsWith("_id")).length;
+  };
+  const orderedResources = [...resources.entries()].sort(([, a], [, b]) => fkCount(a) - fkCount(b));
+
+  // 2026-08-10: real bug found live (freshtst1), root-caused via direct
+  // Postgres statement logging (not guessed) — 100% reproducible, not a
+  // race condition. The dependency-ordering above correctly creates
+  // "classes" before "sessions" so sessions has something real to
+  // reference — but classes' OWN full CRUD-lifecycle check then DELETES
+  // that exact row two steps later (to verify the delete endpoint works),
+  // before "sessions" is even processed. Every downstream
+  // resolveForeignKeyId call then finds an empty list — not because
+  // anything is broken, but because this verifier deleted its own seed
+  // data. Any resource referenced by another resource's "_id" field must
+  // keep its seed row alive for the rest of THIS run — skip its delete
+  // check specifically (create/list/update are still verified).
+  const dependedOnResources = new Set<string>();
+  for (const eps of resources.values()) {
+    const createEp = eps.find((e) => e.method === "POST" && !hasPathParam(e.path));
+    if (!createEp?.requestType || createEp.requestType === "null") continue;
+    const payload = buildPayloadForRequestType(sharedTypesSource, createEp.requestType, "dep-probe") ?? {};
+    for (const field of Object.keys(payload)) {
+      if (!field.endsWith("_id")) continue;
+      const singular = field.slice(0, -3);
+      dependedOnResources.add(pluralize(singular));
+      dependedOnResources.add(singular);
+    }
+  }
+
+  for (const [resource, eps] of orderedResources) {
+    const createEp = eps.find((e) => e.method === "POST" && !hasPathParam(e.path));
     if (!createEp) continue; // read-only resource — nothing to verify at this layer, matches verifyLiveAuthenticatedRoundTrip's precedent
 
     try {
@@ -648,25 +831,38 @@ export async function verifyAllResourceCrud(
         ? buildPayloadForRequestType(sharedTypesSource, createEp.requestType, marker)
         : null;
       const createPayload = (dynamicPayload ?? { title: marker }) as Record<string, unknown>;
+      const fkLookupToken = adminToken ?? token;
       for (const [fieldName, value] of Object.entries(createPayload)) {
         if (!fieldName.endsWith("_id") || typeof value !== "string") continue;
-        const resolved = await resolveForeignKeyId(fieldName, endpoints, backendUrl, token);
+        const resolved = await resolveForeignKeyId(fieldName, endpoints, backendUrl, fkLookupToken);
         if (resolved) createPayload[fieldName] = resolved;
       }
 
-      const createRes = await fetch(`${backendUrl}${createEp.path}`, {
+      let activeToken = token;
+      let createRes = await fetch(`${backendUrl}${createEp.path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeToken}` },
         body: JSON.stringify(createPayload),
       });
-      if (createRes.status === 403) continue; // role-gated, not broken — matches verifyLiveAuthenticatedRoundTrip's precedent
+      if (createRes.status === 403) {
+        const admin = await getAdminToken();
+        if (admin) {
+          activeToken = admin;
+          createRes = await fetch(`${backendUrl}${createEp.path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeToken}` },
+            body: JSON.stringify(createPayload),
+          });
+        }
+      }
+      if (createRes.status === 403) continue; // still forbidden even as admin (or no admin available) — genuinely role-gated, not broken
       if (!createRes.ok) {
         findings.push(`${resource}: POST ${createEp.path} returned ${createRes.status}: ${(await createRes.text()).slice(0, 150)}`);
         continue;
       }
       const createBody = (await createRes.json()) as Record<string, unknown>;
-      const created = (createBody.data ?? createBody) as Record<string, unknown>;
-      const createdId = created.id as string | undefined;
+      const created = findFirstObjectWithId(createBody);
+      const createdId = created?.id as string | undefined;
       if (!createdId) {
         findings.push(`${resource}: create response has no id: ${JSON.stringify(createBody).slice(0, 150)}`);
         continue;
@@ -677,23 +873,41 @@ export async function verifyAllResourceCrud(
         continue; // no real row to update/delete against
       }
 
-      const listEp = eps.find((e) => e.method === "GET" && !e.path.includes("{"));
+      const listEp = eps.find((e) => e.method === "GET" && !hasPathParam(e.path));
       if (listEp) {
-        const listRes = await fetch(`${backendUrl}${listEp.path}`, { headers: { Authorization: `Bearer ${token}` } });
+        const listRes = await fetch(`${backendUrl}${listEp.path}`, { headers: { Authorization: `Bearer ${activeToken}` } });
         if (!listRes.ok || !(await listRes.text()).includes(createdId)) {
           findings.push(`${resource}: GET ${listEp.path} did not include the newly created record (id=${createdId})`);
         }
       }
 
-      const updateEp = eps.find((e) => (e.method === "PATCH" || e.method === "PUT") && e.path.includes("{"));
+      // 2026-08-10: real gap found live (explicit user request) — the LIST
+      // check above only confirms the record's id appears SOMEWHERE in a
+      // bulk response; it never confirms a real user's most common read
+      // path (a detail page, an edit form pre-fill: GET /resource/:id)
+      // actually works. Only exercised when the contract declares this
+      // endpoint — some real apps legitimately never expose a get-by-id
+      // route, matching this file's own "don't invent a check for
+      // something never claimed" convention.
+      const getByIdEp = eps.find((e) => e.method === "GET" && hasPathParam(e.path));
+      if (getByIdEp) {
+        const getRes = await fetch(`${backendUrl}${substitutePathParam(getByIdEp.path, createdId)}`, { headers: { Authorization: `Bearer ${activeToken}` } });
+        if (!getRes.ok) {
+          findings.push(`${resource}: GET ${getByIdEp.path} (fetching the record just created, by its own id) returned ${getRes.status} — the write may have succeeded but the record isn't independently retrievable`);
+        } else if (!(await getRes.text()).includes(createdId)) {
+          findings.push(`${resource}: GET ${getByIdEp.path} returned 2xx but its response body doesn't contain the created record's own id (id=${createdId}) — may be returning the wrong record`);
+        }
+      }
+
+      const updateEp = eps.find((e) => (e.method === "PATCH" || e.method === "PUT") && hasPathParam(e.path));
       if (updateEp) {
         const updateMarker = `${marker}-updated`;
         const updatePayload = (updateEp.requestType && updateEp.requestType !== "null"
           ? buildPayloadForRequestType(sharedTypesSource, updateEp.requestType, updateMarker)
           : { title: updateMarker }) as Record<string, unknown>;
-        const updateRes = await fetch(`${backendUrl}${updateEp.path.replace("{id}", createdId)}`, {
+        const updateRes = await fetch(`${backendUrl}${substitutePathParam(updateEp.path, createdId)}`, {
           method: updateEp.method,
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeToken}` },
           body: JSON.stringify(updatePayload),
         });
         if (updateRes.status === 403) {
@@ -711,11 +925,17 @@ export async function verifyAllResourceCrud(
         }
       }
 
-      const deleteEp = eps.find((e) => e.method === "DELETE" && e.path.includes("{"));
-      if (deleteEp) {
-        const deleteRes = await fetch(`${backendUrl}${deleteEp.path.replace("{id}", createdId)}`, {
+      const deleteEp = eps.find((e) => e.method === "DELETE" && hasPathParam(e.path));
+      if (deleteEp && dependedOnResources.has(resource)) {
+        // Skip: this resource's seed row is what a downstream resource's
+        // resolveForeignKeyId call needs to find later THIS run — deleting
+        // it here would starve that lookup, misreporting the downstream
+        // resource as broken when nothing is actually wrong (see the
+        // dependedOnResources comment above for the live-reproduced trace).
+      } else if (deleteEp) {
+        const deleteRes = await fetch(`${backendUrl}${substitutePathParam(deleteEp.path, createdId)}`, {
           method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: `Bearer ${activeToken}` },
         });
         if (deleteRes.status === 403) {
           // role-gated — not a finding
@@ -767,9 +987,14 @@ export async function run(
   // before the build so the app can actually deploy.
   sanitizeGeneratedPackageJsons(buildDir);
 
-  // Find an available port for this project
+  // Find an available port for this project. backendPort used to be
+  // DERIVED (frontendPort + 100) and never itself checked — a real gap:
+  // a correctly-picked free frontend port could still yield a colliding
+  // backend port. Now searched for real too, starting from the preferred
+  // "+100" convention so the common case still lands on the expected offset.
   const frontendPort = await findFreePort(3200, 3299);
-  const backendPort = frontendPort + 1 >= 3300 ? 3100 : frontendPort + 100;
+  const preferredBackendPort = frontendPort + 100 < 3400 ? frontendPort + 100 : 3100;
+  const backendPort = await findFreePort(preferredBackendPort, preferredBackendPort + 99);
   const dbPort = await findFreePort(5435, 5499);
   const appUrl = `http://localhost:${frontendPort}`;
   const backendUrl = `http://localhost:${backendPort}`;
@@ -984,16 +1209,35 @@ Health check frontend at http://localhost:${frontendPort}`;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function findFreePort(start: number, end: number): Promise<number> {
-  // Simple sequential port finder — tries each port with a quick TCP connect attempt
-  for (let port = start; port <= end; port++) {
-    const free = await isPortFree(port);
-    if (free) return port;
+// 2026-08-10: real bug found live (freshtst1, same session as
+// verifyAllResourceCrud above) — the plain socket-bind check below reported
+// port 5435 as free while meridianbk4's postgres container was actively
+// publishing it. On Windows, Docker Desktop forwards a container's published
+// port through its own proxy (HNS/vpnkit), which does not always create an
+// OS-visible bind conflict a userland `net.createServer().listen()` probe
+// can detect — so a container can hold a port the socket test insists is
+// open. `docker ps` is the ground truth for what Docker itself has
+// published; check it FIRST, before ever trusting the socket-bind fallback.
+// (When freshtst1 hit this live, Riya's own agent worked around it by
+// querying the Docker Engine API directly and then deleting meridianbk4's
+// containers to free the port — a destructive fix for what should have been
+// a "pick a different port" fix. This closes the gap so that workaround is
+// never needed again.)
+export function isPortUsedByDocker(
+  port: number,
+  execFn: (cmd: string) => string = (cmd) => execSync(cmd, { encoding: "utf-8", timeout: 5000 }),
+): boolean {
+  try {
+    const output = execFn(`docker ps --format "{{.Ports}}"`);
+    return new RegExp(`:${port}->`).test(output);
+  } catch {
+    // docker CLI unreachable/not installed — fall through to the socket
+    // check alone rather than treating "can't ask docker" as "port is used".
+    return false;
   }
-  return start; // Fallback — let Docker handle the conflict
 }
 
-async function isPortFree(port: number): Promise<boolean> {
+async function isPortFreeOnHost(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     import("net").then(({ createServer }) => {
       const server = createServer();
@@ -1002,6 +1246,23 @@ async function isPortFree(port: number): Promise<boolean> {
       server.listen(port, "127.0.0.1");
     });
   });
+}
+
+export async function findFreePort(
+  start: number,
+  end: number,
+  deps: {
+    isPortUsedByDocker?: (port: number) => boolean;
+    isPortFreeOnHost?: (port: number) => Promise<boolean>;
+  } = {},
+): Promise<number> {
+  const dockerCheck = deps.isPortUsedByDocker ?? isPortUsedByDocker;
+  const hostCheck = deps.isPortFreeOnHost ?? isPortFreeOnHost;
+  for (let port = start; port <= end; port++) {
+    if (dockerCheck(port)) continue;
+    if (await hostCheck(port)) return port;
+  }
+  return start; // Fallback — every port in range genuinely occupied
 }
 
 async function archiveToGitHub(projectId: string, buildDir: string): Promise<string | null> {

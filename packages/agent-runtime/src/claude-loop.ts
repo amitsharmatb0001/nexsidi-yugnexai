@@ -394,6 +394,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
             config.requiredVerificationCommands,
             config.requiredEvidenceKinds,
             config.allowFailedVerification,
+            config.requiredEvidenceCounts,
           );
           if (!check.allowed) {
             console.log(`[${config.agentName}:claude-agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);

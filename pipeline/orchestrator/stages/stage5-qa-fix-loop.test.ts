@@ -765,3 +765,68 @@ test("parseDebateDecision treats DECISION: INVALID as NOT valid (not a VALID-suf
 test("parseDebateDecision defaults to valid (safe direction) when no DECISION line is present", () => {
   expect(parseDebateDecision("The model just rambled with no clear verdict.")).toBe(true);
 });
+
+// 2026-08-10: real bug found live (project freshtst1) — a "review-incomplete"
+// finding (Deepika's own reviewer tooling crashed: "fallback findings
+// extraction failed after retry: SyntaxError...") has no `file` field, so
+// agentForFile("") falls through every prefix check to its "shubham" default
+// — the SAME default every OTHER unfileable finding gets. Shubham was asked
+// to "fix" a finding whose entire content is "the reviewer's tool crashed" —
+// there is no code change that addresses that, so it recurred identically
+// every round (Deepika's underlying parse failure is a QA-tooling
+// reliability bug, not a code defect), and the loop ran to
+// stuck-detection/escalation instead of recognizing immediately that nothing
+// routable existed. `review-incomplete` findings must never be handed to a
+// generator — they still count toward pass=false (D25 default-FAIL is
+// correct and untouched: a QA agent that didn't complete its review is NOT
+// the same as a clean pass) and still appear in the final report, but the
+// fix loop must not waste a round asking Shubham/Aanya/Pranav to edit code
+// in response to one.
+test("a review-incomplete finding is never routed to a generator to fix — it still blocks pass, but nothing fixable exists", async () => {
+  let fixCalled = false;
+  const reviewIncompleteOnly: Stage5Result = {
+    pass: false,
+    findings: [{ file: "", issue: "[performance/CRITICAL] review-incomplete: Deepika's review did not complete: fallback findings extraction failed after retry: SyntaxError: JSON Parse error: Unexpected EOF" }],
+  };
+  const deps: QAFixDeps = {
+    runStage5: async () => reviewIncompleteOnly,
+    fixShubham: async () => {
+      fixCalled = true;
+      return { success: true };
+    },
+    fixAanya: async () => ({ success: true }),
+  };
+
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(fixCalled).toBe(false); // no generator was asked to "fix" an unfixable tooling failure
+  expect(result.pass).toBe(false); // still correctly blocks — D25 default-FAIL untouched
+  expect(result.stuck).toBe(true); // recognized immediately, no wasted iterations
+  expect(result.findings[0]?.issue).toContain("review-incomplete"); // still visible in the final report
+});
+
+test("a review-incomplete finding alongside a genuinely fixable finding still routes the fixable one", async () => {
+  let capturedFindings: string[] = [];
+  const mixed: Stage5Result = {
+    pass: false,
+    findings: [
+      { file: "", issue: "[performance/CRITICAL] review-incomplete: Deepika's review did not complete: parse error" },
+      { file: "backend/src/routes/index.ts", issue: "[logic/HIGH] route mismatch" },
+    ],
+  };
+  const deps: QAFixDeps = {
+    runStage5: async () => (capturedFindings.length > 0 ? passResult() : mixed),
+    fixShubham: async (_plan, findings) => {
+      capturedFindings = findings;
+      return { success: true };
+    },
+    fixAanya: async () => ({ success: true }),
+  };
+
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(capturedFindings.length).toBe(1); // only the routable finding was handed to Shubham
+  expect(capturedFindings[0]).toContain("route mismatch");
+  expect(capturedFindings.some((f) => f.includes("review-incomplete"))).toBe(false);
+  expect(result.pass).toBe(true);
+});

@@ -24,6 +24,32 @@ export function getOutputDir(projectId: string): string {
   return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, "backend");
 }
 
+// 2026-08-10: real gap found live (user request) — Shubham's self-check
+// mechanical gate ("requiredEvidenceKinds: ['http_check']") is satisfied by
+// testing ONE endpoint, leaving every other resource's CRUD chain
+// unverified at generation time. Counts distinct resources (grouped by
+// first path segment after /api/v1/, excluding auth) that have a real POST
+// create endpoint — same grouping convention agents/riya/src/index.ts's
+// verifyAllResourceCrud uses, kept as a separate local function rather than
+// importing from riya (Shubham generates the code Riya later deploys/
+// verifies — importing from riya into shubham would be a backwards
+// dependency direction). Used to size requiredEvidenceCounts so the
+// mechanical gate scales with how many resources actually need testing.
+export function countTestableResources(plan: BuildPlan): number {
+  const endpoints = plan.apiContract?.endpoints ?? [];
+  const resources = new Map<string, typeof endpoints>();
+  for (const ep of endpoints) {
+    const seg = ep.path.replace(/^\/api\/v1\//, "").split("/")[0];
+    if (!seg || seg === "auth") continue;
+    resources.set(seg, [...(resources.get(seg) ?? []), ep]);
+  }
+  let count = 0;
+  for (const eps of resources.values()) {
+    if (eps.some((e) => e.method === "POST" && !/:[a-zA-Z_]/.test(e.path))) count++;
+  }
+  return count;
+}
+
 // Scan src/routes/ for *.routes.ts files and make sure each one is imported
 // and mounted in src/routes/index.ts. A never-wired route file (the original
 // bug this function fixes: "every generated API was dead") is mounted at
@@ -198,6 +224,18 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     // it), but closes the observed failure mode of zero live verification
     // happening at all.
     requiredEvidenceKinds: ["http_check"],
+    // 2026-08-10: real gap found live (user request) — "≥1 http_request
+    // total" is satisfied by testing ONE endpoint, leaving every other
+    // resource's CRUD chain unverified at generation time (the exact
+    // "self-check the obvious stuff at the source, don't leave it for QA
+    // or a later round-trip" gap the user asked to close). Requires at
+    // least one real http_request PER TESTABLE RESOURCE — a conservative
+    // floor (not "4 calls per resource" for full CRUD) chosen the same way
+    // as Aanya's visual_check gate: meaningfully raises the bar without
+    // demanding an exact call-count pattern that could be wrong for an
+    // app with unusual endpoint shapes. See FULL CRUD SELF-CHECK below for
+    // what this is meant to enforce in practice.
+    requiredEvidenceCounts: countTestableResources(plan) > 0 ? { http_check: countTestableResources(plan) } : {},
     // 2026-07-25: raised from 40 (default) to 60 after two consecutive
     // live P4 runs (nextech5, nextech6) both failed at exactly iteration 40
     // while Shubham was still in the live-verification phase. Measured
@@ -208,7 +246,12 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     // Also updated SELF-VERIFICATION PROTOCOL to remove the server-start
     // + HTTP endpoint check (that was causing 7+ iterations of server-start
     // failures on Windows); DB schema verification is now ≤4 calls.
-    maxIterations: 60,
+    // 2026-08-10: raised 60 -> 90. FULL CRUD SELF-CHECK above adds ~3-4 tool
+    // calls per testable resource on top of the existing ~40-call budget —
+    // a starting estimate (no live measurement yet for this specific
+    // addition, unlike the 40->60 change above which was tuned from two
+    // real overruns); revisit if a live run hits this cap mid-CRUD-check.
+    maxIterations: 90,
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see
@@ -533,11 +576,15 @@ skip, say so explicitly in your task_complete summary and why):
      Docker image behavior, needs no script of your own, and is always the
      exact same file Pranav owns, never a copy. Start it with docker_compose
      up, then use http_request to PROVE — not assume — the auth boundary
-     actually works:
-       - Call a protected/mutating route with NO Authorization header.
+     actually works, for EVERY protected/mutating route in your own
+     api-contract (not just one — a route-by-route sweep, same as the FULL
+     CRUD SELF-CHECK below):
+       - Call each protected/mutating route with NO Authorization header.
          It MUST return 401/403 — if it returns 200/201 or a 500, that route
          is either missing requireAuth or crashing before the check runs;
-         fix the actual code, do not adjust the test to match.
+         fix the actual code, do not adjust the test to match. A route you
+         never actually called is a route you never actually verified — auth
+         gaps hide on the ONE endpoint you didn't get around to testing.
        - Register or log in via your own auth endpoint to get a real token,
          then call the SAME route WITH that token. It must succeed.
        - If a route is intentionally public (e.g. the reservation/contact
@@ -545,18 +592,72 @@ skip, say so explicitly in your task_complete summary and why):
          works with NO token — a public route silently requiring auth is
          also a bug, just the opposite direction.
      Tear down with docker_compose down when finished.
-     Budget ≤8 tool calls total (write compose + up + migrate + 3-4 requests +
-     down). This is NOT the same check QA does — Navya/Karan/Deepika read
-     source text and infer whether a route looks protected; they have no
-     http_request tool and cannot actually call it. This step is the only
-     point in the entire pipeline that PROVES the auth boundary behaves as
-     written, on the code you just wrote, before anyone else ever sees it.
+     Budget scales with route count — roughly 2 calls (no-token + with-token)
+     per protected route, plus setup/teardown. This is NOT the same check QA
+     does — Navya/Karan/Deepika read source text and infer whether a route
+     looks protected; they have no http_request tool and cannot actually
+     call it. This step is the only point in the entire pipeline that PROVES
+     the auth boundary behaves as written, on the code you just wrote,
+     before anyone else ever sees it.
      2026-08-06: a prior version of this protocol started the Express server
      natively on the host and was removed after repeated Windows server-start
      failures burned 7+ iterations per run. Running the server inside Docker
      instead (the same mechanism Riya's real deploy already uses successfully)
      avoids that specific failure mode — this is not the same approach,
      don't assume it has the same problem.
+
+FULL CRUD SELF-CHECK (required whenever this app has more than one resource
+with a create endpoint — reuse the SAME throwaway environment from the
+auth-boundary check above, don't tear down and rebuild):
+  e) For EVERY resource in your own api-contract (not just the one route you
+     already tested above), use http_request AND db_query to actually
+     exercise it — a status code alone proves nothing; you must look at
+     what actually happened to the DATA:
+       - POST a real create. A 200/201 is NOT enough — use db_query to
+         SELECT the row by the id the response returned and confirm it's
+         REALLY there with the fields you sent. A response that claims
+         success while the row was never actually inserted is a real,
+         serious bug (this exact failure mode has shipped before: an
+         endpoint returning a plausible id while the INSERT silently never
+         landed). If a resource depends on another (e.g. a booking needs a
+         real session_id), fetch that dependency's real id from its own GET
+         list endpoint first — never send a guessed/placeholder id.
+       - GET the list endpoint. Don't just check the new record's id is
+         present — read the actual response BODY and confirm the field
+         VALUES match what you sent (name, price, whatever you posted) —
+         a list endpoint can include the right id with stale or wrong field
+         data and still look "present" at a glance.
+       - If a PATCH/PUT endpoint exists, call it with a real field change,
+         then db_query (not just a follow-up GET, which could be serving
+         cached/stale data) to confirm the DATABASE ROW actually changed —
+         not just that the HTTP response was 200.
+       - If a DELETE endpoint exists AND no other resource in this same
+         api-contract references this resource via an "_id" field (e.g.
+         skip deleting "classes" if "sessions" has a class_id field) — call
+         it, then db_query to confirm the row is actually gone. Deleting a
+         resource that something else in your OWN sweep still needs to
+         reference will falsely break that OTHER resource's create step
+         with a missing-foreign-key error that has nothing to do with a
+         real bug — this exact self-inflicted mistake was found and fixed
+         live in Riya's own equivalent post-deploy checker; don't reintroduce
+         it here. When in doubt, just skip the delete check for that
+         resource — update/create/read coverage is not lost by skipping it.
+     A 403 here is not a failure IF it's because your own role-based access
+     control correctly rejected the account you're testing with (e.g. a
+     plain customer account trying to create an admin-only resource) — that
+     PROVES your authorization code works. Only a 500, a silently-missing
+     write, a response body with wrong data, or a create/update/delete that
+     doesn't actually change the database is a real finding you must fix
+     before claiming done.
+     This is the same class of check Riya's post-deploy CRUD verification
+     does later — the entire point of doing it HERE is that you already
+     have full context on the code you just wrote, so a bug caught now costs
+     one extra tool call; the identical bug caught at deploy time costs a
+     full deploy-review-report-refix-redeploy cycle instead.
+     Budget scales with resource count: roughly 4-5 tool calls per resource
+     (create, db_query-verify, read-back, update if it exists, delete if it
+     exists and nothing depends on it) plus the auth-boundary check's own
+     budget above.
 
 PRODUCTION SECURITY — this app may be hosted publicly on day 0; it must not be
 trivially hacked. Beyond the SQL/IDOR/validation rules above, ensure ALL of:

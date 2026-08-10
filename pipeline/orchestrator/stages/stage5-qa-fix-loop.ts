@@ -286,13 +286,30 @@ export async function runQAFixLoopWithDeps(
   let noImprovementStreak = 0;
 
   while (!result.pass && iterations <= MAX_FIX_ITERATIONS) {
+    // 2026-08-10: real bug found live (project freshtst1) — a
+    // "review-incomplete" finding (a QA agent's OWN reviewer tooling
+    // crashed, e.g. Deepika's fallback-parser failing on malformed model
+    // output) has no `file` field, so agentForFile("") falls through to its
+    // "shubham" default — same as every other unfileable finding. Shubham
+    // was then asked to "fix" a finding whose entire content is "the
+    // reviewer's tool crashed," which no code change can address; it
+    // recurred identically every round (a QA-tooling reliability issue, not
+    // a code defect) and ran the loop all the way to stuck-detection
+    // instead of recognizing immediately that nothing routable existed.
+    // Filtered out here, before grouping — result.pass and the final
+    // findings list (checked further down / returned to the caller) are
+    // untouched, so D25's default-FAIL still correctly blocks deployment
+    // and the finding is still visible in the report; it just never gets
+    // handed to a generator.
+    const routableFindings = result.findings.filter((f) => !f.issue.includes("review-incomplete"));
+
     // Real 2026-07-06 stress-test bug: findings can span BOTH backend/ and
     // frontend/ files in the same QA pass. Using only result.faultAgent
     // (identifyFaultAgent's single first-match) fixed one agent every round
     // and permanently ignored the other's findings. Route each agent its OWN
     // subset instead, and fix every implicated agent that has a real fix
     // path (Shubham/Aanya) in the same round.
-    const groups = groupFindingsByAgent(result.findings);
+    const groups = groupFindingsByAgent(routableFindings);
     const shubhamFindings = groups.get("shubham");
     const aanyaFindings = groups.get("aanya");
     const pranavFindings = groups.get("pranav");

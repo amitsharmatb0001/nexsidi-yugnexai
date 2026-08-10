@@ -134,3 +134,33 @@ test("allowFailedVerification=true still allows a genuine true completion", () =
   ledger.record("command_output", "npx tsc --noEmit -> exited 0");
   expect(checkCompletion(ledger, CLAIM, [], [], true)).toEqual({ allowed: true });
 });
+
+// 2026-08-10: real gap found live (user request) — requiredEvidenceKinds
+// only checks PRESENCE ("was http_check ever recorded"), satisfied by ONE
+// call. Shubham's self-check currently claims done after testing a single
+// endpoint's auth boundary, leaving every other resource's CRUD chain
+// unverified until QA or a live deploy round-trip catches it later — the
+// exact "self-check the obvious stuff at the source" gap the user asked to
+// close. requiredEvidenceCounts requires a MINIMUM count per kind, not just
+// presence, so "at least one call per resource" is mechanically enforceable.
+test("rejects completion when a required evidence kind's count is below the minimum", () => {
+  const ledger = createEvidenceLedger();
+  ledger.record("http_check", "GET /a -> 200"); // only 1, but 3 resources need testing
+  const result = checkCompletion(ledger, CLAIM, [], [], false, { http_check: 3 });
+  expect(result.allowed).toBe(false);
+  if (!result.allowed) expect(result.reason).toContain("http_check");
+});
+
+test("allows completion once the required evidence count is met", () => {
+  const ledger = createEvidenceLedger();
+  ledger.record("http_check", "POST /a -> 201");
+  ledger.record("http_check", "POST /b -> 201");
+  ledger.record("http_check", "POST /c -> 201");
+  expect(checkCompletion(ledger, CLAIM, [], [], false, { http_check: 3 })).toEqual({ allowed: true });
+});
+
+test("requiredEvidenceCounts defaults to no minimum — existing callers unaffected", () => {
+  const ledger = createEvidenceLedger();
+  ledger.record("http_check", "GET /health -> 200");
+  expect(checkCompletion(ledger, CLAIM, [], ["http_check"])).toEqual({ allowed: true });
+});

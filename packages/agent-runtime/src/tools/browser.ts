@@ -13,6 +13,7 @@ import { resolve, sep } from "path";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
 import { BrowserSession } from "../browser/client.ts";
+import type { EvidenceLedger } from "../enforce/evidence.ts";
 
 function guardLocalhost(url: string): string | null {
   let parsed: URL;
@@ -43,7 +44,7 @@ export class BrowserToolset {
     return this.session;
   }
 
-  async exec(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  async exec(name: string, args: Record<string, unknown>, ledger?: EvidenceLedger): Promise<ToolResult> {
     try {
       switch (name) {
         case "browser_navigate": {
@@ -62,6 +63,12 @@ export class BrowserToolset {
           const g = guardOutputPath(String(args.outputPath ?? ""));
           if ("error" in g) return { status: "error", summary: g.error };
           await this.ensure().send("screenshot", { path: g.abs, fullPage: args.fullPage ?? true });
+          // 2026-08-10: records "visual_check" evidence — see evidence.ts's
+          // header comment and screenshot.ts's identical convention for the
+          // standalone tool. Interactive browser_screenshot is the one
+          // Aanya's own required workflow actually calls (after navigate),
+          // so this is the real enforcement point for her visual-QA gate.
+          ledger?.record("visual_check", `browser_screenshot -> ${args.outputPath}`);
           return { status: "success", summary: `Screenshot saved to ${args.outputPath}`, output: g.abs };
         }
         case "browser_click": {

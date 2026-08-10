@@ -40,6 +40,12 @@ export function checkCompletion(
   // below still apply (you must show your work either way), only the
   // outcome of that work is no longer forced to be "success."
   allowFailedVerification = false,
+  // 2026-08-10: requiredEvidenceKinds only checks PRESENCE — satisfied by
+  // ONE call. Some callers need BREADTH, not just presence (e.g. "at least
+  // one http_request per resource," not "at least one http_request total")
+  // — see Shubham's generator config for the concrete use. Optional/empty
+  // by default so every existing caller is unaffected.
+  requiredEvidenceCounts: Partial<Record<EvidenceKind, number>> = {},
 ): CompletionCheck {
   if (!claim.verificationPassed && !allowFailedVerification) {
     return {
@@ -68,6 +74,15 @@ export function checkCompletion(
       allowed: false,
       reason: `Completion rejected: required evidence kind(s) missing this run: ${missingKinds.join(", ")}. Call the tool that produces this evidence before claiming done.`,
     };
+  }
+  for (const [kind, minCount] of Object.entries(requiredEvidenceCounts) as Array<[EvidenceKind, number]>) {
+    const actual = ledger.countOfKind(kind);
+    if (actual < minCount) {
+      return {
+        allowed: false,
+        reason: `Completion rejected: required evidence kind "${kind}" needs at least ${minCount} recorded this run, got ${actual}. Cover every resource, not just one, before claiming done.`,
+      };
+    }
   }
   return { allowed: true };
 }
