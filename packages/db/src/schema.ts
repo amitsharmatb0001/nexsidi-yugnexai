@@ -138,6 +138,15 @@ export const agentConversations = pgTable("agent_conversations", {
   projectId:  varchar("project_id", { length: 64 }).notNull(),
   agentName:  text("agent_name").notNull(),
   messages:   jsonb("messages").notNull().default([]),
+  // 2026-08-13 (cost-control Task 2, review Finding 3): the structured fact
+  // ledger (packages/agent-runtime/src/context-selection.ts) was previously
+  // built in gemini-loop.ts and discarded when the function returned —
+  // never included in any return value, never logged, never persisted.
+  // Persisted here following the exact same load/save pattern `messages`
+  // already uses (see runAgentWithGemini's load block and saveHistory), so
+  // it survives and accumulates across a resumed run instead of restarting
+  // empty every call.
+  factLedger: jsonb("fact_ledger").notNull().default([]),
   createdAt:  timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt:  timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

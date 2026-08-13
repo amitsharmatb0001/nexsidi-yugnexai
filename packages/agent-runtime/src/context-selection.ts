@@ -118,7 +118,17 @@ function inferEntriesForActivity(activity: TurnToolActivity, turnIndex: number, 
 
       if (!ok) {
         const detail = result.summary ? `: ${truncate(result.summary, 160)}` : "";
-        return [{ type: "decision", summary: `Command failed: ${command}${detail}`, turnIndex }];
+        // `file` carries the exact command string (reusing the ledger's
+        // generic resource-identifier field) so a later lookup can match
+        // the command exactly instead of prefix/substring-matching the
+        // rendered summary text — see the review finding this replaced:
+        // `.startsWith("Command failed: bun test")` wrongly matched a
+        // failure recorded for "bun test:integration" too, since that
+        // string literally starts with "Command failed: bun test". Real
+        // command pairs like this exist in this codebase (`bun test` vs
+        // `bun test:integration`, `bun run typecheck` vs `bun run
+        // typecheck:watch`).
+        return [{ type: "decision", file: command, summary: `Command failed: ${command}${detail}`, turnIndex }];
       }
 
       // Success: check whether this exact command previously failed and
@@ -126,19 +136,22 @@ function inferEntriesForActivity(activity: TurnToolActivity, turnIndex: number, 
       // fix taking effect. Scanning the ledger here (not a separate index)
       // keeps the ledger the single source of truth, matching its
       // append-only design — no side-channel state to fall out of sync with it.
-      const failureMarker = `Command failed: ${command}`;
+      // Match on the exact command via `file` (set above) plus the
+      // "Command failed: " summary prefix to stay scoped to run_command
+      // failures specifically (other tool cases, e.g. delete_file, also set
+      // `file` on their decision entries, to an unrelated file path).
       const lastFailureIdx = [...ledgerSoFar]
         .map((e, i) => ({ e, i }))
-        .filter(({ e }) => e.type === "decision" && e.summary.startsWith(failureMarker))
+        .filter(({ e }) => e.type === "decision" && e.file === command && e.summary.startsWith("Command failed: "))
         .pop()?.i;
       if (lastFailureIdx === undefined) return [];
 
       const alreadyResolvedSince = ledgerSoFar
         .slice(lastFailureIdx + 1)
-        .some((e) => e.type === "error_resolved" && e.summary.includes(command));
+        .some((e) => e.type === "error_resolved" && e.file === command);
       if (alreadyResolvedSince) return [];
 
-      return [{ type: "error_resolved", summary: `${command} now succeeds (previously failed)`, turnIndex }];
+      return [{ type: "error_resolved", file: command, summary: `${command} now succeeds (previously failed)`, turnIndex }];
     }
 
     case "escalate_finding": {
@@ -147,9 +160,26 @@ function inferEntriesForActivity(activity: TurnToolActivity, turnIndex: number, 
     }
 
     case "task_complete": {
-      const summary = stringField(args, "summary");
-      if (!summary) return [];
-      return [{ type: "decision", summary: `Marked complete: ${truncate(summary, 160)}`, turnIndex }];
+      // Unlike every other case above, gemini-loop.ts's task_complete
+      // handler does NOT flow a genuine acceptance through this function at
+      // all: checkCompletion's default-FAIL gate accepting the call returns
+      // straight out of runAgentWithGemini (see the `return { success: ... }`
+      // right after `ledger.consume()`), before turnActivity/factLedger
+      // ever gets built for that turn. A REJECTED task_complete is the only
+      // way this branch is reached — the gate sets `result = { status:
+      // "error", summary: check.reason }` and falls through to the shared
+      // turnActivity/factLedger code below. So `ok` here is, in practice,
+      // always false — but this still checks it explicitly (rather than
+      // assuming) so the branch stays correct if that call shape ever
+      // changes, and so it never again records a false "Marked complete"
+      // for a completion that was actually rejected (the bug this replaced).
+      if (ok) {
+        const summary = stringField(args, "summary");
+        if (!summary) return [];
+        return [{ type: "decision", summary: `Marked complete: ${truncate(summary, 160)}`, turnIndex }];
+      }
+      const reason = typeof result.summary === "string" ? result.summary : "reason unknown";
+      return [{ type: "decision", summary: `Completion attempt rejected: ${truncate(reason, 160)}`, turnIndex }];
     }
 
     default:

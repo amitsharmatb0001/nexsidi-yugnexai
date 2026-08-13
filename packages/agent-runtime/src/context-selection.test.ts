@@ -108,6 +108,101 @@ test("appendFactLedgerEntry: a command that succeeds without ever having failed 
   expect(ledger.length).toBe(0);
 });
 
+// ── task_complete: review Finding 1 regression coverage ─────────────────────
+//
+// gemini-loop.ts's task_complete handler returns from the whole function
+// BEFORE building turnActivity when checkCompletion accepts the call — so a
+// genuine acceptance can never reach appendFactLedgerEntry. The only way
+// toolName: "task_complete" activity reaches here is a REJECTED completion
+// (checkCompletion sets result = { status: "error", summary: reason } and
+// falls through to the shared turnActivity/factLedger code). Previously this
+// branch ignored status entirely and always recorded "Marked complete" —
+// wrongly logging a rejected completion as accepted.
+
+test("appendFactLedgerEntry: a REJECTED task_complete records the rejection, not a false 'Marked complete'", () => {
+  const activity: TurnToolActivity[] = [
+    {
+      toolName: "task_complete",
+      args: { summary: "Implemented the auth routes", files_written: [], verification_passed: true },
+      result: { status: "error", summary: "Verification command 'bun test' was never run" },
+    },
+  ];
+  const ledger = appendFactLedgerEntry([], 8, activity);
+  expect(ledger.length).toBe(1);
+  expect(ledger[0]!.type).toBe("decision");
+  expect(ledger[0]!.summary).toContain("Completion attempt rejected");
+  expect(ledger[0]!.summary).toContain("Verification command 'bun test' was never run");
+  expect(ledger[0]!.summary).not.toContain("Marked complete");
+});
+
+test("appendFactLedgerEntry: a rejected task_complete with no rejection reason still records something true, not 'Marked complete'", () => {
+  const activity: TurnToolActivity[] = [
+    { toolName: "task_complete", args: { summary: "done" }, result: { status: "error" } },
+  ];
+  const ledger = appendFactLedgerEntry([], 1, activity);
+  expect(ledger.length).toBe(1);
+  expect(ledger[0]!.summary).toContain("Completion attempt rejected");
+  expect(ledger[0]!.summary).not.toContain("Marked complete");
+});
+
+test("appendFactLedgerEntry: a genuinely accepted task_complete (status success) records 'Marked complete' (defensive — this shape cannot occur via gemini-loop.ts's actual call site today, see comment above)", () => {
+  const activity: TurnToolActivity[] = [
+    {
+      toolName: "task_complete",
+      args: { summary: "Implemented the auth routes", files_written: [], verification_passed: true },
+      result: { status: "success" },
+    },
+  ];
+  const ledger = appendFactLedgerEntry([], 8, activity);
+  expect(ledger.length).toBe(1);
+  expect(ledger[0]!.summary).toContain("Marked complete");
+  expect(ledger[0]!.summary).toContain("Implemented the auth routes");
+});
+
+// ── run_command: review Finding 2 regression coverage ───────────────────────
+//
+// Two commands where one is a literal string prefix of the other — the old
+// `.startsWith(failureMarker)` / `.includes(command)` matching wrongly
+// conflated them. Real pairs like this exist in this codebase: `bun test`
+// vs `bun test:integration`, `bun run typecheck` vs `bun run typecheck:watch`.
+
+test("appendFactLedgerEntry: a command that never failed does not falsely resolve a DIFFERENT failed command it is a string-prefix of", () => {
+  let ledger: FactLedgerEntry[] = [];
+  // turn 1: "bun test:integration" fails
+  ledger = appendFactLedgerEntry(ledger, 1, [
+    { toolName: "run_command", args: { command: "bun test:integration" }, result: { status: "error", summary: "2 failures" } },
+  ]);
+  // turn 2: "bun test" succeeds — it never failed, and is NOT the same
+  // command as "bun test:integration", even though it is a string prefix of it.
+  ledger = appendFactLedgerEntry(ledger, 2, [
+    { toolName: "run_command", args: { command: "bun test" }, result: { status: "success" } },
+  ]);
+
+  // No error_resolved entry should be emitted for "bun test" — it never failed.
+  const resolvedForBunTest = ledger.find((e) => e.type === "error_resolved" && e.summary.startsWith("bun test "));
+  expect(resolvedForBunTest).toBeUndefined();
+  expect(ledger.some((e) => e.type === "error_resolved")).toBe(false);
+
+  // The real failure (bun test:integration) must still be present and
+  // unresolved — not swallowed by the false match.
+  const failure = ledger.find((e) => e.type === "decision" && e.file === "bun test:integration");
+  expect(failure).toBeDefined();
+});
+
+test("appendFactLedgerEntry: the same command that actually failed still correctly resolves (exact match still works)", () => {
+  let ledger: FactLedgerEntry[] = [];
+  ledger = appendFactLedgerEntry(ledger, 1, [
+    { toolName: "run_command", args: { command: "bun test:integration" }, result: { status: "error", summary: "2 failures" } },
+  ]);
+  ledger = appendFactLedgerEntry(ledger, 2, [
+    { toolName: "run_command", args: { command: "bun test:integration" }, result: { status: "success" } },
+  ]);
+  const resolved = ledger.find((e) => e.type === "error_resolved");
+  expect(resolved).toBeDefined();
+  expect(resolved!.summary).toContain("bun test:integration");
+  expect(resolved!.turnIndex).toBe(2);
+});
+
 test("appendFactLedgerEntry: read-only tool calls (read_file, list_files) never produce ledger noise", () => {
   const activity: TurnToolActivity[] = [
     { toolName: "read_file", args: { path: "src/index.ts" }, result: { status: "success", output: "..." } },

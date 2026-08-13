@@ -25,6 +25,7 @@ import { checkCompletion } from "./enforce/completion-gate.ts";
 import { createStrikeCounter, buildFailureSignature, type StrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
+import type { FactLedgerEntry } from "./context-selection.ts";
 import type { ToolResult } from "./tools/file.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 
@@ -171,6 +172,14 @@ export interface AgentRunResult {
   // or it never had a reason to escalate), not "empty on purpose". Callers
   // that care read `result.escalations ?? []`.
   escalations?: Escalation[];
+  // 2026-08-13 (cost-control Task 2, review Finding 3): the structured fact
+  // ledger (context-selection.ts) built during the run. Currently only
+  // populated by gemini-loop.ts's runAgentWithGemini — this file's own
+  // runAgent (the NIM path) does not build one, so it stays undefined there,
+  // matching escalations' "absent means never built" convention above. Also
+  // persisted to the agentConversations DB row (see gemini-loop.ts's
+  // saveHistory) so a caller can use either the DB row or this return value.
+  factLedger?: FactLedgerEntry[];
 }
 
 // Exported for the same reason as MAX_ITERATIONS above — claude-loop.ts
