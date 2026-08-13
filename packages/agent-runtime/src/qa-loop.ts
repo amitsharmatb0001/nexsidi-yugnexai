@@ -90,6 +90,15 @@ export interface QAAgentConfig {
   // build it with arjun's buildSystemContext(plan). Optional so existing
   // callers/tests keep working unchanged.
   systemContext?: string;
+  // Cost-control plan Task 3: when set, read_file/read_files route through
+  // sharedFileReadCache(projectId) instead of hitting disk directly — this
+  // is what lets Navya/Karan/Deepika (dispatched with the SAME projectId,
+  // see stage5-adversarial-qa.ts's runStage5WithAgents) dedupe overlapping
+  // reads within one QA round. Optional and gated by isQaReadCacheEnabled()
+  // so omitting it (every existing test/caller) preserves the exact
+  // pre-existing always-hit-disk behavior — individually revertable per the
+  // plan's global constraint without touching any other code path.
+  projectId?: string;
 }
 
 export interface QAAgentResult {
@@ -148,6 +157,118 @@ export function resolveLabeledFile(dirs: LabeledDir[], labeledPath: string): str
   return null;
 }
 
+// ── Shared QA file-read cache (cost-control plan Task 3, 2026-08-11) ───────
+// Confirmed live and directly in this file's own code: Navya/Karan/Deepika
+// each run runQAAgent() fully independently (see stage5-adversarial-qa.ts's
+// runStage5WithAgents, which dispatches all three via Promise.all against the
+// SAME projectId/dirs at the SAME time) and — before this cache — the
+// read_file/read_files tool handlers below called readFileSync directly with
+// no shared state at all. Three reviewers reviewing overlapping file sets
+// every round meant the same file got read from disk and re-serialized into
+// the tool response payload up to three times per round for zero benefit —
+// the three reviewers' FINDINGS never depend on each having done its own
+// disk I/O, only on each having SEEN the content.
+//
+// Keyed on absolute file path only, NOT path+mtime. This was a deliberate
+// call, not an oversight: the cache is explicitly scoped to one QA round
+// (clearSharedFileReadCache below MUST be called before every round starts —
+// see stage5-adversarial-qa.ts's runStage5WithAgents), and nothing writes to
+// project files WHILE a round is in flight — fix passes only happen BETWEEN
+// rounds, after all three reviewers finish and their findings are acted on.
+// So within a round the file path alone is already a correct cache key; a
+// per-read mtime check would only guard against a caller bug (reusing a
+// cache across rounds without clearing it), and mtime resolution on some
+// filesystems (1-2s granularity) can't even reliably detect a same-second
+// edit — path+mtime would add a false sense of safety without closing that
+// gap, so the round-scoped explicit clear is the actual correctness
+// mechanism, not a per-entry timestamp comparison.
+export interface CachedFileRead {
+  content: string; // exactly what a direct readFileSync + truncation call would produce
+  notFound?: boolean;
+  error?: string;
+}
+
+// Same read + truncation logic the pre-cache read_file/read_files code paths
+// used inline — extracted so both the cached and uncached (cache omitted)
+// paths produce byte-identical output, and so FileReadCache.get can reuse it.
+function performRead(absPath: string): CachedFileRead {
+  if (!existsSync(absPath)) {
+    return { content: "", notFound: true };
+  }
+  try {
+    let content = readFileSync(absPath, "utf-8");
+    if (content.length > READ_FILE_CHAR_LIMIT) {
+      content = content.slice(0, READ_FILE_CHAR_LIMIT) + `\n...[truncated, ${content.length - READ_FILE_CHAR_LIMIT} more chars]`;
+    }
+    return { content };
+  } catch (err) {
+    return { content: "", error: String(err) };
+  }
+}
+
+export class FileReadCache {
+  private entries = new Map<string, CachedFileRead>();
+  private reads = 0; // real disk reads performed since construction/last clear() — see tests for how this proves dedup
+
+  get realReadCount(): number {
+    return this.reads;
+  }
+
+  // MUST be called between QA rounds — see clearSharedFileReadCache below.
+  clear(): void {
+    this.entries.clear();
+    this.reads = 0;
+  }
+
+  // absPath must already be resolved (resolveLabeledFile's output). The
+  // FIRST call for a given path performs the real read; every subsequent
+  // call within this cache's lifetime (i.e. within one QA round) returns the
+  // SAME cached result object — no re-read, no re-truncation, byte-identical
+  // to what an uncached call would have returned.
+  get(absPath: string): CachedFileRead {
+    const cached = this.entries.get(absPath);
+    if (cached) return cached;
+    this.reads++;
+    const result = performRead(absPath);
+    this.entries.set(absPath, result);
+    return result;
+  }
+}
+
+const projectFileReadCaches = new Map<string, FileReadCache>();
+
+// One shared FileReadCache per project, reused across all three reviewers
+// within a round — Navya/Karan/Deepika each call this with the SAME
+// projectId (see agents/qa/{navya,karan,deepika}/src/index.ts's runExploring
+// threading config.projectId into runQAAgent) and get back the identical
+// cache instance, which is what makes the dedup work.
+export function sharedFileReadCache(projectId: string): FileReadCache {
+  let cache = projectFileReadCaches.get(projectId);
+  if (!cache) {
+    cache = new FileReadCache();
+    projectFileReadCaches.set(projectId, cache);
+  }
+  return cache;
+}
+
+// MUST be called once at the start of every QA round, BEFORE Navya/Karan/
+// Deepika are dispatched — files change between fix passes (qa-fix-loop.ts
+// re-runs Stage 5 up to 5x per project), so round N+1 must never be served
+// round N's cached content. stage5-adversarial-qa.ts's runStage5WithAgents
+// calls this before dispatching the three reviewers. A no-op if no cache has
+// been created yet for this projectId (first round of a fresh project).
+export function clearSharedFileReadCache(projectId: string): void {
+  projectFileReadCaches.get(projectId)?.clear();
+}
+
+// Global constraint (cost-control plan): every lever must be individually
+// toggleable/revertable without a code change. Matches the
+// PROMPT_AUDIT_ENABLED convention (packages/prompt-audit/src/index.ts) —
+// enabled by default, opt out with an env var set to exactly "false".
+export function isQaReadCacheEnabled(): boolean {
+  return process.env.QA_READ_CACHE_ENABLED !== "false";
+}
+
 // 2026-08-03: real cost problem found live — a single QA round (Navya/Karan/
 // Deepika, each reading dozens of files one at a time via read_file) ran to
 // ~7.8M tokens, because every read_file call is a full round-trip that
@@ -161,24 +282,40 @@ export interface ReadLabeledFilesResult {
   readPaths: string[];
 }
 
-export function readLabeledFiles(dirs: LabeledDir[], paths: string[]): ReadLabeledFilesResult {
+// Single-labeled-file read — the exact logic the read_file tool handler in
+// runQAAgent uses, extracted so it's directly unit-testable and so
+// readLabeledFiles (the read_files/batch path) can share it instead of
+// duplicating the not-found/error/truncation handling. `cache` is optional
+// and opt-in: omit it (as every pre-existing caller does) to get the
+// original always-hit-disk behavior; pass a FileReadCache (see
+// sharedFileReadCache) to dedupe repeated reads of the same path.
+export interface ReadLabeledFileResult {
+  found: boolean;
+  content: string;
+  error?: string;
+}
+
+export function readLabeledFile(dirs: LabeledDir[], path: string, cache?: FileReadCache): ReadLabeledFileResult {
+  const abs = path ? resolveLabeledFile(dirs, path) : null;
+  if (!abs) return { found: false, content: "" };
+  const read = cache ? cache.get(abs) : performRead(abs);
+  if (read.notFound) return { found: false, content: "" };
+  if (read.error) return { found: false, content: "", error: read.error };
+  return { found: true, content: read.content };
+}
+
+export function readLabeledFiles(dirs: LabeledDir[], paths: string[], cache?: FileReadCache): ReadLabeledFilesResult {
   const chunks: string[] = [];
   const readPaths: string[] = [];
   for (const path of paths) {
-    const abs = path ? resolveLabeledFile(dirs, path) : null;
-    if (!abs || !existsSync(abs)) {
+    const { found, content, error } = readLabeledFile(dirs, path, cache);
+    if (error) {
+      chunks.push(`// FILE: ${path}\n[read failed: ${error}]`);
+    } else if (!found) {
       chunks.push(`// FILE: ${path}\n[not found — use list_files to see valid paths]`);
-      continue;
-    }
-    try {
-      let content = readFileSync(abs, "utf-8");
-      if (content.length > READ_FILE_CHAR_LIMIT) {
-        content = content.slice(0, READ_FILE_CHAR_LIMIT) + `\n...[truncated, ${content.length - READ_FILE_CHAR_LIMIT} more chars]`;
-      }
+    } else {
       readPaths.push(path);
       chunks.push(`// FILE: ${path}\n${content}`);
-    } catch (err) {
-      chunks.push(`// FILE: ${path}\n[read failed: ${String(err)}]`);
     }
   }
   return { output: chunks.join("\n\n"), readPaths };
@@ -291,6 +428,11 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
   // see computeQaMaxIterations.
   let totalFilesListed = listLabeledFiles(config.dirs).length;
   const effectiveMaxIterations = computeQaMaxIterations(totalFilesListed);
+  // Cost-control plan Task 3: undefined (falls back to the original
+  // always-hit-disk path in readLabeledFile/readLabeledFiles) unless the
+  // caller supplied a projectId AND the cache hasn't been disabled via
+  // QA_READ_CACHE_ENABLED=false.
+  const fileReadCache = config.projectId && isQaReadCacheEnabled() ? sharedFileReadCache(config.projectId) : undefined;
 
   while (iterations < effectiveMaxIterations) {
     iterations++;
@@ -363,26 +505,24 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
         }
         case "read_file": {
           const path = (call.input as { path: string }).path;
-          const abs = path ? resolveLabeledFile(config.dirs, path) : null;
-          if (!abs || !existsSync(abs)) {
+          // Task 3: routes through fileReadCache when set — the second and
+          // third reviewer's read_file call for a path already read this
+          // round is served from the cache instead of hitting disk again.
+          const { found, content, error } = readLabeledFile(config.dirs, path, fileReadCache);
+          if (error) {
+            result = { status: "error", summary: `read_file failed: ${error}` };
+          } else if (!found) {
             result = { status: "error", summary: `File not found: ${path} — use list_files to see valid paths` };
-            break;
-          }
-          try {
-            let content = readFileSync(abs, "utf-8");
-            if (content.length > READ_FILE_CHAR_LIMIT) {
-              content = content.slice(0, READ_FILE_CHAR_LIMIT) + `\n...[truncated, ${content.length - READ_FILE_CHAR_LIMIT} more chars]`;
-            }
+          } else {
             readFiles.add(path);
             result = { status: "success", summary: `Read ${path}`, output: content };
-          } catch (err) {
-            result = { status: "error", summary: `read_file failed: ${String(err)}` };
           }
           break;
         }
         case "read_files": {
           const paths = (call.input as { paths?: string[] }).paths ?? [];
-          const { output, readPaths } = readLabeledFiles(config.dirs, paths);
+          // Task 3: same cache as read_file above — batched reads dedupe too.
+          const { output, readPaths } = readLabeledFiles(config.dirs, paths, fileReadCache);
           for (const path of readPaths) readFiles.add(path);
           result = { status: "success", summary: `Read ${paths.length} file(s)`, output };
           break;

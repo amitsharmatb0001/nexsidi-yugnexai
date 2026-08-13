@@ -64,6 +64,11 @@ export async function runExploring(
     reviewFocus: "logic errors (null references, invalid state transitions, algorithm flaws, race conditions, and API/type contract mismatches)",
     dirs,
     systemContext,
+    // Cost-control plan Task 3: shares one FileReadCache with Karan/Deepika
+    // for this same round (all three are dispatched with the same
+    // projectId — see stage5-adversarial-qa.ts's runStage5WithAgents, which
+    // clears the cache before dispatching them).
+    projectId,
   });
 
   const hasFatalError = result.errors.some(

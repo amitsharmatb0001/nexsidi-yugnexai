@@ -100,6 +100,9 @@ export async function runExploring(
     reviewFocus: "performance issues (Big-O complexity blowups, memory leaks, N+1 query patterns, blocking synchronous calls on the hot path)",
     dirs,
     systemContext,
+    // Cost-control plan Task 3: shares one FileReadCache with Navya/Karan
+    // for this same round — see navya/src/index.ts's identical parameter.
+    projectId,
   });
 
   const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings") && !e.includes("Stuck:"));

@@ -24,6 +24,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import { identifyFaultAgent, type Finding, type Stage4Result } from "./stage4-multi-agent-dev.ts";
+import { clearSharedFileReadCache } from "../../../packages/agent-runtime/src/qa-loop.ts";
 import { getOutputDir as getPranavOutputDir } from "../../../agents/generators/pranav/src/index.ts";
 import {
   scoreSecurityFindings,
@@ -148,6 +149,14 @@ export async function runStage5WithAgents(
   // (the real entry point) passes a live, non-zero value.
   staggerMs = 0,
 ): Promise<Stage5Result> {
+  // Cost-control plan Task 3: MUST run before dispatching the three
+  // reviewers, not after — clears any FileReadCache left over from a
+  // previous round (qa-fix-loop.ts re-runs this stage up to 5x per project,
+  // and files change between fix passes) so this round's reviewers can't be
+  // served stale content from a round that already ran against different
+  // code. Safe no-op on a project's first-ever round (nothing cached yet).
+  clearSharedFileReadCache(projectId);
+
   const systemContext = plan ? buildSystemContext(plan) : undefined;
   const navyaPromise = agents.runNavya(projectId, stage4Result, systemContext);
   await sleep(staggerMs);
