@@ -287,6 +287,13 @@ export interface ClaudeChatWithToolsResult {
   // must push this back as the assistant turn verbatim (not just the
   // extracted text) to preserve tool_use blocks, per the SDK's own guidance.
   rawContent: Anthropic.Messages.ContentBlock[];
+  // 2026-08-13 (cost-control Task 1): response.usage was already read for
+  // the console.log usage line right below where this is populated, then
+  // discarded — claude-loop.ts (the only caller) had no way to see it. This
+  // is the escalation tier (claude-loop.ts's runAgentWithClaude, reached via
+  // runAgentEscalated when the NIM/Gemini path fails) — real spend at
+  // Claude's rates, same recordSpend gap as loop.ts/gemini-loop.ts.
+  usage: { inputTokens: number; outputTokens: number };
 }
 
 export async function claudeChatWithTools(
@@ -347,6 +354,7 @@ export async function claudeChatWithTools(
       toolCalls,
       stopReason: response.stop_reason,
       rawContent: response.content,
+      usage: { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens },
     };
   } catch (err) {
     recordFailure(circuitKey);

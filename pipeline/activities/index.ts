@@ -516,24 +516,38 @@ export async function runSelectedRepairs(
   await Promise.all(targets.map((target) => runners[target](plan, findings)));
 }
 
+// 2026-08-13 (cost-control Task 1, HIGH finding closed): runCodeFix invokes
+// the same generators (runShubhamFix/runAanyaFix, via runSelectedRepairs)
+// that ARE gated at their normal entry points (runShubham/runAanya above
+// both call assertWithinBudget first) — but this activity had no check of
+// its own, despite being called in a loop from BOTH the pre-QA compile gate
+// (up to 3x) and the post-QA compile gate (up to 3x) in
+// pipeline/workflows/project-build.ts. Real, repeated, previously-uncapped
+// spend. Gated first, before any repair work, matching the exact pattern
+// used by runShubham/runAanya/runPranav/runQAFixLoopActivity above.
 export async function runCodeFix(projectId: string, iteration: number, reason: string): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   console.log(`[activity:code-fix] iter=${iteration} reason=${reason}`);
 
-  // Publish self-heal event so the UI shows amber "Fixing..." card
-  const shortReason = reason
-    .replace(/^(live_check_fail|compile_error|qa_fail|spec_mismatch):\s*/, "")
-    .slice(0, 150);
-  appendEvent(projectId, {
-    type: "repair",
-    agent: "system",
-    tool: "code_fix",
-    attempt: iteration,
-    errorSnippet: shortReason || reason.slice(0, 80),
-  });
-
   try {
+    // Checked first, before even publishing the self-heal UI event below —
+    // an over-budget project shouldn't show an amber "Fixing..." card for
+    // repair work that's about to be halted before it starts.
+    await assertWithinBudget(projectId, "code-fix");
+
+    // Publish self-heal event so the UI shows amber "Fixing..." card
+    const shortReason = reason
+      .replace(/^(live_check_fail|compile_error|qa_fail|spec_mismatch):\s*/, "")
+      .slice(0, 150);
+    appendEvent(projectId, {
+      type: "repair",
+      agent: "system",
+      tool: "code_fix",
+      attempt: iteration,
+      errorSnippet: shortReason || reason.slice(0, 80),
+    });
+
     const findings = await db
       .select({ agent: qaResults.agentName, score: qaResults.score, findings: qaResults.findings })
       .from(qaResults)
@@ -740,10 +754,20 @@ export interface DeployActivityResult {
   stuck: boolean;
 }
 
+// 2026-08-13 (cost-control Task 1): flagged by review as a lower-confidence
+// but genuinely in-scope gap, decided in favor of gating after reading
+// runStage6 (stage6-deployment.ts) — it is NOT pure browser automation. It
+// dynamically imports and runs runStage5 (the full Navya/Karan/Deepika/
+// Tier-3 GAN re-run against the live URL), runLiveEval (Tilotma's
+// live-browser LLM eval), and runFix on Shubham/Aanya/Pranav for live-check
+// repair — all real LLM spend, retried up to MAX_DEPLOY_ATTEMPTS (2) times
+// per deploy attempt, itself retried by the workflow's Stage 6 loop on a
+// human retry decision. Same pattern as every other gated activity.
 export async function runDeployWithLiveRetest(projectId: string): Promise<DeployActivityResult> {
   const ctx = Context.current();
   const hb = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
+    await assertWithinBudget(projectId, "deploy");
     const plan = getPlan(projectId);
     const stage4Result = buildStage4Result(projectId);
     // Patent Claim 3: verify the codebase QA just approved is exactly what

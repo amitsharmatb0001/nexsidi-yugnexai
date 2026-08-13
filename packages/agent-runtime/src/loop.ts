@@ -11,6 +11,20 @@ import { initWorkspaceTransaction, commitWorkspaceTransaction } from "./tools/gi
 import { compactHistory, estimateTokenCount } from "./compaction.ts";
 import { SharedTokenBucket } from "./token-bucket.ts";
 import { BudgetTracker } from "./budget-tracker.ts";
+// 2026-08-13 (cost-control Task 1, CRITICAL gap closed): recordSpend
+// persists a running per-project $ total to the `token_spend` table —
+// checkBudget/assertWithinBudget (pipeline/activities/index.ts) read that
+// exact total to decide whether to halt. Before this, NOTHING in the repo
+// called recordSpend outside cost-budget.test.ts — a grep across the whole
+// repo confirmed zero production call sites — so checkBudget(projectId)
+// always read spentUsd: 0 and the hard cap could structurally never trip,
+// no matter how much was actually spent. BudgetTracker (imported above) is
+// a DIFFERENT, unrelated, in-memory-only per-run token counter (500K in /
+// 100K out cap, never persisted, not dollar-denominated) — it does not and
+// never did cover this. This is the real fix, at the one place in this
+// shared NIM loop where a per-call token count AND the model that served it
+// are both already in scope.
+import { recordSpend } from "./cost-budget.ts";
 import { execRunCommand, COMMAND_TOOL_DEF } from "./tools/command.ts";
 import { execHttpRequest, HTTP_TOOL_DEF } from "./tools/http.ts";
 import { execDockerCompose, DOCKER_TOOL_DEF } from "./tools/docker.ts";
@@ -643,6 +657,21 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
       const usage = (response as any).usage ?? { prompt_tokens: estimatedTokens, completion_tokens: 300 };
       budget.recordRequest(usage.prompt_tokens, usage.completion_tokens);
+      // 2026-08-13 (cost-control Task 1): real per-project $ accumulation —
+      // see the recordSpend import comment above. Fire only when projectId
+      // is known (config.projectId is optional — e.g. ad-hoc/test runs with
+      // no project to bill against); failures are logged and swallowed
+      // rather than thrown, so a transient DB hiccup degrades to
+      // under-counted spend instead of crashing an otherwise-healthy
+      // generation run (the budget check itself still runs on the NEXT
+      // activity's assertWithinBudget call either way).
+      if (config.projectId) {
+        try {
+          await recordSpend(config.projectId, usage.prompt_tokens, usage.completion_tokens, currentModel);
+        } catch (spendErr) {
+          console.error(`[${config.agentName}:agent] recordSpend failed (non-fatal — this call's spend may be under-counted):`, spendErr);
+        }
+      }
     } catch (err) {
       errors.push(`NIM call failed (model: ${currentModel}): ${String(err)}`);
       if (modelIdx < modelChain.length - 1) {

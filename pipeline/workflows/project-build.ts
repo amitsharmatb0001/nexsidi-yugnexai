@@ -16,7 +16,7 @@ import {
   ApplicationFailure,
 } from "@temporalio/workflow";
 import type * as activities from "../activities/index.ts";
-import type { QAFixLoopActivityResult } from "../activities/index.ts";
+import type { QAFixLoopActivityResult, DeployActivityResult } from "../activities/index.ts";
 
 // 2026-08-11 (cost-control Task 1): pipeline/activities/index.ts's
 // assertWithinBudget throws ApplicationFailure.create({ type:
@@ -31,7 +31,12 @@ import type { QAFixLoopActivityResult } from "../activities/index.ts";
 // Stage 3 (generation) and Stage 5 (QA) catch blocks below to route a
 // budget failure into escalateAndAwaitRetryDecision("budget_exceeded")
 // instead of the generic "generation_failed" reason / an uncaught throw.
-function isBudgetExceededFailure(err: unknown): boolean {
+// 2026-08-13 (cost-control Task 1, test coverage gap closed): exported so
+// this type-matching logic can be unit-tested in isolation, per the review
+// that flagged it as "exactly the kind of SDK-internals-dependent code that
+// silently breaks on a Temporal version bump with nothing to catch it" — see
+// pipeline/workflows/budget-escalation.test.ts.
+export function isBudgetExceededFailure(err: unknown): boolean {
   return (
     err instanceof ActivityFailure &&
     err.cause instanceof ApplicationFailure &&
@@ -352,7 +357,32 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     // waste a code-fix cycle chasing a bug that was never actually observed.
     if (compile.timedOut) continue;
     if (compileAttempts < 3) {
-      await genAct.runCodeFix(projectId, 0, `compile_error:\n${compile.errors}`);
+      // 2026-08-13 (cost-control Task 1): runCodeFix now calls
+      // assertWithinBudget before doing any repair work — previously this
+      // call had NO surrounding try/catch, so an over-budget failure here
+      // would propagate as an uncaught ActivityFailure out of the workflow
+      // function. That is NOT a clean workflow failure: per
+      // @temporalio/common's own ActivityFailure doc, throwing anything
+      // other than an ApplicationFailure from workflow code fails the
+      // WORKFLOW TASK (retried indefinitely by the worker via replay), not
+      // the workflow execution — so an uncaught budget trip here would have
+      // wedged the workflow in a replay-and-fail loop forever instead of
+      // halting cleanly. Caught the same way every other assertWithinBudget
+      // call site already is.
+      try {
+        await genAct.runCodeFix(projectId, 0, `compile_error:\n${compile.errors}`);
+      } catch (err) {
+        if (!isBudgetExceededFailure(err)) throw err;
+        state.stage = "error";
+        console.log(`[workflow] pre-QA compile repair halted — budget exceeded`);
+        const retry = await escalateAndAwaitRetryDecision("budget_exceeded");
+        if (!retry) {
+          await act.markProjectFailed(projectId, "budget_exceeded");
+          return;
+        }
+        state.stage = "compile_check";
+        console.log(`[workflow] retrying pre-QA compile repair after a human retry decision (budget_exceeded)`);
+      }
     }
   }
   // After 3 failed compile attempts, continue anyway — QA will catch it.
@@ -437,14 +467,39 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       }
       let postQaCompileFailures = 0;
       let exhausted = false;
+      // 2026-08-13 (cost-control Task 1): see the pre-QA compile gate's
+      // identical comment above for why an uncaught budget trip here would
+      // wedge the workflow instead of failing cleanly. budgetExceeded is
+      // handled AFTER this loop (not by escalating from inside it) so it
+      // doesn't get tangled with postQaCompileFailures' own counting — a
+      // budget halt is a different reason than "repair kept not fixing it".
+      let budgetExceeded = false;
       while (!postQaCompile.pass) {
         postQaCompileFailures += 1;
         if (shouldStopCompileRepair(postQaCompileFailures, MAX_POST_QA_COMPILE_FAILURES)) {
           exhausted = true;
           break;
         }
-        await genAct.runCodeFix(projectId, state.iteration, `compile_error:\n${postQaCompile.errors}`);
+        try {
+          await genAct.runCodeFix(projectId, state.iteration, `compile_error:\n${postQaCompile.errors}`);
+        } catch (err) {
+          if (!isBudgetExceededFailure(err)) throw err;
+          budgetExceeded = true;
+          break;
+        }
         postQaCompile = await act.runCompileCheck(projectId);
+      }
+      if (budgetExceeded) {
+        state.stage = "error";
+        console.log(`[workflow] post-QA compile repair halted — budget exceeded`);
+        const retry = await escalateAndAwaitRetryDecision("budget_exceeded");
+        if (!retry) {
+          await act.markProjectFailed(projectId, "budget_exceeded");
+          return;
+        }
+        state.stage = "compile_check";
+        console.log(`[workflow] retrying post-QA compile repair after a human retry decision (budget_exceeded)`);
+        continue;
       }
       if (!exhausted) break;
 
@@ -478,7 +533,27 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     // explicit human decision ───────────────────────────────────────────
     state.stage = "deliver";
     for (;;) {
-      const deployResult = await orchestratorAct.runDeployWithLiveRetest(projectId);
+      // 2026-08-13 (cost-control Task 1): runDeployWithLiveRetest now calls
+      // assertWithinBudget before doing any deploy/live-retest work — this
+      // call had no surrounding try/catch before, same uncaught-propagation
+      // risk as the two compile-repair sites above (see their comments for
+      // why that would wedge the workflow instead of failing cleanly).
+      let deployResult: DeployActivityResult;
+      try {
+        deployResult = await orchestratorAct.runDeployWithLiveRetest(projectId);
+      } catch (err) {
+        if (!isBudgetExceededFailure(err)) throw err;
+        state.stage = "error";
+        console.log(`[workflow] Stage 6 deploy halted — budget exceeded`);
+        const retry = await escalateAndAwaitRetryDecision("budget_exceeded");
+        if (!retry) {
+          await act.markProjectFailed(projectId, "budget_exceeded");
+          return;
+        }
+        state.stage = "deliver";
+        console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (budget_exceeded)`);
+        continue;
+      }
       if (deployResult.success) break;
 
       state.stage = "error";

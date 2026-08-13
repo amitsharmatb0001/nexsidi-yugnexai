@@ -24,7 +24,12 @@ import { join, extname } from "node:path";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { checkFindingsEvidence, checkReviewCoverage } from "./enforce/finding-evidence.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
-import { compactGeminiHistory } from "./compaction.ts";
+import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts";
+// 2026-08-13 (cost-control Task 1): same CRITICAL gap as loop.ts/
+// gemini-loop.ts/claude-loop.ts — and this file's own header comment records
+// the live incident that makes it the MOST important of the four to close
+// ("a single QA round ... ran to ~7.8M tokens").
+import { recordSpend } from "./cost-budget.ts";
 
 // 2026-07-24 (W0.3): this loop previously had NO compaction at all. 2026-
 // 07-25 (Phase 0.3): matches gemini-loop.ts's threshold — 40K was 4% of the
@@ -90,6 +95,14 @@ export interface QAAgentConfig {
   // build it with arjun's buildSystemContext(plan). Optional so existing
   // callers/tests keep working unchanged.
   systemContext?: string;
+  // 2026-08-13 (cost-control Task 1): this loop's own header comment
+  // documents a real live cost incident — "a single QA round ... ran to
+  // ~7.8M tokens" — yet had no way to attribute that spend to a project at
+  // all (no projectId field existed here before this task). Optional so
+  // existing callers/tests keep working unchanged; navya/karan/deepika's
+  // runExploring() already receive projectId as their own first parameter
+  // and now thread it through here.
+  projectId?: string;
 }
 
 export interface QAAgentResult {
@@ -316,6 +329,20 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
       response = await routeToolsWithFallback("qa", messages, tools, { agentName: config.agentName });
       if (iterations === 1) {
         console.log(`[${config.agentName}:qa-loop] model=${response.modelUsed}`);
+      }
+      // 2026-08-13 (cost-control Task 1): real per-project $ accumulation —
+      // see this file's recordSpend import comment.
+      if (config.projectId) {
+        try {
+          await recordSpend(
+            config.projectId,
+            response.promptTokens ?? estimateGeminiTokenCount(messages),
+            response.completionTokens ?? 300,
+            response.modelUsed,
+          );
+        } catch (spendErr) {
+          console.error(`[${config.agentName}:qa-loop] recordSpend failed (non-fatal — this call's spend may be under-counted):`, spendErr);
+        }
       }
     } catch (err) {
       errors.push(`Gemini call failed on iteration ${iterations}: ${String(err)}`);

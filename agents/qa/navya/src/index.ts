@@ -64,6 +64,11 @@ export async function runExploring(
     reviewFocus: "logic errors (null references, invalid state transitions, algorithm flaws, race conditions, and API/type contract mismatches)",
     dirs,
     systemContext,
+    // 2026-08-13 (cost-control Task 1): projectId was already this
+    // function's own first parameter — just never threaded into the loop
+    // config, so real QA spend (this loop's own header comment: "a single
+    // QA round ... ran to ~7.8M tokens") had nothing to attribute it to.
+    projectId,
   });
 
   const hasFatalError = result.errors.some(
