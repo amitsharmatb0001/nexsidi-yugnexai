@@ -130,7 +130,13 @@ function hasFunctionResponsePart(m: GeminiMessage): boolean {
 // preceding turn) is always kept alongside it. Without this, compacting
 // mid-tool-call would send Gemini a functionResponse with no functionCall
 // in the same request, which the API rejects.
-function safeTrailingSlice(nonSys: GeminiMessage[], desiredCount: number): GeminiMessage[] {
+//
+// Exported (2026-08-13, cost-control Task 2) so context-selection.ts's
+// selectRelevantContext can reuse the exact same pairing-safety walk for its
+// "last N raw turns" window instead of reimplementing it — this is the same
+// hazard class (a naive slice(-N) splitting a functionCall/functionResponse
+// pair) regardless of which mechanism is choosing the trailing window.
+export function safeTrailingSlice(nonSys: GeminiMessage[], desiredCount: number): GeminiMessage[] {
   let start = Math.max(0, nonSys.length - desiredCount);
   while (start > 0 && hasFunctionResponsePart(nonSys[start]!)) {
     start--;

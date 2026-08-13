@@ -20,6 +20,7 @@ import {
 } from "@nexsidi/llm-client";
 import { runAgent, buildToolList, evaluateCommandStrike, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
 import { compactGeminiHistory } from "./compaction.ts";
+import { appendFactLedgerEntry, type FactLedgerEntry, type TurnToolActivity } from "./context-selection.ts";
 import { createStrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { execWriteFile, execWriteFiles, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol } from "./tools/file.ts";
@@ -162,6 +163,11 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
 
   let messages: GeminiMessage[] = [];
   let loadedFromDb = false;
+  // 2026-08-13 (cost-control Task 2, review Finding 3): loaded/saved
+  // alongside `messages` below via the identical pattern, so the fact
+  // ledger actually survives and accumulates across a resumed run instead
+  // of restarting empty (and being thrown away) on every call.
+  let loadedFactLedger: FactLedgerEntry[] = [];
 
   if (config.projectId) {
     try {
@@ -187,7 +193,8 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           messages[sysIdx] = { role: "system", content: systemPrompt };
         }
         loadedFromDb = true;
-        console.log(`[${config.agentName}:gemini-agent] Loaded existing conversation history (${messages.length} messages) from database`);
+        loadedFactLedger = Array.isArray(existing[0].factLedger) ? (existing[0].factLedger as FactLedgerEntry[]) : [];
+        console.log(`[${config.agentName}:gemini-agent] Loaded existing conversation history (${messages.length} messages, ${loadedFactLedger.length} fact-ledger entries) from database`);
         // 2026-07-24 (W0.3): this load was previously UNBOUNDED — the entire
         // persisted transcript (measured up to 820 messages / ~300K tokens
         // on a resumed code-fix) was re-sent verbatim on the very first call
@@ -231,6 +238,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
             .update(agentConversations)
             .set({
               messages,
+              // 2026-08-13 (cost-control Task 2, review Finding 3): saved
+              // alongside `messages` — same rationale as the load-side
+              // change above (loadedFactLedger).
+              factLedger,
               updatedAt: new Date(),
             })
             .where(eq(agentConversations.id, existing[0].id));
@@ -239,9 +250,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
             projectId: config.projectId,
             agentName: config.agentName,
             messages,
+            factLedger,
           });
         }
-        console.log(`[${config.agentName}:gemini-agent] Saved conversation history (${messages.length} messages) to database`);
+        console.log(`[${config.agentName}:gemini-agent] Saved conversation history (${messages.length} messages, ${factLedger.length} fact-ledger entries) to database`);
       } catch (e) {
         console.error(`[${config.agentName}:gemini-agent] Failed to save history:`, e);
       }
@@ -282,6 +294,21 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   // diagnostic. Same detectStuckLoop used in qa-loop.ts for Navya/Karan/
   // Deepika, applied here so Shubham/Aanya/Riya get the same early exit.
   const recentCallSignatures: string[] = [];
+
+  // 2026-08-13 (cost-control plan, Task 2): builds the structured fact
+  // ledger (context-selection.ts) alongside the existing raw history, but
+  // does NOT change what gets sent to the model on any call in this loop —
+  // selectRelevantContext is still not wired into the live model-calling
+  // path; that swap is Task 4's job, after this mechanism has been reviewed
+  // on its own. Seeded from loadedFactLedger (populated above when a prior
+  // run's row was found) and persisted back to the same DB row by
+  // saveHistory — see review Finding 3: this used to be a local variable
+  // that was built up and then discarded when the function returned,
+  // despite a comment here previously (incorrectly) claiming it
+  // "accumulates real data from real runs" — it now actually does, the same
+  // way `messages` already did, so Task 4 has real accumulated data to work
+  // from across resumed runs, not just within one function call.
+  let factLedger: FactLedgerEntry[] = loadedFactLedger;
 
   // 2026-07-25 (Phase 1): per-agent tier — see loop.ts's geminiTier comment
   // for why this is a bare string there. Unset defaults to "generation",
@@ -449,6 +476,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           iterations,
           errors: [...errors, `Agent stopped calling tools for ${noToolCallStreak} turns without calling task_complete`],
           escalations,
+          factLedger,
         };
       }
       // 2026-08-05: real bug found live (project 193c3080e582) — the original
@@ -482,10 +510,15 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       const reason = `Stuck: ${config.agentName} repeated the identical tool call (${turnSignature.slice(0, 150)}) 3 turns in a row with no progress — stopped early instead of grinding to the ${effectiveMaxIterations}-iteration cap.`;
       console.log(`[${config.agentName}:gemini-agent] ${reason}`);
       await saveHistory();
-      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish", escalations };
+      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "cannot_finish", escalations, factLedger };
     }
 
     const responseParts: GeminiPart[] = [];
+    // Cost-control Task 2: raw material for the fact-ledger append below —
+    // collected alongside responseParts, not derived from it, since
+    // responseParts only carries the functionResponse (not the original
+    // toolName/args pairing needed for inference).
+    const turnActivity: TurnToolActivity[] = [];
     for (const call of response.toolCalls) {
       const toolName = call.name;
       const args = call.input;
@@ -599,6 +632,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
             iterations,
             errors,
             escalations,
+            factLedger,
           };
         }
         case "db_query": {
@@ -671,6 +705,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
       }
 
+      turnActivity.push({ toolName, args, result });
       responseParts.push({ functionResponse: { name: toolName, response: result } });
 
       // Attach the ACTUAL image bytes right after the functionResponse for
@@ -689,6 +724,12 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     }
 
     messages.push({ role: "user", content: responseParts });
+
+    // Cost-control Task 2: still does not affect what's sent to the model on
+    // any call in this loop (selectRelevantContext remains unwired — that's
+    // Task 4's job). See the factLedger declaration comment above for how
+    // this now persists across calls instead of being discarded.
+    factLedger = appendFactLedgerEntry(factLedger, iterations, turnActivity);
 
     // Same rationale as loop.ts: the SAME command failed identically a 4th
     // time after already being told to pivot on strike 3 — stop retrying
@@ -713,6 +754,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     errors: exhaustedThreeStrikes || abortedOnUnrecoverableError ? errors : [...errors, "Max iterations exceeded"],
     ...(exhaustedThreeStrikes ? { escalationReason: "three_strikes" as const } : {}),
     escalations,
+    factLedger,
   };
   } finally {
     if (browserToolset) await browserToolset.close();
