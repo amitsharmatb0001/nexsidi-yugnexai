@@ -2,7 +2,21 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listLabeledFiles, resolveLabeledFile, readLabeledFiles, detectStuckLoop, buildQaInitialMessage, computeQaMaxIterations, stripThinkingBlock, extractFindingsFromHistory, type LabeledDir } from "./qa-loop.ts";
+import {
+  listLabeledFiles,
+  resolveLabeledFile,
+  readLabeledFiles,
+  readLabeledFile,
+  detectStuckLoop,
+  buildQaInitialMessage,
+  computeQaMaxIterations,
+  stripThinkingBlock,
+  extractFindingsFromHistory,
+  sharedFileReadCache,
+  clearSharedFileReadCache,
+  isQaReadCacheEnabled,
+  type LabeledDir,
+} from "./qa-loop.ts";
 
 let root: string;
 let dirs: LabeledDir[];
@@ -269,4 +283,126 @@ test("detectStuckLoop is false when the last N signatures include any variation"
 test("detectStuckLoop only looks at the trailing window, not the whole history", () => {
   // 3 identical calls happened early, then the agent moved on — not currently stuck.
   expect(detectStuckLoop(["read_file:a", "read_file:a", "read_file:a", "read_file:b", "read_file:c"], 3)).toBe(false);
+});
+
+// ── Shared QA file-read cache (cost-control plan Task 3) ────────────────────
+// 2026-08-11: real cost problem confirmed live — Navya/Karan/Deepika each run
+// runQAAgent() independently (see stage5-adversarial-qa.ts's
+// runStage5WithAgents, which dispatches all three via Promise.all against the
+// SAME projectId/dirs/code state) and each one's read_file/read_files tool
+// handler called readFileSync directly with zero shared state — confirmed by
+// reading qa-loop.ts's read_file/read_files switch cases and readLabeledFiles:
+// no cache existed anywhere before this test, so three reviewers reading the
+// same file in the same round meant three real disk reads + three full
+// re-serializations of that content into the tool result. sharedFileReadCache
+// gives all three the same FileReadCache instance for a given projectId; the
+// first reviewer's read is real, the second and third are served from the
+// cache's in-memory entry instead.
+test("three QA-agent-shaped reads against the same fixture project hit disk once per unique file, not three times", () => {
+  const cache = sharedFileReadCache("dedup-fixture-project");
+  cache.clear(); // isolate from any other test reusing this projectId
+
+  const filesEachReviewerReads = [
+    "backend/src/index.ts",
+    "backend/src/controllers/tasks.ts",
+    "frontend/app/page.tsx",
+  ];
+  const reviewers = ["navya", "karan", "deepika"];
+
+  for (const _reviewer of reviewers) {
+    for (const path of filesEachReviewerReads) {
+      // readLabeledFile is the exact function qa-loop.ts's read_file tool
+      // handler calls — this exercises the real dedup path, not a proxy.
+      const { found } = readLabeledFile(dirs, path, cache);
+      expect(found).toBe(true);
+    }
+  }
+
+  // 3 reviewers x 3 files = 9 tool-call-shaped reads, but only 3 unique
+  // files — the underlying disk read must happen exactly once per file.
+  expect(cache.realReadCount).toBe(filesEachReviewerReads.length);
+});
+
+test("sharedFileReadCache also dedupes the batched read_files path (readLabeledFiles), not just single read_file", () => {
+  const cache = sharedFileReadCache("dedup-fixture-project-batch");
+  cache.clear();
+
+  const paths = ["backend/src/index.ts", "frontend/app/page.tsx"];
+  // Navya batches both files in one read_files call...
+  readLabeledFiles(dirs, paths, cache);
+  // ...Karan requests the same batch...
+  readLabeledFiles(dirs, paths, cache);
+  // ...Deepika requests the same batch, and content must still be correct.
+  const { output } = readLabeledFiles(dirs, paths, cache);
+
+  expect(cache.realReadCount).toBe(paths.length);
+  expect(output).toContain("export {};");
+  expect(output).toContain("export default function Page() {}");
+});
+
+test("FileReadCache without a cache argument (undefined) falls back to a real read every time — backward compatible / cache is opt-in per call", () => {
+  // No cache passed — mirrors every EXISTING caller (all prior tests in this
+  // file call readLabeledFiles/readLabeledFile with no third argument), so
+  // this proves the dedup feature is additive and doesn't change behavior
+  // for a caller that doesn't opt in.
+  const first = readLabeledFile(dirs, "backend/src/index.ts");
+  const second = readLabeledFile(dirs, "backend/src/index.ts");
+  expect(first.found).toBe(true);
+  expect(second.found).toBe(true);
+  expect(first.content).toBe(second.content);
+});
+
+test("readLabeledFile reports not-found the same way with or without a cache", () => {
+  expect(readLabeledFile(dirs, "backend/does-not-exist.ts").found).toBe(false);
+  const cache = sharedFileReadCache("dedup-not-found-project");
+  cache.clear();
+  expect(readLabeledFile(dirs, "backend/does-not-exist.ts", cache).found).toBe(false);
+});
+
+// Round boundary: files change between fix passes (qa-fix-loop.ts re-runs
+// Stage 5 up to 5x per project), so a round N+1 reviewer must never be served
+// round N's stale cached content.
+test("clearSharedFileReadCache forces a fresh disk read on the next QA round instead of serving stale content", () => {
+  const projectId = "dedup-round-clear-project";
+  const before = sharedFileReadCache(projectId);
+  before.clear();
+
+  const first = readLabeledFile(dirs, "backend/src/index.ts", before);
+  expect(first.content).toContain("export {};");
+  expect(before.realReadCount).toBe(1);
+
+  // A fix pass changes the file's content between rounds.
+  writeFileSync(join(root, "backend", "src", "index.ts"), "export const changed = true;");
+
+  clearSharedFileReadCache(projectId);
+  const after = sharedFileReadCache(projectId);
+  const second = readLabeledFile(dirs, "backend/src/index.ts", after);
+
+  expect(second.content).toContain("changed");
+  expect(after.realReadCount).toBe(1); // fresh cache after clear — one real read, not a stale hit
+});
+
+test("clearSharedFileReadCache on a projectId with no existing cache is a safe no-op", () => {
+  expect(() => clearSharedFileReadCache("never-seen-this-project-id")).not.toThrow();
+});
+
+// Global constraint from the cost-control plan: every lever must be
+// individually toggleable/revertable. QA_READ_CACHE_ENABLED=false reverts to
+// the pre-existing independent-read behavior without a code change, matching
+// the PROMPT_AUDIT_ENABLED convention (packages/prompt-audit/src/index.ts).
+test("isQaReadCacheEnabled defaults to enabled and can be disabled via QA_READ_CACHE_ENABLED=false", () => {
+  const original = process.env.QA_READ_CACHE_ENABLED;
+  try {
+    delete process.env.QA_READ_CACHE_ENABLED;
+    expect(isQaReadCacheEnabled()).toBe(true);
+
+    process.env.QA_READ_CACHE_ENABLED = "false";
+    expect(isQaReadCacheEnabled()).toBe(false);
+
+    process.env.QA_READ_CACHE_ENABLED = "true";
+    expect(isQaReadCacheEnabled()).toBe(true);
+  } finally {
+    if (original === undefined) delete process.env.QA_READ_CACHE_ENABLED;
+    else process.env.QA_READ_CACHE_ENABLED = original;
+  }
 });
