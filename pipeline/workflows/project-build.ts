@@ -12,8 +12,32 @@ import {
   sleep,
   patched,
   condition,
+  ActivityFailure,
+  ApplicationFailure,
 } from "@temporalio/workflow";
 import type * as activities from "../activities/index.ts";
+import type { QAFixLoopActivityResult } from "../activities/index.ts";
+
+// 2026-08-11 (cost-control Task 1): pipeline/activities/index.ts's
+// assertWithinBudget throws ApplicationFailure.create({ type:
+// "BudgetExceeded", nonRetryable: true, ... }) when a project is over its
+// per-project cap. Per @temporalio/common's ActivityFailure doc ("the
+// ApplicationFailure from the last Activity Task will be the `cause` of the
+// ActivityFailure thrown in the Workflow"), that surfaces here as an
+// ActivityFailure whose .cause is the original ApplicationFailure with
+// .type preserved — this is the real, documented shape (checked against
+// node_modules/@temporalio/common's failure.d.ts, not guessed), not a
+// message-string convention like isQuotaExhaustionError's. Used by the
+// Stage 3 (generation) and Stage 5 (QA) catch blocks below to route a
+// budget failure into escalateAndAwaitRetryDecision("budget_exceeded")
+// instead of the generic "generation_failed" reason / an uncaught throw.
+function isBudgetExceededFailure(err: unknown): boolean {
+  return (
+    err instanceof ActivityFailure &&
+    err.cause instanceof ApplicationFailure &&
+    err.cause.type === "BudgetExceeded"
+  );
+}
 
 // Short timeout for single-LLM-call activities (spec, QA, compliance)
 const act = proxyActivities<typeof activities>({
@@ -286,6 +310,25 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.log(`[workflow] Stage 3 generation failed: ${reason}`);
+      // 2026-08-11 (cost-control Task 1): a budget-exceeded generator
+      // failure gets its own escalation reason so a human sees WHY the
+      // pipeline stopped (over cap) instead of the generic
+      // "generation_failed" a real code-generation bug would report.
+      // Written as an explicit branch (not a computed variable) so both
+      // literal calls stay grep/source-string visible — compile-loop.test.ts
+      // asserts `escalateAndAwaitRetryDecision("generation_failed")` and
+      // `markProjectFailed(projectId, "generation_failed")` verbatim.
+      if (isBudgetExceededFailure(err)) {
+        const retry = patched("generation-retry-signal-v1")
+          ? await escalateAndAwaitRetryDecision("budget_exceeded")
+          : false;
+        if (!retry) {
+          await act.markProjectFailed(projectId, "budget_exceeded");
+          return;
+        }
+        console.log(`[workflow] retrying Stage 3 generation after a human retry decision (budget_exceeded)`);
+        continue;
+      }
       const retry = patched("generation-retry-signal-v1")
         ? await escalateAndAwaitRetryDecision("generation_failed")
         : false;
@@ -332,7 +375,33 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     // decision instead of unconditionally terminating the workflow ────────
     state.stage = "qa";
     for (;;) {
-      const qaResult = await orchestratorAct.runQAFixLoopActivity(projectId);
+      // 2026-08-11 (cost-control Task 1): runQAFixLoopActivity now calls
+      // assertWithinBudget before doing any GAN work — previously this call
+      // had NO surrounding try/catch at all, so any activity failure here
+      // (budget-exceeded or otherwise) would propagate straight out of the
+      // workflow function uncaught. This only intercepts the NEW
+      // budget-exceeded failure (impossible in any pre-existing workflow
+      // history — checkBudget didn't exist before this change, so no
+      // in-flight replay can diverge) and routes it through the same
+      // escalateAndAwaitRetryDecision pattern stuck-state already uses,
+      // just with reason "budget_exceeded" instead of "stuck_state". Any
+      // other failure is re-thrown unchanged, preserving today's exact
+      // (uncaught-propagates) behavior for everything that isn't this new
+      // failure type.
+      let qaResult: QAFixLoopActivityResult;
+      try {
+        qaResult = await orchestratorAct.runQAFixLoopActivity(projectId);
+      } catch (err) {
+        if (!isBudgetExceededFailure(err)) throw err;
+        console.log(`[workflow] Stage 5 QA halted — budget exceeded`);
+        const retry = await escalateAndAwaitRetryDecision("budget_exceeded");
+        if (!retry) {
+          await act.markProjectFailed(projectId, "budget_exceeded");
+          return;
+        }
+        console.log(`[workflow] retrying Stage 5 QA after a human retry decision (budget_exceeded)`);
+        continue;
+      }
       state.iteration = qaResult.iterations;
       if (qaResult.pass) break;
 

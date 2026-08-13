@@ -49,6 +49,11 @@ import type { ProjectSpec } from "../../agents/saanvi/src/index.ts";
 import type { BuildPlan }   from "../../agents/arjun/src/index.ts";
 import type { DesignBrief } from "../../agents/vanya/src/index.ts";
 import { isQuotaExhaustionError } from "../../packages/agent-runtime/src/gemini-loop.ts";
+// 2026-08-11 (cost-control Task 1): checkBudget's persisted per-project
+// total is the ceiling assertWithinBudget (below) gates every generator/QA
+// activity entry point on — see docs/nexsidi/plans/2026-08-11-cost-control.md
+// for the incident this responds to.
+import { checkBudget } from "../../packages/agent-runtime/src/cost-budget.ts";
 
 // ── In-process cache (activities run in same Temporal worker process)
 const specCache = new Map<string, ProjectSpec>();
@@ -280,6 +285,38 @@ export function generatorFailure(agentName: string, errors: string[]): never {
   });
 }
 
+// 2026-08-11 (cost-control Task 1): called at the top of every generator and
+// QA activity entry point, before any LLM work for that stage happens. An
+// over-budget project must halt BEFORE spending more, not after — the whole
+// point of a "hard" budget, and the direct fix for the $29K/week incident
+// (docs/nexsidi/plans/2026-08-11-cost-control.md), which happened precisely
+// because nothing checked a running dollar total against a ceiling anywhere
+// in this pipeline.
+//
+// Mirrors generatorFailure's exact shape (ApplicationFailure, type +
+// nonRetryable:true) so this reaches the workflow the same proven way a
+// generator's own exhaustion does. nonRetryable is correct here for the
+// SAME reason it's correct there: Temporal's own retry policy (genAct:
+// maximumAttempts 5 / orchestratorAct: 2) blindly re-running an over-budget
+// activity would just spend more — the opposite of the fix — before ever
+// reaching a human decision.
+//
+// type: "BudgetExceeded" and the "budget_exceeded: " message prefix are
+// both load-bearing — pipeline/workflows/project-build.ts's
+// isBudgetExceededFailure() and its Stage 3/Stage 5 catch blocks key off
+// them to route this into escalateAndAwaitRetryDecision("budget_exceeded")
+// instead of the generic "generation_failed"/uncaught-failure paths.
+export async function assertWithinBudget(projectId: string, agentName: string): Promise<void> {
+  const status = await checkBudget(projectId);
+  if (!status.withinBudget) {
+    throw ApplicationFailure.create({
+      message: `budget_exceeded: project ${projectId} has spent $${status.spentUsd.toFixed(2)} of its $${status.capUsd.toFixed(2)} cap — halted before ${agentName} ran`,
+      type: "BudgetExceeded",
+      nonRetryable: true,
+    });
+  }
+}
+
 // 2026-08-06: real bug found live (project bae438767bed) — this retry
 // wrapper was only ever wired into runShubham/runAanya/runPranav (initial
 // generation, below). stage5-qa-fix-loop.ts's DI wiring called each agent's
@@ -301,6 +338,7 @@ export async function runShubham(projectId: string): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
+    await assertWithinBudget(projectId, "shubham");
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "shubham", plan);
     const result = await runGeneratorWithQuotaRetry(() => runShubhamAgent(plan));
@@ -315,6 +353,7 @@ export async function runAanya(projectId: string): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
+    await assertWithinBudget(projectId, "aanya");
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "aanya", plan);
     const result = await runGeneratorWithQuotaRetry(() => runAanyaAgent(plan, "integrate"));
@@ -329,6 +368,7 @@ export async function runPranav(projectId: string): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
+    await assertWithinBudget(projectId, "pranav");
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "pranav", plan);
     const result = await runGeneratorWithQuotaRetry(() => runPranavAgent(plan));
@@ -647,6 +687,7 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
   const ctx = Context.current();
   const hb = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
+    await assertWithinBudget(projectId, "qa-gan");
     const plan = getPlan(projectId);
     const stage4Result = buildStage4Result(projectId);
     const result = await runQAFixLoop(projectId, plan, stage4Result);
