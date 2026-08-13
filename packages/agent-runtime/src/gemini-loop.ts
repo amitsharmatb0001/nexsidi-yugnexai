@@ -20,6 +20,7 @@ import {
 } from "@nexsidi/llm-client";
 import { runAgent, buildToolList, evaluateCommandStrike, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
 import { compactGeminiHistory } from "./compaction.ts";
+import { appendFactLedgerEntry, type FactLedgerEntry, type TurnToolActivity } from "./context-selection.ts";
 import { createStrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { execWriteFile, execWriteFiles, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol } from "./tools/file.ts";
@@ -283,6 +284,16 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   // Deepika, applied here so Shubham/Aanya/Riya get the same early exit.
   const recentCallSignatures: string[] = [];
 
+  // 2026-08-13 (cost-control plan, Task 2): data-collection only — builds the
+  // structured fact ledger (context-selection.ts) alongside the existing raw
+  // history, but does NOT change what gets sent to the model on any call in
+  // this loop. That swap is Task 4's job, after this mechanism has been
+  // reviewed on its own. Kept here (rather than only in a standalone test)
+  // so the ledger actually accumulates real data from real runs, which Task 4
+  // will need to pick a measurement-backed compaction threshold instead of a
+  // guess (see the plan's Task 4 Step 3).
+  let factLedger: FactLedgerEntry[] = [];
+
   // 2026-07-25 (Phase 1): per-agent tier — see loop.ts's geminiTier comment
   // for why this is a bare string there. Unset defaults to "generation",
   // preserving every existing caller's behavior.
@@ -486,6 +497,11 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     }
 
     const responseParts: GeminiPart[] = [];
+    // Cost-control Task 2: raw material for the fact-ledger append below —
+    // collected alongside responseParts, not derived from it, since
+    // responseParts only carries the functionResponse (not the original
+    // toolName/args pairing needed for inference).
+    const turnActivity: TurnToolActivity[] = [];
     for (const call of response.toolCalls) {
       const toolName = call.name;
       const args = call.input;
@@ -671,6 +687,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
       }
 
+      turnActivity.push({ toolName, args, result });
       responseParts.push({ functionResponse: { name: toolName, response: result } });
 
       // Attach the ACTUAL image bytes right after the functionResponse for
@@ -689,6 +706,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     }
 
     messages.push({ role: "user", content: responseParts });
+
+    // Cost-control Task 2: data collection only (see the factLedger
+    // declaration comment above) — does not affect what's sent to the model.
+    factLedger = appendFactLedgerEntry(factLedger, iterations, turnActivity);
 
     // Same rationale as loop.ts: the SAME command failed identically a 4th
     // time after already being told to pivot on strike 3 — stop retrying
