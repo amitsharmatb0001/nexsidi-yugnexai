@@ -443,6 +443,74 @@ test("compactViaRelevantContext: below threshold, returns the identical messages
   expect(result).toBe(messages);
 });
 
+// ── Review Finding 1: stale synthetic messages must not leak into the ─────
+// trailing window on the 2nd+ compaction in a session ───────────────────────
+//
+// Every test above (and the whole pre-fix suite) only ever calls
+// compactViaRelevantContext/selectRelevantContext ONCE — that's exactly the
+// gap the review found. At the old 750K threshold, hitting compaction twice
+// in one session was rare; at the new 120K threshold it's the routine case.
+// Root cause: selectRelevantContext's taskMsg/ledgerMsg are ordinary `role:
+// "user"` messages folded into the returned `messages` array. On a SECOND
+// compaction later in the session, `nonSys` is re-derived by filtering for
+// `role !== "system"` — which cannot tell a genuine turn from a synthetic
+// CURRENT TASK/FACT LEDGER block a PRIOR compaction injected. A short
+// trailing window can pull that stale block into the new slice, and a FRESH
+// task/ledger block gets prepended on top of it — "FACT LEDGER" and
+// "CURRENT TASK" then each appear twice in the same request (fresh +
+// stale), even though no fact is technically lost (the fresh dump is a
+// superset).
+test("compactViaRelevantContext: two compactions in one session produce exactly one FACT LEDGER and one CURRENT TASK block, not a stale duplicate", () => {
+  const bigTurn = (label: string) => makeModelTurn(`${label}: ${"x".repeat(6000)}`);
+
+  let messages: GeminiMessage[] = [
+    { role: "system", content: "You are Shubham, the backend generator." },
+    makeUserTurn("Initial task: build the auth routes"),
+  ];
+  let ledger: FactLedgerEntry[] = appendFactLedgerEntry([], 1, [
+    { toolName: "write_file", args: { path: "backend/src/auth.ts", content: "x" }, result: { status: "success" } },
+  ]);
+
+  const thresholdTokens = 500;
+  const currentTask = "Continue building auth";
+
+  // One large early turn forces the FIRST compaction — with so few real
+  // turns in history yet, the resulting trailing window is necessarily
+  // small (mirrors the reviewer's reproduction shape).
+  messages.push(bigTurn("turn2"));
+  messages = compactViaRelevantContext(messages, currentTask, ledger, thresholdTokens);
+
+  let serialized = JSON.stringify(messages);
+  expect((serialized.match(/FACT LEDGER/g) ?? []).length).toBe(1);
+  expect((serialized.match(/CURRENT TASK/g) ?? []).length).toBe(1);
+
+  // A single ordinary turn passes...
+  messages.push(makeUserTurn("ack"));
+  ledger = appendFactLedgerEntry(ledger, 2, [
+    { toolName: "write_file", args: { path: "backend/src/routes.ts", content: "y" }, result: { status: "success" } },
+  ]);
+
+  // ...then another large turn forces a SECOND compaction shortly after —
+  // routine now at the 120K threshold, not an edge case. With only a couple
+  // of real turns since the first compaction, the default trailing window
+  // (6) reaches back far enough to include the first compaction's synthetic
+  // taskMsg/ledgerMsg unless they are correctly excluded.
+  messages.push(bigTurn("turn4"));
+  messages = compactViaRelevantContext(messages, currentTask, ledger, thresholdTokens);
+
+  serialized = JSON.stringify(messages);
+  const ledgerCount = (serialized.match(/FACT LEDGER/g) ?? []).length;
+  const taskCount = (serialized.match(/CURRENT TASK/g) ?? []).length;
+  expect(ledgerCount).toBe(1);
+  expect(taskCount).toBe(1);
+
+  // Nothing lost: both facts (one from before each compaction) must still
+  // be present — the fresh ledger dump is a superset of the stale one it
+  // replaced, not a narrower one.
+  expect(serialized).toContain("backend/src/auth.ts");
+  expect(serialized).toContain("backend/src/routes.ts");
+});
+
 test("compactViaRelevantContext: above threshold, rebuilds via selectRelevantContext (fact ledger survives, touched files derived from it)", () => {
   const fullHistory: GeminiMessage[] = [{ role: "system", content: "sys" }];
   let ledger: FactLedgerEntry[] = [];

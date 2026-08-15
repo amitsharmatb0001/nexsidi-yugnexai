@@ -520,6 +520,13 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       // and its job here is "shrink NOW by any means" rather than "select
       // the right context," so keeping the plain hard-drop/summarize
       // behavior is correct, not a gap.
+      // Review Finding 3 (non-blocking): `messages` at this point may already
+      // include the FACT LEDGER block compactViaRelevantContext injected, so
+      // this paraphrases that block into lossy prose for this one retry —
+      // `factLedger` itself is untouched and re-sent in full on the next
+      // proactive compaction, so nothing is permanently lost, but the model
+      // works from a lossy summary until 120K is re-crossed. Same structural
+      // shape as before Task 4, just more likely to matter now.
       if (isContextLengthExceededError(err)) {
         console.log(`[${config.agentName}:gemini-agent] Context length exceeded on iteration ${iterations} — forcing emergency compaction and retrying`);
         messages = await compactGeminiHistory(messages, undefined, Math.floor(COMPACTION_THRESHOLD_TOKENS / 10));

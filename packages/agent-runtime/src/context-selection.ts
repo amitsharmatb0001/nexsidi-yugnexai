@@ -238,6 +238,50 @@ export interface SelectContextOptions {
   trailingTurnCount?: number;
 }
 
+// ── Synthetic-message tagging (review Finding 1 fix) ────────────────────────
+//
+// Bug this closes: selectRelevantContext's taskMsg/ledgerMsg are ordinary
+// `role: "user"` GeminiMessage objects, appended into the array
+// compactViaRelevantContext hands back as the new `messages`. On the NEXT
+// compaction later in the same session (now the routine case at a 120K
+// threshold, not an edge case), this function re-derives `nonSys` by
+// filtering `fullHistory` for `role !== "system"` — which can't distinguish
+// a genuine conversation turn from a synthetic CURRENT TASK/FACT LEDGER block
+// a PRIOR call to this function injected. A small/short trailing window can
+// then pull that stale block into the new trailing slice, and this function
+// prepends a FRESH task/ledger block on top of it — producing a request with
+// "FACT LEDGER" (and "CURRENT TASK") appearing twice: once fresh and
+// complete, once stale and incomplete, both claiming to be authoritative.
+//
+// Fix: tag every synthetic message this function creates, and exclude tagged
+// messages from the trailing-window candidate pool before slicing. This is
+// safe — not lossy — because the tagged messages carry no information the
+// FRESH rebuild doesn't already re-derive as a superset: taskMsg is rebuilt
+// from `currentTask` (which gemini-loop.ts documents as constant across a
+// run) and the ledger-derived touched-files list; ledgerMsg is rebuilt from
+// the full `factLedger`, which only ever grows. Dropping a stale copy of
+// either from the trailing pool therefore cannot drop a fact — only a
+// duplicate presentation of one.
+//
+// A plain boolean field (not a Symbol) so it survives the actual persistence
+// path: `messages` round-trips through `agentConversations.messages` (jsonb,
+// packages/db/src/schema.ts) between a save and a later resumed run, and
+// Symbol-keyed properties do not survive JSON.stringify/parse. The marker is
+// never sent to the model: buildGeminiContents (llm-client/src/gemini.ts)
+// only ever reads `m.role`/`m.content` when assembling the outgoing request,
+// so an extra property on the message object is inert there.
+const SYNTHETIC_CONTEXT_MARKER = "__nexsidiContextSelectionSynthetic" as const;
+
+type SyntheticGeminiMessage = GeminiMessage & { [SYNTHETIC_CONTEXT_MARKER]?: true };
+
+function markSynthetic(message: GeminiMessage): GeminiMessage {
+  return { ...message, [SYNTHETIC_CONTEXT_MARKER]: true } as SyntheticGeminiMessage;
+}
+
+function isSyntheticContextMessage(message: GeminiMessage): boolean {
+  return (message as SyntheticGeminiMessage)[SYNTHETIC_CONTEXT_MARKER] === true;
+}
+
 /**
  * Build the context to actually send to the model for the next call:
  * system prompt + current task brief (task, touched files, open findings)
@@ -260,7 +304,12 @@ export function selectRelevantContext(
   const trailingTurnCount = options.trailingTurnCount ?? 6;
 
   const sys = fullHistory.filter((m): m is Extract<GeminiMessage, { role: "system" }> => m.role === "system");
-  const nonSys = fullHistory.filter((m) => m.role !== "system");
+  // Exclude synthetic CURRENT TASK/FACT LEDGER blocks a PRIOR compaction
+  // injected — see isSyntheticContextMessage's header comment above. Without
+  // this, a second-or-later compaction's trailing-window candidate pool can
+  // include a stale synthetic block, which then rides along inside `trailing`
+  // below and duplicates the fresh one this call is about to build.
+  const nonSys = fullHistory.filter((m) => m.role !== "system" && !isSyntheticContextMessage(m));
   const trailing = safeTrailingSlice(nonSys, trailingTurnCount);
 
   const taskLines = [
@@ -269,7 +318,7 @@ export function selectRelevantContext(
     openFindings.length > 0 ? `OPEN FINDINGS:\n${openFindings.map((f) => `- ${f}`).join("\n")}` : null,
   ].filter((l): l is string => l !== null);
 
-  const taskMsg: GeminiMessage = { role: "user", content: taskLines.join("\n\n") };
+  const taskMsg: GeminiMessage = markSynthetic({ role: "user", content: taskLines.join("\n\n") });
 
   const messages: GeminiMessage[] = [...sys, taskMsg];
 
@@ -277,10 +326,10 @@ export function selectRelevantContext(
   // the prompt, and it keeps the "no facts recorded yet" case indistinguishable
   // from extra boilerplate rather than a real section.
   if (factLedger.length > 0) {
-    const ledgerMsg: GeminiMessage = {
+    const ledgerMsg: GeminiMessage = markSynthetic({
       role: "user",
       content: `FACT LEDGER (full — every entry below is a fact recorded earlier in this session and is never dropped):\n${formatFactLedgerForPrompt(factLedger)}`,
-    };
+    });
     messages.push(ledgerMsg);
   }
 
