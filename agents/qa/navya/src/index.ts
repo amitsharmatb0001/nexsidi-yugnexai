@@ -68,6 +68,10 @@ export async function runExploring(
     // for this same round (all three are dispatched with the same
     // projectId — see stage5-adversarial-qa.ts's runStage5WithAgents, which
     // clears the cache before dispatching them).
+    // Cost-control plan Task 1: also the only way real QA spend (this loop's
+    // own header comment: "a single QA round ... ran to ~7.8M tokens") has
+    // anything to attribute it to — projectId was already this function's
+    // own first parameter, just never threaded into the loop config before.
     projectId,
   });
 

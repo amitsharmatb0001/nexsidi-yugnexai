@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
-  bigserial, boolean, char, check, foreignKey, index, integer, jsonb, pgTable,
+  bigserial, boolean, char, check, foreignKey, index, integer, jsonb, numeric, pgTable,
   text, timestamp, unique, uniqueIndex, uuid, varchar,
 } from "drizzle-orm/pg-core";
 
@@ -118,6 +118,28 @@ export const promptAudit = pgTable("prompt_audit", {
 }, (t) => [
   index("audit_hash_idx").on(t.hash),
 ]);
+
+// ─── Token Spend (cost-control Task 1, docs/nexsidi/plans/2026-08-11-cost-control.md) ──
+// Running per-project token/cost total — checked BEFORE every generator/QA
+// activity (pipeline/activities/index.ts's assertWithinBudget) so a project
+// halts before spending more, not after discovering it overspent. Direct
+// response to a real incident: a project burned $29K of GCP/Gemini credits
+// in a week with no spend ceiling anywhere in the pipeline.
+// One row per project, accumulated in place via UPSERT (see
+// packages/agent-runtime/src/cost-budget.ts's recordSpend) rather than
+// re-derived by summing a log table — a budget check is O(1) regardless of
+// how many LLM calls a project has made.
+export const tokenSpend = pgTable("token_spend", {
+  projectId:      varchar("project_id", { length: 64 }).primaryKey(),
+  totalTokensIn:  integer("total_tokens_in").notNull().default(0),
+  totalTokensOut: integer("total_tokens_out").notNull().default(0),
+  // 12,6 gives headroom to $999,999.999999 at 6-decimal precision — a
+  // per-project total should never realistically approach that, but
+  // truncating fractional cents across thousands of accumulated small
+  // deltas (one per LLM call) would silently under-count real spend.
+  totalCostUsd:   numeric("total_cost_usd", { precision: 12, scale: 6 }).notNull().default("0"),
+  updatedAt:      timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 // ─── Instinct Memory (Patent Claim 2) ────────────────────────────────────────
 export const instincts = pgTable("instincts", {

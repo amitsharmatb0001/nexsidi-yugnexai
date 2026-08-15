@@ -279,6 +279,14 @@ export interface GeminiChatWithToolsResult {
   // the prefix is byte-identical across calls; this field is how a cache HIT
   // becomes visible, since there's no separate "cache hit" flag otherwise).
   cachedContentTokens?: number;
+  // 2026-08-13 (cost-control Task 1): usageMetadata.candidatesTokenCount was
+  // already coming back from Vertex on every call (see the usage log line
+  // right below where this is populated) but was silently dropped instead
+  // of being returned — the only place completion-token cost actually
+  // matters (packages/agent-runtime/src/cost-budget.ts's recordSpend, which
+  // gemini-loop.ts now calls) had no way to see it. promptTokens above had
+  // the same shape already; this is just the missing other half of the pair.
+  completionTokens?: number;
 }
 
 // Shape of the `usageMetadata` object Vertex AI returns on every
@@ -569,6 +577,7 @@ export async function geminiChatWithTools(
       rawParts: parts,
       promptTokens: data.usageMetadata?.promptTokenCount,
       cachedContentTokens: data.usageMetadata?.cachedContentTokenCount,
+      completionTokens: data.usageMetadata?.candidatesTokenCount,
     };
   } catch (err) {
     recordFailure(circuitKey);

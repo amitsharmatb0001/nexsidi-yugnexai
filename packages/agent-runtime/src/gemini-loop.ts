@@ -19,8 +19,18 @@ import {
   type GeminiTier,
 } from "@nexsidi/llm-client";
 import { runAgent, buildToolList, evaluateCommandStrike, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
-import { compactGeminiHistory } from "./compaction.ts";
+import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts";
 import { appendFactLedgerEntry, type FactLedgerEntry, type TurnToolActivity } from "./context-selection.ts";
+// 2026-08-13 (cost-control Task 1): same CRITICAL gap as loop.ts (see that
+// file's recordSpend import comment for the full root cause) — this is the
+// PARALLEL Gemini-side agentic loop (Shubham/Aanya/Pranav/Riya/Tilotma's
+// Tier-3 evaluators, when routed through Gemini instead of NIM), and it had
+// the identical zero-callers problem. response.completionTokens didn't even
+// exist on GeminiChatWithToolsResult until this task (Vertex's own
+// candidatesTokenCount was being read into the usage LOG line and then
+// discarded — see packages/llm-client/src/gemini.ts) — added there so it's
+// available here.
+import { recordSpend } from "./cost-budget.ts";
 import { createStrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { execWriteFile, execWriteFiles, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol } from "./tools/file.ts";
@@ -376,6 +386,26 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       response = await routeToolsWithFallback(tier, messages, tools, { model: config.geminiModel, cachedContent: cachedContentHandle, agentName: config.agentName });
       if (iterations === 1) {
         console.log(`[${config.agentName}:gemini-agent] model=${response.modelUsed}`);
+      }
+      // 2026-08-13 (cost-control Task 1): real per-project $ accumulation —
+      // see this file's recordSpend import comment. promptTokens/
+      // completionTokens are both optional on the wire (Vertex doesn't
+      // guarantee usageMetadata on every response) — fall back to a rough
+      // character-based estimate for the prompt side (same technique
+      // loop.ts's NIM path and this file's own compaction checks already
+      // use) and a conservative fixed guess for completion, rather than
+      // silently recording zero cost for a call that really happened.
+      if (config.projectId) {
+        try {
+          await recordSpend(
+            config.projectId,
+            response.promptTokens ?? estimateGeminiTokenCount(messages),
+            response.completionTokens ?? 300,
+            response.modelUsed,
+          );
+        } catch (spendErr) {
+          console.error(`[${config.agentName}:gemini-agent] recordSpend failed (non-fatal — this call's spend may be under-counted):`, spendErr);
+        }
       }
     } catch (err) {
       if (isUnrecoverableGeminiError(err)) {

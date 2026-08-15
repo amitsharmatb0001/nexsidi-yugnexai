@@ -100,8 +100,9 @@ export async function runExploring(
     reviewFocus: "performance issues (Big-O complexity blowups, memory leaks, N+1 query patterns, blocking synchronous calls on the hot path)",
     dirs,
     systemContext,
-    // Cost-control plan Task 3: shares one FileReadCache with Navya/Karan
-    // for this same round — see navya/src/index.ts's identical parameter.
+    // Cost-control plan Tasks 1 and 3: see navya/src/index.ts's identical
+    // parameter for the full rationale (shared FileReadCache + QA spend
+    // attribution).
     projectId,
   });
 

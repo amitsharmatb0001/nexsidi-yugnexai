@@ -108,8 +108,9 @@ export async function runExploring(
     reviewFocus: "security vulnerabilities AND information-integrity defects — specifically: (1) OWASP issues (injection, auth/authz gaps, unsafe deserialization, exposed secrets, CSRF, unvalidated input); (2) read frontend JSX/TSX files and search for 'NexSidi', 'NexUI', '@yugnex' appearing as RENDERED TEXT in JSX (string literals between JSX tags, aria-label values, title/alt attributes, or text rendered inside <p>/<span>/<footer>/<h*> elements) — CRITICAL if found. IMPORTANT: TypeScript import statements (e.g. \"import { X } from '@yugnex/nexui-react'\") and package.json dependency entries are NOT user-visible text and must NOT be flagged — only flag when the string is actually rendered in the browser as visible text; (3) read frontend/app/dashboard/page.tsx and look for <Badge> or status text like 'Connected API', 'Online', 'Active' rendered unconditionally without a runtime state variable — MEDIUM if the value is a hardcoded string literal never set by an actual API check",
     dirs,
     systemContext,
-    // Cost-control plan Task 3: shares one FileReadCache with Navya/Deepika
-    // for this same round — see navya/src/index.ts's identical parameter.
+    // Cost-control plan Tasks 1 and 3: see navya/src/index.ts's identical
+    // parameter for the full rationale (shared FileReadCache + QA spend
+    // attribution).
     projectId,
   });
 

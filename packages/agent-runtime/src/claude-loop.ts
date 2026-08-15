@@ -20,10 +20,17 @@
 import {
   claudeChatWithTools,
   translateNimToolToClaudeTool,
+  resolveClaudeModel,
   type ClaudeMessage,
   type ClaudeToolDef,
   type ClaudeContentBlockParam,
 } from "@nexsidi/llm-client";
+// 2026-08-13 (cost-control Task 1): same CRITICAL gap as loop.ts/
+// gemini-loop.ts — this is the Claude escalation tier (rare, one-shot retry
+// when NIM fails, but at Claude's rates the most expensive per-call spend of
+// any of the three loops). claudeChatWithTools's usage field (added this
+// task — see claude.ts) makes the real per-call token counts available here.
+import { recordSpend } from "./cost-budget.ts";
 import { runAgent, buildToolList, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
 import { join } from "path";
 import { readFileSync } from "node:fs";
@@ -245,6 +252,15 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
     let response;
     try {
       response = await claudeChatWithTools(messages, tools, claudeApiKey);
+      // 2026-08-13 (cost-control Task 1): real per-project $ accumulation —
+      // see this file's recordSpend import comment.
+      if (config.projectId) {
+        try {
+          await recordSpend(config.projectId, response.usage.inputTokens, response.usage.outputTokens, resolveClaudeModel());
+        } catch (spendErr) {
+          console.error(`[${config.agentName}:claude-agent] recordSpend failed (non-fatal — this call's spend may be under-counted):`, spendErr);
+        }
+      }
     } catch (err) {
       if (isUnrecoverableClaudeError(err)) {
         errors.push(`Claude call failed on iteration ${iterations} with an unrecoverable error — aborting early instead of retrying: ${String(err)}`);
