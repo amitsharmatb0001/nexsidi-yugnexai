@@ -1,6 +1,17 @@
-import { test, expect } from "bun:test";
+import { test, expect, afterEach } from "bun:test";
 import { readFileSync } from "node:fs";
-import { isContextLengthExceededError, isUnrecoverableGeminiError, isAllPoolModelsExhaustedError, isQuotaExhaustionError, screenshotImagePathFor } from "./gemini-loop.ts";
+import type { GeminiMessage } from "@nexsidi/llm-client";
+import {
+  isContextLengthExceededError,
+  isUnrecoverableGeminiError,
+  isAllPoolModelsExhaustedError,
+  isQuotaExhaustionError,
+  screenshotImagePathFor,
+  isRelevantContextSelectionEnabled,
+  COMPACTION_THRESHOLD_TOKENS,
+} from "./gemini-loop.ts";
+import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts";
+import { appendFactLedgerEntry, compactViaRelevantContext, type FactLedgerEntry } from "./context-selection.ts";
 
 const source = readFileSync(new URL("./gemini-loop.ts", import.meta.url), "utf-8");
 
@@ -128,4 +139,154 @@ test("isQuotaExhaustionError returns false for an empty errors list", () => {
 // not just described in a comment.
 test("the no-tool-call nudge explicitly forbids writing another thinking block", () => {
   expect(source).toContain("Do NOT write another <thinking> block restating or expanding your plan");
+});
+
+// ── Cost-control Task 4: lowered threshold + selectRelevantContext as the ──
+// primary compaction path ────────────────────────────────────────────────
+//
+// Root cause being guarded against here: the 2026-07-24 "amnesiac
+// oscillation" bug — lowering the threshold is only safe because Task 2's
+// fact ledger (context-selection.ts) is what actually runs when the
+// threshold is crossed now, not the old lossy prose summarizer. Every test
+// below is exercised WITHOUT a live network call (compactViaRelevantContext
+// and selectRelevantContext are pure), matching this file's existing
+// convention of testing the pure decision logic directly rather than the
+// full network-calling loop.
+
+test("COMPACTION_THRESHOLD_TOKENS was lowered well below the old 750K value, and stays under the plan's 150K/call target", () => {
+  expect(COMPACTION_THRESHOLD_TOKENS).toBeLessThan(750_000);
+  expect(COMPACTION_THRESHOLD_TOKENS).toBeLessThanOrEqual(150_000);
+  expect(COMPACTION_THRESHOLD_TOKENS).toBeGreaterThan(0);
+});
+
+test("isRelevantContextSelectionEnabled defaults to true and respects RELEVANT_CONTEXT_SELECTION_ENABLED=false", () => {
+  const original = process.env.RELEVANT_CONTEXT_SELECTION_ENABLED;
+  try {
+    delete process.env.RELEVANT_CONTEXT_SELECTION_ENABLED;
+    expect(isRelevantContextSelectionEnabled()).toBe(true);
+    process.env.RELEVANT_CONTEXT_SELECTION_ENABLED = "false";
+    expect(isRelevantContextSelectionEnabled()).toBe(false);
+    process.env.RELEVANT_CONTEXT_SELECTION_ENABLED = "true";
+    expect(isRelevantContextSelectionEnabled()).toBe(true);
+  } finally {
+    if (original === undefined) delete process.env.RELEVANT_CONTEXT_SELECTION_ENABLED;
+    else process.env.RELEVANT_CONTEXT_SELECTION_ENABLED = original;
+  }
+});
+
+test("both primary compaction call sites are wired to compactViaRelevantContext, gated by the escape hatch, with compactGeminiHistory reserved for the escape-hatch revert and the emergency context-exceeded path only", () => {
+  // The two call sites this task rewires (on DB load, and before every
+  // model call in the iteration loop) must use compactViaRelevantContext
+  // when the lever is enabled.
+  const primarySiteCount = (source.match(/compactViaRelevantContext\(/g) ?? []).length;
+  expect(primarySiteCount).toBe(2);
+
+  // compactGeminiHistory must still appear exactly twice: once as the
+  // escape-hatch's full-revert fallback shared by both primary call sites
+  // (LEGACY_COMPACTION_THRESHOLD_TOKENS), and once as the genuine
+  // context-length-exceeded emergency recovery. It must NOT be called with
+  // the new low COMPACTION_THRESHOLD_TOKENS directly anywhere — that would
+  // be "run the lossy summarizer frequently," the exact bug this task exists
+  // to avoid.
+  const legacyCallCount = (source.match(/compactGeminiHistory\(messages, undefined, LEGACY_COMPACTION_THRESHOLD_TOKENS\)/g) ?? []).length;
+  expect(legacyCallCount).toBe(2);
+  expect(source).not.toContain("compactGeminiHistory(messages, undefined, COMPACTION_THRESHOLD_TOKENS)");
+});
+
+// ── The critical regression proof: reuses context-selection.test.ts's ──────
+// "fact recorded early survives many turns later" pattern, scaled up to the
+// exact shape of the incident this task fixes — a single call that would
+// previously have carried 500K+ tokens.
+
+function bigModelTurn(turn: number, sizeTokensApprox: number): GeminiMessage {
+  // ~4 chars/token (estimateGeminiTokenCount's own approximation) — pads a
+  // turn out to a realistic "large tool output" size (e.g. a sizeable
+  // generated file or command output) rather than a tiny placeholder, so the
+  // simulated history genuinely reaches incident-scale token counts.
+  const filler = "x".repeat(sizeTokensApprox * 4);
+  return { role: "model", content: [{ text: `Turn ${turn}: ${filler}` }] };
+}
+function ackTurn(turn: number): GeminiMessage {
+  return { role: "user", content: `Turn ${turn}: ack` };
+}
+
+test("a run that previously would have hit 500K+ tokens on a single call now stays under the new ceiling via compactViaRelevantContext, without losing any fact-ledger entry", async () => {
+  const fullHistory: GeminiMessage[] = [{ role: "system", content: "You are Shubham, the backend generator." }];
+  let ledger: FactLedgerEntry[] = [];
+
+  // Turn 5: the fact that must survive — a real decision (bcryptjs -> bcrypt)
+  // recorded early in the session, matching context-selection.test.ts's
+  // existing regression test for the identical bug class.
+  fullHistory.push({ role: "model", content: [{ text: "Turn 5: editing backend/package.json to replace bcryptjs with bcrypt" }] });
+  fullHistory.push(ackTurn(5));
+  ledger = appendFactLedgerEntry(ledger, 5, [
+    { toolName: "edit_file", args: { path: "backend/package.json", old_str: "bcryptjs", new_str: "bcrypt" }, result: { status: "success" } },
+  ]);
+
+  // Turns 6-45: large, routine tool-output-shaped turns — enough to genuinely
+  // reach 500K+ tokens raw, reproducing the incident's single-call size
+  // (docs/nexsidi/plans/2026-08-11-cost-control.md: "a single call tonight
+  // sent 540,000+ input tokens").
+  for (let turn = 6; turn <= 45; turn++) {
+    fullHistory.push(bigModelTurn(turn, 15000));
+    fullHistory.push(ackTurn(turn));
+  }
+
+  const rawTokens = estimateGeminiTokenCount(fullHistory);
+  expect(rawTokens).toBeGreaterThan(500_000); // reproduces the incident's single-call scale
+
+  // Sanity check on the OLD regime: under the legacy 750K threshold, this
+  // history would NOT have been compacted at all (compactGeminiHistory
+  // returns the identical reference when under threshold — compaction.ts:
+  // `if (tokens < thresholdTokens) return messages`) — this is exactly how a
+  // single call reached 540K+ tokens in the real incident: nothing fired.
+  const uncompactedUnderLegacyThreshold = await compactGeminiHistory(fullHistory, undefined, 750_000);
+  expect(uncompactedUnderLegacyThreshold).toBe(fullHistory); // same reference = no-op, confirming it would NOT have triggered
+
+  // Now the actual fix: compactViaRelevantContext at the new, much lower
+  // threshold rebuilds the context from the fact ledger instead.
+  const compacted = compactViaRelevantContext(fullHistory, "Continue implementing the auth routes", ledger, COMPACTION_THRESHOLD_TOKENS);
+  const compactedTokens = estimateGeminiTokenCount(compacted);
+
+  expect(compactedTokens).toBeLessThan(150_000); // the plan's explicit "under 150K per call" target
+  expect(compactedTokens).toBeLessThan(rawTokens); // real trimming happened, not a no-op
+
+  // No fact lost: the turn-5 decision must still be present...
+  const serialized = JSON.stringify(compacted);
+  expect(serialized).toContain("bcryptjs");
+  expect(serialized).toContain("bcrypt");
+
+  // ...specifically via the fact ledger, not because turn 5's raw message
+  // happened to survive in the trailing window (it's 40 turns back — long
+  // gone from any reasonable trailing window).
+  expect(serialized).not.toContain("editing backend/package.json to replace bcryptjs with bcrypt");
+  expect(serialized).toContain("FACT LEDGER");
+});
+
+test("touched files sent to selectRelevantContext come from the fact ledger's file_written entries, not a separately tracked list", async () => {
+  let ledger: FactLedgerEntry[] = [];
+  ledger = appendFactLedgerEntry(ledger, 1, [
+    { toolName: "write_file", args: { path: "backend/src/routes/auth.ts", content: "x" }, result: { status: "success" } },
+  ]);
+  ledger = appendFactLedgerEntry(ledger, 2, [
+    { toolName: "run_command", args: { command: "bun test" }, result: { status: "error", summary: "1 failure" } },
+  ]);
+
+  const fullHistory: GeminiMessage[] = [
+    { role: "system", content: "sys" },
+    { role: "user", content: "start" },
+  ];
+  // Force compaction regardless of size by passing thresholdTokens = 0.
+  const compacted = compactViaRelevantContext(fullHistory, "task", ledger, 0);
+  const serialized = JSON.stringify(compacted);
+
+  expect(serialized).toContain("TOUCHED FILES");
+  expect(serialized).toContain("backend/src/routes/auth.ts");
+  // The failed run_command's `file` field (the command string) must NOT leak
+  // into TOUCHED FILES — it is a decision entry, not a file_written entry.
+  expect(serialized).not.toContain("- bun test");
+});
+
+afterEach(() => {
+  delete process.env.RELEVANT_CONTEXT_SELECTION_ENABLED;
 });

@@ -4,6 +4,8 @@ import {
   appendFactLedgerEntry,
   formatFactLedgerForPrompt,
   selectRelevantContext,
+  touchedFilesFromLedger,
+  compactViaRelevantContext,
   type FactLedgerEntry,
   type TurnToolActivity,
 } from "./context-selection.ts";
@@ -404,4 +406,62 @@ test("selectRelevantContext: includes a ledger section header when facts exist",
   const serialized = JSON.stringify(context);
   expect(serialized).toContain("FACT LEDGER");
   expect(serialized).toContain("picked bcrypt");
+});
+
+// ── touchedFilesFromLedger / compactViaRelevantContext (cost-control Task 4) ─
+
+test("touchedFilesFromLedger: collects only file_written entries, de-duplicated in first-seen order", () => {
+  let ledger: FactLedgerEntry[] = [];
+  ledger = appendFactLedgerEntry(ledger, 1, [
+    { toolName: "write_file", args: { path: "a.ts", content: "1" }, result: { status: "success" } },
+  ]);
+  ledger = appendFactLedgerEntry(ledger, 2, [
+    { toolName: "run_command", args: { command: "bun test" }, result: { status: "error", summary: "boom" } },
+  ]);
+  ledger = appendFactLedgerEntry(ledger, 3, [
+    { toolName: "edit_file", args: { path: "b.ts", old_str: "x", new_str: "y" }, result: { status: "success" } },
+  ]);
+  // a.ts written again — must not appear twice
+  ledger = appendFactLedgerEntry(ledger, 4, [
+    { toolName: "write_file", args: { path: "a.ts", content: "2" }, result: { status: "success" } },
+  ]);
+
+  expect(touchedFilesFromLedger(ledger)).toEqual(["a.ts", "b.ts"]);
+});
+
+test("touchedFilesFromLedger: returns an empty array for a ledger with no file_written entries", () => {
+  const ledger: FactLedgerEntry[] = [{ type: "decision", summary: "picked bcrypt", turnIndex: 1 }];
+  expect(touchedFilesFromLedger(ledger)).toEqual([]);
+});
+
+test("compactViaRelevantContext: below threshold, returns the identical messages reference unchanged", () => {
+  const messages: GeminiMessage[] = [
+    { role: "system", content: "sys" },
+    makeUserTurn("hello"),
+  ];
+  const result = compactViaRelevantContext(messages, "task", [], 1_000_000);
+  expect(result).toBe(messages);
+});
+
+test("compactViaRelevantContext: above threshold, rebuilds via selectRelevantContext (fact ledger survives, touched files derived from it)", () => {
+  const fullHistory: GeminiMessage[] = [{ role: "system", content: "sys" }];
+  let ledger: FactLedgerEntry[] = [];
+  for (let turn = 1; turn <= 20; turn++) {
+    fullHistory.push(makeModelTurn(`Turn ${turn}: ${"x".repeat(2000)}`));
+    fullHistory.push(makeUserTurn(`Turn ${turn}: ack`));
+    if (turn === 3) {
+      ledger = appendFactLedgerEntry(ledger, turn, [
+        { toolName: "write_file", args: { path: "backend/src/auth.ts", content: "x" }, result: { status: "success" } },
+      ]);
+    }
+  }
+
+  const result = compactViaRelevantContext(fullHistory, "Continue the auth work", ledger, 100);
+  expect(result).not.toBe(fullHistory);
+  expect(result.length).toBeLessThan(fullHistory.length);
+
+  const serialized = JSON.stringify(result);
+  expect(serialized).toContain("backend/src/auth.ts");
+  expect(serialized).toContain("TOUCHED FILES");
+  expect(serialized).toContain("FACT LEDGER");
 });

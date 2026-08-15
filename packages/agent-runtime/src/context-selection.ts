@@ -1,5 +1,5 @@
 import type { GeminiMessage } from "@nexsidi/llm-client";
-import { safeTrailingSlice } from "./compaction.ts";
+import { safeTrailingSlice, estimateGeminiTokenCount } from "./compaction.ts";
 
 // ── Real relevant-context selection (cost-control plan, Task 2) ────────────
 //
@@ -21,11 +21,13 @@ import { safeTrailingSlice } from "./compaction.ts";
 // output) rather than being re-compressed, a fact recorded once cannot be
 // silently dropped by this mechanism the way a prose summary can.
 //
-// NOT WIRED into gemini-loop.ts's actual model-calling path yet. Task 4 (not
-// this task) does that swap, after this module has been reviewed. The only
-// integration point touched here is a data-collection hook — see the
-// gemini-loop.ts comment near the fact-ledger append call for what that is
-// and is not.
+// 2026-08-15 (cost-control Task 4): now wired into gemini-loop.ts's actual
+// model-calling path via compactViaRelevantContext below, replacing
+// compactGeminiHistory as the PRIMARY compaction mechanism at gemini-loop.ts's
+// on-load and before-every-call sites. compactGeminiHistory is kept only as
+// (a) the genuine emergency fallback on a context-length-exceeded error, and
+// (b) the full behavioral revert when the RELEVANT_CONTEXT_SELECTION_ENABLED
+// escape hatch is set to "false" — see gemini-loop.ts for both.
 
 export interface FactLedgerEntry {
   type: "file_written" | "fix_applied" | "decision" | "error_resolved";
@@ -284,4 +286,67 @@ export function selectRelevantContext(
 
   messages.push(...trailing);
   return messages;
+}
+
+// ── gemini-loop.ts wiring helpers (cost-control Task 4) ─────────────────────
+
+/**
+ * Derive "touched files" for selectRelevantContext straight from the fact
+ * ledger, rather than gemini-loop.ts tracking a second, parallel list that
+ * could fall out of sync with it. Only `file_written` entries qualify — a
+ * `decision` entry can also carry a `file` field (e.g. a failed run_command's
+ * exact command string, or a deleted path — see inferEntriesForActivity's
+ * run_command/delete_file cases), which is not "a file this agent wrote or
+ * edited" and would be misleading in a TOUCHED FILES section. Order-preserving
+ * de-duplication (first-seen order) rather than a Set-then-array conversion,
+ * so the list reads in the same order the files were actually touched.
+ */
+export function touchedFilesFromLedger(factLedger: FactLedgerEntry[]): string[] {
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const entry of factLedger) {
+    if (entry.type !== "file_written" || !entry.file) continue;
+    if (seen.has(entry.file)) continue;
+    seen.add(entry.file);
+    files.push(entry.file);
+  }
+  return files;
+}
+
+/**
+ * Drop-in structural replacement for compaction.ts's compactGeminiHistory at
+ * gemini-loop.ts's PRIMARY compaction call sites (on history load, and before
+ * every model call): same "only touch history once it's grown past
+ * thresholdTokens, otherwise return the identical reference" shape, so the
+ * call sites read as a like-for-like swap. The difference is what happens
+ * once the threshold IS crossed — compactGeminiHistory asks an LLM to
+ * paraphrase the middle of the history into prose (lossy); this rebuilds the
+ * context from the fact ledger instead (lossless for anything the ledger
+ * captured, per this module's header comment and the "turn 5 survives at
+ * turn 105" test below).
+ *
+ * `currentTask` is gemini-loop.ts's `config.initialMessage` — the task this
+ * agent run was actually given, which does not change turn to turn in this
+ * loop (there is no separate "current subtask" concept here). `openFindings`
+ * is always empty: this is the general generator/evaluator loop (Shubham/
+ * Aanya/Pranav/Riya/Tilotma's Tier-3 evaluators), not qa-loop.ts — "open
+ * findings" is a QA-loop-specific concept (Navya/Karan/Deepika's findings
+ * list) that has no equivalent in this loop's config or state today.
+ */
+export function compactViaRelevantContext(
+  messages: GeminiMessage[],
+  currentTask: string,
+  factLedger: FactLedgerEntry[],
+  thresholdTokens: number,
+  options: SelectContextOptions = {},
+): GeminiMessage[] {
+  const tokens = estimateGeminiTokenCount(messages);
+  if (tokens < thresholdTokens) return messages;
+
+  console.log(
+    `[context-selection] History ~${tokens} tokens exceeds ${thresholdTokens} — rebuilding via selectRelevantContext (fact ledger: ${factLedger.length} entries) instead of prose-summarizing.`,
+  );
+
+  const touchedFiles = touchedFilesFromLedger(factLedger);
+  return selectRelevantContext(messages, currentTask, touchedFiles, [], factLedger, options);
 }
