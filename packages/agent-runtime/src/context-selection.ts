@@ -290,8 +290,9 @@ function isSyntheticContextMessage(message: GeminiMessage): boolean {
  * Gemini functionCall/functionResponse adjacency requirement applies here,
  * so this reuses that logic rather than reimplementing it).
  *
- * NOT currently called from gemini-loop.ts's live model-calling path — see
- * this module's header comment. Standalone and independently testable.
+ * Wired into gemini-loop.ts's live model-calling path as the primary
+ * compaction mechanism via compactViaRelevantContext (cost-control Task 4)
+ * — see this module's header comment.
  */
 export function selectRelevantContext(
   fullHistory: GeminiMessage[],

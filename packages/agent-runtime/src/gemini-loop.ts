@@ -366,12 +366,11 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   const recentCallSignatures: string[] = [];
 
   // 2026-08-13 (cost-control plan, Task 2): builds the structured fact
-  // ledger (context-selection.ts) alongside the existing raw history, but
-  // does NOT change what gets sent to the model on any call in this loop —
-  // selectRelevantContext is still not wired into the live model-calling
-  // path; that swap is Task 4's job, after this mechanism has been reviewed
-  // on its own. Seeded from loadedFactLedger (populated above when a prior
-  // run's row was found) and persisted back to the same DB row by
+  // ledger (context-selection.ts) alongside the existing raw history.
+  // selectRelevantContext is now wired in as the primary compaction
+  // mechanism via compactViaRelevantContext (Task 4, below). Seeded from
+  // loadedFactLedger (populated above when a prior run's row was found)
+  // and persisted back to the same DB row by
   // saveHistory — see review Finding 3: this used to be a local variable
   // that was built up and then discarded when the function returned,
   // despite a comment here previously (incorrectly) claiming it
