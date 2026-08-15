@@ -20,7 +20,7 @@ import {
 } from "@nexsidi/llm-client";
 import { runAgent, buildToolList, evaluateCommandStrike, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
 import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts";
-import { appendFactLedgerEntry, type FactLedgerEntry, type TurnToolActivity } from "./context-selection.ts";
+import { appendFactLedgerEntry, compactViaRelevantContext, type FactLedgerEntry, type TurnToolActivity } from "./context-selection.ts";
 // 2026-08-13 (cost-control Task 1): same CRITICAL gap as loop.ts (see that
 // file's recordSpend import comment for the full root cause) — this is the
 // PARALLEL Gemini-side agentic loop (Shubham/Aanya/Pranav/Riya/Tilotma's
@@ -61,15 +61,67 @@ export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 // headroom under 1M for the current turn's output + tool schemas, but keeps
 // working context intact for the length of one real generation run
 // (measured full runs: 190-311K tokens — this threshold now sits comfortably
-// above that instead of triggering on every turn).
+// above that instead of triggering on every turn), at the cost of making
+// compaction fire almost never — which is what let a single call balloon to
+// 540,000+ input tokens (docs/nexsidi/plans/2026-08-11-cost-control.md,
+// "Root cause"): nothing was broken, the threshold was just too high to ever
+// catch it.
 //
-// This does NOT abandon cost control — that job moves to two other levers,
-// not raw history truncation: explicit prompt caching (geminiCreateCachedContent,
-// wired below) makes the repeated stable prefix (system prompt + build plan)
-// cheap to resend, and 2.5.3's relevant-context selection (only the task,
-// touched files, open findings — not the full transcript) is the intended
-// long-term replacement for "compact by token count" entirely.
-const COMPACTION_THRESHOLD_TOKENS = 750_000;
+// 2026-08-15 (cost-control Task 4): lowered now that Task 2's
+// selectRelevantContext (context-selection.ts) exists and is wired in below
+// via compactViaRelevantContext as the PRIMARY compaction mechanism at both
+// call sites that used to call compactGeminiHistory unconditionally. The 40K
+// value above was never unsafe as a SIZE ceiling — what made it unsafe was
+// WHAT ran when it was crossed: compactGeminiHistory's LLM prose summary,
+// which can silently drop a specific decision because paraphrasing is lossy
+// by construction. selectRelevantContext replaces that with the structured,
+// append-only fact ledger (sent in full, never re-summarized), which cannot
+// drop a fact the way a summary can — see context-selection.ts's header
+// comment and its "turn 5 survives at turn 105" test, and this file's own
+// "500K+ single call now stays under the new ceiling, no fact lost" test.
+// That decoupling is what makes compacting far more often safe again.
+//
+// Chosen value (120,000): no live single-TURN token measurement exists
+// anywhere in this repo to instrument against — every real number on record
+// is either a full-RUN total (190-311K, measured against the old
+// rarely-firing 750K threshold above) or the single-CALL incident this task
+// exists to prevent (540K+) — neither is "typical single-turn size." Two
+// real, measured per-call floors this repo DOES have: (1) prompt-assembly.ts
+// always includes core-reasoning.md (~10.5KB ≈ ~2,600 tokens) plus a
+// per-agent doctrine file (packages/agent-runtime/skills/*.md range from
+// ~225 to ~1,300 tokens) in every system prompt; (2) a single model response
+// is hard-capped at 16,000 output tokens (TOOL_CALL_MAX_TOKENS in
+// llm-client/src/claude.ts, maxOutputTokens in llm-client/src/gemini.ts) —
+// so a handful of raw trailing turns (each potentially a write_file/
+// edit_file call plus its result, up to that cap) can plausibly add up to
+// tens of thousands of tokens well before hitting six figures. 120,000 stays
+// safely under this task's explicit target ("under 150K per call" — cost-
+// control plan, Task 4) while still leaving room for several such turns
+// between compactions, rather than firing on literally every iteration
+// (which would defeat prompt caching's stable-prefix benefit for no
+// correctness gain, since correctness no longer depends on the threshold at
+// all). If live instrumentation later shows real single-turn sizes cluster
+// well below this, tighten it further — this is a reasoned starting point,
+// not a value with more precision behind it than the evidence supports.
+export const COMPACTION_THRESHOLD_TOKENS = 120_000;
+
+// Escape hatch (cost-control plan's global constraint: every lever must be
+// individually toggleable/revertable). Matches QA_READ_CACHE_ENABLED's
+// convention (qa-loop.ts) — enabled by default, opt out with exactly
+// "false". When disabled, BOTH primary call sites below fall back to
+// compactGeminiHistory at LEGACY_COMPACTION_THRESHOLD_TOKENS — i.e. a full
+// behavioral revert to the pre-Task-4 state, not just "run the old
+// summarizer at the new low threshold" (which would reintroduce the exact
+// amnesiac-oscillation bug this task exists to avoid, since the lossy
+// summarizer would then fire constantly).
+export function isRelevantContextSelectionEnabled(): boolean {
+  return process.env.RELEVANT_CONTEXT_SELECTION_ENABLED !== "false";
+}
+
+// The pre-Task-4 threshold, preserved verbatim so disabling the escape hatch
+// above is a genuine full revert (mechanism AND threshold together) rather
+// than a partial one that could still misbehave.
+const LEGACY_COMPACTION_THRESHOLD_TOKENS = 750_000;
 
 // Same category of error as claude-loop.ts's isUnrecoverableClaudeError —
 // auth/permission failures on Gemini will repeat identically on every retry
@@ -210,7 +262,15 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         // on a resumed code-fix) was re-sent verbatim on the very first call
         // of the resumed run. Compact immediately on load, before appending
         // the new turn, so a resume never starts from an oversized history.
-        messages = await compactGeminiHistory(messages, undefined, COMPACTION_THRESHOLD_TOKENS);
+        // 2026-08-15 (cost-control Task 4): primary path switched to
+        // compactViaRelevantContext (fact-ledger-backed, lossless) — see
+        // COMPACTION_THRESHOLD_TOKENS's comment above. loadedFactLedger is
+        // used here (not the `factLedger` variable) because this runs before
+        // that variable is declared further down, seeded from the same
+        // loadedFactLedger value.
+        messages = isRelevantContextSelectionEnabled()
+          ? compactViaRelevantContext(messages, config.initialMessage, loadedFactLedger, COMPACTION_THRESHOLD_TOKENS)
+          : await compactGeminiHistory(messages, undefined, LEGACY_COMPACTION_THRESHOLD_TOKENS);
         messages.push({ role: "user", content: config.initialMessage });
       }
     } catch (e) {
@@ -306,12 +366,11 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   const recentCallSignatures: string[] = [];
 
   // 2026-08-13 (cost-control plan, Task 2): builds the structured fact
-  // ledger (context-selection.ts) alongside the existing raw history, but
-  // does NOT change what gets sent to the model on any call in this loop —
-  // selectRelevantContext is still not wired into the live model-calling
-  // path; that swap is Task 4's job, after this mechanism has been reviewed
-  // on its own. Seeded from loadedFactLedger (populated above when a prior
-  // run's row was found) and persisted back to the same DB row by
+  // ledger (context-selection.ts) alongside the existing raw history.
+  // selectRelevantContext is now wired in as the primary compaction
+  // mechanism via compactViaRelevantContext (Task 4, below). Seeded from
+  // loadedFactLedger (populated above when a prior run's row was found)
+  // and persisted back to the same DB row by
   // saveHistory — see review Finding 3: this used to be a local variable
   // that was built up and then discarded when the function returned,
   // despite a comment here previously (incorrectly) claiming it
@@ -371,7 +430,19 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     // promptTokens, so the request that first crossed the threshold was
     // always sent in full anyway. Checking here means no call this loop
     // makes exceeds the threshold in the first place.
-    messages = await compactGeminiHistory(messages, undefined, COMPACTION_THRESHOLD_TOKENS);
+    // 2026-08-15 (cost-control Task 4): this is the loop's PRIMARY compaction
+    // call site — fires on every iteration once the threshold above is
+    // crossed. Switched to compactViaRelevantContext (fact-ledger-backed) so
+    // firing this often is actually safe now — see COMPACTION_THRESHOLD_
+    // TOKENS's comment. The escape hatch's disabled branch intentionally
+    // uses compactGeminiHistory at the OLD LEGACY_COMPACTION_THRESHOLD_TOKENS
+    // (not the new low one) — running the lossy summarizer at a low
+    // threshold is exactly the amnesiac-oscillation bug this task exists to
+    // avoid, so disabling this lever must revert BOTH the mechanism and the
+    // threshold together, not just the mechanism.
+    messages = isRelevantContextSelectionEnabled()
+      ? compactViaRelevantContext(messages, config.initialMessage, factLedger, COMPACTION_THRESHOLD_TOKENS)
+      : await compactGeminiHistory(messages, undefined, LEGACY_COMPACTION_THRESHOLD_TOKENS);
 
     let response;
     try {
@@ -436,6 +507,25 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       // normal proactive threshold) so the next attempt has real headroom,
       // instead of grinding silently to MAX_ITERATIONS on a call that can
       // never succeed as-is.
+      // 2026-08-15 (cost-control Task 4): deliberately UNCHANGED —
+      // compactGeminiHistory stays here as the genuine emergency fallback
+      // (this branch only runs after a call has already failed with a real
+      // context-length-exceeded error from the model, i.e. the primary
+      // compactViaRelevantContext path above has already been bypassed by a
+      // single oversized turn or an escape-hatch revert). This is now the
+      // ONLY intentional remaining use of the old lossy summarizer in this
+      // loop's normal operation — it fires rarely (proactive compaction at
+      // 120K keeps normal calls far below the 1M window where this triggers)
+      // and its job here is "shrink NOW by any means" rather than "select
+      // the right context," so keeping the plain hard-drop/summarize
+      // behavior is correct, not a gap.
+      // Review Finding 3 (non-blocking): `messages` at this point may already
+      // include the FACT LEDGER block compactViaRelevantContext injected, so
+      // this paraphrases that block into lossy prose for this one retry —
+      // `factLedger` itself is untouched and re-sent in full on the next
+      // proactive compaction, so nothing is permanently lost, but the model
+      // works from a lossy summary until 120K is re-crossed. Same structural
+      // shape as before Task 4, just more likely to matter now.
       if (isContextLengthExceededError(err)) {
         console.log(`[${config.agentName}:gemini-agent] Context length exceeded on iteration ${iterations} — forcing emergency compaction and retrying`);
         messages = await compactGeminiHistory(messages, undefined, Math.floor(COMPACTION_THRESHOLD_TOKENS / 10));

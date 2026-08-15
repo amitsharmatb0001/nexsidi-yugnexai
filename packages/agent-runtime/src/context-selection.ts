@@ -1,5 +1,5 @@
 import type { GeminiMessage } from "@nexsidi/llm-client";
-import { safeTrailingSlice } from "./compaction.ts";
+import { safeTrailingSlice, estimateGeminiTokenCount } from "./compaction.ts";
 
 // ── Real relevant-context selection (cost-control plan, Task 2) ────────────
 //
@@ -21,11 +21,13 @@ import { safeTrailingSlice } from "./compaction.ts";
 // output) rather than being re-compressed, a fact recorded once cannot be
 // silently dropped by this mechanism the way a prose summary can.
 //
-// NOT WIRED into gemini-loop.ts's actual model-calling path yet. Task 4 (not
-// this task) does that swap, after this module has been reviewed. The only
-// integration point touched here is a data-collection hook — see the
-// gemini-loop.ts comment near the fact-ledger append call for what that is
-// and is not.
+// 2026-08-15 (cost-control Task 4): now wired into gemini-loop.ts's actual
+// model-calling path via compactViaRelevantContext below, replacing
+// compactGeminiHistory as the PRIMARY compaction mechanism at gemini-loop.ts's
+// on-load and before-every-call sites. compactGeminiHistory is kept only as
+// (a) the genuine emergency fallback on a context-length-exceeded error, and
+// (b) the full behavioral revert when the RELEVANT_CONTEXT_SELECTION_ENABLED
+// escape hatch is set to "false" — see gemini-loop.ts for both.
 
 export interface FactLedgerEntry {
   type: "file_written" | "fix_applied" | "decision" | "error_resolved";
@@ -236,6 +238,50 @@ export interface SelectContextOptions {
   trailingTurnCount?: number;
 }
 
+// ── Synthetic-message tagging (review Finding 1 fix) ────────────────────────
+//
+// Bug this closes: selectRelevantContext's taskMsg/ledgerMsg are ordinary
+// `role: "user"` GeminiMessage objects, appended into the array
+// compactViaRelevantContext hands back as the new `messages`. On the NEXT
+// compaction later in the same session (now the routine case at a 120K
+// threshold, not an edge case), this function re-derives `nonSys` by
+// filtering `fullHistory` for `role !== "system"` — which can't distinguish
+// a genuine conversation turn from a synthetic CURRENT TASK/FACT LEDGER block
+// a PRIOR call to this function injected. A small/short trailing window can
+// then pull that stale block into the new trailing slice, and this function
+// prepends a FRESH task/ledger block on top of it — producing a request with
+// "FACT LEDGER" (and "CURRENT TASK") appearing twice: once fresh and
+// complete, once stale and incomplete, both claiming to be authoritative.
+//
+// Fix: tag every synthetic message this function creates, and exclude tagged
+// messages from the trailing-window candidate pool before slicing. This is
+// safe — not lossy — because the tagged messages carry no information the
+// FRESH rebuild doesn't already re-derive as a superset: taskMsg is rebuilt
+// from `currentTask` (which gemini-loop.ts documents as constant across a
+// run) and the ledger-derived touched-files list; ledgerMsg is rebuilt from
+// the full `factLedger`, which only ever grows. Dropping a stale copy of
+// either from the trailing pool therefore cannot drop a fact — only a
+// duplicate presentation of one.
+//
+// A plain boolean field (not a Symbol) so it survives the actual persistence
+// path: `messages` round-trips through `agentConversations.messages` (jsonb,
+// packages/db/src/schema.ts) between a save and a later resumed run, and
+// Symbol-keyed properties do not survive JSON.stringify/parse. The marker is
+// never sent to the model: buildGeminiContents (llm-client/src/gemini.ts)
+// only ever reads `m.role`/`m.content` when assembling the outgoing request,
+// so an extra property on the message object is inert there.
+const SYNTHETIC_CONTEXT_MARKER = "__nexsidiContextSelectionSynthetic" as const;
+
+type SyntheticGeminiMessage = GeminiMessage & { [SYNTHETIC_CONTEXT_MARKER]?: true };
+
+function markSynthetic(message: GeminiMessage): GeminiMessage {
+  return { ...message, [SYNTHETIC_CONTEXT_MARKER]: true } as SyntheticGeminiMessage;
+}
+
+function isSyntheticContextMessage(message: GeminiMessage): boolean {
+  return (message as SyntheticGeminiMessage)[SYNTHETIC_CONTEXT_MARKER] === true;
+}
+
 /**
  * Build the context to actually send to the model for the next call:
  * system prompt + current task brief (task, touched files, open findings)
@@ -244,8 +290,9 @@ export interface SelectContextOptions {
  * Gemini functionCall/functionResponse adjacency requirement applies here,
  * so this reuses that logic rather than reimplementing it).
  *
- * NOT currently called from gemini-loop.ts's live model-calling path — see
- * this module's header comment. Standalone and independently testable.
+ * Wired into gemini-loop.ts's live model-calling path as the primary
+ * compaction mechanism via compactViaRelevantContext (cost-control Task 4)
+ * — see this module's header comment.
  */
 export function selectRelevantContext(
   fullHistory: GeminiMessage[],
@@ -258,7 +305,12 @@ export function selectRelevantContext(
   const trailingTurnCount = options.trailingTurnCount ?? 6;
 
   const sys = fullHistory.filter((m): m is Extract<GeminiMessage, { role: "system" }> => m.role === "system");
-  const nonSys = fullHistory.filter((m) => m.role !== "system");
+  // Exclude synthetic CURRENT TASK/FACT LEDGER blocks a PRIOR compaction
+  // injected — see isSyntheticContextMessage's header comment above. Without
+  // this, a second-or-later compaction's trailing-window candidate pool can
+  // include a stale synthetic block, which then rides along inside `trailing`
+  // below and duplicates the fresh one this call is about to build.
+  const nonSys = fullHistory.filter((m) => m.role !== "system" && !isSyntheticContextMessage(m));
   const trailing = safeTrailingSlice(nonSys, trailingTurnCount);
 
   const taskLines = [
@@ -267,7 +319,7 @@ export function selectRelevantContext(
     openFindings.length > 0 ? `OPEN FINDINGS:\n${openFindings.map((f) => `- ${f}`).join("\n")}` : null,
   ].filter((l): l is string => l !== null);
 
-  const taskMsg: GeminiMessage = { role: "user", content: taskLines.join("\n\n") };
+  const taskMsg: GeminiMessage = markSynthetic({ role: "user", content: taskLines.join("\n\n") });
 
   const messages: GeminiMessage[] = [...sys, taskMsg];
 
@@ -275,13 +327,76 @@ export function selectRelevantContext(
   // the prompt, and it keeps the "no facts recorded yet" case indistinguishable
   // from extra boilerplate rather than a real section.
   if (factLedger.length > 0) {
-    const ledgerMsg: GeminiMessage = {
+    const ledgerMsg: GeminiMessage = markSynthetic({
       role: "user",
       content: `FACT LEDGER (full — every entry below is a fact recorded earlier in this session and is never dropped):\n${formatFactLedgerForPrompt(factLedger)}`,
-    };
+    });
     messages.push(ledgerMsg);
   }
 
   messages.push(...trailing);
   return messages;
+}
+
+// ── gemini-loop.ts wiring helpers (cost-control Task 4) ─────────────────────
+
+/**
+ * Derive "touched files" for selectRelevantContext straight from the fact
+ * ledger, rather than gemini-loop.ts tracking a second, parallel list that
+ * could fall out of sync with it. Only `file_written` entries qualify — a
+ * `decision` entry can also carry a `file` field (e.g. a failed run_command's
+ * exact command string, or a deleted path — see inferEntriesForActivity's
+ * run_command/delete_file cases), which is not "a file this agent wrote or
+ * edited" and would be misleading in a TOUCHED FILES section. Order-preserving
+ * de-duplication (first-seen order) rather than a Set-then-array conversion,
+ * so the list reads in the same order the files were actually touched.
+ */
+export function touchedFilesFromLedger(factLedger: FactLedgerEntry[]): string[] {
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const entry of factLedger) {
+    if (entry.type !== "file_written" || !entry.file) continue;
+    if (seen.has(entry.file)) continue;
+    seen.add(entry.file);
+    files.push(entry.file);
+  }
+  return files;
+}
+
+/**
+ * Drop-in structural replacement for compaction.ts's compactGeminiHistory at
+ * gemini-loop.ts's PRIMARY compaction call sites (on history load, and before
+ * every model call): same "only touch history once it's grown past
+ * thresholdTokens, otherwise return the identical reference" shape, so the
+ * call sites read as a like-for-like swap. The difference is what happens
+ * once the threshold IS crossed — compactGeminiHistory asks an LLM to
+ * paraphrase the middle of the history into prose (lossy); this rebuilds the
+ * context from the fact ledger instead (lossless for anything the ledger
+ * captured, per this module's header comment and the "turn 5 survives at
+ * turn 105" test below).
+ *
+ * `currentTask` is gemini-loop.ts's `config.initialMessage` — the task this
+ * agent run was actually given, which does not change turn to turn in this
+ * loop (there is no separate "current subtask" concept here). `openFindings`
+ * is always empty: this is the general generator/evaluator loop (Shubham/
+ * Aanya/Pranav/Riya/Tilotma's Tier-3 evaluators), not qa-loop.ts — "open
+ * findings" is a QA-loop-specific concept (Navya/Karan/Deepika's findings
+ * list) that has no equivalent in this loop's config or state today.
+ */
+export function compactViaRelevantContext(
+  messages: GeminiMessage[],
+  currentTask: string,
+  factLedger: FactLedgerEntry[],
+  thresholdTokens: number,
+  options: SelectContextOptions = {},
+): GeminiMessage[] {
+  const tokens = estimateGeminiTokenCount(messages);
+  if (tokens < thresholdTokens) return messages;
+
+  console.log(
+    `[context-selection] History ~${tokens} tokens exceeds ${thresholdTokens} — rebuilding via selectRelevantContext (fact ledger: ${factLedger.length} entries) instead of prose-summarizing.`,
+  );
+
+  const touchedFiles = touchedFilesFromLedger(factLedger);
+  return selectRelevantContext(messages, currentTask, touchedFiles, [], factLedger, options);
 }
