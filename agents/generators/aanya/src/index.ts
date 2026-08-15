@@ -3,9 +3,10 @@
 // UI: @yugnex/nexui-react (NexSidi's own library) — NO Tailwind, NO shadcn/ui.
 
 import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
-import { mkdirSync, writeFileSync, readFileSync, cpSync, existsSync } from "fs";
+import { mkdirSync, writeFileSync } from "fs";
+import { execSync } from "child_process";
 import { randomBytes } from "crypto";
-import { join, resolve } from "path";
+import { join } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
 import { formatDesignBriefForPrompt } from "../../../vanya/src/index.ts";
@@ -257,73 +258,83 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
   };
 }
 
-// Full-system audit E1: vendored packages' own package.json declares
-// devDependencies (@types/react@^18) that conflict with the generated app's
-// root deps (React 19). Stripping devDependencies here — before the vendored
-// package.json ever lands in the generated project — means there is nothing
-// for npm to install a conflicting nested copy of. Confirmed root cause via
-// stress-test runs 8/9/10: every model (glm-5.2, mistral-medium-3.5-128b,
-// claude-sonnet-5) burned real iterations discovering and working around
-// vendor/nexui-react/node_modules/@types/react (v18) shadowing root's v19.
-// Falls back to the original content unchanged on unparseable JSON — a
-// corrupt vendored package.json should surface as a build error downstream,
-// not crash generation here.
-export function stripDevDependencies(packageJsonContent: string): string {
-  let pkg: Record<string, unknown>;
-  try {
-    pkg = JSON.parse(packageJsonContent);
-  } catch {
-    return packageJsonContent;
+// 2026-08-16 (aanya-nexui-migration Task 1): the components confirmed by
+// direct inspection of the real registry (E:\nex-ui\apps\docs\public\r\*.json,
+// not the README) to exist under the same name as the old vendored NexUI —
+// see the component API audit in
+// docs/nexsidi/plans/2026-08-16-aanya-nexui-migration.md. That doc labels
+// this list "13 direct matches" but actually enumerates 14 names — an
+// off-by-one in the doc's own count, not in the names, which were verified
+// directly against index.json (all 14 present there). Panel and Spinner
+// have no registry equivalent and are resolved via prompt guidance instead
+// (Task 3), not vendored here. Default component list for vendorNexui: the
+// only structured signal BuildPlan carries about a project's frontend is
+// aanyaTasks[].description (freeform LLM prose) and .outputFiles (file
+// paths) — neither names which UI components a task uses, so per-project
+// selection can't be derived without guessing which specific component names
+// might be needed. Per the plan's own instruction ("do not guess, pick the
+// safer option if uncertain"), every generation fetches all 14 rather than
+// risk a missing component mid-build.
+export const NEXUI_CONFIRMED_COMPONENTS = [
+  "button", "card", "input", "badge", "checkbox", "modal", "tabs",
+  "select", "tooltip", "switch", "progress", "skeleton", "avatar", "separator",
+] as const;
+
+const DEFAULT_NEXUI_REGISTRY_URL = "https://new.yugnex.com";
+// Pinned to the version confirmed live/working during this migration's
+// audit — bump deliberately, not silently, when a newer CLI is verified.
+const NEXUI_CLI_VERSION = "0.1.1";
+
+export type VendorExecFn = (command: string, options: { cwd: string }) => string;
+
+const defaultVendorExecFn: VendorExecFn = (command, options) =>
+  execSync(command, { cwd: options.cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+
+// ── Vendor NexUI components into the generated project ─────────────────────
+// 2026-08-16 (aanya-nexui-migration Task 1): replaces the old whole-package
+// cpSync-based vendorNexui. NexUI moved from a vendored-package model
+// (@yugnex/nexui + @yugnex/nexui-react, copied wholesale from a local
+// nexui-publish/ directory) to a shadcn/ui-style model: @yugnex/core is a
+// real npm dependency (added to package.json in Task 2, not here) and
+// individual component SOURCE FILES are copied in per-project by
+// @yugnex/cli, fetched from a registry. This shells out to the CLI's `init`
+// (writes components.json + styles/nexui-theme.css into outputDir) then
+// `add <components>` (copies the real .tsx files into
+// outputDir/components/nexui/) against the configurable registry URL.
+//
+// Library import vs subprocess — checked, not assumed: @yugnex/cli's
+// addCommand/initCommand/listCommand (packages/cli/src/commands/*.ts in the
+// nex-ui repo) ARE cleanly separable functions in SOURCE, but that source is
+// never published — the real package.json declares `"files": ["dist"]` and
+// no "exports" map, and its only build entry point is `src/index.ts`
+// (`tsup src/index.ts --format esm --clean`), which bundles everything into
+// a single dist/index.js containing ZERO `export` statements (confirmed by
+// grepping the actual built bundle) and calls `program.parseAsync()` at
+// module top level with no `require.main`-style guard. Importing that
+// module would both find nothing to import AND immediately try to parse
+// THIS process's own argv as CLI args — a real unwanted side effect, not
+// just an awkward API. There is nothing importable in the real, installed
+// package, so subprocess is the only mechanism it actually supports (also
+// consistent with the plan's own "no new dependencies in NexSidi's own
+// repo" constraint — a library import would require adding @yugnex/cli as a
+// real dependency here, which the plan explicitly rules out). Confirmed
+// working end-to-end (`npx --yes @yugnex/cli@0.1.1 init`/`add` against a
+// local fixture directory registry, verifying real output files) before
+// writing this — see index.test.ts's real-subprocess test.
+export function vendorNexui(
+  outputDir: string,
+  components: readonly string[] = NEXUI_CONFIRMED_COMPONENTS,
+  execFn: VendorExecFn = defaultVendorExecFn,
+): void {
+  const registryUrl = process.env.NEXUI_REGISTRY_URL ?? DEFAULT_NEXUI_REGISTRY_URL;
+  const cli = `npx --yes @yugnex/cli@${NEXUI_CLI_VERSION}`;
+
+  execFn(`${cli} init --yes --registry "${registryUrl}"`, { cwd: outputDir });
+
+  if (components.length > 0) {
+    const names = components.map((name) => `"${name}"`).join(" ");
+    execFn(`${cli} add ${names} --yes --registry "${registryUrl}"`, { cwd: outputDir });
   }
-  delete pkg.devDependencies;
-  return JSON.stringify(pkg, null, 2);
-}
-
-// ── Vendor NexUI into the generated project ───────────────────────────────────
-export function vendorNexui(outputDir: string): void {
-  const vendorDir = join(outputDir, "vendor");
-  mkdirSync(vendorDir, { recursive: true });
-
-  const nexuiPublishDir = resolve(process.env.NEXUI_DIR ?? join(process.cwd(), "nexui-publish"));
-  const nexuiSrc = join(nexuiPublishDir, "nexui");
-  const nexuiReactSrc = join(nexuiPublishDir, "nexui-react");
-
-  if (existsSync(nexuiSrc)) {
-    cpSync(nexuiSrc, join(vendorDir, "nexui"), { recursive: true,
-      filter: (src) => !src.includes("node_modules") });
-    stripVendoredPackageJsonDevDeps(join(vendorDir, "nexui", "package.json"));
-  }
-  if (existsSync(nexuiReactSrc)) {
-    cpSync(nexuiReactSrc, join(vendorDir, "nexui-react"), { recursive: true,
-      filter: (src) => !src.includes("node_modules") });
-    stripVendoredPackageJsonDevDeps(join(vendorDir, "nexui-react", "package.json"));
-  }
-
-  // 2026-08-06: real bug found live (project 88d7b375eaef) — NexUI's own CSS
-  // (nexui-base.css) declares @font-face src url('../fonts/NexuiSans-*.woff2')
-  // etc., relative to vendor/nexui/css/. Next.js's Turbopack bundles that
-  // @import'd CSS and resolves the relative url() to a root-relative
-  // "/fonts/<file>.woff2" — but nothing in the generated app serves that path,
-  // since only files under public/ are exposed at the app root and vendor/
-  // isn't public/. Every NexUI font 404'd, the browser fell through the whole
-  // stack to a fallback, and the resulting mismatch between Next's font-metric
-  // overrides (calibrated for the intended custom faces) and the actual
-  // fallback rendering produced visibly corrupted/overlapping glyphs — caught
-  // live by Tilotma's Stage 2 reality-checker (mojibake like "Email" ->
-  // "Es ail"). Fix: also copy the font files to public/fonts/ so Next's static
-  // file serving actually answers the request the bundled CSS makes.
-  const nexuiFontsSrc = join(nexuiSrc, "fonts");
-  if (existsSync(nexuiFontsSrc)) {
-    const publicFontsDir = join(outputDir, "public", "fonts");
-    mkdirSync(publicFontsDir, { recursive: true });
-    cpSync(nexuiFontsSrc, publicFontsDir, { recursive: true });
-  }
-}
-
-function stripVendoredPackageJsonDevDeps(packageJsonPath: string): void {
-  if (!existsSync(packageJsonPath)) return;
-  const content = readFileSync(packageJsonPath, "utf-8");
-  writeFileSync(packageJsonPath, stripDevDependencies(content), "utf-8");
 }
 
 // 2026-08-08: explicit user request — the real YugNex logo (packages/

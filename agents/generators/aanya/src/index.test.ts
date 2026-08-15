@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAgentPrompt, buildAgentTask, stripDevDependencies, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui, countPlannedPages, writeStaticScaffold } from "./index.ts";
+import { buildAgentPrompt, buildAgentTask, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui, NEXUI_CONFIRMED_COMPONENTS, countPlannedPages, writeStaticScaffold } from "./index.ts";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { FALLBACK_BRIEF } from "../../../vanya/src/index.ts";
 
@@ -120,72 +120,144 @@ test("integrate mode prompt instructs real API wiring", () => {
   expect(prompt).not.toContain("useAuth().getToken()");
 });
 
-// Full-system audit E1: vendored NexUI packages declare devDependencies
-// (@types/react@^18) that conflict with generated apps' React 19 root
-// deps — confirmed via run logs 8/9/10 where every model fought a nested
-// vendor/nexui-react/node_modules/@types/react (v18) conflict. Stripping
-// devDependencies from the vendored package.json before it's ever written
-// to the generated project prevents npm from ever installing the
-// conflicting nested copy.
-test("stripDevDependencies removes the devDependencies key entirely", () => {
-  const pkg = JSON.stringify({
-    name: "@yugnex/nexui-react",
-    version: "2.0.1",
-    dependencies: {},
-    devDependencies: { typescript: "^5.5.0", "@types/react": "^18.0.0" },
-  });
-  const result = JSON.parse(stripDevDependencies(pkg));
-  expect(result.devDependencies).toBeUndefined();
-  expect(result.name).toBe("@yugnex/nexui-react"); // everything else preserved
-});
+// 2026-08-16 (aanya-nexui-migration Task 1): vendorNexui was rewritten from
+// a whole-package cpSync copy of a local nexui-publish/ directory to
+// per-component vendoring via @yugnex/cli against a registry (shadcn/ui-
+// style). stripDevDependencies/stripVendoredPackageJsonDevDeps are gone —
+// there is no vendored package.json anymore to strip devDependencies from;
+// components are raw .tsx files copied straight into components/nexui/, and
+// @yugnex/core (the one real npm dependency) ships its own clean manifest.
+// The font-copying block is gone too — checked @yugnex/core's actual theme
+// tokens (packages/core/src/theme/tokens.ts in the nex-ui repo): its default
+// fontFamily is a system-font stack ('-apple-system, BlinkMacSystemFont,
+// "Segoe UI", ...'), not a custom webfont, and grepping every registry
+// component's real JSON (apps/docs/public/r/*.json) for @font-face/.woff/
+// next/font found zero references. The font-404 bug class this used to
+// guard against (NexuiSans-*.woff2 relative to vendor/nexui/css/) cannot
+// recur because there is no custom font being shipped at all — confirmed,
+// not assumed.
+//
+// vendorNexui shells out to @yugnex/cli's `init` then `add` (subprocess, not
+// a library import — see vendorNexui's own header comment in index.ts for
+// why: the published @yugnex/cli@0.1.1 package has no "exports" map, ships
+// only a single bundled dist/index.js with zero `export` statements, and
+// that bundle runs `program.parseAsync()` as a top-level side effect on
+// import — there is nothing importable and importing it would try to parse
+// THIS process's argv). Tests inject a fake execFn to assert the exact
+// commands issued without spawning a real process, mirroring the execFn
+// injection pattern already used by riya's isPortUsedByDocker.
+test("vendorNexui shells out to the CLI's init then add commands with the configured registry URL and outputDir as cwd", () => {
+  const outputDir = "/fake/output/dir";
+  const calls: Array<{ command: string; cwd: string }> = [];
+  const fakeExec = (command: string, options: { cwd: string }) => {
+    calls.push({ command, cwd: options.cwd });
+    return "";
+  };
 
-test("stripDevDependencies is a no-op when devDependencies is already absent", () => {
-  const pkg = JSON.stringify({ name: "x", version: "1.0.0" });
-  const result = JSON.parse(stripDevDependencies(pkg));
-  expect(result).toEqual({ name: "x", version: "1.0.0" });
-});
-
-// 2026-08-06: real bug found live (project 88d7b375eaef) — NexUI's own CSS
-// declares @font-face src url('../fonts/NexuiSans-*.woff2') relative to
-// vendor/nexui/css/, but Next.js's Turbopack bundles that CSS and resolves
-// the relative url() to a root-relative "/fonts/<file>" that nothing served
-// (only public/ is exposed at the app root). Every custom font 404'd and the
-// resulting fallback-font/metric mismatch rendered visibly corrupted glyphs
-// (caught live by Tilotma's reality-checker: "Email" -> "Es ail"). Confirmed
-// live: copying the fonts into public/fonts/ and rebuilding the container
-// made every font request 200 and the corruption disappeared.
-test("vendorNexui copies NexUI's font files into public/fonts so Next.js actually serves them", () => {
-  const nexuiDir = mkdtempSync(join(tmpdir(), "nexsidi-nexui-publish-test-"));
-  const outputDir = mkdtempSync(join(tmpdir(), "nexsidi-aanya-output-test-"));
+  const previous = process.env.NEXUI_REGISTRY_URL;
+  process.env.NEXUI_REGISTRY_URL = "https://fixture.example.test";
   try {
-    mkdirSync(join(nexuiDir, "nexui", "fonts"), { recursive: true });
-    writeFileSync(join(nexuiDir, "nexui", "fonts", "NexuiSans-Regular.woff2"), "fake-font-bytes");
-    mkdirSync(join(nexuiDir, "nexui", "css"), { recursive: true });
-    writeFileSync(join(nexuiDir, "nexui", "package.json"), JSON.stringify({ name: "@yugnex/nexui" }));
-
-    const previous = process.env.NEXUI_DIR;
-    process.env.NEXUI_DIR = nexuiDir;
-    try {
-      vendorNexui(outputDir);
-    } finally {
-      if (previous === undefined) delete process.env.NEXUI_DIR;
-      else process.env.NEXUI_DIR = previous;
-    }
-
-    expect(existsSync(join(outputDir, "public", "fonts", "NexuiSans-Regular.woff2"))).toBe(true);
+    vendorNexui(outputDir, ["button", "card"], fakeExec);
   } finally {
-    rmSync(nexuiDir, { recursive: true, force: true });
-    rmSync(outputDir, { recursive: true, force: true });
+    if (previous === undefined) delete process.env.NEXUI_REGISTRY_URL;
+    else process.env.NEXUI_REGISTRY_URL = previous;
+  }
+
+  expect(calls.length).toBe(2);
+  expect(calls[0]?.cwd).toBe(outputDir);
+  expect(calls[0]?.command).toContain("init");
+  expect(calls[0]?.command).toContain("https://fixture.example.test");
+  expect(calls[1]?.cwd).toBe(outputDir);
+  expect(calls[1]?.command).toContain("add");
+  expect(calls[1]?.command).toContain("button");
+  expect(calls[1]?.command).toContain("card");
+});
+
+test("vendorNexui defaults to the confirmed live registry URL when NEXUI_REGISTRY_URL is unset", () => {
+  const calls: string[] = [];
+  const fakeExec = (command: string) => { calls.push(command); return ""; };
+
+  const previous = process.env.NEXUI_REGISTRY_URL;
+  delete process.env.NEXUI_REGISTRY_URL;
+  try {
+    vendorNexui("/fake/output/dir", ["button"], fakeExec);
+  } finally {
+    if (previous !== undefined) process.env.NEXUI_REGISTRY_URL = previous;
+  }
+
+  expect(calls[0]).toContain("https://new.yugnex.com");
+});
+
+test("vendorNexui defaults to the 13 confirmed-mapped components when none are specified", () => {
+  // Component API audit (docs/nexsidi/plans/2026-08-16-aanya-nexui-migration.md):
+  // aanyaTasks/BuildPlan only carry freeform task descriptions and output
+  // file paths — no structured record of which UI components a task
+  // actually uses — so per-project component selection can't be derived
+  // reliably without guessing which the plan explicitly forbids. Default to
+  // fetching every confirmed-mapped component every time instead.
+  const calls: string[] = [];
+  const fakeExec = (command: string) => { calls.push(command); return ""; };
+  vendorNexui("/fake/output/dir", undefined, fakeExec);
+
+  // Note: the plan doc labels this list "13 direct matches" but actually
+  // enumerates 14 names (button, card, input, badge, checkbox, modal, tabs,
+  // select, tooltip, switch, progress, skeleton, avatar, separator) — an
+  // off-by-one in the doc's own count, not in the names themselves. Verified
+  // directly against the real registry index.json
+  // (E:\nex-ui\apps\docs\public\r\index.json): all 14 names exist there.
+  expect(NEXUI_CONFIRMED_COMPONENTS.length).toBe(14);
+  for (const name of NEXUI_CONFIRMED_COMPONENTS) {
+    expect(calls[1]).toContain(name);
   }
 });
 
-test("stripDevDependencies preserves formatting-independent JSON validity on malformed input", () => {
-  // Defensive: if the vendored package.json is ever unreadable/corrupt, don't
-  // throw and abort the whole generation — return the original content
-  // unchanged so the (unfixed) conflict is a build error, not a crash.
-  const result = stripDevDependencies("not valid json {{{");
-  expect(result).toBe("not valid json {{{");
-});
+// Real end-to-end check against a local fixture registry (mirrors the real
+// registry JSON shape seen live at E:\nex-ui\apps\docs\public\r\button.json)
+// instead of hitting the live https://new.yugnex.com over the network —
+// fetch-registry.ts's readSource treats a non-http registryUrl as a local
+// directory, so pointing NEXUI_REGISTRY_URL at a temp dir exercises the
+// REAL @yugnex/cli subprocess end-to-end (init writes components.json, add
+// resolves registryDependencies and copies real file content) with zero
+// live network calls to the actual product registry.
+test("vendorNexui (real CLI subprocess) writes components.json and copies real component source into outputDir/components/nexui", () => {
+  const registryDir = mkdtempSync(join(tmpdir(), "nexsidi-nexui-registry-fixture-"));
+  const outputDir = mkdtempSync(join(tmpdir(), "nexsidi-aanya-vendor-output-"));
+  try {
+    writeFileSync(join(registryDir, "index.json"), JSON.stringify([
+      { name: "button", title: "Button", description: "A button." },
+      { name: "card", title: "Card", description: "A card." },
+    ]));
+    writeFileSync(join(registryDir, "button.json"), JSON.stringify({
+      name: "button",
+      dependencies: [],
+      registryDependencies: [],
+      files: [{ path: "button.tsx", content: "export function Button() { return null; }\n", type: "registry:component" }],
+    }));
+    writeFileSync(join(registryDir, "card.json"), JSON.stringify({
+      name: "card",
+      dependencies: [],
+      registryDependencies: ["button"], // proves transitive resolution runs for real
+      files: [{ path: "card.tsx", content: "export function Card() { return null; }\n", type: "registry:component" }],
+    }));
+
+    const previous = process.env.NEXUI_REGISTRY_URL;
+    process.env.NEXUI_REGISTRY_URL = registryDir;
+    try {
+      vendorNexui(outputDir, ["card"]); // real (default) execFn — actually spawns the CLI
+    } finally {
+      if (previous === undefined) delete process.env.NEXUI_REGISTRY_URL;
+      else process.env.NEXUI_REGISTRY_URL = previous;
+    }
+
+    expect(existsSync(join(outputDir, "components.json"))).toBe(true);
+    expect(existsSync(join(outputDir, "components", "nexui", "card.tsx"))).toBe(true);
+    // registryDependencies: ["button"] must have been pulled in transitively
+    expect(existsSync(join(outputDir, "components", "nexui", "button.tsx"))).toBe(true);
+  } finally {
+    rmSync(registryDir, { recursive: true, force: true });
+    rmSync(outputDir, { recursive: true, force: true });
+  }
+}, 30000);
 
 // Found live during the Phase B stress-test gate (stress2phaseb, 2026-07-04):
 // .env.local was reading process.env.CLERK_PUBLISHABLE_KEY, but the real
