@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAgentPrompt, buildAgentTask, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui, NEXUI_CONFIRMED_COMPONENTS, countPlannedPages, writeStaticScaffold } from "./index.ts";
+import type { VendorExecFn } from "./index.ts";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { FALLBACK_BRIEF } from "../../../vanya/src/index.ts";
 
@@ -146,13 +147,36 @@ test("integrate mode prompt instructs real API wiring", () => {
 // THIS process's argv). Tests inject a fake execFn to assert the exact
 // commands issued without spawning a real process, mirroring the execFn
 // injection pattern already used by riya's isPortUsedByDocker.
-test("vendorNexui shells out to the CLI's init then add commands with the configured registry URL and outputDir as cwd", () => {
-  const outputDir = "/fake/output/dir";
-  const calls: Array<{ command: string; cwd: string }> = [];
-  const fakeExec = (command: string, options: { cwd: string }) => {
+// 2026-08-16 (review fix, Finding A): these three tests only asserted the
+// exact commands issued — they never proved anything landed on disk, which
+// is precisely the gap Finding A's review caught. Switched from a bogus
+// "/fake/output/dir" (never real, so the new post-add file-existence check
+// would always throw) to a real mkdtempSync dir, and fakeExec now stubs out
+// each requested component's .tsx file on the "add" call — mirroring what
+// the real CLI does on success — so these command-shape assertions keep
+// passing under vendorNexui's new verification without weakening it.
+function fakeExecThatWritesStubComponents(
+  calls: Array<{ command: string; cwd: string }>,
+): VendorExecFn {
+  return (command, options) => {
     calls.push({ command, cwd: options.cwd });
+    const match = command.match(/ add ((?:"[^"]+"\s*)+)--yes/);
+    if (match?.[1]) {
+      const names = [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+      const componentsDir = join(options.cwd, "components", "nexui");
+      mkdirSync(componentsDir, { recursive: true });
+      for (const name of names) {
+        writeFileSync(join(componentsDir, `${name}.tsx`), `export function ${name}() { return null; }\n`);
+      }
+    }
     return "";
   };
+}
+
+test("vendorNexui shells out to the CLI's init then add commands with the configured registry URL and outputDir as cwd", () => {
+  const outputDir = mkdtempSync(join(tmpdir(), "aanya-vendor-cmd-shape-"));
+  const calls: Array<{ command: string; cwd: string }> = [];
+  const fakeExec = fakeExecThatWritesStubComponents(calls);
 
   const previous = process.env.NEXUI_REGISTRY_URL;
   process.env.NEXUI_REGISTRY_URL = "https://fixture.example.test";
@@ -161,6 +185,7 @@ test("vendorNexui shells out to the CLI's init then add commands with the config
   } finally {
     if (previous === undefined) delete process.env.NEXUI_REGISTRY_URL;
     else process.env.NEXUI_REGISTRY_URL = previous;
+    rmSync(outputDir, { recursive: true, force: true });
   }
 
   expect(calls.length).toBe(2);
@@ -174,18 +199,20 @@ test("vendorNexui shells out to the CLI's init then add commands with the config
 });
 
 test("vendorNexui defaults to the confirmed live registry URL when NEXUI_REGISTRY_URL is unset", () => {
-  const calls: string[] = [];
-  const fakeExec = (command: string) => { calls.push(command); return ""; };
+  const outputDir = mkdtempSync(join(tmpdir(), "aanya-vendor-default-registry-"));
+  const calls: Array<{ command: string; cwd: string }> = [];
+  const fakeExec = fakeExecThatWritesStubComponents(calls);
 
   const previous = process.env.NEXUI_REGISTRY_URL;
   delete process.env.NEXUI_REGISTRY_URL;
   try {
-    vendorNexui("/fake/output/dir", ["button"], fakeExec);
+    vendorNexui(outputDir, ["button"], fakeExec);
   } finally {
     if (previous !== undefined) process.env.NEXUI_REGISTRY_URL = previous;
+    rmSync(outputDir, { recursive: true, force: true });
   }
 
-  expect(calls[0]).toContain("https://new.yugnex.com");
+  expect(calls[0]?.command).toContain("https://new.yugnex.com");
 });
 
 test("vendorNexui defaults to the 13 confirmed-mapped components when none are specified", () => {
@@ -195,9 +222,14 @@ test("vendorNexui defaults to the 13 confirmed-mapped components when none are s
   // actually uses — so per-project component selection can't be derived
   // reliably without guessing which the plan explicitly forbids. Default to
   // fetching every confirmed-mapped component every time instead.
-  const calls: string[] = [];
-  const fakeExec = (command: string) => { calls.push(command); return ""; };
-  vendorNexui("/fake/output/dir", undefined, fakeExec);
+  const outputDir = mkdtempSync(join(tmpdir(), "aanya-vendor-default-components-"));
+  const calls: Array<{ command: string; cwd: string }> = [];
+  const fakeExec = fakeExecThatWritesStubComponents(calls);
+  try {
+    vendorNexui(outputDir, undefined, fakeExec);
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true });
+  }
 
   // Note: the plan doc labels this list "13 direct matches" but actually
   // enumerates 14 names (button, card, input, badge, checkbox, modal, tabs,
@@ -207,7 +239,66 @@ test("vendorNexui defaults to the 13 confirmed-mapped components when none are s
   // (E:\nex-ui\apps\docs\public\r\index.json): all 14 names exist there.
   expect(NEXUI_CONFIRMED_COMPONENTS.length).toBe(14);
   for (const name of NEXUI_CONFIRMED_COMPONENTS) {
-    expect(calls[1]).toContain(name);
+    expect(calls[1]?.command).toContain(name);
+  }
+});
+
+// 2026-08-16 (review fix, Finding A — regression test): the real @yugnex/cli
+// subprocess can exit 0 while silently having fetched ZERO bytes for one or
+// more requested components — traced into the real CLI source: fetchRegistry-
+// Component (packages/cli/src/utils/fetch-registry.ts) swallows any fetch
+// failure (404, network error, malformed JSON) into a bare `try/catch { return
+// null }`, and addOne (packages/cli/src/commands/add.ts) on receiving that
+// `null` just `console.log`s a red warning and `return`s — no process.exit(1),
+// no throw. The CLI process genuinely exits 0 in this scenario; a bare
+// execSync (which only inspects the exit code) cannot see the gap. This test
+// proves vendorNexui's own post-add file-existence check closes it: inject a
+// fake execFn that behaves exactly like the real CLI does when one component
+// silently fails — it returns normally (exit 0 semantics) but never writes
+// that component's .tsx file to disk — and assert vendorNexui throws,
+// identifying the missing component by name, instead of returning silently.
+test("vendorNexui throws naming the missing component(s) when the CLI subprocess exits 0 but a component file never lands on disk", () => {
+  const outputDir = mkdtempSync(join(tmpdir(), "aanya-vendor-partial-fail-"));
+  try {
+    // Simulate the real CLI's actual on-disk behavior for a partial failure:
+    // "button" fetches fine and its file is written; "card" silently fails
+    // inside the CLI (404/network hiccup) and addOne just logs + returns,
+    // writing nothing — but the subprocess as a whole still exits 0.
+    const fakeExec = (command: string, options: { cwd: string }) => {
+      if (command.includes(" add ")) {
+        mkdirSync(join(options.cwd, "components", "nexui"), { recursive: true });
+        writeFileSync(join(options.cwd, "components", "nexui", "button.tsx"), "export function Button() { return null; }\n");
+        // "card" deliberately never written — mirrors addOne's silent-return path.
+      }
+      return ""; // real CLI exits 0 even though "card" was never fetched
+    };
+
+    expect(() => vendorNexui(outputDir, ["button", "card"], fakeExec)).toThrow(/card/);
+    try {
+      vendorNexui(outputDir, ["button", "card"], fakeExec);
+    } catch (err) {
+      expect(String(err)).not.toContain("button"); // only the ACTUALLY-missing one is named
+    }
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true });
+  }
+});
+
+test("vendorNexui does not throw when the CLI subprocess exits 0 and every requested component file actually landed on disk", () => {
+  const outputDir = mkdtempSync(join(tmpdir(), "aanya-vendor-success-"));
+  try {
+    const fakeExec = (command: string, options: { cwd: string }) => {
+      if (command.includes(" add ")) {
+        mkdirSync(join(options.cwd, "components", "nexui"), { recursive: true });
+        writeFileSync(join(options.cwd, "components", "nexui", "button.tsx"), "export function Button() { return null; }\n");
+        writeFileSync(join(options.cwd, "components", "nexui", "card.tsx"), "export function Card() { return null; }\n");
+      }
+      return "";
+    };
+
+    expect(() => vendorNexui(outputDir, ["button", "card"], fakeExec)).not.toThrow();
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true });
   }
 });
 

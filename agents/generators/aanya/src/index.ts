@@ -3,7 +3,7 @@
 // UI: @yugnex/nexui-react (NexSidi's own library) — NO Tailwind, NO shadcn/ui.
 
 import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
-import { mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { randomBytes } from "crypto";
 import { join } from "path";
@@ -65,7 +65,16 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
   const outputDir = getOutputDir(plan.projectId);
   mkdirSync(outputDir, { recursive: true });
 
-  // 1. Vendor in NexSidi UI packages (no external npm required in Docker)
+  // 1. Vendor in NexSidi UI packages via @yugnex/cli against the registry.
+  // NEEDS NETWORK ACCESS (2026-08-16, aanya-nexui-migration review fix):
+  // unlike the old cpSync-based local-copy implementation, this shells out to
+  // `npx --yes @yugnex/cli@${NEXUI_CLI_VERSION}` (resolves/downloads the CLI
+  // package itself from the npm registry) and that CLI in turn does an HTTP
+  // fetch per component against NEXUI_REGISTRY_URL. If Aanya's generator ever
+  // runs inside a network-restricted container/sandbox, vendoring will fail —
+  // confirm real network egress (npm registry + the NexUI registry host) is
+  // available in whatever environment actually runs generation before relying
+  // on this path (see Task 4 of the migration plan).
   vendorNexui(outputDir);
 
   // 2. Write static scaffold
@@ -287,8 +296,27 @@ const NEXUI_CLI_VERSION = "0.1.1";
 
 export type VendorExecFn = (command: string, options: { cwd: string }) => string;
 
+// 2026-08-16 (review fix, Finding C): no other execSync/spawnSync call site in
+// this codebase that talks to a network endpoint goes unbounded — see
+// pipeline/activities/index.ts's bunInstall (timeout: 180_000) for the
+// closest match in kind (npm-registry-dependent package resolution, not a
+// fast local check like riya's isPortUsedByDocker docker-ps 5000ms). This
+// call does the same class of work (npx resolving @yugnex/cli from the npm
+// registry, then the CLI itself fetching each component over HTTP), so it
+// gets the same order-of-magnitude budget rather than being unbounded or an
+// arbitrarily small number that would false-fail on a slow but healthy
+// network. A hang here previously blocked the entire generator run
+// indefinitely — see Finding A's header comment on vendorNexui for why a
+// fast, clean failure matters more here than elsewhere (there wasn't one).
+const VENDOR_EXEC_TIMEOUT_MS = 180_000;
+
 const defaultVendorExecFn: VendorExecFn = (command, options) =>
-  execSync(command, { cwd: options.cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
+  execSync(command, {
+    cwd: options.cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: VENDOR_EXEC_TIMEOUT_MS,
+  });
 
 // ── Vendor NexUI components into the generated project ─────────────────────
 // 2026-08-16 (aanya-nexui-migration Task 1): replaces the old whole-package
@@ -321,6 +349,36 @@ const defaultVendorExecFn: VendorExecFn = (command, options) =>
 // working end-to-end (`npx --yes @yugnex/cli@0.1.1 init`/`add` against a
 // local fixture directory registry, verifying real output files) before
 // writing this — see index.test.ts's real-subprocess test.
+// 2026-08-16 (review fix, Finding A): vendorNexui used to trust a zero exit
+// code as proof every requested component actually landed on disk. It
+// doesn't. Traced into the real CLI source it shells out to
+// (packages/cli/src/{commands/add.ts,utils/fetch-registry.ts} in the nex-ui
+// repo): fetchRegistryComponent wraps its fetch in a bare
+// `try { ... } catch { return null; }` — a 404, a network hiccup, or
+// malformed JSON are all indistinguishable and all swallowed to `null`. On
+// receiving that `null`, addOne does `console.log(pc.red(...)); return;` —
+// no process.exit(1), no throw — so the `add` loop just continues to the
+// next component and addCommand returns normally. The CLI process therefore
+// exits 0 even if every one of the requested components failed to fetch. A
+// bare execSync (which only throws on non-zero exit) can never see this.
+// Net effect without this check: a transient registry blip silently produces
+// a generation run that believes vendoring succeeded, and the real problem
+// only surfaces many expensive agent-loop iterations later as a confusing
+// "module not found" build error.
+//
+// The fix: after `add` returns, verify each requested component's real file
+// actually exists on disk. `init` (packages/cli/src/commands/init.ts) writes
+// componentsDir as `components/nexui` (no `src/` prefix, since Aanya's
+// scaffold has no src/ dir) and every registry component's JSON entry names
+// its own file `<component-name>.tsx` (confirmed directly against the real
+// registry files, e.g. apps/docs/public/r/button.json's
+// `files: [{ path: "button.tsx", ... }]`) — so `outputDir/components/nexui/
+// <name>.tsx` is the exact, verified path convention, not a guess.
+function missingVendoredComponents(outputDir: string, components: readonly string[]): string[] {
+  const componentsDir = join(outputDir, "components", "nexui");
+  return components.filter((name) => !existsSync(join(componentsDir, `${name}.tsx`)));
+}
+
 export function vendorNexui(
   outputDir: string,
   components: readonly string[] = NEXUI_CONFIRMED_COMPONENTS,
@@ -334,6 +392,17 @@ export function vendorNexui(
   if (components.length > 0) {
     const names = components.map((name) => `"${name}"`).join(" ");
     execFn(`${cli} add ${names} --yes --registry "${registryUrl}"`, { cwd: outputDir });
+
+    const missing = missingVendoredComponents(outputDir, components);
+    if (missing.length > 0) {
+      throw new Error(
+        `vendorNexui: the CLI reported success but ${missing.length} component(s) never ` +
+          `landed on disk under ${join(outputDir, "components", "nexui")}: ${missing.join(", ")}. ` +
+          `The @yugnex/cli 'add' command silently swallows fetch failures (missing component, ` +
+          `404, network error) per-component instead of failing the process — check registry ` +
+          `URL "${registryUrl}" and network access, then retry.`,
+      );
+    }
   }
 }
 
