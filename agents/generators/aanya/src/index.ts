@@ -10,7 +10,7 @@ import { join } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
 import { formatDesignBriefForPrompt } from "../../../vanya/src/index.ts";
-import { buildThemeOverrideCss, buildThemeOverrideTokens } from "./theme.ts";
+import { buildFontOverrideCss, buildThemeOverrideTokens, themeColorMode } from "./theme.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
 
@@ -607,13 +607,22 @@ LAYOUT PATTERNS:
   one-size-fits-all example.
 
 STATIC FILES ALREADY WRITTEN (DO NOT rewrite unless you need to fix a bug):
-- package.json (with @yugnex/nexui-react + @yugnex/nexui as file: deps)
-- app/layout.tsx (NexuiProvider wrapper)
-- app/globals.css (NexUI token imports, base reset — NO @apply Tailwind directives)
+- package.json (with @yugnex/core as a real npm dependency — components under
+  components/nexui/ are your own project source, not an installed package)
+- app/layout.tsx (StyleRegistry + ThemeProvider + NoFoucScript from
+  @yugnex/core — this project's colors are already wired in, do not replace
+  with a different theme setup)
+- app/globals.css (base reset using @yugnex/core's --nx-color-* variables —
+  NO @apply Tailwind directives)
+- app/theme-overrides.css (this project's font-family override — imported by
+  globals.css, do not remove the import)
 - middleware.ts (custom JWT cookie-based auth middleware for Next.js 16.2 —
   this IS the real, framework-recognized filename; do not rename it)
 - next.config.ts
 - tsconfig.json
+- components/nexui/*.tsx (vendored NexUI component source — see NEXUI
+  COMPONENT API below for what's actually available; edit these only to fix
+  a genuine bug, never to add Tailwind/shadcn/ui-style classes)
 
 FILES YOU MUST WRITE:
 You MUST create all pages, routes, and components listed in the "PLANNED FRONTEND FILES AND PAGES" section of your task description. Typically this includes:
@@ -856,11 +865,21 @@ JWT_SECRET=${placeholder}
 `;
 }
 
-// Diagnosis 2026-07-04 (stress2/stress3 forensics): "vendor" MUST be in
-// exclude — the vendored NexUI source is not held to the generated project's
-// React 19 typecheck (it ships its own dist), and letting Next compile it
-// cost every run 10-20 iterations of mystery build errors until a model
-// rediscovered this exclusion. Exported for direct unit testing.
+// Diagnosis 2026-07-04 (stress2/stress3 forensics): "vendor" used to be
+// required in exclude — the old whole-package-vendored NexUI source wasn't
+// held to the generated project's React 19 typecheck (it shipped its own
+// dist), and letting Next compile it cost every run 10-20 iterations of
+// mystery build errors until a model rediscovered this exclusion.
+// 2026-08-16 (aanya-nexui-migration Task 2): Task 1 replaced whole-package
+// vendoring with @yugnex/cli copying individual component .tsx files into
+// components/nexui/ — there is no vendor/ directory produced at all anymore
+// (confirmed: vendorNexui's real, verified output path is
+// outputDir/components/nexui/<name>.tsx). components/nexui/*.tsx are real,
+// first-party project source now — the whole point of the shadcn/ui-style
+// "you own the code" model is that the generated project's own TypeScript
+// strictness applies to them, same as any file Aanya writes herself.
+// "vendor" is dropped; node_modules stays excluded as always.
+// Exported for direct unit testing.
 export function buildScaffoldTsconfig(): string {
   return JSON.stringify({
     compilerOptions: {
@@ -873,20 +892,29 @@ export function buildScaffoldTsconfig(): string {
       paths: { "@/*": ["./*"] },
     },
     include: ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-    exclude: ["node_modules", "vendor"],
+    exclude: ["node_modules"],
   }, null, 2);
 }
 
 // Same forensics: experimental.serverComponentsExternalPackages was renamed
 // upstream in Next 15 and is invalid on the mandated Next 16.2 — Claude
-// deleted it in both stress2 and stress3 (the identical edit each run).
-// Ship the config without it. Exported for direct unit testing.
+// deleted it in both stress2 and stress3 (the identical edit each run). Ship
+// the config without it.
+// 2026-08-16 (aanya-nexui-migration Task 2): transpilePackages existed
+// solely because the old @yugnex/nexui-react vendored package shipped raw
+// TypeScript source that Next.js needed to be told to transpile.
+// @yugnex/core ships pre-built dist/*.js + .d.ts (confirmed:
+// node_modules/@yugnex/core/dist/{index,client}.js from a real `npm
+// install`, not assumed from the README) — nothing needs transpiling.
+// Verified empirically, not just asserted: a real `npm install` + `npx next
+// build` against a minimal Next.js 16.2 project depending on @yugnex/core,
+// with NO transpilePackages entry at all, compiled clean (Next 16.3.1/
+// Turbopack, zero errors) — see this migration's plan doc for the full
+// build log. Exported for direct unit testing.
 export function buildScaffoldNextConfig(): string {
   return `import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
-  transpilePackages: ["@yugnex/nexui-react", "@yugnex/nexui"],
-};
+const nextConfig: NextConfig = {};
 
 export default nextConfig;
 `;
@@ -903,12 +931,18 @@ export function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
         version: "1.0.0",
         private: true,
         scripts: { dev: "next dev", build: "next build", start: "next start" },
+        // 2026-08-16 (aanya-nexui-migration Task 2): @yugnex/core is the
+        // ONLY NexUI package installed as a real dependency now — components
+        // themselves are copied in as source by Task 1's vendorNexui, not
+        // installed from npm (shadcn/ui-style: "you own the code you ship").
+        // "^0.1.0" confirmed live via `npm view @yugnex/core version` this
+        // session (published on the public npm registry, not a private-only
+        // package) — pin deliberately, bump when a newer version is verified.
         dependencies: {
           next: "^16.2.0",
           react: "^19.0.0",
           "react-dom": "^19.0.0",
-          "@yugnex/nexui": "file:./vendor/nexui",
-          "@yugnex/nexui-react": "file:./vendor/nexui-react",
+          "@yugnex/core": "^0.1.0",
         },
         devDependencies: {
           typescript: "^5.7.0",
@@ -942,18 +976,38 @@ export function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
       // ONE fixed dark palette + hardcoded Inter font with zero per-project
       // variation, even though Vanya's real designBrief (palette/typeface/
       // mood) was already computed and available on `plan` — it was just
-      // never read. buildThemeOverrideCss derives real CSS custom-property
-      // overrides from it; @importing this AFTER NexUI's own tokens (below)
-      // lets the project's actual colors/fonts win the cascade for those
-      // specific variables, no vendored file needs touching.
+      // never read.
+      // 2026-08-16 (aanya-nexui-migration Task 2): colors no longer live
+      // here. @yugnex/core's createTheme()/ThemeProvider (see layout.tsx
+      // below) is the real, cascade-safe mechanism for per-project color —
+      // verified empirically this session that overrides passed to
+      // createTheme() land in the SAME SSR-flushed stylesheet as the base
+      // theme, so there is no longer a "later runtime injection wins"
+      // problem for a static file to lose to. This file now covers the ONE
+      // real gap createTheme() leaves open: typography (confirmed against
+      // @yugnex/core's actual ThemeOverrides type — colors only, no font
+      // slot). buildFontOverrideCss sets a literal font-family on
+      // html/body/headings, deliberately NOT touching the --nx-font-family-*
+      // CSS variable NexUI's own vendored components read internally — see
+      // theme.ts's header comment for why that avoids reintroducing the old
+      // cascade-race bug class in a new shape.
       path: "app/theme-overrides.css",
-      content: buildThemeOverrideCss(plan.designBrief),
+      content: buildFontOverrideCss(plan.designBrief),
     },
     {
+      // 2026-08-16 (aanya-nexui-migration Task 2): @yugnex/core ships ZERO
+      // CSS files (confirmed: a real `npm install` of @yugnex/core@0.1.0 —
+      // node_modules/@yugnex/core/dist/ contains only .js/.d.ts/.map, no
+      // nexui-tokens.css/nexui-base.css equivalent in any form) — token
+      // injection happens entirely at runtime via <ThemeProvider> in
+      // layout.tsx, not a static @import. The reset/base rules below now
+      // reference @yugnex/core's real CSS custom-property names
+      // (--nx-color-background, --nx-color-foreground, --nx-color-primary —
+      // confirmed against packages/core/src/theme/createTheme.ts's cssVarName
+      // convention: `--nx-${kebab(path)}`), not the old --nx-bg-base/--nx-text
+      // names, which no longer exist in this system.
       path: "app/globals.css",
-      content: `@import "@yugnex/nexui/css/nexui-tokens.css";
-@import "@yugnex/nexui/css/nexui-base.css";
-@import "./theme-overrides.css";
+      content: `@import "./theme-overrides.css";
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -962,22 +1016,21 @@ export function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
 }
 
 html {
-  font-family: var(--nx-ff-sans);
-  font-size: var(--nx-fs-base);
-  color: var(--nx-text);
-  background: var(--nx-bg-base);
+  font-size: var(--nx-font-size-base);
+  color: var(--nx-color-foreground);
+  background: var(--nx-color-background);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 body {
   min-height: 100vh;
-  background: var(--nx-bg-base);
-  color: var(--nx-text);
+  background: var(--nx-color-background);
+  color: var(--nx-color-foreground);
 }
 
 a {
-  color: var(--nx-accent-text);
+  color: var(--nx-color-primary);
   text-decoration: none;
 }
 
@@ -988,20 +1041,38 @@ a:hover {
     },
     {
       path: "app/layout.tsx",
-      // 2026-08-06: real bug found live (confirmed on two separate deployed
-      // builds via getComputedStyle) — theme-overrides.css's colors were
-      // correct in source but NEVER actually rendered. Root cause:
-      // NexuiProvider's initializeNexuiEngine injects the "void" preset's
-      // OWN <style> tag into document.head at runtime (client-side, after
-      // hydration) — which always lands later in the DOM than this file's
-      // statically-imported theme-overrides.css and wins the cascade
-      // regardless of import order. customTokens bakes this SAME project's
-      // colors/fonts into that runtime injection instead, so it can't lose
-      // that fight. theme-overrides.css is kept (still imported via
-      // globals.css above) only as a pre-hydration first-paint
-      // approximation — customTokens is the one guaranteed to actually win.
+      // 2026-08-16 (aanya-nexui-migration Task 2): replaces NexuiProvider
+      // (@yugnex/nexui-react) with @yugnex/core's real provider stack.
+      // Import split confirmed against the ACTUAL published dist/*.d.ts
+      // (not the README's usage example, which is wrong — a real `next
+      // build` against the README's exact import shape fails with "Module
+      // '@yugnex/core/client' has no exported member 'NoFoucScript'"):
+      // StyleRegistry/ThemeProvider are "use client" exports, only on
+      // "@yugnex/core/client"; NoFoucScript and createTheme are server-safe
+      // (no hooks) and only live on the main "@yugnex/core" entry.
+      //
+      // The old NexuiProvider customTokens race (2026-08-06: a runtime
+      // effect-injected <style> tag always won the cascade over a
+      // statically-imported CSS file, regardless of import order) does NOT
+      // recur here: createTheme(buildThemeOverrideTokens(...)) bakes this
+      // project's real per-project colors into the ONE theme object passed
+      // to <ThemeProvider>, and ThemeProvider injects that theme's CSS
+      // synchronously during render (SSR included, flushed by
+      // <StyleRegistry> via Next's useServerInsertedHTML) — there is no
+      // second, later style source for anything to lose a fight against.
+      // Verified empirically, not assumed: real `npm install` + `next
+      // build` + `next start` + raw HTML fetch of the rendered page showed
+      // the override colors present in the very first SSR-flushed
+      // stylesheet (see this migration's plan doc for the full build/output
+      // log).
+      //
+      // defaultColorMode is pinned to themeColorMode(plan.designBrief) —
+      // matching the OLD system's fixed single "void" theme (never a
+      // system-preference-driven light/dark switch a design brief was never
+      // built to describe two variants for).
       content: `import type { ReactNode } from "react";
-import { NexuiProvider } from "@yugnex/nexui-react";
+import { StyleRegistry, ThemeProvider } from "@yugnex/core/client";
+import { createTheme, NoFoucScript } from "@yugnex/core";
 import "./globals.css";
 
 export const metadata = {
@@ -1009,15 +1080,20 @@ export const metadata = {
   description: "${plan.appDescription ?? ""}",
 };
 
-const nexuiCustomTokens = ${JSON.stringify(buildThemeOverrideTokens(plan.designBrief), null, 2)};
+const projectTheme = createTheme(${JSON.stringify(buildThemeOverrideTokens(plan.designBrief), null, 2)});
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
+      <head>
+        <NoFoucScript />
+      </head>
       <body>
-        <NexuiProvider theme="void" customTokens={nexuiCustomTokens}>
-          {children}
-        </NexuiProvider>
+        <StyleRegistry>
+          <ThemeProvider theme={projectTheme} defaultColorMode="${themeColorMode(plan.designBrief)}">
+            {children}
+          </ThemeProvider>
+        </StyleRegistry>
       </body>
     </html>
   );
