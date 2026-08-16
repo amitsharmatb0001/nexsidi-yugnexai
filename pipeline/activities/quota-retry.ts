@@ -96,22 +96,52 @@ export async function runWithQuotaWatchAndResume<T extends { success: boolean; e
   return result;
 }
 
+export interface GeneratorQuotaRetryOptions {
+  healthCheckFn?: () => Promise<boolean>;
+  sleepFn?: (ms: number) => Promise<void>;
+  log?: (msg: string) => void;
+}
+
 // Mirrors stage6-deployment.ts's deployWithQuotaRetry: retries the WHOLE
 // generator call (not just the failed step) with a backoff wait, but ONLY
 // when the failure is quota-exhaustion-shaped — any other failure reason
 // returns immediately unchanged, so a genuine bug still fails fast.
+//
+// 2026-08-16 (token-waste-reduction plan, Task 2): each retry's `attempt()`
+// reloads and resends the FULL stored conversation history (confirmed
+// hundreds of KB live) — expensive, and near-certainly doomed if the
+// circuit breaker is still open 90s after it was JUST open. This now
+// mirrors runWithQuotaWatchAndResume's DI pattern (same options shape,
+// same default checkGeminiHealth) to gate WHETHER attempt() runs at each
+// existing retry slot: after the same 90s sleep, run a cheap health check
+// first, and only pay for the resend if it reports healthy. Unhealthy
+// still consumes that retry slot (and its 90s sleep) — this stays a
+// strictly SHORTER-horizon mechanism than runWithQuotaWatchAndResume's
+// ~2h watch loop; it does not add polls or extend the backoff, it just
+// avoids the wasted resend within the existing 2-retry/90s budget.
 export async function runGeneratorWithQuotaRetry<T extends { success: boolean; errors: string[] }>(
   attempt: () => Promise<T>,
-  sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  opts: GeneratorQuotaRetryOptions = {},
 ): Promise<T> {
+  const healthCheckFn = opts.healthCheckFn ?? checkGeminiHealth;
+  const sleepFn = opts.sleepFn ?? defaultSleep;
+  const log = opts.log ?? console.log;
+
   let result = await attempt();
   let retries = 0;
   while (!result.success && isQuotaExhaustionError(result.errors) && retries < MAX_GENERATOR_QUOTA_RETRIES) {
     retries++;
-    console.log(
+    log(
       `[generator] failed on LLM quota/circuit-breaker exhaustion — waiting ${GENERATOR_QUOTA_RETRY_BACKOFF_MS}ms for recovery before retry ${retries}/${MAX_GENERATOR_QUOTA_RETRIES}`,
     );
     await sleepFn(GENERATOR_QUOTA_RETRY_BACKOFF_MS);
+    const healthy = await healthCheckFn();
+    if (!healthy) {
+      log(
+        `[generator] health check after ${GENERATOR_QUOTA_RETRY_BACKOFF_MS}ms wait still unhealthy — skipping the full-context resend for retry ${retries}/${MAX_GENERATOR_QUOTA_RETRIES} (doomed retry avoided)`,
+      );
+      continue;
+    }
     result = await attempt();
   }
   return result;
