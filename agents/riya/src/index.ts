@@ -603,9 +603,18 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
     }
     if (!createRes.ok) return { ok: false, reason: `create ${createEp.path} returned ${createRes.status}: ${(await createRes.text()).slice(0, 200)}` };
     const createBody = (await createRes.json()) as Record<string, unknown>;
-    // Unwrap {success, data: {...}} envelope (Express convention) if present
-    const created = (createBody.data ?? createBody) as Record<string, unknown>;
-    const createdId = created.id as string | undefined;
+    // 2026-08-17: real false-deploy-failure found live (fulfillio1) — this
+    // unwrap only peeled ONE level ({data: {...}} -> {...}), the exact same
+    // bug findFirstObjectWithId (above) was already written to fix for
+    // verifyAllResourceCrud's own create check, just never reused here. A
+    // genuinely successful create — {"success":true,"data":{"item":{"id":...
+    // — was misreported as "response has no id" (created.id undefined,
+    // since data unwraps to {item:{id}}, not {id} directly) and burned BOTH
+    // of Stage 6's retry attempts on the same false positive, escalating a
+    // working deploy as deploy_failed. Reusing the already-correct helper
+    // instead of a second, shallower duplicate.
+    const created = findFirstObjectWithId(createBody);
+    const createdId = created?.id as string | undefined;
     if (!createdId) return { ok: false, reason: `create response has no id: ${JSON.stringify(createBody).slice(0, 200)}` };
     // 2026-08-03 (live, verify4617991, follow-on to the payload-shape fix
     // above): a real contract can legitimately declare a minimal ack
