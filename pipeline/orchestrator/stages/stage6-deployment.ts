@@ -595,16 +595,26 @@ export async function runStage6(
 
         // 2026-07-28 (live, complex1): mirrors stage5-qa-fix-loop.ts's same
         // escalation routing — a fix agent may decide the real fix belongs
-        // in Pranav's domain (escalate_finding) instead of forcing a
-        // workaround in its own. Dispatched in THIS SAME round so a schema
+        // in another agent's domain (escalate_finding) instead of forcing a
+        // workaround in its own. Dispatched in THIS SAME round so the real
         // fix lands before the redeploy below, not a full wasted round later.
-        const pranavEscalations = fixResults.flatMap((r) => r.escalations ?? []).filter((e) => e.targetAgent === "pranav");
-        if (pranavEscalations.length > 0) {
-          const formatted = pranavEscalations.map((e) => `${e.finding} — ${e.reason}`);
-          console.log(`[stage6] routing ${formatted.length} escalated finding(s) to Pranav this round`);
-          const escalationResult = await fixPranavReal(plan, formatted);
+        // 2026-08-16: like stage5-qa-fix-loop.ts, this only ever routed
+        // targetAgent === "pranav" — shubham/aanya escalations were captured
+        // in fixResults but silently dropped here too, the same root cause
+        // found live on fulfillio1 (Aanya's escalate_finding("shubham", ...)
+        // for a missing GET /api/v1/orders/:id looked successful but never
+        // reached Shubham). Fixed the same way in both places.
+        const escalationsByTarget: Record<"shubham" | "aanya" | "pranav", Escalation[]> = { shubham: [], aanya: [], pranav: [] };
+        for (const e of fixResults.flatMap((r) => r.escalations ?? [])) escalationsByTarget[e.targetAgent].push(e);
+        for (const target of ["shubham", "aanya", "pranav"] as const) {
+          const targeted = escalationsByTarget[target];
+          if (targeted.length === 0) continue;
+          const formatted = targeted.map((e) => `${e.finding} — ${e.reason}`);
+          console.log(`[stage6] routing ${formatted.length} escalated finding(s) to ${target} this round`);
+          const fixFn = target === "pranav" ? fixPranavReal : target === "shubham" ? fixShubhamReal : fixAanyaReal;
+          const escalationResult = await fixFn(plan, formatted);
           if (!escalationResult.success) {
-            console.error(`[stage6] pranav escalation fix FAILED to complete`);
+            console.error(`[stage6] ${target} escalation fix FAILED to complete`);
           }
         }
 

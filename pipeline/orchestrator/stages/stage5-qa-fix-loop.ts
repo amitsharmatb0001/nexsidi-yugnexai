@@ -469,23 +469,40 @@ export async function runQAFixLoopWithDeps(
 
     // P3 (agent-autonomy-assessment F3): a fix agent may have decided the
     // real fix belongs in another agent's domain (escalate_finding) instead
-    // of forcing a workaround. Route escalations to pranav (currently the
-    // only cross-layer target with a real fix path) in THIS SAME round —
-    // waiting for another QA cycle to notice the same root cause is exactly
-    // the wasted-round cost this closes. Dispatched sequentially, after the
-    // main round, since it depends on this round's fix outcomes.
-    const pranavEscalations = fixOutcomes.flatMap((o) => o.escalations ?? []).filter((e) => e.targetAgent === "pranav");
-    if (pranavEscalations.length > 0 && deps.fixPranav) {
-      const formatted = pranavEscalations.map((e) => `${e.finding} — ${e.reason}`);
-      console.log(`[qa-fix-loop] routing ${formatted.length} escalated finding(s) to pranav this round`);
-      await deps.recordInstincts?.("pranav", formatted);
-      const { success, filesWritten } = await deps.fixPranav(plan, formatted);
+    // of forcing a workaround. Route the escalation to whichever agent
+    // actually owns that domain in THIS SAME round — waiting for another QA
+    // cycle to notice the same root cause is exactly the wasted-round cost
+    // this closes. Dispatched sequentially, after the main round, since it
+    // depends on this round's fix outcomes.
+    // 2026-08-16: this used to filter for targetAgent === "pranav" only
+    // ("currently the only cross-layer target with a real fix path" — but
+    // fixShubham/fixAanya were ALREADY real fix paths by then, just never
+    // wired here). Root-caused live on fulfillio1: Aanya repeatedly called
+    // escalate_finding({target_agent: "shubham", ...}) for a missing
+    // GET /api/v1/orders/:id endpoint — the tool call itself succeeds and
+    // logs "Escalated to shubham: ...", which looks like it worked, but the
+    // escalation was silently dropped here every round because only pranav
+    // was ever dispatched. The same finding re-surfaced round after round,
+    // burning QA cycles and tripping stuck-detection, while Shubham never
+    // once received it as an actual task.
+    const escalationsByTarget: Record<"shubham" | "aanya" | "pranav", Escalation[]> = { shubham: [], aanya: [], pranav: [] };
+    for (const e of fixOutcomes.flatMap((o) => o.escalations ?? [])) escalationsByTarget[e.targetAgent].push(e);
+    const labelForEscalation: Record<"shubham" | "aanya" | "pranav", string> = { shubham: "backend", aanya: "frontend", pranav: "db" };
+
+    for (const target of ["shubham", "aanya", "pranav"] as const) {
+      const targeted = escalationsByTarget[target];
+      const fixFn = target === "pranav" ? deps.fixPranav : target === "shubham" ? deps.fixShubham : deps.fixAanya;
+      if (targeted.length === 0 || !fixFn) continue;
+      const formatted = targeted.map((e) => `${e.finding} — ${e.reason}`);
+      console.log(`[qa-fix-loop] routing ${formatted.length} escalated finding(s) to ${target} this round`);
+      await deps.recordInstincts?.(target, formatted);
+      const { success, filesWritten } = await fixFn(plan, formatted);
       // Token-waste-reduction plan, Task 1: an escalation-routed fix writes
       // real files too (outside the main fixCalls/computeChangedFiles pass
       // above) — fold it in so the next round's reviewers know to look here.
-      for (const f of filesWritten ?? []) changedFilesThisRound.add(`db/${f}`);
+      for (const f of filesWritten ?? []) changedFilesThisRound.add(`${labelForEscalation[target]}/${f}`);
       if (!success) {
-        console.error(`[qa-fix-loop] pranav escalation fix FAILED to complete`);
+        console.error(`[qa-fix-loop] ${target} escalation fix FAILED to complete`);
       }
     }
 
