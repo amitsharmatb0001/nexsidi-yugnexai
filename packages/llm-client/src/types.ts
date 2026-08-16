@@ -49,6 +49,13 @@ export type ModelId =
   // user tier (minimal thinking / cheapest).
   | "gemini-3.1-pro-preview"
   | "gemini-3.6-flash"
+  // 2026-08-16: same price as gemini-3.6-flash per Google's own docs, better
+  // agentic-task performance — added ahead of 3.6-flash in FALLBACK_CHAIN,
+  // not replacing it outright, since 3.6-flash had a real region-availability
+  // gap on the new aiayug GCP project tonight (asia-southeast1 404) and a
+  // freshly-released model could plausibly have the same kind of gap; kept
+  // as an immediate fallback rather than assuming full parity untested.
+  | "gemini-3.7-flash"
   | "gemini-2.5-flash-lite";
 
 // Per-agent primary model assignment (D4)

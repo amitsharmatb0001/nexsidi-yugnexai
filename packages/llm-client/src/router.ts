@@ -158,11 +158,19 @@ export type GeminiTier = "plan" | "design" | "qa" | "generation" | "a2a" | "user
 // Aanya's geminiTier config) — it only adds a third rung so a fully-
 // exhausted pool degrades to "finish with a lesser model" instead of
 // "fail the entire pipeline."
+// 2026-08-16: gemini-3.7-flash added ahead of gemini-3.6-flash in every
+// Flash-tier slot — same price as 3.6-flash per Google's own docs, better
+// agentic-task performance, no reason to prefer the older model once 3.7 is
+// available. 3.6-flash kept immediately after it (not removed) as a live
+// fallback: 3.6-flash itself had a real region-availability gap on the new
+// aiayug project tonight (404 in asia-southeast1), so a brand-new model
+// could plausibly have a similar gap on a fresh project — this degrades
+// gracefully instead of assuming untested full parity.
 const TIER_POOLS: Record<GeminiTier, string[]> = {
-  plan:       ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"],
-  design:     ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"],
-  qa:         ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"],
-  generation: ["gemini-3.6-flash", "gemini-3.5-flash"],
+  plan:       ["gemini-3.1-pro-preview", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+  design:     ["gemini-3.1-pro-preview", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+  qa:         ["gemini-3.1-pro-preview", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+  generation: ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
   a2a:        ["gemini-2.5-flash-lite", "gemini-3.5-flash"],
   user:       ["gemini-2.5-flash-lite", "gemini-3.5-flash"],
 };

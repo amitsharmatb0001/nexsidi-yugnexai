@@ -54,11 +54,13 @@ test("shouldUseGeminiForQA is false for any other QA_TIER value", () => {
 // the fallback chain — and prove the override-collapses-to-one-model
 // contract routeToolsWithFallback relies on for GEMINI_GENERATION_MODEL.
 test("poolForTier returns the QA pool led by the pro-thinking model, not flash", () => {
-  expect(poolForTier("qa")).toEqual(["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"]);
+  expect(poolForTier("qa")).toEqual(["gemini-3.1-pro-preview", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
 });
 
-test("poolForTier returns the generation pool led by gemini-3.6-flash", () => {
-  expect(poolForTier("generation")).toEqual(["gemini-3.6-flash", "gemini-3.5-flash"]);
+// 2026-08-16: gemini-3.7-flash added ahead of gemini-3.6-flash — same price,
+// better agentic-task performance per Google's own docs (see router.ts).
+test("poolForTier returns the generation pool led by gemini-3.7-flash", () => {
+  expect(poolForTier("generation")).toEqual(["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
 });
 
 test("poolForTier returns the user/status pool led by the cheapest flash-lite model", () => {
@@ -83,8 +85,8 @@ test("poolForTier collapses to a single-model pool when an explicit override is 
 // ordering is unchanged (still leads with 3.1-pro-preview for quality) —
 // 3.5-flash is appended as a third rung, matching every other tier.
 test("poolForTier: plan and design use the pro-thinking pool, not flash-lite", () => {
-  expect(poolForTier("plan")).toEqual(["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"]);
-  expect(poolForTier("design")).toEqual(["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.5-flash"]);
+  expect(poolForTier("plan")).toEqual(["gemini-3.1-pro-preview", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
+  expect(poolForTier("design")).toEqual(["gemini-3.1-pro-preview", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
 });
 
 test("poolForTier: a2a uses the cheap flash-lite pool, same tier as user", () => {
