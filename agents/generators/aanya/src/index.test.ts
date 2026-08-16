@@ -661,3 +661,134 @@ test("the watermark example uses a valid JSX style object, not an invalid HTML-s
   expect(prompt).not.toMatch(/style="height:24px/);
   expect(prompt).toContain('style={{ height: "24px", width: "auto", opacity: 0.75 }}');
 });
+
+// ── NEXUI COMPONENT API rewrite (Task 3) — regression tests ────────────────
+// 2026-08-16 (aanya-nexui-migration Task 3): every prop name/value below was
+// copied from the REAL registry source (E:\nex-ui\apps\docs\public\r\*.json)
+// during this task, not written from memory or by pattern-matching the old
+// prompt's style — see this task's own report for the full component ->
+// source-file verification table. These tests mirror the exact
+// "asserts the WRONG old pattern is gone AND the RIGHT new pattern is
+// present" style already established by the proxy.ts/middleware.ts tests
+// above (search "system prompt correctly requires middleware.ts") — same
+// idea, applied to every component whose old and new prop shapes differ.
+test("prompt has zero references to the old @yugnex/nexui-react package as an importable dependency", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain('from "@yugnex/nexui-react"');
+  expect(prompt).toContain("@/components/nexui/button");
+});
+
+test("Button: prompt uses the real variant/tone split (solid/outline/ghost/soft + tone), not the old variant=\"primary\"", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain('variant="primary"');
+  expect(prompt).toContain('variant="solid" tone="primary"');
+  expect(prompt).toContain("isLoading");
+});
+
+test("Badge: prompt uses tone for semantic color (success/warning are tones, not variants)", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain('variant="success"');
+  expect(prompt).not.toContain('variant="warning"');
+  expect(prompt).toContain('tone="success"');
+  expect(prompt).toContain('tone="warning"');
+});
+
+test("Checkbox: prompt uses onCheckedChange (not onChange) and does not claim a built-in label prop", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain("<Checkbox checked={done} label=");
+  expect(prompt).not.toContain("onChange={setDone}");
+  expect(prompt).toContain("onCheckedChange={(c) => setDone(c === true)}");
+});
+
+test("Switch: prompt uses onCheckedChange (not onChange) and does not claim label/size/color props", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain("onChange={setEnabled}");
+  expect(prompt).not.toContain('<Switch checked={enabled} onChange={setEnabled} label=');
+  expect(prompt).toContain("onCheckedChange={setEnabled}");
+});
+
+test("Modal: prompt uses the real compound-component API (open/onOpenChange, ModalContent/ModalHeader/ModalFooter), not the old onClose/title/footer props", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain("onClose={() => setOpen(false)}");
+  expect(prompt).not.toMatch(/<Modal[^>]+title="/);
+  expect(prompt).toContain("onOpenChange={setOpen}");
+  expect(prompt).toContain("ModalContent");
+  expect(prompt).toContain("ModalHeader");
+  expect(prompt).toContain("ModalFooter");
+});
+
+test("Select: prompt uses the real data-driven options array API, not the old SelectItem/SelectGroup JSX children", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain("<SelectItem");
+  expect(prompt).not.toContain("<SelectGroup");
+  expect(prompt).toContain("options={[");
+  expect(prompt).toContain("SelectField");
+});
+
+test("Tabs: prompt uses the real TabsPanel component, not the old TabsContent name", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toMatch(/<TabsContent[ >]/);
+  expect(prompt).not.toContain('TabsContent value="all"');
+  expect(prompt).toContain("TabsPanel");
+});
+
+test("Tooltip: prompt uses the real placement prop (not side) and the real default delay", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain('side="top"');
+  expect(prompt).not.toContain("default 400");
+  expect(prompt).toContain('placement="top"');
+});
+
+test("Progress: prompt uses the real tone prop (not variant/color) — linear bar only, no circular variant", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain('variant="linear"');
+  expect(prompt).not.toContain('color="accent"');
+  expect(prompt).toContain('tone="primary"');
+});
+
+test("Skeleton: prompt uses the real shape prop (not variant)", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain('variant="text"');
+  expect(prompt).not.toContain('variant="rect"');
+  expect(prompt).toContain('shape="text"');
+  expect(prompt).toContain('shape="rect"');
+});
+
+test("Avatar: prompt uses a numeric size prop, not a sm/md/lg size string", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).toContain("size={40}");
+});
+
+test("Panel & Spinner: prompt teaches css()/keyframes() replacements, not the removed <Panel>/<Spinner> components", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toMatch(/<Panel[ >]/);
+  expect(prompt).not.toMatch(/<Spinner[ >]/);
+  expect(prompt).toContain("NO Panel and NO Spinner component");
+  expect(prompt).toContain("panelClass = css({");
+  expect(prompt).toContain("spinnerClass = css({");
+  expect(prompt).toContain("keyframes({");
+});
+
+test("NexUI CSS variables: prompt uses the real --nx-color-* naming convention, not the old --nx-bg-base/--nx-accent/--nx-green names", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain("--nx-bg-base");
+  expect(prompt).not.toContain("--nx-bg-elevated");
+  expect(prompt).not.toContain("var(--nx-accent)");
+  expect(prompt).not.toContain("--nx-green");
+  expect(prompt).not.toContain("--nx-red");
+  expect(prompt).toContain("var(--nx-color-background)");
+  expect(prompt).toContain("var(--nx-color-primary)");
+  expect(prompt).toContain("var(--nx-color-destructive)");
+});
+
+test("Layout patterns: prompt no longer tells Aanya to use Panel for layout", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain("Use Panel and gap for layout");
+  expect(prompt).toContain("Use css()");
+});
+
+test("STACK section and loading-state rule no longer mention the removed Spinner component", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain("use Spinner while fetching");
+  expect(prompt).toContain("isLoading prop for in-button loading");
+});
