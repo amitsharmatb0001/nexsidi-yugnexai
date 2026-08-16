@@ -614,8 +614,8 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
     // working deploy as deploy_failed. Reusing the already-correct helper
     // instead of a second, shallower duplicate.
     const created = findFirstObjectWithId(createBody);
-    const createdId = created?.id as string | undefined;
-    if (!createdId) return { ok: false, reason: `create response has no id: ${JSON.stringify(createBody).slice(0, 200)}` };
+    if (!created) return { ok: false, reason: `create response has no id: ${JSON.stringify(createBody).slice(0, 200)}` };
+    const createdId = created.id as string;
     // 2026-08-03 (live, verify4617991, follow-on to the payload-shape fix
     // above): a real contract can legitimately declare a minimal ack
     // response (CreateContactResponse { id: string; status: string } —
