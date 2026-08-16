@@ -149,7 +149,19 @@ export function shouldStopCompileRepair(failures: number, maximum: number): bool
 // ─── Workflow ──────────────────────────────────────────────────────────────
 // userRequest is passed from Maya → Temporal, then forwarded to the Saanvi activity.
 // The activity writes it to BUILD_DIR/{projectId}/user-request.txt for all downstream agents.
-export async function projectBuildWorkflow(projectId: string, userRequest?: string): Promise<void> {
+// 2026-08-17 (live, fulfillio1): a Stage-6-only failure (e.g. the
+// context_chain_hash_mismatch class fixed above) kills the ENTIRE workflow
+// execution non-retryably — Temporal signals can't reach a terminated
+// execution, so the only way to make progress used to be starting a brand
+// new workflow, which re-runs Saanvi/Arjun/generation/QA from scratch even
+// though all of that work already succeeded and is sitting on disk/DB
+// untouched. resumeFromDeploy lets a NEW workflow execution skip straight to
+// Gate 2 + Stage 6 for a project whose spec/plan/generated-code/QA-pass
+// already exist — every Stage 6 activity here already takes only projectId
+// (runDeployWithLiveRetest, recordDeployHandoffActivity) and loads its own
+// state from disk/cache, so no workflow-local `plan` value needs to be
+// reconstructed for this to work.
+export async function projectBuildWorkflow(projectId: string, userRequest?: string, resumeFromDeploy?: boolean): Promise<void> {
   const state: PipelineState = {
     projectId,
     stage: "spec",
@@ -216,6 +228,80 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     await condition(() => clarificationAnswer !== null);
     state.pendingQuestions = null;
     return clarificationAnswer as string;
+  }
+
+  // Gate 2 (deploy approval) + Stage 6 (deploy + live-browser retest),
+  // extracted so both the normal post-QA flow and resumeFromDeploy (which
+  // skips straight here) share one implementation instead of two copies
+  // that could drift out of sync.
+  async function runGate2AndStage6(): Promise<void> {
+    // GATE 2: Deployment/Rollout Approval
+    state.stage = "await_deploy_approval";
+    await condition(() => deployApproved);
+
+    // ── Stage 6: deploy + live-browser retest, retried in-place on an
+    // explicit human decision ───────────────────────────────────────────
+    state.stage = "deliver";
+    for (;;) {
+      // 2026-08-17 (live, fulfillio1 — 3rd occurrence of the same false-
+      // positive class as two prior ones): recordHandoff used to be called
+      // ONCE, before this loop, so a SECOND (or third) Stage 6 attempt's
+      // verifyHandoff (inside runDeployWithLiveRetest) was checked against
+      // the snapshot taken before the FIRST attempt ever ran. Riya's deploy
+      // legitimately edits tracked source (e.g. docker-compose.yml, which
+      // Navya/Karan/Deepika DO read as part of QA) while fixing deploy
+      // config between attempts — a real, expected pipeline step, not
+      // tampering — but any retry (deploy_failed, deploy_stuck,
+      // budget_exceeded) tripped a non-retryable ContextChainViolation that
+      // killed the ENTIRE workflow outright, discarding a genuinely
+      // deployed, QA-passed, running app. Re-recording at the top of every
+      // iteration keeps each attempt's tamper window scoped to that single
+      // attempt (record here, verify moments later inside the activity)
+      // instead of one stale snapshot spanning every retry.
+      await orchestratorAct.recordDeployHandoffActivity(projectId);
+
+      // 2026-08-13 (cost-control Task 1): runDeployWithLiveRetest now calls
+      // assertWithinBudget before doing any deploy/live-retest work — this
+      // call had no surrounding try/catch before, same uncaught-propagation
+      // risk as the compile-repair sites above (see their comments for why
+      // that would wedge the workflow instead of failing cleanly).
+      let deployResult: DeployActivityResult;
+      try {
+        deployResult = await orchestratorAct.runDeployWithLiveRetest(projectId);
+      } catch (err) {
+        if (!isBudgetExceededFailure(err)) throw err;
+        state.stage = "error";
+        console.log(`[workflow] Stage 6 deploy halted — budget exceeded`);
+        const retry = await escalateAndAwaitRetryDecision("budget_exceeded");
+        if (!retry) {
+          await act.markProjectFailed(projectId, "budget_exceeded");
+          return;
+        }
+        state.stage = "deliver";
+        console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (budget_exceeded)`);
+        continue;
+      }
+      if (deployResult.success) break;
+
+      state.stage = "error";
+      const retry = patched("stuck-state-retry-signal-v1")
+        ? await escalateAndAwaitRetryDecision(deployResult.stuck ? "deploy_stuck" : "deploy_failed")
+        : false;
+      if (!retry) {
+        await act.markProjectFailed(projectId, deployResult.stuck ? "deploy_stuck" : "deploy_failed");
+        return;
+      }
+      state.stage = "deliver";
+      console.log(`[workflow] retrying Stage 6 deploy after a human retry decision`);
+    }
+
+    state.stage = "done";
+  }
+
+  if (resumeFromDeploy) {
+    console.log(`[workflow] resumeFromDeploy=true — skipping Stage 1-5, jumping straight to Gate 2 + Stage 6 for ${projectId}`);
+    await runGate2AndStage6();
+    return;
   }
 
   // ── Stage 1+2: Spec, design, and decomposition, looped until approved ───
@@ -524,68 +610,9 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     // that race while still covering the actually-meaningful tamper window
     // (the human approval wait below, which can be long).
     //
-    // GATE 2: Deployment/Rollout Approval
-    state.stage = "await_deploy_approval";
-    await condition(() => deployApproved);
-
-    // ── Stage 6: deploy + live-browser retest, retried in-place on an
-    // explicit human decision ───────────────────────────────────────────
-    state.stage = "deliver";
-    for (;;) {
-      // 2026-08-17 (live, fulfillio1 — 3rd occurrence of the same false-
-      // positive class as the two above): recordHandoff used to be called
-      // ONCE, before this loop, so a SECOND (or third) Stage 6 attempt's
-      // verifyHandoff (inside runDeployWithLiveRetest) was checked against
-      // the snapshot taken before the FIRST attempt ever ran. Riya's deploy
-      // legitimately edits tracked source (e.g. docker-compose.yml, which
-      // Navya/Karan/Deepika DO read as part of QA) while fixing deploy
-      // config between attempts — a real, expected pipeline step, not
-      // tampering — but any retry (deploy_failed, deploy_stuck,
-      // budget_exceeded) tripped a non-retryable ContextChainViolation that
-      // killed the ENTIRE workflow outright, discarding a genuinely
-      // deployed, QA-passed, running app. Re-recording at the top of every
-      // iteration keeps each attempt's tamper window scoped to that single
-      // attempt (record here, verify moments later inside the activity)
-      // instead of one stale snapshot spanning every retry — same fix
-      // shape as the two prior occurrences, applied one level up.
-      await orchestratorAct.recordDeployHandoffActivity(projectId);
-
-      // 2026-08-13 (cost-control Task 1): runDeployWithLiveRetest now calls
-      // assertWithinBudget before doing any deploy/live-retest work — this
-      // call had no surrounding try/catch before, same uncaught-propagation
-      // risk as the two compile-repair sites above (see their comments for
-      // why that would wedge the workflow instead of failing cleanly).
-      let deployResult: DeployActivityResult;
-      try {
-        deployResult = await orchestratorAct.runDeployWithLiveRetest(projectId);
-      } catch (err) {
-        if (!isBudgetExceededFailure(err)) throw err;
-        state.stage = "error";
-        console.log(`[workflow] Stage 6 deploy halted — budget exceeded`);
-        const retry = await escalateAndAwaitRetryDecision("budget_exceeded");
-        if (!retry) {
-          await act.markProjectFailed(projectId, "budget_exceeded");
-          return;
-        }
-        state.stage = "deliver";
-        console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (budget_exceeded)`);
-        continue;
-      }
-      if (deployResult.success) break;
-
-      state.stage = "error";
-      const retry = patched("stuck-state-retry-signal-v1")
-        ? await escalateAndAwaitRetryDecision(deployResult.stuck ? "deploy_stuck" : "deploy_failed")
-        : false;
-      if (!retry) {
-        await act.markProjectFailed(projectId, deployResult.stuck ? "deploy_stuck" : "deploy_failed");
-        return;
-      }
-      state.stage = "deliver";
-      console.log(`[workflow] retrying Stage 6 deploy after a human retry decision`);
-    }
-
-    state.stage = "done";
+    // GATE 2 + Stage 6 — see runGate2AndStage6 above (shared with
+    // resumeFromDeploy so both paths stay in sync).
+    await runGate2AndStage6();
     return;
   }
 
