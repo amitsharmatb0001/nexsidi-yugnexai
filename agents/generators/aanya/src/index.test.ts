@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAgentPrompt, buildAgentTask, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui, NEXUI_CONFIRMED_COMPONENTS, countPlannedPages, writeStaticScaffold } from "./index.ts";
@@ -88,6 +88,21 @@ test("countPlannedPages returns 1 for a genuine single-page app", () => {
     ],
   };
   expect(countPlannedPages(plan)).toBe(1);
+});
+
+// 2026-08-16 (aanya-nexui-migration Task 2): the "STATIC FILES ALREADY
+// WRITTEN" list directly describes what writeStaticScaffold produces — the
+// exact failure class this migration's plan warns against repeating
+// (proxy.ts/middleware.ts: a confidently-wrong claim shipped in the prompt
+// with zero test ever checking it). Locks in that this list was actually
+// updated alongside the scaffold rewrite above, not left describing the old
+// vendored-package model.
+test("system prompt's STATIC FILES list describes the real @yugnex/core scaffold, not the old vendored-package one", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toContain("@yugnex/nexui-react + @yugnex/nexui as file: deps");
+  expect(prompt).not.toContain("NexuiProvider wrapper");
+  expect(prompt).toContain("@yugnex/core as a real npm dependency");
+  expect(prompt).toContain("StyleRegistry + ThemeProvider + NoFoucScript");
 });
 
 test("preview mode prompt instructs mock data, no real API calls", () => {
@@ -382,25 +397,170 @@ test("buildCustomEnvLocal never falls back to a fixed, predictable JWT_SECRET va
   expect(content).not.toContain("default_dev_secret");
 });
 
-// Diagnosis 2026-07-04 (stress2/stress3 forensics): the scaffold tsconfig
-// excluded only node_modules, so Next's typecheck compiled vendor/nexui-react/
-// src — which is React-19-type-broken — and EVERY run burned 10-20 iterations
-// until a model discovered it must add "vendor" to exclude (stress3: Claude
-// iteration 23). Ship the fix in the scaffold instead.
-test("scaffold tsconfig excludes vendor so Next never typechecks vendored NexUI source", () => {
+// 2026-08-16 (aanya-nexui-migration Task 2): Task 1 moved vendoring from
+// whole-package cpSync copies under vendor/ to per-component .tsx files
+// copied by @yugnex/cli into components/nexui/ — there is no vendor/
+// directory produced at all anymore (confirmed: vendorNexui's real output
+// path is outputDir/components/nexui/<name>.tsx, see its own tests above).
+// components/nexui/*.tsx are real, first-party project source now (the
+// whole point of the shadcn/ui-style "you own the code" model) and MUST be
+// typechecked like any other project file — excluding them would silently
+// let a broken vendored component ship. "vendor" is dropped from exclude;
+// node_modules stays (@yugnex/core itself ships pre-built dist, no reason
+// to typecheck it either way since it's not under this project's own
+// TypeScript scope).
+test("scaffold tsconfig no longer excludes vendor (Task 1 writes components/nexui/, not vendor/) and still excludes node_modules", () => {
   const tsconfig = JSON.parse(buildScaffoldTsconfig());
   expect(tsconfig.exclude).toContain("node_modules");
-  expect(tsconfig.exclude).toContain("vendor");
+  expect(tsconfig.exclude).not.toContain("vendor");
 });
 
-// Same forensics: scaffold next.config shipped experimental.serverComponents-
-// ExternalPackages — renamed upstream in Next 15, invalid on Next 16.2. Claude
-// deleted it in BOTH stress2 and stress3 (identical edit, iteration 11 each).
-test("scaffold next.config has no dead experimental key and keeps transpilePackages", () => {
+// 2026-08-16 (aanya-nexui-migration Task 2): transpilePackages existed to
+// make Next.js transpile @yugnex/nexui-react's raw TypeScript source (the
+// old vendored package shipped .ts, not prebuilt .js). @yugnex/core ships
+// pre-built dist/*.js (confirmed: node_modules/@yugnex/core/dist/index.js,
+// client.js — real npm install, not assumed) — nothing needs transpiling.
+// Verified empirically this session: a real `npm install` + `npx next
+// build` against a minimal project depending on @yugnex/core, with NO
+// transpilePackages entry at all, compiles clean (no "Unexpected token" /
+// unresolved-syntax errors that would indicate raw TS leaking into the
+// build). Same forensics as before: scaffold next.config must not carry the
+// dead experimental.serverComponentsExternalPackages key either (renamed
+// upstream in Next 15, invalid on Next 16.2).
+test("scaffold next.config has no dead experimental key and no transpilePackages (nothing needs transpiling anymore)", () => {
   const config = buildScaffoldNextConfig();
   expect(config).not.toContain("serverComponentsExternalPackages");
-  expect(config).toContain("transpilePackages");
-  expect(config).toContain("@yugnex/nexui-react");
+  expect(config).not.toContain("transpilePackages");
+  expect(config).not.toContain("@yugnex/nexui-react");
+  expect(config).not.toContain("@yugnex/nexui");
+});
+
+// ── writeStaticScaffold's package.json (Task 2) ─────────────────────────────
+// Replaces the old file:./vendor/nexui[-react] deps with @yugnex/core as a
+// real, non-file: npm dependency (confirmed live: `npm view @yugnex/core
+// version` → 0.1.0, published on the public npm registry, not a private-only
+// package).
+test("scaffold package.json depends on @yugnex/core as a real dependency, not a file: vendored path", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aanya-scaffold-pkg-"));
+  try {
+    writeStaticScaffold(FIX_TEST_PLAN, dir);
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
+    expect(pkg.dependencies["@yugnex/core"]).toBe("^0.1.0");
+    expect(pkg.dependencies["@yugnex/core"]).not.toContain("file:");
+    expect(pkg.dependencies["@yugnex/nexui"]).toBeUndefined();
+    expect(pkg.dependencies["@yugnex/nexui-react"]).toBeUndefined();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── writeStaticScaffold's app/globals.css (Task 2) ─────────────────────────
+// @yugnex/core ships ZERO CSS files (confirmed: `npm pack`'d tarball and
+// node_modules/@yugnex/core/dist/ contain only .js/.d.ts/.map — no
+// nexui-tokens.css/nexui-base.css equivalent exists in any form). Token
+// injection happens at runtime via <ThemeProvider> (see layout.tsx below),
+// not a static @import. globals.css keeps the reset/base rules but now
+// references @yugnex/core's real CSS custom-property names
+// (--nx-color-background, not the old --nx-bg-base) and drops the dead
+// @import entirely.
+test("scaffold globals.css does not @import any @yugnex/nexui CSS file (none exists in the new package)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aanya-scaffold-css-"));
+  try {
+    writeStaticScaffold(FIX_TEST_PLAN, dir);
+    const css = readFileSync(join(dir, "app", "globals.css"), "utf-8");
+    expect(css).not.toContain("@yugnex/nexui/css");
+    expect(css).not.toContain("nexui-tokens.css");
+    expect(css).not.toContain("nexui-base.css");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scaffold globals.css uses @yugnex/core's real CSS variable names (--nx-color-*), not the old --nx-bg-base/--nx-text names", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aanya-scaffold-css-vars-"));
+  try {
+    writeStaticScaffold(FIX_TEST_PLAN, dir);
+    const css = readFileSync(join(dir, "app", "globals.css"), "utf-8");
+    expect(css).toContain("var(--nx-color-background)");
+    expect(css).toContain("var(--nx-color-foreground)");
+    expect(css).not.toContain("--nx-bg-base");
+    expect(css).not.toContain("--nx-text)");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scaffold globals.css still imports the per-project override file (now font-only, see theme.ts)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aanya-scaffold-css-import-"));
+  try {
+    writeStaticScaffold(FIX_TEST_PLAN, dir);
+    const css = readFileSync(join(dir, "app", "globals.css"), "utf-8");
+    expect(css).toContain('@import "./theme-overrides.css"');
+    const overrideCss = readFileSync(join(dir, "app", "theme-overrides.css"), "utf-8");
+    // Task 2: theme-overrides.css no longer carries color --nx-* overrides
+    // (those now flow through createTheme()/ThemeProvider in layout.tsx) —
+    // it is font-only now (see theme.ts's buildFontOverrideCss).
+    expect(overrideCss).not.toContain("--nx-");
+    expect(overrideCss).toContain("font-family");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── writeStaticScaffold's app/layout.tsx (Task 2) ──────────────────────────
+// Real shape confirmed against @yugnex/core@0.1.0's published dist/*.d.ts
+// this session, NOT the README's usage example — the README shows
+// `import { StyleRegistry, ThemeProvider, NoFoucScript } from
+// "@yugnex/core/client"`, which is WRONG: a real `next build` against that
+// exact import fails with "Module '@yugnex/core/client' has no exported
+// member 'NoFoucScript'". NoFoucScript is a server-safe export (no hooks)
+// and only lives on the main "@yugnex/core" entry; StyleRegistry/
+// ThemeProvider (both "use client") are the only real /client exports.
+test("scaffold layout.tsx imports StyleRegistry/ThemeProvider from @yugnex/core/client and NoFoucScript/createTheme from @yugnex/core (not from /client — real published shape, README's example is wrong)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aanya-scaffold-layout-imports-"));
+  try {
+    writeStaticScaffold(FIX_TEST_PLAN, dir);
+    const layout = readFileSync(join(dir, "app", "layout.tsx"), "utf-8");
+    expect(layout).toMatch(/import\s*\{\s*StyleRegistry,\s*ThemeProvider\s*\}\s*from\s*"@yugnex\/core\/client"/);
+    expect(layout).toMatch(/import\s*\{\s*createTheme,\s*NoFoucScript\s*\}\s*from\s*"@yugnex\/core"/);
+    expect(layout).not.toContain("NoFoucScript } from \"@yugnex/core/client\"");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scaffold layout.tsx no longer references NexuiProvider or @yugnex/nexui-react", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aanya-scaffold-layout-noold-"));
+  try {
+    writeStaticScaffold(FIX_TEST_PLAN, dir);
+    const layout = readFileSync(join(dir, "app", "layout.tsx"), "utf-8");
+    expect(layout).not.toContain("NexuiProvider");
+    expect(layout).not.toContain("@yugnex/nexui-react");
+    expect(layout).not.toContain("customTokens");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("scaffold layout.tsx builds the theme from buildThemeOverrideTokens via createTheme() and mounts NoFoucScript + StyleRegistry + ThemeProvider in the real required nesting", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aanya-scaffold-layout-shape-"));
+  try {
+    writeStaticScaffold(FIX_TEST_PLAN, dir);
+    const layout = readFileSync(join(dir, "app", "layout.tsx"), "utf-8");
+    expect(layout).toContain("createTheme(");
+    // Real, per-project color overrides (FALLBACK_BRIEF's accent) must
+    // actually reach createTheme() — not a placeholder object.
+    expect(layout).toContain('"light":');
+    expect(layout).toContain('"dark":');
+    // NoFoucScript must render before hydration (real requirement per its
+    // own doc comment: "Render once, as early as possible in the root
+    // layout") — inside <head>, not nested under StyleRegistry/ThemeProvider.
+    expect(layout).toMatch(/<head>[\s\S]*<NoFoucScript \/>[\s\S]*<\/head>/);
+    expect(layout).toMatch(/<StyleRegistry>[\s\S]*<ThemeProvider[\s\S]*<\/StyleRegistry>/);
+    expect(layout).toContain("defaultColorMode=");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // A6 (full-system audit, Phase C): same fix-loop pattern as Shubham's
