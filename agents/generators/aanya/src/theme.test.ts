@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
-import { buildFontOverrideCss, buildThemeOverrideTokens, themeColorMode } from "./theme.ts";
+import { buildFontOverrideCss, buildThemeOverrideTokens, parseFontSpec, themeColorMode } from "./theme.ts";
 import type { DesignBrief } from "../../../vanya/src/index.ts";
+import { FALLBACK_BRIEF } from "../../../vanya/src/index.ts";
 
 // 2026-08-16 (aanya-nexui-migration Task 2): rewritten for @yugnex/core's
 // real theming API (packages/core/src/theme/createTheme.ts in the nex-ui
@@ -183,4 +184,73 @@ test("buildFontOverrideCss produces visibly different output for two different d
   expect(cssA).not.toBe(cssB);
   expect(cssA).toContain("IBM Plex Sans");
   expect(cssB).toContain("Source Serif 4");
+});
+
+// ── real bug: "(fallback: ...)" annotation embedded verbatim ───────────────
+// Found live by an independent adversarial review — a real `npm install &&
+// npx next build && npx next start` against a scaffold generated with the
+// REAL FALLBACK_BRIEF (agents/vanya/src/index.ts), then reading the actual
+// rendered page's computed `font-family`, showed the literal string
+// "Charter (fallback: Georgia, serif)" landing whole inside a single CSS
+// font name — a font no browser will ever match, silently collapsing to the
+// generic tail. BRIEF_A/BRIEF_B above use clean synthetic names
+// ("Fraunces", "IBM Plex Sans") that never exercise this path — that's
+// exactly why the bug shipped uncaught the first time. This test uses
+// FALLBACK_BRIEF itself, unmodified, so it can't drift from the real data.
+
+test("buildFontOverrideCss extracts a clean font name from FALLBACK_BRIEF's real '(fallback: ...)' typography — does not embed the annotation verbatim", () => {
+  // Real values, not a synthetic stand-in: FALLBACK_BRIEF.typography is
+  // { display: "Söhne (fallback: system-ui)", body: "Charter (fallback: Georgia, serif)" }.
+  const css = buildFontOverrideCss(FALLBACK_BRIEF);
+
+  // The literal parenthetical annotation must never reach the generated CSS.
+  expect(css).not.toContain("(fallback:");
+  expect(css).not.toContain(")");
+
+  // The real typeface names must still be present, as clean CSS tokens.
+  expect(css).toContain("'Charter'");
+  expect(css).toContain("'Söhne'");
+
+  // The body rule's font-family value must be valid, comma-separated CSS —
+  // sanity-check by extracting it and confirming it parses into tokens with
+  // no stray unbalanced quote or paren.
+  const bodyMatch = css.match(/html,\s*body\s*\{\s*font-family:\s*([^;]+);/);
+  expect(bodyMatch).not.toBeNull();
+  const bodyValue = bodyMatch?.[1] ?? "";
+  expect(bodyValue).not.toContain("(");
+  // Even quote count (each quoted token opens+closes) confirms nothing was
+  // left mid-token by the parenthetical stripping.
+  expect((bodyValue.match(/'/g) ?? []).length % 2).toBe(0);
+});
+
+test("buildFontOverrideCss uses the annotation's own fallback chain as real CSS fallback fonts, not just discarding it", () => {
+  // "Charter (fallback: Georgia, serif)" is read as "prefer Charter, then
+  // Georgia, then the generic serif family" — that's real fallback-chain
+  // information, not just a human-readable note, so it should survive into
+  // the generated font-family stack in order.
+  const css = buildFontOverrideCss(FALLBACK_BRIEF);
+  const bodyMatch = css.match(/html,\s*body\s*\{\s*font-family:\s*([^;]+);/);
+  const bodyValue = bodyMatch?.[1] ?? "";
+  const charterIndex = bodyValue.indexOf("Charter");
+  const georgiaIndex = bodyValue.indexOf("Georgia");
+  const serifIndex = bodyValue.indexOf("serif");
+  expect(charterIndex).toBeGreaterThanOrEqual(0);
+  expect(georgiaIndex).toBeGreaterThan(charterIndex);
+  expect(serifIndex).toBeGreaterThan(georgiaIndex);
+});
+
+test("parseFontSpec splits a '(fallback: ...)' annotation into a clean name and an explicit fallback chain", () => {
+  expect(parseFontSpec("Charter (fallback: Georgia, serif)")).toEqual({
+    name: "Charter",
+    fallbacks: ["Georgia", "serif"],
+  });
+  expect(parseFontSpec("Söhne (fallback: system-ui)")).toEqual({
+    name: "Söhne",
+    fallbacks: ["system-ui"],
+  });
+});
+
+test("parseFontSpec returns the name unchanged with no fallbacks when there is no annotation", () => {
+  expect(parseFontSpec("Fraunces")).toEqual({ name: "Fraunces", fallbacks: [] });
+  expect(parseFontSpec("IBM Plex Sans")).toEqual({ name: "IBM Plex Sans", fallbacks: [] });
 });

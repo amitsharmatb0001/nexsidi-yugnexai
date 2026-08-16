@@ -206,6 +206,78 @@ export function buildThemeOverrideTokens(brief: DesignBrief): ThemeColorOverride
   return { light: colors, dark: { ...colors } };
 }
 
+// 2026-08-16 (post-review fix): real bug found live by an independent
+// adversarial review — `npm install && npx next build && npx next start`
+// against a scaffold generated with the real FALLBACK_BRIEF
+// (agents/vanya/src/index.ts), then reading the rendered page's actual
+// computed `font-family`. FALLBACK_BRIEF.typography.body is literally
+// "Charter (fallback: Georgia, serif)" — Vanya's system prompt never asks
+// for this annotation shape, but the fallback brief (and, per its own
+// header comment, any brief) can carry it — and the old code embedded that
+// whole human-readable string verbatim as a single CSS font name:
+// `font-family: 'Charter (fallback: Georgia, serif)', ...`. No browser
+// matches a font literally named that, so it silently fell through to the
+// generic tail — the per-project typeface was never actually applied for
+// this brief.
+//
+// The annotation is genuine, useful data, not noise: "Charter (fallback:
+// Georgia, serif)" means "prefer Charter; if unavailable, Georgia, then
+// serif" — exactly what a CSS font-family fallback chain is for. Rather
+// than just stripping it, parseFontSpec below extracts BOTH the real
+// primary name AND the author's own fallback chain, and splices that chain
+// into the generated CSS ahead of the generic system-font tail — so the
+// annotation's real information survives into the output instead of being
+// discarded.
+const CSS_GENERIC_FONT_KEYWORDS = new Set([
+  "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
+  "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "emoji", "fangsong",
+]);
+
+interface ParsedFontSpec {
+  name: string;
+  fallbacks: string[];
+}
+
+// Splits a typeface string like "Charter (fallback: Georgia, serif)" into
+// its real primary name ("Charter") and an explicit fallback chain
+// (["Georgia", "serif"]). A name with no such annotation just yields an
+// empty fallback list. Exported for direct unit testing.
+export function parseFontSpec(raw: string): ParsedFontSpec {
+  const match = raw.match(/^(.*?)\s*\(fallback:\s*(.+?)\)\s*$/i);
+  if (!match) return { name: raw.trim(), fallbacks: [] };
+  const name = (match[1] ?? "").trim();
+  const fallbacks = (match[2] ?? "").split(",").map((f) => f.trim()).filter(Boolean);
+  return { name: name || raw.trim(), fallbacks };
+}
+
+// Renders one font-family token: generic CSS keywords (serif, system-ui,
+// ...) must stay bare or they stop being recognized as generic families;
+// every real typeface name is quoted since it may contain spaces (and
+// quoting a single-word name like Charter is always valid CSS too).
+function cssFontToken(name: string): string {
+  return CSS_GENERIC_FONT_KEYWORDS.has(name.toLowerCase()) ? name : `'${name}'`;
+}
+
+// Builds a full font-family declaration value: the brief's real typeface
+// name, then its own explicit fallback chain (if the "(fallback: ...)"
+// annotation supplied one), then the fixed generic system-font tail — unless
+// the brief's own chain already ends in a generic CSS keyword, in which case
+// appending more after it would be dead/unreachable and is skipped.
+//
+// `genericTail` entries are pre-formatted literal CSS tokens (already
+// correctly quoted/unquoted, e.g. `-apple-system`, `'Segoe UI'`) and are
+// appended as-is — only `raw`'s own name/fallback tokens are run through
+// cssFontToken, since re-quoting an already-quoted or already-bare tail
+// token would produce broken CSS (e.g. `''Segoe UI''` or `'-apple-system'`).
+function buildFontFamilyValue(raw: string, genericTail: string[]): string {
+  const { name, fallbacks } = parseFontSpec(raw);
+  const customTokens = [name, ...fallbacks].map(cssFontToken);
+  const lastFallback = fallbacks[fallbacks.length - 1]?.toLowerCase();
+  const chainEndsGeneric = lastFallback !== undefined && CSS_GENERIC_FONT_KEYWORDS.has(lastFallback);
+  const allTokens = chainEndsGeneric ? customTokens : [...customTokens, ...genericTail];
+  return allTokens.join(", ");
+}
+
 /**
  * Covers the one real gap createTheme() leaves open: per-project typography.
  * Deliberately does NOT touch any `--nx-*` CSS custom property (that's the
@@ -221,8 +293,12 @@ export function buildThemeOverrideTokens(brief: DesignBrief): ThemeColorOverride
  * migration must not reintroduce.
  */
 export function buildFontOverrideCss(brief: DesignBrief): string {
-  const bodyFont = `'${brief.typography.body}', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
-  const displayFont = `'${brief.typography.display}', -apple-system, BlinkMacSystemFont, sans-serif`;
+  const bodyFont = buildFontFamilyValue(brief.typography.body, [
+    "-apple-system", "BlinkMacSystemFont", "'Segoe UI'", "sans-serif",
+  ]);
+  const displayFont = buildFontFamilyValue(brief.typography.display, [
+    "-apple-system", "BlinkMacSystemFont", "sans-serif",
+  ]);
   return `html, body {
   font-family: ${bodyFont};
 }
