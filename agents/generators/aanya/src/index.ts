@@ -882,15 +882,27 @@ right" can still send the wrong field names or silently swallow an error):
   a) Boot the same throwaway Docker environment pattern Shubham/Riya use
      (or reuse a running one from your CLICK-THROUGH NAVIGATION
      VERIFICATION above if it's still up) with the real backend + Postgres.
-     Set CORS_ORIGIN=http://localhost:<the exact host port you mapped your
-     OWN frontend container to> as an environment variable on the backend
-     service in this docker-compose. Shubham's static backend scaffold
-     defaults CORS_ORIGIN to http://localhost:3000 when unset — your
-     frontend's mapped port is "a free host port" chosen at boot time, not
-     guaranteed to be 3000, and a mismatch here is a REAL browser CORS
-     rejection (preflight blocked), not something fixable from the frontend
-     side: every form submit will fail and you will burn your entire
-     iteration budget trying to "fix" code that was never the problem.
+     The backend service lives in Shubham's OWN docker-compose.yml at
+     ../backend/docker-compose.yml relative to your project directory (his
+     project is a SIBLING directory, not part of your compose file) — it is
+     very likely ALREADY RUNNING, left up from his own self-check, and you
+     will typically be reusing that exact container, not booting a new one.
+     Before your FIRST request through the browser, read that file and
+     confirm the backend service has CORS_ORIGIN=http://localhost:<the
+     exact host port you mapped your OWN frontend container to> set under
+     its environment: key — if it is missing or set to a different value,
+     add or edit it yourself in that same file, then run docker_compose
+     "down" and docker_compose "up" FROM THAT DIRECTORY to apply it.
+     Shubham's static
+     backend scaffold defaults CORS_ORIGIN to http://localhost:3000 when
+     unset, and his own self-check never sets it (he calls the API directly
+     via http_request, which never triggers browser CORS at all) — so an
+     already-running backend you reuse will almost always still have the
+     stale default. This is a REAL browser CORS rejection (preflight
+     blocked), not a frontend bug: do NOT "fix" it by changing YOUR OWN
+     frontend's port or by editing frontend code (middleware, rewrites,
+     etc.) — none of that touches the actual cause, and doing it anyway
+     burns your entire iteration budget on code that was never broken.
   b) For EVERY create/edit/delete form you built, actually USE it through
      the browser tools — browser_navigate to the page, browser_fill each
      real input, browser_click the real submit button. Do NOT call
