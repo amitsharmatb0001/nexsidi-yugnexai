@@ -102,7 +102,25 @@ test("system prompt's STATIC FILES list describes the real @yugnex/core scaffold
   expect(prompt).not.toContain("@yugnex/nexui-react + @yugnex/nexui as file: deps");
   expect(prompt).not.toContain("NexuiProvider wrapper");
   expect(prompt).toContain("@yugnex/core as a real npm dependency");
-  expect(prompt).toContain("StyleRegistry + ThemeProvider + NoFoucScript");
+  expect(prompt).toContain("StyleRegistry + ThemeProvider from @yugnex/core/client");
+  expect(prompt).toContain("NoFoucScript + createTheme from the main @yugnex/core entry");
+});
+
+// 2026-08-16 (aanya-nexui-migration review fix): the STATIC FILES list used
+// to lump "StyleRegistry + ThemeProvider + NoFoucScript" under one single
+// import source ("from @yugnex/core") — wrong either way you read it:
+// StyleRegistry/ThemeProvider actually need the "/client" subpath, while
+// NoFoucScript (server-safe, no hooks) only lives on the main "@yugnex/core"
+// entry per the real scaffold (see the app/layout.tsx content block below,
+// and the STACK section's already-correct "StyleRegistry + ThemeProvider
+// (from @yugnex/core/client)" phrasing). The previous test above only
+// checked the three names appeared together, so this exact misattribution
+// shipped with green tests. Assert the wrong claim — in either direction —
+// can't recur.
+test("system prompt does not misattribute NoFoucScript to @yugnex/core/client", () => {
+  const prompt = buildAgentPrompt("preview");
+  expect(prompt).not.toMatch(/NoFoucScript[\s\S]{0,60}@yugnex\/core\/client/);
+  expect(prompt).not.toContain("StyleRegistry + ThemeProvider + NoFoucScript from");
 });
 
 test("preview mode prompt instructs mock data, no real API calls", () => {

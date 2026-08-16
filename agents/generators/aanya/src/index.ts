@@ -617,8 +617,9 @@ everything you need is here; do NOT assume any prop from the OLD
     systems recommend over a bare spinner —
     <Skeleton shape="rect" width="100%" height="120px" />. Only when
     neither Button's isLoading nor Skeleton genuinely fits, build a small
-    inline spinner using the exact pattern NexUI's own button.tsx uses
-    internally for its isLoading state:
+    inline spinner using the same keyframes()/css() technique NexUI's own
+    button.tsx uses internally for its isLoading state, adapted for
+    standalone use:
       import { css, keyframes, themeVars as theme } from "@yugnex/core";
       const spin = keyframes({ from: { transform: "rotate(0deg)" }, to: { transform: "rotate(360deg)" } });
       const spinnerClass = css({
@@ -779,9 +780,10 @@ LAYOUT PATTERNS:
 STATIC FILES ALREADY WRITTEN (DO NOT rewrite unless you need to fix a bug):
 - package.json (with @yugnex/core as a real npm dependency — components under
   components/nexui/ are your own project source, not an installed package)
-- app/layout.tsx (StyleRegistry + ThemeProvider + NoFoucScript from
-  @yugnex/core — this project's colors are already wired in, do not replace
-  with a different theme setup)
+- app/layout.tsx (StyleRegistry + ThemeProvider from @yugnex/core/client,
+  plus NoFoucScript + createTheme from the main @yugnex/core entry — this
+  project's colors are already wired in, do not replace with a different
+  theme setup)
 - app/globals.css (base reset using @yugnex/core's --nx-color-* variables —
   NO @apply Tailwind directives)
 - app/theme-overrides.css (this project's font-family override — imported by
