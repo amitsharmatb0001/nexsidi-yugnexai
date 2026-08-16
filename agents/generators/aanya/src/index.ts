@@ -882,6 +882,15 @@ right" can still send the wrong field names or silently swallow an error):
   a) Boot the same throwaway Docker environment pattern Shubham/Riya use
      (or reuse a running one from your CLICK-THROUGH NAVIGATION
      VERIFICATION above if it's still up) with the real backend + Postgres.
+     Set CORS_ORIGIN=http://localhost:<the exact host port you mapped your
+     OWN frontend container to> as an environment variable on the backend
+     service in this docker-compose. Shubham's static backend scaffold
+     defaults CORS_ORIGIN to http://localhost:3000 when unset — your
+     frontend's mapped port is "a free host port" chosen at boot time, not
+     guaranteed to be 3000, and a mismatch here is a REAL browser CORS
+     rejection (preflight blocked), not something fixable from the frontend
+     side: every form submit will fail and you will burn your entire
+     iteration budget trying to "fix" code that was never the problem.
   b) For EVERY create/edit/delete form you built, actually USE it through
      the browser tools — browser_navigate to the page, browser_fill each
      real input, browser_click the real submit button. Do NOT call
