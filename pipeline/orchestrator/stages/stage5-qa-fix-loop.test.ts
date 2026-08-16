@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { runQAFixLoopWithDeps, inferInstinctDomain, parseDebateDecision, type QAFixDeps } from "./stage5-qa-fix-loop.ts";
+import {
+  runQAFixLoopWithDeps,
+  inferInstinctDomain,
+  parseDebateDecision,
+  computeChangedFiles,
+  extractPreviousFindings,
+  type QAFixDeps,
+} from "./stage5-qa-fix-loop.ts";
 import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 
@@ -803,6 +810,152 @@ test("a review-incomplete finding is never routed to a generator to fix — it s
   expect(result.pass).toBe(false); // still correctly blocks — D25 default-FAIL untouched
   expect(result.stuck).toBe(true); // recognized immediately, no wasted iterations
   expect(result.findings[0]?.issue).toContain("review-incomplete"); // still visible in the final report
+});
+
+// ── Round-scoped QA re-scan (token-waste-reduction plan, Task 1, 2026-08-16) ─
+// Every round after the first re-explored the ENTIRE codebase, even when a
+// fix pass only touched one or two files. This loop is where round N's
+// generator filesWritten (Shubham/Aanya/Pranav's own return value) and round
+// N's findings become round N+1's "focus your reads here" signal.
+
+// ── computeChangedFiles (pure) ───────────────────────────────────────────────
+test("computeChangedFiles labels each agent's filesWritten to match QA's backend/frontend/db dirs convention", () => {
+  const result = computeChangedFiles([
+    { agent: "shubham", filesWritten: ["src/routes/index.ts", "src/index.ts"] },
+    { agent: "aanya", filesWritten: ["app/page.tsx"] },
+    { agent: "pranav", filesWritten: ["migrations/0001_fix.sql"] },
+  ]);
+  expect(result).toEqual([
+    "backend/src/routes/index.ts",
+    "backend/src/index.ts",
+    "frontend/app/page.tsx",
+    "db/migrations/0001_fix.sql",
+  ]);
+});
+
+test("computeChangedFiles returns empty when no outcome has filesWritten", () => {
+  expect(computeChangedFiles([{ agent: "shubham" }, { agent: "aanya", filesWritten: [] }])).toEqual([]);
+});
+
+test("computeChangedFiles ignores an unrecognized agent label", () => {
+  expect(computeChangedFiles([{ agent: "unknown", filesWritten: ["x.ts"] }])).toEqual([]);
+});
+
+// ── extractPreviousFindings (pure) ──────────────────────────────────────────
+test("extractPreviousFindings returns undefined when the round has no perAgentFindings", () => {
+  expect(extractPreviousFindings({ pass: false, findings: [] })).toBeUndefined();
+});
+
+test("extractPreviousFindings filters review-incomplete/parse-failure QA-tooling meta findings out of each agent's carry-forward set", () => {
+  const result: Stage5Result = {
+    pass: false,
+    findings: [],
+    perAgentFindings: {
+      navya: [
+        { severity: "CRITICAL", category: "review-incomplete", detail: "Navya's review did not complete: x" },
+        { severity: "HIGH", category: "null-ref", detail: "real bug", file: "backend/src/x.ts" },
+      ],
+      karan: [
+        { severity: "CRITICAL", description: "Karan's output could not be parsed as JSON — treating as a potential vulnerability per D25 default-FAIL." },
+        { severity: "CRITICAL", description: "SQL injection", file: "backend/src/db.ts" },
+      ],
+      deepika: [
+        { severity: "CRITICAL", category: "parse-failure", detail: "Deepika's output could not be parsed as JSON" },
+      ],
+    },
+  };
+
+  const extracted = extractPreviousFindings(result);
+
+  expect(extracted?.navya).toEqual([{ severity: "HIGH", category: "null-ref", detail: "real bug", file: "backend/src/x.ts" }]);
+  expect(extracted?.karan).toEqual([{ severity: "CRITICAL", description: "SQL injection", file: "backend/src/db.ts" }]);
+  expect(extracted?.deepika).toEqual([]);
+});
+
+// ── End-to-end threading through runQAFixLoopWithDeps ───────────────────────
+test("runQAFixLoopWithDeps passes no changedFiles/previousFindings on round 1 (initial call, no prior round)", async () => {
+  const capturedArgs: Array<{ changedFiles?: string[] }> = [];
+  const deps: QAFixDeps = {
+    runStage5: async (_pid, _s4, _plan, changedFiles) => {
+      capturedArgs.push({ changedFiles });
+      return passResult();
+    },
+    fixShubham: async () => ({ success: true }),
+    fixAanya: async () => ({ success: true }),
+  };
+
+  await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(capturedArgs[0]?.changedFiles).toBeUndefined();
+});
+
+test("runQAFixLoopWithDeps threads round 1's fix filesWritten into round 2's changedFiles, and round 1's findings into previousFindings", async () => {
+  const capturedArgs: Array<{ changedFiles?: string[]; previousFindings?: unknown }> = [];
+  const deps: QAFixDeps = {
+    runStage5: async (_pid, _s4, _plan, changedFiles, previousFindings) => {
+      capturedArgs.push({ changedFiles, previousFindings });
+      return capturedArgs.length === 1
+        ? {
+            pass: false,
+            findings: [{ file: "backend/src/index.ts", issue: "[logic/HIGH] logic: off-by-one" }],
+            perAgentFindings: {
+              navya: [{ severity: "HIGH", category: "logic", detail: "off-by-one", file: "backend/src/index.ts" }],
+              karan: [],
+              deepika: [],
+            },
+          }
+        : passResult();
+    },
+    fixShubham: async () => ({ success: true, filesWritten: ["src/index.ts"] }),
+    fixAanya: async () => ({ success: true }),
+  };
+
+  await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(capturedArgs).toHaveLength(2);
+  expect(capturedArgs[1]?.changedFiles).toEqual(["backend/src/index.ts"]);
+  expect(capturedArgs[1]?.previousFindings).toEqual({
+    navya: [{ severity: "HIGH", category: "logic", detail: "off-by-one", file: "backend/src/index.ts" }],
+    karan: [],
+    deepika: [],
+  });
+});
+
+test("runQAFixLoopWithDeps falls back to full-explore next round (undefined/undefined) when the fix produced no filesWritten at all", async () => {
+  const capturedArgs: Array<{ changedFiles?: string[]; previousFindings?: unknown }> = [];
+  const deps: QAFixDeps = {
+    runStage5: async (_pid, _s4, _plan, changedFiles, previousFindings) => {
+      capturedArgs.push({ changedFiles, previousFindings });
+      return capturedArgs.length === 1 ? failResult(1, "shubham") : passResult();
+    },
+    fixShubham: async () => ({ success: true }), // no filesWritten reported
+    fixAanya: async () => ({ success: true }),
+  };
+
+  await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(capturedArgs[1]?.changedFiles).toBeUndefined();
+  expect(capturedArgs[1]?.previousFindings).toBeUndefined();
+});
+
+test("runQAFixLoopWithDeps folds a pranav ESCALATION fix's filesWritten into the next round's changedFiles too", async () => {
+  const capturedChangedFiles: Array<string[] | undefined> = [];
+  const deps: QAFixDeps = {
+    runStage5: async (_pid, _s4, _plan, changedFiles) => {
+      capturedChangedFiles.push(changedFiles);
+      return capturedChangedFiles.length === 1 ? failResult(1, "shubham") : passResult();
+    },
+    fixShubham: async () => ({
+      success: true,
+      escalations: [{ targetAgent: "pranav", finding: "TOCTOU race on applications", reason: "needs UNIQUE(user_id, property_id)" }],
+    }),
+    fixAanya: async () => ({ success: true }),
+    fixPranav: async () => ({ success: true, filesWritten: ["migrations/0002_fix.sql"] }),
+  };
+
+  await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(capturedChangedFiles[1]).toContain("db/migrations/0002_fix.sql");
 });
 
 test("a review-incomplete finding alongside a genuinely fixable finding still routes the fixable one", async () => {

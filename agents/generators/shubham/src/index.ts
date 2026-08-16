@@ -62,21 +62,36 @@ export function countTestableResources(plan: BuildPlan): number {
 // silently reverted those fixes every time (found live, project
 // meridianbk4: the same route-mismatch QA finding recurred 3 times because
 // of this). Deterministic and fail-safe. Exported for unit testing.
-export function autoWireRoutes(backendDir: string): void {
+//
+// Returns the routes/index.ts path (relative to backendDir, matching the
+// same format as the agentic loop's own filesWritten entries) when it
+// actually wrote something, or null on a genuine no-op (no route files, or
+// everything already wired). 2026-08-16 (token-waste-reduction plan, Task
+// 1): this write previously happened OUTSIDE the agentic write_file tool
+// loop that run()/runFix()'s own `result.filesWritten` tracks — confirmed by
+// reading run()/runFix() below, neither fed this function's writes back into
+// filesWritten at all. That's a real gap for round-scoped QA re-scan (this
+// plan's whole "what changed since last round" mechanism): a fix round that
+// only changed routes/index.ts via auto-wiring would have been invisible to
+// the next round's "focus your reads here" signal, and a route-mounting
+// regression in that exact file could go silently unread. run()/runFix()
+// below fold this return value into their own filesWritten so it isn't lost.
+export function autoWireRoutes(backendDir: string): string | null {
   const routesDir = join(backendDir, "src", "routes");
   try {
-    if (!existsSync(routesDir)) return;
+    if (!existsSync(routesDir)) return null;
     const routeFiles = readdirSync(routesDir)
       .filter((f) => f.endsWith(".routes.ts"))
       .sort();
-    if (routeFiles.length === 0) return;
+    if (routeFiles.length === 0) return null;
 
     const indexPath = join(routesDir, "index.ts");
+    const indexRelPath = "src/routes/index.ts";
     const existing = existsSync(indexPath) ? readFileSync(indexPath, "utf-8") : "";
     const isWired = (file: string) => existing.includes(`./${file.replace(/\.routes\.ts$/, "")}.routes"`);
     const missing = routeFiles.filter((f) => !isWired(f));
 
-    if (existing && missing.length === 0) return; // everything already wired — don't touch hand-tuned mounts
+    if (existing && missing.length === 0) return null; // everything already wired — don't touch hand-tuned mounts
 
     const importLine = (file: string) => {
       const resource = file.replace(/\.routes\.ts$/, "");
@@ -96,7 +111,7 @@ export function autoWireRoutes(backendDir: string): void {
       mountLines.push("", "export default router;", "");
       writeFileSync(indexPath, importLines.join("\n") + "\n" + mountLines.join("\n"), "utf-8");
       console.log(`[shubham] auto-wired ${routeFiles.length} route file(s) into routes/index.ts: ${routeFiles.join(", ")}`);
-      return;
+      return indexRelPath;
     }
 
     // Mixed state: some route files already wired (possibly hand-tuned),
@@ -124,8 +139,10 @@ export function autoWireRoutes(backendDir: string): void {
     }
     writeFileSync(indexPath, content, "utf-8");
     console.log(`[shubham] auto-wired ${missing.length} new route file(s) into routes/index.ts (preserved existing mounts): ${missing.join(", ")}`);
+    return indexRelPath;
   } catch (err) {
     console.warn(`[shubham] autoWireRoutes skipped: ${String(err)}`);
+    return null;
   }
 }
 
@@ -258,13 +275,20 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
   // autoWireRoutes) — a placeholder was left there and the never-implemented
   // auto-wiring meant every generated API was dead. Runs after the agent has
   // written its route files.
-  autoWireRoutes(outputDir);
+  const autoWiredFile = autoWireRoutes(outputDir);
+  // Token-waste-reduction plan Task 1: fold autoWireRoutes' own write into
+  // filesWritten — it happens outside the agentic loop above, so
+  // result.filesWritten alone would never mention it (see autoWireRoutes'
+  // own comment for the live gap this closes).
+  const filesWritten = autoWiredFile && !result.filesWritten.includes(autoWiredFile)
+    ? [...result.filesWritten, autoWiredFile]
+    : result.filesWritten;
 
   return {
     success: result.success,
     projectId: plan.projectId,
     outputDir,
-    filesWritten: result.filesWritten,
+    filesWritten,
     errors: result.errors,
   };
 }
@@ -385,13 +409,20 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
   // autoWireRoutes) — a placeholder was left there and the never-implemented
   // auto-wiring meant every generated API was dead. Runs after the agent has
   // written its route files.
-  autoWireRoutes(outputDir);
+  const autoWiredFile = autoWireRoutes(outputDir);
+  // Token-waste-reduction plan Task 1: see run()'s identical fold above —
+  // this write happens outside the agentic loop, so result.filesWritten
+  // alone would never mention it, and the NEXT QA round's round-scoped
+  // re-review (stage5-qa-fix-loop.ts) relies on filesWritten being complete.
+  const filesWritten = autoWiredFile && !result.filesWritten.includes(autoWiredFile)
+    ? [...result.filesWritten, autoWiredFile]
+    : result.filesWritten;
 
   return {
     success: result.success,
     projectId: plan.projectId,
     outputDir,
-    filesWritten: result.filesWritten,
+    filesWritten,
     errors: result.errors,
     escalations: result.escalations,
   };

@@ -204,6 +204,37 @@ test("runExploring() computes the severity-weighted score from the loop's findin
   expect(result.passed).toBe(true);
 });
 
+// Token-waste-reduction plan, Task 1 (2026-08-16): round-scoped re-review —
+// stage5-adversarial-qa.ts threads forward what changed since the last round
+// (from Shubham/Aanya/Pranav's own filesWritten) plus Deepika's own previous
+// findings, so runQAAgent can focus reads there instead of a full re-explore.
+test("runExploring() forwards changedFilesSinceLastRound and previousFindings through to the underlying runAgent call", async () => {
+  let capturedConfig: any;
+  const deps = {
+    runAgent: async (config: any) => {
+      capturedConfig = config;
+      return { findings: [], iterations: 1, errors: [] };
+    },
+  };
+  const previous = [{ severity: "HIGH" as const, category: "n-plus-one", detail: "extra query on empty page", file: "backend/src/x.ts" }];
+  await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps, undefined, ["backend/src/x.ts"], previous);
+  expect(capturedConfig.changedFilesSinceLastRound).toEqual(["backend/src/x.ts"]);
+  expect(capturedConfig.previousFindings).toEqual(previous);
+});
+
+test("runExploring() omits changedFilesSinceLastRound/previousFindings when not supplied (round 1, backward compatible)", async () => {
+  let capturedConfig: any;
+  const deps = {
+    runAgent: async (config: any) => {
+      capturedConfig = config;
+      return { findings: [], iterations: 1, errors: [] };
+    },
+  };
+  await runExploring("diag", [{ label: "backend", path: "/tmp/x" }], deps);
+  expect(capturedConfig.changedFilesSinceLastRound).toBeUndefined();
+  expect(capturedConfig.previousFindings).toBeUndefined();
+});
+
 test("runExploring() does NOT default-FAIL when the loop timed out but had no fatal errors", async () => {
   const deps = {
     runAgent: async () => ({

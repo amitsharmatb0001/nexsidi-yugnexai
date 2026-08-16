@@ -67,3 +67,27 @@ export function checkReviewCoverage(filesReadCount: number, totalFilesListed: nu
   }
   return { allowed: true };
 }
+
+// Token-waste-reduction plan, Task 1 (2026-08-16): round-scoped re-review.
+// checkReviewCoverage (above) is the round-1 gate — "read literally every
+// file in the project" — and stays completely unchanged for round 1. This is
+// the round-2+ gate: instead of requiring every file in the whole project,
+// it requires every file that actually CHANGED since the last round (from
+// Shubham/Aanya/Pranav's own filesWritten, threaded in by
+// stage5-qa-fix-loop.ts — see qa-loop.ts's changedFilesSinceLastRound). A
+// reviewer is still free to read MORE than the changed set (e.g. an
+// unchanged file whose correctness depends on a changed one) — this only
+// stops it from submitting with LESS than the changed set unread, the same
+// "must have actually looked before concluding" discipline
+// checkReviewCoverage already enforces, just scoped to what could plausibly
+// have moved instead of the whole codebase.
+export function checkChangedFilesCoverage(readFiles: ReadonlySet<string>, changedFiles: string[]): ReviewCoverageCheck {
+  const unread = changedFiles.filter((f) => !readFiles.has(f));
+  if (unread.length > 0) {
+    return {
+      allowed: false,
+      reason: `You still need to read ${unread.length} of ${changedFiles.length} file(s) that changed since your last review before submitting: ${unread.join(", ")}. These are the files most likely to hold a new or still-unfixed issue.`,
+    };
+  }
+  return { allowed: true };
+}

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { checkFindingsEvidence, checkReviewCoverage } from "./finding-evidence.ts";
+import { checkFindingsEvidence, checkReviewCoverage, checkChangedFilesCoverage } from "./finding-evidence.ts";
 
 test("allows findings with no file field at all (severity/category-only observations)", () => {
   const result = checkFindingsEvidence([{}], new Set());
@@ -87,4 +87,30 @@ test("checkReviewCoverage allows only once every listed file has been read", () 
 
 test("checkReviewCoverage allows a review of an empty/near-empty project trivially", () => {
   expect(checkReviewCoverage(0, 0).allowed).toBe(true);
+});
+
+// ── checkChangedFilesCoverage (token-waste-reduction plan, Task 1) ─────────
+// Round-2+ gate: requires every CHANGED file to have been read, not every
+// file in the whole project — checkReviewCoverage above stays the round-1
+// gate, completely unchanged.
+test("checkChangedFilesCoverage rejects when a changed file hasn't been read yet", () => {
+  const result = checkChangedFilesCoverage(new Set(["backend/src/index.ts"]), ["backend/src/index.ts", "backend/src/routes/index.ts"]);
+  expect(result.allowed).toBe(false);
+  expect(result.reason).toContain("backend/src/routes/index.ts");
+});
+
+test("checkChangedFilesCoverage allows once every changed file has been read, even if the project has many more unread files", () => {
+  const readFiles = new Set(["backend/src/index.ts", "backend/src/routes/index.ts"]);
+  const result = checkChangedFilesCoverage(readFiles, ["backend/src/index.ts", "backend/src/routes/index.ts"]);
+  expect(result.allowed).toBe(true);
+});
+
+test("checkChangedFilesCoverage allows trivially when the changed-files list is empty", () => {
+  expect(checkChangedFilesCoverage(new Set(), []).allowed).toBe(true);
+});
+
+test("checkChangedFilesCoverage does not care about files read that AREN'T in the changed list — reading extra is fine", () => {
+  const readFiles = new Set(["backend/src/index.ts", "backend/src/unrelated.ts"]);
+  const result = checkChangedFilesCoverage(readFiles, ["backend/src/index.ts"]);
+  expect(result.allowed).toBe(true);
 });

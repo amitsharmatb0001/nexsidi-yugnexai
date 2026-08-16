@@ -15,7 +15,9 @@ import {
   sharedFileReadCache,
   clearSharedFileReadCache,
   isQaReadCacheEnabled,
+  mergeCarriedForwardFindings,
   type LabeledDir,
+  type Finding,
 } from "./qa-loop.ts";
 
 let root: string;
@@ -78,6 +80,94 @@ test("buildQaInitialMessage tells the agent to batch reads via read_files", () =
   const msg = buildQaInitialMessage("logic errors", undefined);
   expect(msg).toContain("read_files");
   expect(msg).toContain("batch");
+});
+
+// ── Round-scoped re-review (token-waste-reduction plan, Task 1, 2026-08-16) ─
+// Every round after the first re-explored the ENTIRE codebase from scratch
+// even when only one or two files changed since the last fix pass — the
+// per-round shared read cache (cost-control plan Task 3) only dedupes
+// Navya/Karan/Deepika reading the SAME file as each other within one round,
+// it does nothing across rounds (deliberately cleared at every round
+// boundary). When stage5-qa-fix-loop.ts threads forward what actually
+// changed (Shubham/Aanya/Pranav's own filesWritten), round 2+ should focus
+// reads there instead of demanding a full explore — round 1 (no prior round,
+// changedFiles omitted/empty) must stay exactly as it always was.
+test("buildQaInitialMessage on round 2+ (changedFiles provided) names only the changed files as the primary focus, not a full explore", () => {
+  const msg = buildQaInitialMessage("logic errors", undefined, ["backend/src/routes/index.ts", "frontend/app/page.tsx"]);
+  expect(msg).toContain("backend/src/routes/index.ts");
+  expect(msg).toContain("frontend/app/page.tsx");
+  // Round-1's mandatory full-explore phrasing must NOT appear — this is the
+  // literal behavioral difference from round 1's message.
+  expect(msg).not.toContain("read EVERY file listed");
+});
+
+test("buildQaInitialMessage on round 2+ tells the agent it does not need to re-read every file, only what changed", () => {
+  const msg = buildQaInitialMessage("security vulnerabilities", undefined, ["backend/src/auth.ts"]);
+  // Must not instruct list_files as a mandatory first step the way round 1
+  // does — round 2's message should let the agent start straight from the
+  // known changed-file list instead of re-discovering the whole file tree.
+  expect(msg).not.toContain("Call list_files first");
+});
+
+test("buildQaInitialMessage on round 2+ still tells the agent to double-check whether a changed file could affect an unchanged one it depends on", () => {
+  const msg = buildQaInitialMessage("logic errors", undefined, ["backend/src/routes/index.ts"]);
+  expect(msg.toLowerCase()).toContain("affect");
+});
+
+test("buildQaInitialMessage falls back to the unchanged round-1 (full explore) message when changedFiles is an empty array", () => {
+  const round1 = buildQaInitialMessage("logic errors", undefined);
+  const emptyChanged = buildQaInitialMessage("logic errors", undefined, []);
+  expect(emptyChanged).toBe(round1);
+});
+
+test("buildQaInitialMessage round-1 behavior (no changedFiles arg at all) is byte-identical to before this feature existed", () => {
+  const msg = buildQaInitialMessage("logic errors", undefined);
+  expect(msg).toContain("read EVERY file listed");
+  expect(msg).toContain("Call list_files first");
+});
+
+// ── mergeCarriedForwardFindings (token-waste-reduction plan, Task 1) ───────
+// A round-2+ reviewer is never required to re-read a file it has no reason
+// to suspect changed — but a REAL finding on that file from the previous
+// round must never be silently dropped just because nobody looked at it
+// again this round (global constraint: no coverage/correctness loss to save
+// tokens). This is the deterministic (not prompt-only/probabilistic — see
+// D28) mechanism that guarantees it: any previous finding whose file was NOT
+// read this round survives into the final result automatically.
+const PREV_UNCHANGED: Finding = { severity: "HIGH", category: "n-plus-one", detail: "tasks list issues one query per row", file: "backend/src/controllers/tasks.ts" };
+const PREV_CHANGED: Finding = { severity: "CRITICAL", category: "sql-injection", detail: "string-interpolated query", file: "backend/src/routes/index.ts" };
+const PREV_NO_FILE: Finding = { severity: "MEDIUM", category: "architecture", detail: "no rate limiting anywhere in the API" };
+
+test("mergeCarriedForwardFindings preserves a previous finding whose file was NOT read this round", () => {
+  const merged = mergeCarriedForwardFindings([], [PREV_UNCHANGED], new Set());
+  expect(merged).toContainEqual(PREV_UNCHANGED);
+});
+
+test("mergeCarriedForwardFindings drops a previous finding whose file WAS read this round — the fresh submission supersedes it", () => {
+  const merged = mergeCarriedForwardFindings([], [PREV_CHANGED], new Set(["backend/src/routes/index.ts"]));
+  expect(merged).not.toContainEqual(PREV_CHANGED);
+});
+
+test("mergeCarriedForwardFindings always carries forward a fileless previous finding (can't determine if its dependency changed)", () => {
+  const merged = mergeCarriedForwardFindings([], [PREV_NO_FILE], new Set(["backend/src/routes/index.ts"]));
+  expect(merged).toContainEqual(PREV_NO_FILE);
+});
+
+test("mergeCarriedForwardFindings does not duplicate a carried-forward finding the fresh submission already restates", () => {
+  const merged = mergeCarriedForwardFindings([PREV_UNCHANGED], [PREV_UNCHANGED], new Set());
+  expect(merged.filter((f) => f.detail === PREV_UNCHANGED.detail)).toHaveLength(1);
+});
+
+test("mergeCarriedForwardFindings appends carried-forward findings after the fresh submission, preserving fresh findings untouched", () => {
+  const fresh: Finding = { severity: "LOW", category: "style", detail: "inconsistent naming", file: "backend/src/index.ts" };
+  const merged = mergeCarriedForwardFindings([fresh], [PREV_UNCHANGED], new Set());
+  expect(merged).toEqual([fresh, PREV_UNCHANGED]);
+});
+
+test("mergeCarriedForwardFindings with no previous findings returns the fresh submission unchanged (round-1 behavior, backward compatible)", () => {
+  const fresh: Finding = { severity: "LOW", category: "style", detail: "x", file: "a.ts" };
+  expect(mergeCarriedForwardFindings([fresh], undefined, new Set())).toEqual([fresh]);
+  expect(mergeCarriedForwardFindings([fresh], [], new Set())).toEqual([fresh]);
 });
 
 // ── readLabeledFiles (batch read) ───────────────────────────────────────────

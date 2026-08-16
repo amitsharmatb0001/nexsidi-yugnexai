@@ -22,7 +22,7 @@ import {
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
-import { checkFindingsEvidence, checkReviewCoverage } from "./enforce/finding-evidence.ts";
+import { checkFindingsEvidence, checkReviewCoverage, checkChangedFilesCoverage } from "./enforce/finding-evidence.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts";
 // 2026-08-13 (cost-control Task 1): same CRITICAL gap as loop.ts/
@@ -109,6 +109,38 @@ export interface QAAgentConfig {
   // to attribute that spend to a project at all before this field existed.
   // Optional so existing callers/tests keep working unchanged.
   projectId?: string;
+
+  // ── Round-scoped re-review (token-waste-reduction plan, Task 1, 2026-08-16) ─
+  // Every round after the first re-explored the ENTIRE project from scratch,
+  // even when a fix pass had only touched one or two files — the shared
+  // read-cache above (Task 3) only dedupes the SAME file across Navya/Karan/
+  // Deepika within one round, it does nothing across rounds (deliberately
+  // cleared at every round boundary, per its own comment). When set (round
+  // 2+ — stage5-qa-fix-loop.ts computes this from Shubham/Aanya/Pranav's own
+  // filesWritten, NOT filesystem mtime, for the same correctness reasons the
+  // read-cache above documents), buildQaInitialMessage tells the reviewer
+  // exactly which labeled paths changed and the full-coverage gate
+  // (checkChangedFilesCoverage, not checkReviewCoverage) only requires THOSE
+  // to be read before submit_findings — the reviewer remains free to read
+  // more if a changed file's contract could affect an unchanged one.
+  // Omitted, or an empty array, preserves the original always-full-explore
+  // round-1 behavior unchanged — this is the deliberate safe default,
+  // including when a fix round produced no filesWritten at all.
+  changedFilesSinceLastRound?: string[];
+
+  // This SAME reviewer's own findings from the immediately preceding round
+  // (qa-loop's canonical Finding shape — Karan's wrapper converts its native
+  // SecurityFinding[] before passing this in). Only meaningful alongside
+  // changedFilesSinceLastRound. Never trusted to a probabilistic "please
+  // restate your old findings" prompt instruction (D28: hooks/mechanical
+  // checks fire 100%, skill-instruction-only compliance fires 50-80%) —
+  // mergeCarriedForwardFindings below deterministically re-includes any
+  // entry whose file was NOT read this round, so a real finding on a file
+  // nobody had reason to revisit is never silently lost just because the
+  // reviewer didn't re-read it. An entry whose file WAS read this round is
+  // dropped — the fresh, this-round evidence-based conclusion supersedes it
+  // (including "no longer present" if the fix actually worked).
+  previousFindings?: Finding[];
 }
 
 export interface QAAgentResult {
@@ -404,8 +436,38 @@ const QA_TOOL_DEFS: NimToolDef[] = [
 // schema re-flagged the same false-positive finding every round because it
 // had no way to judge scale/intent, and could never report "this doesn't
 // match what was asked for."
-export function buildQaInitialMessage(reviewFocus: string, systemContext: string | undefined): string {
+export function buildQaInitialMessage(
+  reviewFocus: string,
+  systemContext: string | undefined,
+  // Token-waste-reduction plan, Task 1: labeled paths that changed since the
+  // last round (stage5-qa-fix-loop.ts, from the generators' own
+  // filesWritten). Present and non-empty -> round 2+ message (focus reads,
+  // full explore not required). Omitted or empty -> round 1's original
+  // always-full-explore message, byte-identical to before this feature
+  // existed.
+  changedFiles?: string[],
+): string {
   const contextBlock = systemContext ? `${systemContext}\n\n` : "";
+
+  if (changedFiles && changedFiles.length > 0) {
+    return (
+      `${contextBlock}This is a RE-REVIEW after a fix round, not a first pass. Review this codebase for ${reviewFocus}. ` +
+      `The following files changed since your last review — read ALL of them (use read_files to batch several per ` +
+      `call) before doing anything else; this is where a newly introduced or still-unfixed issue is most likely to ` +
+      `live:\n${changedFiles.join("\n")}\n\n` +
+      `Files NOT in that list were already reviewed in a previous round and do not need a full re-read — you do not ` +
+      `need to call list_files first or re-explore the whole project. However, "unchanged" does not always mean ` +
+      `"unaffected": if something you read in a changed file (an API contract, a route path, an exported type, a ` +
+      `shared schema) could affect the correctness of a file you have NOT re-read, read that file too before ` +
+      `concluding — do not assume it's still fine just because it wasn't touched. Your own findings from the ` +
+      `previous round on files you don't re-read are preserved automatically; you do not need to restate them — only ` +
+      `report NEW findings from what you actually reviewed this round, or a correction to a previous finding you ` +
+      `re-examined and found no longer holds. Use read_files to batch several files (3-10) per call instead of ` +
+      `read_file one at a time — each call costs a full round-trip of resent history. Call submit_findings when ` +
+      `done (empty findings array if you found nothing new).`
+    );
+  }
+
   return (
     `${contextBlock}Review this codebase for ${reviewFocus}. Call list_files first to see every file, then ` +
     `read EVERY file listed — submit_findings will be rejected until you have read all of them, not a ` +
@@ -417,15 +479,50 @@ export function buildQaInitialMessage(reviewFocus: string, systemContext: string
   );
 }
 
+// Token-waste-reduction plan, Task 1: deterministic carry-forward — see
+// QAAgentConfig.previousFindings' comment for why this can't be a
+// prompt-only ("please restate your old findings") instruction. `submitted`
+// is this round's fresh findings (from submit_findings, or the fallback
+// extractor). Any `previousFindings` entry whose `file` was actually read
+// this round is dropped (the fresh, re-verified conclusion supersedes it —
+// including silently "fixed" if the model didn't resubmit it); an entry
+// with no `file` at all is always carried forward, since there's no way to
+// tell whether the dependency it's about changed. Deduped against fresh
+// findings by (file, category, detail) so a model that DOES choose to
+// restate an old finding verbatim doesn't produce a visible duplicate.
+export function mergeCarriedForwardFindings(
+  submitted: Finding[],
+  previousFindings: Finding[] | undefined,
+  readFiles: ReadonlySet<string>,
+): Finding[] {
+  if (!previousFindings || previousFindings.length === 0) return submitted;
+  const key = (f: Finding) => `${f.file ?? ""}|${f.category}|${f.detail}`;
+  const seen = new Set(submitted.map(key));
+  const carried = previousFindings.filter((f) => {
+    if (f.file && readFiles.has(f.file)) return false;
+    return !seen.has(key(f));
+  });
+  return [...submitted, ...carried];
+}
+
 export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> {
   const tools: GeminiToolDef[] = QA_TOOL_DEFS.map(translateNimToolToGeminiTool);
   const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt });
+
+  // Token-waste-reduction plan, Task 1: round-scoped re-review. Empty array
+  // and undefined are treated identically (both fall through to round-1's
+  // full-explore behavior) — see QAAgentConfig.changedFilesSinceLastRound's
+  // comment for why an empty list is the deliberate safe default, not an
+  // accidental free pass.
+  const changedFiles = config.changedFilesSinceLastRound && config.changedFilesSinceLastRound.length > 0
+    ? config.changedFilesSinceLastRound
+    : undefined;
 
   let messages: GeminiMessage[] = [
     { role: "system", content: systemPrompt },
     {
       role: "user",
-      content: buildQaInitialMessage(config.reviewFocus, config.systemContext),
+      content: buildQaInitialMessage(config.reviewFocus, config.systemContext, changedFiles),
     },
   ];
 
@@ -435,7 +532,13 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
   let iterations = 0;
   // Computed upfront (not lazily on the first list_files call) since the
   // iteration cap must scale with the real file count from the start —
-  // see computeQaMaxIterations.
+  // see computeQaMaxIterations. Deliberately still sized off the FULL
+  // project file count even in round 2+ mode (not changedFiles.length) —
+  // the reviewer is free to read beyond the changed set (see
+  // buildQaInitialMessage's "could affect an unchanged file" guidance), so
+  // the iteration budget stays generous rather than under-provisioned; the
+  // real savings come from the reviewer CHOOSING not to use it, not from a
+  // tighter cap forcing it to stop early.
   let totalFilesListed = listLabeledFiles(config.dirs).length;
   const effectiveMaxIterations = computeQaMaxIterations(totalFilesListed);
   // Cost-control plan Task 3: undefined (falls back to the original
@@ -498,7 +601,10 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
       if (response.stopReason === "STOP" || response.stopReason === null) {
         console.log(`[${config.agentName}:qa-loop] Agent stopped without calling submit_findings. Running fallback parser...`);
         const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles, errors);
-        return { findings: fallbackFindings, iterations, errors };
+        // Token-waste-reduction plan, Task 1: even on this fallback exit
+        // path, a real previous-round finding on a file never read this
+        // round must not silently vanish — see mergeCarriedForwardFindings.
+        return { findings: mergeCarriedForwardFindings(fallbackFindings, config.previousFindings, readFiles), iterations, errors };
       }
       continue;
     }
@@ -510,7 +616,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
       console.log(`[${config.agentName}:qa-loop] ${reason}`);
       errors.push(reason);
       const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles, errors);
-      return { findings: fallbackFindings, iterations, errors };
+      return { findings: mergeCarriedForwardFindings(fallbackFindings, config.previousFindings, readFiles), iterations, errors };
     }
 
     const responseParts: GeminiPart[] = [];
@@ -553,7 +659,12 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
         }
         case "submit_findings": {
           const findings = ((call.input as { findings?: Finding[] }).findings ?? []);
-          const coverage = checkReviewCoverage(readFiles.size, totalFilesListed);
+          // Token-waste-reduction plan, Task 1: round 2+ only requires the
+          // known-changed files to have been read, not the whole project —
+          // checkReviewCoverage (round 1) is completely unchanged.
+          const coverage = changedFiles
+            ? checkChangedFilesCoverage(readFiles, changedFiles)
+            : checkReviewCoverage(readFiles.size, totalFilesListed);
           if (!coverage.allowed) {
             result = { status: "error", summary: coverage.reason };
             break;
@@ -564,7 +675,11 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
             break;
           }
           result = { status: "success", summary: "Findings accepted" };
-          submitted = findings;
+          // Task 1: merge AFTER evidence/coverage validation of the FRESH
+          // findings — carried-forward entries are already-evidenced facts
+          // from a prior round, not new claims that need a fresh read_file
+          // call to back them up.
+          submitted = mergeCarriedForwardFindings(findings, config.previousFindings, readFiles);
           break;
         }
         default:
@@ -583,7 +698,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
 
   console.log(`[${config.agentName}:qa-loop] Max iterations reached without submit_findings. Running fallback parser...`);
   const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles, errors);
-  return { findings: fallbackFindings, iterations, errors };
+  return { findings: mergeCarriedForwardFindings(fallbackFindings, config.previousFindings, readFiles), iterations, errors };
 }
 
 export async function extractFindingsFromHistory(

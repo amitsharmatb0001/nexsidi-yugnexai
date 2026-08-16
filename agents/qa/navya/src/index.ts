@@ -57,6 +57,19 @@ export async function runExploring(
   // codebase should implement — see qa-loop.test.ts for why QA judging code
   // shape alone (no intent) produces cheap false positives every round.
   systemContext?: string,
+  // Token-waste-reduction plan, Task 1 (2026-08-16): labeled paths that
+  // changed since Navya's last review of this project (stage5-adversarial-
+  // qa.ts, sourced from Shubham/Aanya/Pranav's own filesWritten via
+  // stage5-qa-fix-loop.ts). Omitted (round 1, or the caller has no prior
+  // round) preserves the original always-full-explore behavior unchanged.
+  changedFilesSinceLastRound?: string[],
+  // Navya's OWN findings from the immediately preceding round — carried
+  // forward deterministically inside runQAAgent (mergeCarriedForwardFindings)
+  // for any file not re-read this round, so a real finding on an unchanged
+  // file is never silently lost just because Navya had no reason to revisit
+  // it. See qa-loop.ts's QAAgentConfig.previousFindings for the full
+  // rationale.
+  previousFindings?: Finding[],
 ): Promise<QAResult> {
   const result = await deps.runAgent({
     agentName: "navya",
@@ -73,6 +86,8 @@ export async function runExploring(
     // anything to attribute it to — projectId was already this function's
     // own first parameter, just never threaded into the loop config before.
     projectId,
+    changedFilesSinceLastRound,
+    previousFindings,
   });
 
   const hasFatalError = result.errors.some(
