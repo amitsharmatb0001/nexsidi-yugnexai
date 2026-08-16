@@ -593,3 +593,13 @@ Task 4: VERIFICATION GATE PASSED. Real end-to-end check against an 11-route Buil
 
 ## PLAN COMPLETE: docs/nexsidi/plans/2026-08-16-aanya-nexui-migration.md
 All 4 tasks done, 3 needed a fix-and-re-review round (real bugs caught each time: silent vendoring failure, dark/light-mode + font-embedding bugs, a NoFoucScript import misattribution), 1 approved on first pass. Task 4 found zero remaining bugs after Tasks 1-3, confirming the sequential build-then-verify discipline held. Aanya now generates projects against the live, real @yugnex/core + @yugnex/cli model instead of the old vendored-package approach.
+
+---
+## Plan: docs/nexsidi/plans/2026-08-16-token-waste-reduction.md
+Task 2: implemented (health-gated generator retry), reviewed APPROVED (loop timing math hand-traced, confirmed no budget regression). MERGED into feat/nexsidi-pipeline-v2-eager. 12/12 quota-retry tests pass post-merge.
+Task 1 (round-scoped QA re-scan): still implementing.
+Task 1: implemented (round-scoped QA re-scan), reviewed APPROVED (one non-blocking residual risk flagged for follow-up: changed-file coverage gate is mechanically weaker than old full-project gate in one specific cross-file-dependency case, currently prompt-only not deterministic). Found and fixed a real related gap (autoWireRoutes writing outside the tracked filesWritten set). MERGED into feat/nexsidi-pipeline-v2-eager.
+
+## PLAN COMPLETE: docs/nexsidi/plans/2026-08-16-token-waste-reduction.md
+Both tasks done, both reviewed and merged. Full repo suite: 1023 pass/2 skip/0 fail, independently confirmed.
+Follow-up noted (not yet a task): make the round-2+ QA coverage gate's cross-file-dependency check deterministic instead of prompt-only, matching mergeCarriedForwardFindings' own mechanical-check pattern.
