@@ -523,8 +523,7 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     // compile-check has settled and before the deploy-approval wait, closes
     // that race while still covering the actually-meaningful tamper window
     // (the human approval wait below, which can be long).
-    await orchestratorAct.recordDeployHandoffActivity(projectId);
-
+    //
     // GATE 2: Deployment/Rollout Approval
     state.stage = "await_deploy_approval";
     await condition(() => deployApproved);
@@ -533,6 +532,24 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     // explicit human decision ───────────────────────────────────────────
     state.stage = "deliver";
     for (;;) {
+      // 2026-08-17 (live, fulfillio1 — 3rd occurrence of the same false-
+      // positive class as the two above): recordHandoff used to be called
+      // ONCE, before this loop, so a SECOND (or third) Stage 6 attempt's
+      // verifyHandoff (inside runDeployWithLiveRetest) was checked against
+      // the snapshot taken before the FIRST attempt ever ran. Riya's deploy
+      // legitimately edits tracked source (e.g. docker-compose.yml, which
+      // Navya/Karan/Deepika DO read as part of QA) while fixing deploy
+      // config between attempts — a real, expected pipeline step, not
+      // tampering — but any retry (deploy_failed, deploy_stuck,
+      // budget_exceeded) tripped a non-retryable ContextChainViolation that
+      // killed the ENTIRE workflow outright, discarding a genuinely
+      // deployed, QA-passed, running app. Re-recording at the top of every
+      // iteration keeps each attempt's tamper window scoped to that single
+      // attempt (record here, verify moments later inside the activity)
+      // instead of one stale snapshot spanning every retry — same fix
+      // shape as the two prior occurrences, applied one level up.
+      await orchestratorAct.recordDeployHandoffActivity(projectId);
+
       // 2026-08-13 (cost-control Task 1): runDeployWithLiveRetest now calls
       // assertWithinBudget before doing any deploy/live-retest work — this
       // call had no surrounding try/catch before, same uncaught-propagation
