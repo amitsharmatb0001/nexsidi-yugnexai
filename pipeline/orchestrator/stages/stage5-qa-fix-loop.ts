@@ -29,7 +29,7 @@
 //     loop, not the expected exit path.
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 import { groupFindingsByAgent, type Stage4Result, type Finding } from "./stage4-multi-agent-dev.ts";
-import { runStage5, type Stage5Result } from "./stage5-adversarial-qa.ts";
+import { runStage5, type Stage5Result, type Stage5RawFindings } from "./stage5-adversarial-qa.ts";
 import type { InstinctDomain } from "@nexsidi/db";
 import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
 import { runGeneratorWithQuotaRetry } from "../../activities/quota-retry.ts";
@@ -57,19 +57,38 @@ export interface QAFixDeps {
   // F5 (agent-autonomy-assessment): plan is optional third arg so existing
   // stubs (which ignore it) keep working — the real entry point always
   // passes it.
-  runStage5: (projectId: string, stage4Result: Stage4Result, plan?: BuildPlan) => Promise<Stage5Result>;
+  // Token-waste-reduction plan, Task 1 (2026-08-16): changedFiles/
+  // previousFindings are appended at the end, both optional, so every
+  // existing stub (which ignores them) keeps compiling unchanged. Computed
+  // by runQAFixLoopWithDeps below from THIS round's fix outcomes and the
+  // JUST-FAILED round's findings — see computeChangedFiles/
+  // extractPreviousFindings. Only ever non-undefined on a round-2+ call
+  // (inside the while loop); the initial call before the loop always omits
+  // both, preserving round-1's full-explore behavior.
+  runStage5: (
+    projectId: string,
+    stage4Result: Stage4Result,
+    plan?: BuildPlan,
+    changedFiles?: string[],
+    previousFindings?: Stage5RawFindings,
+  ) => Promise<Stage5Result>;
   // P3 (agent-autonomy-assessment F3): escalations is optional on the
   // result so existing DI test stubs (which return only {success}) keep
   // compiling unchanged.
-  fixShubham: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[] }>;
-  fixAanya: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[] }>;
+  // Token-waste-reduction plan, Task 1: filesWritten is optional so existing
+  // stubs (which don't report it) keep compiling unchanged — omitting it is
+  // indistinguishable from "this fix touched nothing," which correctly
+  // falls back to full-explore next round (the safe default) rather than
+  // silently granting a free pass.
+  fixShubham: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>;
+  fixAanya: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>;
   // 2026-07-24 (P3.W3.4): Pranav previously had NO fix path at all — a
   // db/-only finding set stopped the loop immediately ("no auto-fix path
   // yet"). Optional (like recordInstincts below) so existing DI tests that
   // predate this fix keep compiling and behaving unchanged; the real entry
   // point wires Pranav's real runFix (expand-contract migration, not a
   // schema rewrite — see agents/generators/pranav/src/index.ts).
-  fixPranav?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
+  fixPranav?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; filesWritten?: string[] }>;
   // 2026-07-08: Patent Claim 2's instinct memory had a real DB table but
   // nothing ever wrote to it — every pipeline run started with total
   // amnesia. Optional so existing DI tests (which don't care about memory)
@@ -82,6 +101,61 @@ export interface QAFixDeps {
 
 function formatFinding(f: { file: string; issue: string }): string {
   return f.file ? `${f.file}: ${f.issue}` : f.issue;
+}
+
+// ── Round-scoped QA re-scan (token-waste-reduction plan, Task 1, 2026-08-16) ─
+// Every round after the first re-explored the ENTIRE project from scratch,
+// even when a fix pass only touched one or two files — this is where round
+// N's generator filesWritten (Shubham/Aanya/Pranav's own return value)
+// becomes round N+1's "focus your reads here" signal for Navya/Karan/
+// Deepika (stage5-adversarial-qa.ts / qa-loop.ts).
+//
+// Labels each agent's filesWritten (relative to that agent's OWN output
+// dir, e.g. "src/routes/index.ts") to match the SAME "backend/"/"frontend/"/
+// "db/" prefix convention QA's labeled dirs use (stage5-adversarial-qa.ts's
+// runStage5) — a raw unlabeled path would never match anything a reviewer
+// actually reads. Deliberately NOT filesystem mtime — same correctness
+// reasoning qa-loop.ts's shared file-read cache already documents: mtime
+// resolution can't reliably detect a same-second edit, and filesWritten is
+// the generator's own authoritative record of what it touched.
+export function computeChangedFiles(
+  fixOutcomes: Array<{ agent: string; filesWritten?: string[] }>,
+): string[] {
+  const labelFor: Record<string, string> = { shubham: "backend", aanya: "frontend", pranav: "db" };
+  const out = new Set<string>();
+  for (const outcome of fixOutcomes) {
+    const label = labelFor[outcome.agent];
+    if (!label) continue;
+    for (const f of outcome.filesWritten ?? []) out.add(`${label}/${f}`);
+  }
+  return [...out];
+}
+
+// The round that just failed reported each reviewer's OWN raw findings via
+// perAgentFindings (stage5-adversarial-qa.ts) — this is the source for the
+// NEXT round's `previousFindings` argument, so a real finding on a file
+// nobody re-reads next round isn't silently lost (see qa-loop.ts's
+// mergeCarriedForwardFindings, the actual deterministic carry-forward
+// mechanism this data feeds). Filters out each reviewer's own "my review
+// tooling crashed" meta-findings (review-incomplete / parse-failure /
+// Karan's equivalent text) — those describe a QA-tooling failure from THIS
+// round, not a confirmed code defect, and must never be mechanically
+// re-asserted as if they were. Returns undefined when the round had no
+// perAgentFindings at all (e.g. a hand-built Stage5Result in a test/caller
+// that predates this field) — the caller treats that the same as "no
+// previous findings to carry forward," never as an error.
+function isKaranMetaFinding(description: string): boolean {
+  return description.includes("review did not complete") || description.includes("could not be parsed as JSON");
+}
+
+export function extractPreviousFindings(result: Stage5Result): Stage5RawFindings | undefined {
+  const raw = result.perAgentFindings;
+  if (!raw) return undefined;
+  return {
+    navya: raw.navya.filter((f) => f.category !== "review-incomplete" && f.category !== "parse-failure"),
+    karan: raw.karan.filter((f) => !isKaranMetaFinding(f.description)),
+    deepika: raw.deepika.filter((f) => f.category !== "review-incomplete" && f.category !== "parse-failure"),
+  };
 }
 
 // 2026-07-12: real bug found live (direct DB query: `SELECT domain,
@@ -339,15 +413,15 @@ export async function runQAFixLoopWithDeps(
     // via Promise.all (they touch disjoint output directories, same as the
     // initial parallel generation stage) is real wall-clock savings on the
     // common case of findings spanning both backend and frontend.
-    const fixCalls: Promise<{ agent: string; success: boolean; escalations?: Escalation[] }>[] = [];
+    const fixCalls: Promise<{ agent: string; success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>[] = [];
 
     if (shubhamFindings) {
       const formatted = shubhamFindings.map(formatFinding);
       fixCalls.push(
         (async () => {
           await deps.recordInstincts?.("shubham", formatted);
-          const { success, escalations } = await deps.fixShubham(plan, formatted);
-          return { agent: "shubham", success, escalations };
+          const { success, escalations, filesWritten } = await deps.fixShubham(plan, formatted);
+          return { agent: "shubham", success, escalations, filesWritten };
         })(),
       );
     }
@@ -356,8 +430,8 @@ export async function runQAFixLoopWithDeps(
       fixCalls.push(
         (async () => {
           await deps.recordInstincts?.("aanya", formatted);
-          const { success, escalations } = await deps.fixAanya(plan, formatted);
-          return { agent: "aanya", success, escalations };
+          const { success, escalations, filesWritten } = await deps.fixAanya(plan, formatted);
+          return { agent: "aanya", success, escalations, filesWritten };
         })(),
       );
     }
@@ -366,8 +440,8 @@ export async function runQAFixLoopWithDeps(
       fixCalls.push(
         (async () => {
           await deps.recordInstincts?.("pranav", formatted);
-          const { success } = await deps.fixPranav!(plan, formatted);
-          return { agent: "pranav", success };
+          const { success, filesWritten } = await deps.fixPranav!(plan, formatted);
+          return { agent: "pranav", success, filesWritten };
         })(),
       );
     }
@@ -388,6 +462,11 @@ export async function runQAFixLoopWithDeps(
       return { ...result, iterations, stuck: true };
     }
 
+    // Token-waste-reduction plan, Task 1: what this round ACTUALLY changed,
+    // for the NEXT round's QA dispatch — computed from the main fix round's
+    // filesWritten before the escalation block below (which can add more).
+    const changedFilesThisRound = new Set(computeChangedFiles(fixOutcomes));
+
     // P3 (agent-autonomy-assessment F3): a fix agent may have decided the
     // real fix belongs in another agent's domain (escalate_finding) instead
     // of forcing a workaround. Route escalations to pranav (currently the
@@ -400,13 +479,25 @@ export async function runQAFixLoopWithDeps(
       const formatted = pranavEscalations.map((e) => `${e.finding} — ${e.reason}`);
       console.log(`[qa-fix-loop] routing ${formatted.length} escalated finding(s) to pranav this round`);
       await deps.recordInstincts?.("pranav", formatted);
-      const { success } = await deps.fixPranav(plan, formatted);
+      const { success, filesWritten } = await deps.fixPranav(plan, formatted);
+      // Token-waste-reduction plan, Task 1: an escalation-routed fix writes
+      // real files too (outside the main fixCalls/computeChangedFiles pass
+      // above) — fold it in so the next round's reviewers know to look here.
+      for (const f of filesWritten ?? []) changedFilesThisRound.add(`db/${f}`);
       if (!success) {
         console.error(`[qa-fix-loop] pranav escalation fix FAILED to complete`);
       }
     }
 
-    result = await applyDebateVerdict(await deps.runStage5(projectId, stage4Result, plan), deps);
+    // Token-waste-reduction plan, Task 1: an empty changed-files set (a fix
+    // round that reported no filesWritten at all — every existing DI test
+    // stub, or a genuinely no-op fix) is the deliberate safe default for
+    // "fall back to full-explore next round," not a free pass — see
+    // qa-loop.ts's QAAgentConfig.changedFilesSinceLastRound comment.
+    const changedFiles = changedFilesThisRound.size > 0 ? [...changedFilesThisRound] : undefined;
+    const previousFindings = changedFiles ? extractPreviousFindings(result) : undefined;
+
+    result = await applyDebateVerdict(await deps.runStage5(projectId, stage4Result, plan, changedFiles, previousFindings), deps);
     iterations++;
 
     const currentFindingCount = result.findings.length;
@@ -442,8 +533,9 @@ export async function runQAFixLoop(
     // includeTier3 stays at its default false — this is the pre-deployment
     // gate, per runStage5's own header comment. Wrapped so plan lands in
     // QAFixDeps.runStage5's 3rd positional slot instead of runStage5's own
-    // 3rd slot (includeTier3).
-    runStage5: (pid, s4, p) => runStage5(pid, s4, false, p),
+    // 3rd slot (includeTier3). changedFiles/previousFindings (Task 1) pass
+    // straight through to runStage5's own matching positional slots.
+    runStage5: (pid, s4, p, changedFiles, previousFindings) => runStage5(pid, s4, false, p, changedFiles, previousFindings),
     // 2026-08-06: real bug found live (project bae438767bed) — a shared-pool
     // quota exhaustion hitting all three fix calls simultaneously (they run
     // concurrently) used to fail every one of them outright within a
@@ -454,15 +546,15 @@ export async function runQAFixLoop(
     // runPranav) — see quota-retry.ts's header comment for the full trace.
     fixShubham: async (p, findings) => {
       const r = await runGeneratorWithQuotaRetry(() => fixShubhamReal(p, findings));
-      return { success: r.success, escalations: r.escalations };
+      return { success: r.success, escalations: r.escalations, filesWritten: r.filesWritten };
     },
     fixAanya: async (p, findings) => {
       const r = await runGeneratorWithQuotaRetry(() => fixAanyaReal(p, findings));
-      return { success: r.success, escalations: r.escalations };
+      return { success: r.success, escalations: r.escalations, filesWritten: r.filesWritten };
     },
     fixPranav: async (p, findings) => {
       const r = await runGeneratorWithQuotaRetry(() => fixPranavReal(p, findings));
-      return { success: r.success };
+      return { success: r.success, filesWritten: r.filesWritten };
     },
     conductPeerDebate: conductPeerDebateReal,
     // 2026-07-08: real instinct-memory write path (see packages/db/src/

@@ -93,6 +93,14 @@ export async function runExploring(
   // parameter for the full rationale — this is also what lets Deepika stop
   // re-flagging "missing index" as HIGH every round with no scale context.
   systemContext?: string,
+  // Token-waste-reduction plan, Task 1: see navya/src/index.ts's identical
+  // parameter for the full rationale — round 2+ focuses Deepika's reads on
+  // what actually changed since her last review instead of a full re-explore.
+  changedFilesSinceLastRound?: string[],
+  // Deepika's OWN findings from the immediately preceding round — see
+  // navya/src/index.ts's identical parameter (and qa-loop.ts's
+  // mergeCarriedForwardFindings) for the full rationale.
+  previousFindings?: Finding[],
 ): Promise<QAResult> {
   const result = await deps.runAgent({
     agentName: "deepika",
@@ -104,6 +112,8 @@ export async function runExploring(
     // parameter for the full rationale (shared FileReadCache + QA spend
     // attribution).
     projectId,
+    changedFilesSinceLastRound,
+    previousFindings,
   });
 
   const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings") && !e.includes("Stuck:"));

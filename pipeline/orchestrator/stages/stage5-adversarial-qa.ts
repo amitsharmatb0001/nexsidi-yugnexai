@@ -36,10 +36,29 @@ import type { Finding as DeepikaFinding, QAResult as DeepikaResult } from "../..
 import type { Tier3ReviewResult } from "../../../agents/tilotma/src/tier3-review.ts";
 import { buildSystemContext, type BuildPlan } from "../../../agents/arjun/src/index.ts";
 
+// Token-waste-reduction plan, Task 1 (2026-08-16): round-scoped re-review.
+// Each reviewer's OWN findings from THIS round, in their native shapes —
+// threaded into Stage5Result so stage5-qa-fix-loop.ts can build the NEXT
+// round's `previousFindings` argument without needing a lossy conversion at
+// storage time (Karan's SecurityFinding stays SecurityFinding here; the
+// SecurityFinding<->qa-loop-Finding conversion only happens inside
+// karan/src/index.ts's runExploring, right before/after the actual
+// runQAAgent call — see that file's securityFindingToQaLoopFinding).
+export interface Stage5RawFindings {
+  navya: NavyaFinding[];
+  karan: SecurityFinding[];
+  deepika: DeepikaFinding[];
+}
+
 export interface Stage5Result {
   pass: boolean;
   findings: Finding[];
   faultAgent?: string;
+  // Task 1: undefined only for a Stage5Result a test/stub built by hand
+  // without populating it — every real runStage5WithAgents return path sets
+  // it, since navyaResult/karanResult/deepikaResult are always available by
+  // the time any of them returns.
+  perAgentFindings?: Stage5RawFindings;
 }
 
 // Injectable seam for testing — runStage5() below wraps this with the real
@@ -55,9 +74,16 @@ export interface Stage5Agents {
   // spec/API-contract/DB-schema (buildSystemContext(plan)) — see
   // qa-loop.test.ts for why QA needs this. Tier3Review doesn't take it: it
   // reviews the LIVE deployed app's UX/behavior, not source-level intent.
-  runNavya: (projectId: string, stage4Result: Stage4Result, systemContext?: string) => Promise<NavyaResult>;
-  runKaran: (projectId: string, stage4Result: Stage4Result, systemContext?: string) => Promise<KaranResult>;
-  runDeepika: (projectId: string, stage4Result: Stage4Result, systemContext?: string) => Promise<DeepikaResult>;
+  //
+  // Token-waste-reduction plan, Task 1: changedFiles/previousFindings are
+  // this round's round-scoping inputs — see qa-loop.ts's
+  // QAAgentConfig.changedFilesSinceLastRound/previousFindings for the full
+  // rationale. Optional so every existing call site (and every test using
+  // makeAgents()) stays valid; undefined on both means "round 1 / no prior
+  // round," preserving full-explore behavior unchanged.
+  runNavya: (projectId: string, stage4Result: Stage4Result, systemContext?: string, changedFiles?: string[], previousFindings?: NavyaFinding[]) => Promise<NavyaResult>;
+  runKaran: (projectId: string, stage4Result: Stage4Result, systemContext?: string, changedFiles?: string[], previousFindings?: SecurityFinding[]) => Promise<KaranResult>;
+  runDeepika: (projectId: string, stage4Result: Stage4Result, systemContext?: string, changedFiles?: string[], previousFindings?: DeepikaFinding[]) => Promise<DeepikaResult>;
   runTier3Review: (projectId: string, stage4Result: Stage4Result) => Promise<Tier3ReviewResult>;
 }
 
@@ -148,6 +174,16 @@ export async function runStage5WithAgents(
   // Defaults to 0 — see qaDispatchStaggerMs's header comment. runStage5
   // (the real entry point) passes a live, non-zero value.
   staggerMs = 0,
+  // Token-waste-reduction plan, Task 1 (2026-08-16): labeled paths that
+  // changed since the last round (stage5-qa-fix-loop.ts, sourced from
+  // Shubham/Aanya/Pranav's own filesWritten). Appended at the end so every
+  // existing positional call site is unaffected — omitted (round 1, or a
+  // fix round that produced no filesWritten) preserves the original
+  // always-full-explore behavior unchanged for every reviewer.
+  changedFiles?: string[],
+  // Each reviewer's OWN findings from the immediately preceding round — see
+  // Stage5RawFindings' comment. Only meaningful alongside changedFiles.
+  previousFindings?: Stage5RawFindings,
 ): Promise<Stage5Result> {
   // Cost-control plan Task 3: MUST run before dispatching the three
   // reviewers, not after — clears any FileReadCache left over from a
@@ -158,16 +194,17 @@ export async function runStage5WithAgents(
   clearSharedFileReadCache(projectId);
 
   const systemContext = plan ? buildSystemContext(plan) : undefined;
-  const navyaPromise = agents.runNavya(projectId, stage4Result, systemContext);
+  const navyaPromise = agents.runNavya(projectId, stage4Result, systemContext, changedFiles, previousFindings?.navya);
   await sleep(staggerMs);
-  const karanPromise = agents.runKaran(projectId, stage4Result, systemContext);
+  const karanPromise = agents.runKaran(projectId, stage4Result, systemContext, changedFiles, previousFindings?.karan);
   await sleep(staggerMs);
-  const deepikaPromise = agents.runDeepika(projectId, stage4Result, systemContext);
+  const deepikaPromise = agents.runDeepika(projectId, stage4Result, systemContext, changedFiles, previousFindings?.deepika);
   const [navyaResult, karanResult, deepikaResult] = await Promise.all([
     navyaPromise,
     karanPromise,
     deepikaPromise,
   ]);
+  const perAgentFindings: Stage5RawFindings = { navya: navyaResult.findings, karan: karanResult.findings, deepika: deepikaResult.findings };
 
   try {
     const { writeFileSync, mkdirSync } = await import("node:fs");
@@ -212,17 +249,18 @@ export async function runStage5WithAgents(
   ];
 
   if (!allPass) {
-    return { pass: false, findings, faultAgent: identifyFaultAgent(findings) };
+    return { pass: false, findings, faultAgent: identifyFaultAgent(findings), perAgentFindings };
   }
 
   if (!includeTier3) {
-    return { pass: true, findings };
+    return { pass: true, findings, perAgentFindings };
   }
 
   const tier3 = await agents.runTier3Review(projectId, stage4Result);
   return {
     pass: tier3.pass,
     findings: tier3.findings.map((issue): Finding => ({ file: "", issue })),
+    perAgentFindings,
   };
 }
 
@@ -326,6 +364,12 @@ export async function runStage5(
   // F5 (agent-autonomy-assessment): threaded through to buildSystemContext
   // for every QA agent — see this file's test for the live evidence.
   plan?: BuildPlan,
+  // Token-waste-reduction plan, Task 1: see runStage5WithAgents' identical
+  // parameters for the full rationale. stage5-qa-fix-loop.ts is the only
+  // real caller that ever passes these (round 2+ retest calls) — the
+  // initial round-1 call always omits both.
+  changedFiles?: string[],
+  previousFindings?: Stage5RawFindings,
 ): Promise<Stage5Result> {
   const [{ runExploring: runNavyaReal }, karanModule, { runExploring: runDeepikaReal }, { runTier3Review: runTier3ReviewReal }] =
     await Promise.all([
@@ -354,11 +398,37 @@ export async function runStage5(
   ];
 
   const agents: Stage5Agents = {
-    runNavya: (pid, s4, ctx) => runNavyaReal(pid, labeledDirs(s4), undefined, ctx),
-    runKaran: (pid, s4, ctx) => runKaranReal(pid, labeledDirs(s4), undefined, ctx),
-    runDeepika: (pid, s4, ctx) => runDeepikaReal(pid, labeledDirs(s4), undefined, ctx),
+    runNavya: (pid, s4, ctx, cf, pf) => runNavyaReal(pid, labeledDirs(s4), undefined, ctx, cf, pf),
+    runKaran: (pid, s4, ctx, cf, pf) => runKaranReal(pid, labeledDirs(s4), undefined, ctx, cf, pf),
+    runDeepika: (pid, s4, ctx, cf, pf) => runDeepikaReal(pid, labeledDirs(s4), undefined, ctx, cf, pf),
     runTier3Review: (pid, s4) => runTier3ReviewReal(pid, s4.frontendOutputDir),
   };
 
-  return runStage5WithAgents(projectId, stage4Result, agents, includeTier3, plan, qaDispatchStaggerMs());
+  // Token-waste-reduction plan, Task 1: escape hatch matching this session's
+  // established convention (QA_READ_CACHE_ENABLED, COST_BUDGET_CAP_USD) —
+  // enabled by default, opt out with the env var set to exactly "false".
+  // When disabled, every reviewer gets undefined for both regardless of what
+  // the caller passed in, which is exactly round-1's always-full-explore
+  // path — a full, individually-revertable behavioral revert with no other
+  // code change needed.
+  const roundScopingEnabled = isQaRoundScopedRescanEnabled();
+  return runStage5WithAgents(
+    projectId,
+    stage4Result,
+    agents,
+    includeTier3,
+    plan,
+    qaDispatchStaggerMs(),
+    roundScopingEnabled ? changedFiles : undefined,
+    roundScopingEnabled ? previousFindings : undefined,
+  );
+}
+
+// Token-waste-reduction plan, Task 1: global constraint from the plan —
+// every lever stays individually toggleable/revertable. Matches
+// QA_READ_CACHE_ENABLED's exact convention (packages/agent-runtime/src/
+// qa-loop.ts) — enabled by default, opt out with the env var set to exactly
+// "false".
+export function isQaRoundScopedRescanEnabled(): boolean {
+  return process.env.QA_ROUND_SCOPED_RESCAN_ENABLED !== "false";
 }

@@ -10,6 +10,7 @@ import {
   navyaFindingToFinding,
   deepikaFindingToFinding,
   qaDispatchStaggerMs,
+  isQaRoundScopedRescanEnabled,
   type Stage5Agents,
 } from "./stage5-adversarial-qa.ts";
 import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
@@ -36,6 +37,35 @@ const source = readFileSync(new URL("./stage5-adversarial-qa.ts", import.meta.ur
 test("runStage5's real labeledDirs includes a 'db' label pointing at Pranav's real output directory", () => {
   expect(source).toContain('{ label: "db", path: getPranavOutputDir(projectId) }');
   expect(source).toContain('import { getOutputDir as getPranavOutputDir }');
+});
+
+// ── Round-scoped re-review escape hatch (token-waste-reduction plan, Task 1) ─
+// Global constraint: every lever stays individually toggleable/revertable,
+// matching QA_READ_CACHE_ENABLED's exact convention.
+test("isQaRoundScopedRescanEnabled defaults to enabled and can be disabled via QA_ROUND_SCOPED_RESCAN_ENABLED=false", () => {
+  const original = process.env.QA_ROUND_SCOPED_RESCAN_ENABLED;
+  try {
+    delete process.env.QA_ROUND_SCOPED_RESCAN_ENABLED;
+    expect(isQaRoundScopedRescanEnabled()).toBe(true);
+
+    process.env.QA_ROUND_SCOPED_RESCAN_ENABLED = "false";
+    expect(isQaRoundScopedRescanEnabled()).toBe(false);
+
+    process.env.QA_ROUND_SCOPED_RESCAN_ENABLED = "true";
+    expect(isQaRoundScopedRescanEnabled()).toBe(true);
+  } finally {
+    if (original === undefined) delete process.env.QA_ROUND_SCOPED_RESCAN_ENABLED;
+    else process.env.QA_ROUND_SCOPED_RESCAN_ENABLED = original;
+  }
+});
+
+// Source-string check (mirrors the established pattern above for this
+// file's real wiring, which dynamically imports live agents and isn't
+// unit-testable directly) — confirms the escape hatch actually forces
+// undefined through to every reviewer rather than merely existing unused.
+test("runStage5's real wiring gates changedFiles/previousFindings behind isQaRoundScopedRescanEnabled", () => {
+  expect(source).toContain("roundScopingEnabled ? changedFiles : undefined");
+  expect(source).toContain("roundScopingEnabled ? previousFindings : undefined");
 });
 
 // Real Navya/Karan/Deepika run() calls and Tilotma's Tier 3 review hit live
@@ -160,6 +190,67 @@ test("runStage5WithAgents forwards a rendered systemContext from plan to every Q
 test("runStage5WithAgents works with no plan (systemContext undefined) — backward compatible", async () => {
   const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, makeAgents(), false);
   expect(result.pass).toBe(true);
+});
+
+// ── Round-scoped QA re-scan (token-waste-reduction plan, Task 1, 2026-08-16) ─
+// stage5-qa-fix-loop.ts threads forward what changed since the last round
+// (from Shubham/Aanya/Pranav's own filesWritten) plus each reviewer's own
+// previous-round findings — runStage5WithAgents just needs to pass these
+// straight through to every reviewer function unchanged.
+test("runStage5WithAgents forwards changedFiles and previousFindings to every QA agent", async () => {
+  const captured: Record<string, { changedFiles?: string[]; previousFindings?: unknown }> = {};
+  const agents = makeAgents({
+    runNavya: async (_pid, _s4, _ctx, cf, pf) => { captured.navya = { changedFiles: cf, previousFindings: pf }; return CLEAN_NAVYA; },
+    runKaran: async (_pid, _s4, _ctx, cf, pf) => { captured.karan = { changedFiles: cf, previousFindings: pf }; return CLEAN_KARAN; },
+    runDeepika: async (_pid, _s4, _ctx, cf, pf) => { captured.deepika = { changedFiles: cf, previousFindings: pf }; return CLEAN_DEEPIKA; },
+  });
+  const changedFiles = ["backend/src/routes/index.ts"];
+  const previousFindings = {
+    navya: [{ severity: "HIGH" as const, category: "logic", detail: "x", file: "backend/src/routes/index.ts" }],
+    karan: [{ severity: "CRITICAL" as const, description: "SQL injection", file: "backend/src/routes/index.ts" }],
+    deepika: [{ severity: "MEDIUM" as const, category: "n-plus-one", detail: "y", file: "backend/src/routes/index.ts" }],
+  };
+
+  await runStage5WithAgents("test-proj", STAGE4_RESULT, agents, false, undefined, 0, changedFiles, previousFindings);
+
+  expect(captured.navya?.changedFiles).toEqual(changedFiles);
+  expect(captured.navya?.previousFindings).toEqual(previousFindings.navya);
+  expect(captured.karan?.changedFiles).toEqual(changedFiles);
+  expect(captured.karan?.previousFindings).toEqual(previousFindings.karan);
+  expect(captured.deepika?.changedFiles).toEqual(changedFiles);
+  expect(captured.deepika?.previousFindings).toEqual(previousFindings.deepika);
+});
+
+test("runStage5WithAgents omits changedFiles/previousFindings when not supplied (round 1, backward compatible)", async () => {
+  const captured: Record<string, { changedFiles?: string[] }> = {};
+  const agents = makeAgents({
+    runNavya: async (_pid, _s4, _ctx, cf) => { captured.navya = { changedFiles: cf }; return CLEAN_NAVYA; },
+  });
+
+  await runStage5WithAgents("test-proj", STAGE4_RESULT, agents, false);
+
+  expect(captured.navya?.changedFiles).toBeUndefined();
+});
+
+// Round N+1's carry-forward mechanism (qa-loop.ts's mergeCarriedForwardFindings)
+// needs round N's RAW per-agent findings, not just the aggregated Stage4
+// Finding[] shape — perAgentFindings is what stage5-qa-fix-loop.ts reads to
+// build the NEXT round's previousFindings argument.
+test("runStage5WithAgents's result carries each agent's own raw findings via perAgentFindings", async () => {
+  const agents = makeAgents({
+    runNavya: async (): Promise<NavyaResult> => ({
+      agent: "navya",
+      score: 90,
+      passed: true,
+      findings: [{ severity: "HIGH", category: "logic", detail: "off-by-one", file: "backend/src/index.ts" }],
+    }),
+  });
+
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents, false);
+
+  expect(result.perAgentFindings?.navya).toEqual([{ severity: "HIGH", category: "logic", detail: "off-by-one", file: "backend/src/index.ts" }]);
+  expect(result.perAgentFindings?.karan).toEqual([]);
+  expect(result.perAgentFindings?.deepika).toEqual([]);
 });
 
 // 2026-07-11: real bug found live — traced the full call graph and confirmed

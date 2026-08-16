@@ -90,6 +90,18 @@ function qaLoopFindingToSecurityFinding(f: QALoopFinding): SecurityFinding {
   return { severity: f.severity, description: `${f.category}: ${f.detail}`, file: f.file, line: f.line };
 }
 
+// Token-waste-reduction plan, Task 1 (2026-08-16): the inverse of
+// qaLoopFindingToSecurityFinding above — Karan's own findings from a
+// previous round need to become qa-loop.ts's canonical Finding shape before
+// they can be threaded into runQAAgent's `previousFindings` (the field
+// Navya/Deepika pass straight through unchanged, since their native Finding
+// already IS that shape). category is fixed to "security" (Karan has no
+// native category field) — detail carries the original description text
+// unmodified so nothing is lost in the round trip.
+function securityFindingToQaLoopFinding(f: SecurityFinding): QALoopFinding {
+  return { severity: f.severity, category: "security", detail: f.description, file: f.file, line: f.line };
+}
+
 export interface KaranExploringDeps {
   runAgent: typeof runQAAgent;
 }
@@ -101,6 +113,16 @@ export async function runExploring(
   // F5 (agent-autonomy-assessment): see navya/src/index.ts's identical
   // parameter for the full rationale.
   systemContext?: string,
+  // Token-waste-reduction plan, Task 1: see navya/src/index.ts's identical
+  // parameter for the full rationale — round 2+ focuses Karan's reads on
+  // what actually changed since her last review instead of a full re-explore.
+  changedFilesSinceLastRound?: string[],
+  // Karan's OWN findings from the immediately preceding round, in Karan's
+  // native SecurityFinding shape (converted below before reaching
+  // runQAAgent, which only understands qa-loop.ts's canonical Finding). See
+  // navya/src/index.ts's identical parameter (and qa-loop.ts's
+  // mergeCarriedForwardFindings) for the full rationale.
+  previousFindings?: SecurityFinding[],
 ): Promise<QAResult> {
   const result = await deps.runAgent({
     agentName: "karan",
@@ -112,6 +134,8 @@ export async function runExploring(
     // parameter for the full rationale (shared FileReadCache + QA spend
     // attribution).
     projectId,
+    changedFilesSinceLastRound,
+    previousFindings: previousFindings?.map(securityFindingToQaLoopFinding),
   });
 
   const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings") && !e.includes("Stuck:"));
