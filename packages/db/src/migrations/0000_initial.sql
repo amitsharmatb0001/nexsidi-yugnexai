@@ -49,7 +49,17 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
   updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_projects_clerk_id ON projects (clerk_id);
+-- 2026-08-16: same unguarded-replay bug as idx_users_clerk_id above (see
+-- that comment for the full mechanism) — projects.clerk_id was dropped by
+-- 0004_drop_clerk_id.sql, so a full replay against an already-migrated DB
+-- hit an unguarded CREATE INDEX on a column that no longer exists. Same fix,
+-- same reasoning, applied to the table this file's own author missed.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'clerk_id') THEN
+    CREATE INDEX IF NOT EXISTS idx_projects_clerk_id ON projects (clerk_id);
+  END IF;
+END $$;
 
 -- Context chain (Patent Claims 1/3/7) — append-only
 CREATE TABLE IF NOT EXISTS context_chain (
