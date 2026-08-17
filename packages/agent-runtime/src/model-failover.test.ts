@@ -45,24 +45,38 @@ test("sanitizeModelChain drops the known-dead qwen3-next-80b model even though i
   expect(result).toEqual(["mistralai/mistral-nemotron"]);
 });
 
-// 2026-08-09: real bug found live (project meridianbk4) — Riya's own config
-// (agents/riya/src/index.ts) is `model: "moonshotai/kimi-k2.6"` with NO
-// fallbackModels at all. sanitizeModelChain correctly drops that (per the
-// test above — deliberate, not an oversight), which means the sanitized
-// chain for Riya's REAL config is completely empty. runAgent's main loop
-// used to read `modelChain[modelIdx] ?? config.model` — with an empty
-// array that `??` silently fell through to the ORIGINAL, just-sanitized-
-// away model, defeating sanitization entirely: every single Riya deploy
-// attempt burned MAX_CONSECUTIVE_TRANSPORT_FAILURES (5) worth of real,
-// slow network round-trips against the disallowed model before
-// runAgentEscalated's cannot_finish path finally kicked in and escalated
-// to a working model. This pins down that Riya's exact real config
-// produces an empty chain (proving the failure mode is real, not
-// hypothetical) and confirms runAgent now fails fast on it instead of
-// silently reintroducing the disallowed model.
-test("sanitizeModelChain on Riya's real config (moonshotai primary, no fallbacks) produces an empty chain", () => {
+// 2026-08-09: real bug found live (project meridianbk4) — at the time,
+// Riya's own config (agents/riya/src/index.ts) was `model:
+// "moonshotai/kimi-k2.6"` with NO fallbackModels at all, so its sanitized
+// chain was completely empty. runAgent's main loop used to read
+// `modelChain[modelIdx] ?? config.model` — with an empty array that `??`
+// silently fell through to the ORIGINAL, just-sanitized-away model,
+// defeating sanitization entirely: every single Riya deploy attempt burned
+// MAX_CONSECUTIVE_TRANSPORT_FAILURES (5) worth of real, slow network
+// round-trips against the disallowed model before runAgentEscalated's
+// cannot_finish path finally kicked in. Fixed at the time by making
+// runAgent fail fast on an empty chain (test below) instead of silently
+// reintroducing the disallowed model — this test now documents the general
+// empty-chain case in isolation. Riya's own config was separately fixed on
+// 2026-08-17 to carry real fallbacks (see the test directly below this one)
+// so it no longer HITS this empty-chain case at all in practice.
+test("sanitizeModelChain on a bare moonshotai model with no fallbacks produces an empty chain", () => {
   const result = sanitizeModelChain(["moonshotai/kimi-k2.6"]);
   expect(result).toEqual([]);
+});
+
+// 2026-08-17: real bug found live (fulfillio1) — Riya's actual call site
+// (agents/riya/src/index.ts) used to pass NO fallbackModels at all, so its
+// real config was exactly the empty-chain case above — every single deploy
+// escalated straight to Sonnet 5, not just genuine hard-problem cases as
+// the "one-time escalation only" comment there claimed. The disallowed
+// moonshotai/ exclusion itself is correct and unchanged (test above); the
+// actual bug was that Riya never gave itself anything else to fall back to.
+// Pins Riya's CURRENT real config (moonshotai primary + two allowed
+// fallbacks) to prove the chain is genuinely non-empty now.
+test("sanitizeModelChain on Riya's current real config (moonshotai primary + two allowed fallbacks) is non-empty", () => {
+  const result = sanitizeModelChain(["moonshotai/kimi-k2.6", "mistralai/mistral-medium-3.5-128b", "mistralai/mistral-nemotron"]);
+  expect(result).toEqual(["mistralai/mistral-medium-3.5-128b", "mistralai/mistral-nemotron"]);
 });
 
 test("runAgent fails fast with escalationReason cannot_finish when the sanitized model chain is empty, instead of silently reusing the disallowed model", () => {

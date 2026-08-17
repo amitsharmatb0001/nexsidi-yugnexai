@@ -1062,9 +1062,24 @@ export async function run(
   // escalation only when NIM genuinely can't finish — hard-problem
   // escalation only, not a routine-cost default. See
   // packages/agent-runtime/src/claude-loop.ts.
+  // 2026-08-17: real bug found live (fulfillio1) — this had NO
+  // fallbackModels at all, and sanitizeModelChain's allowlist deliberately
+  // excludes moonshotai/ (see model-failover.test.ts: "sanitizeModelChain on
+  // Riya's real config ... produces an empty chain" — confirmed intentional,
+  // not a bug in the allowlist itself). With zero fallbacks, that empty
+  // chain meant EVERY single Riya deploy escalated straight to Sonnet 5,
+  // regardless of how simple the task was — the "one-time escalation only
+  // when NIM genuinely can't finish" comment above was aspirational, not
+  // what actually happened. Adding real fallbacks already on the allowlist
+  // (mistral-medium-3.5-128b: aanya/shubham's own primary, proven reliable
+  // for tool-calling/agentic work all night; mistral-nemotron: deepika/
+  // arjun's primary) gives Riya an actual NIM path to try before paying for
+  // the Sonnet-5 escalation, restoring the "hard-problem escalation only"
+  // intent instead of leaving Sonnet-5 as the de facto default.
   const result = await runAgentEscalated({
     agentName: "riya",
     model: "moonshotai/kimi-k2.6",
+    fallbackModels: ["mistralai/mistral-medium-3.5-128b", "mistralai/mistral-nemotron"],
     apiKey: process.env.NIM_API_KEY ?? "",
     systemPrompt: RIYA_AGENT_SYSTEM_PROMPT,
     initialMessage: buildAgentTask(projectId, buildDir, frontendPort, backendPort, dbPort, jwtSecret),
