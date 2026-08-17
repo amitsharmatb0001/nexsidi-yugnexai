@@ -533,7 +533,23 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
   }
 
   const createEp = endpoints.find((e) => e.method === "POST" && e.auth && !hasPathParam(e.path));
-  const getByIdEp = endpoints.find((e) => e.method === "GET" && e.auth && hasPathParam(e.path));
+  // 2026-08-17: real false-deploy-failure found live (fulfillio1) — this
+  // used to pick the FIRST GET-with-param endpoint anywhere in the
+  // contract, with no correlation to createEp's own resource. For an app
+  // with a nested sub-resource (e.g. inventory items with a separate
+  // "/api/v1/inventory/:id/locations" endpoint), that could — and did —
+  // pick the sub-resource instead of the item itself: createEp created an
+  // inventory ITEM, but the read-back checked its (empty, unrelated)
+  // LOCATIONS list for the marker, which was never going to be there.
+  // Require getByIdEp to be createEp's own path with exactly one more
+  // segment (the :id itself) — same base resource, not a deeper
+  // sub-resource — so create and read-back are always checking the same
+  // thing. Falls back to undefined (treated as "nothing to verify at this
+  // layer", same as the existing !createEp case) rather than a wrong match.
+  const detailPathFor = (basePath: string) => `${basePath.replace(/\/$/, "")}/:id`;
+  const getByIdEp = createEp
+    ? endpoints.find((e) => e.method === "GET" && e.auth && e.path === detailPathFor(createEp.path))
+    : endpoints.find((e) => e.method === "GET" && e.auth && hasPathParam(e.path));
   // 2026-07-26 (live, simple1): a project whose locked spec asked for
   // sign-in/sign-up but no protected resource to create (e.g. a small
   // business site with only a public contact form) has NO authenticated

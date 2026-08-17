@@ -96,6 +96,35 @@ test("a 403 Forbidden from a role-gated create endpoint is NOT treated as a brok
   expect(result.reason.toLowerCase()).toContain("403");
 });
 
+// 2026-08-17: real false-deploy-failure found live (fulfillio1) — getByIdEp
+// used to be "the first GET-with-param endpoint anywhere in the contract",
+// no correlation to createEp's own resource. A contract with a nested
+// sub-resource (inventory items + a separate .../:id/locations endpoint,
+// but no plain .../:id at all — added late via an escalated fix that never
+// updated the locked contract) picked the sub-resource as getByIdEp: the
+// create endpoint made an inventory ITEM, the read-back checked its
+// (empty, unrelated) locations list for the marker, which was never going
+// to be there. Verifies the mismatched sub-resource is never even called —
+// the mock 404s it — and the check now correctly treats this as nothing to
+// verify at this layer (ok: true), the same safe-skip already used when
+// there's no createEp at all, rather than a wrong, doomed-to-fail match.
+test("a GET-with-param endpoint for an unrelated sub-resource is not picked as the read-back check for a different created resource", async () => {
+  writeContract([
+    { method: "POST", path: "/api/v1/auth/register", auth: false },
+    { method: "POST", path: "/api/v1/auth/login", auth: false },
+    { method: "POST", path: "/api/v1/properties", auth: true },
+    { method: "GET", path: "/api/v1/properties/:id/photos", auth: true },
+  ]);
+  // startMockBackend 404s anything but register/login/properties-POST — if
+  // the fix regresses and picks /properties/:id/photos again, that request
+  // hits the 404 branch and this test fails, proving the mismatch is gone.
+  const backendUrl = await startMockBackend(201, { success: true, data: { id: "item-1" } });
+
+  const result = await verifyLiveAuthenticatedRoundTrip(dir, backendUrl);
+
+  expect(result.ok).toBe(true);
+});
+
 test("a genuine server failure (500) on the create endpoint IS still a real deploy failure", async () => {
   writeContract([
     { method: "POST", path: "/api/v1/auth/register", auth: false },
