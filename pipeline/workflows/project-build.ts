@@ -303,7 +303,23 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       // progress, not a loop. Auto-retry without paging a human, same as
       // any other transient/self-healing failure class already does
       // elsewhere in this workflow, up to MAX_AUTO_RETRIES.
-      if (!deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES) {
+      // 2026-08-17: patched() called unconditionally, same convention as
+      // every other patch marker in this file — real nondeterminism error
+      // hit live (fulfillio1-deploy-resume) when this branch was first
+      // added without one: an in-flight workflow's ALREADY-RECORDED history
+      // had a stuck-state-retry-signal-v1 marker at this point (from the
+      // OLD code, which always reached escalateAndAwaitRetryDecision), but
+      // replaying that same history through the new code took this NEW
+      // `continue` branch instead whenever deployResult.stuck was false,
+      // never reaching the old patched() call — Temporal's replay correctly
+      // refused to proceed ("[TMPRL1100] Non-deprecated patch marker
+      // encountered... but there is no corresponding change command").
+      // Gating this branch on its OWN new marker means replay of history
+      // recorded before this change always resolves false here (old
+      // unconditional-escalation behavior preserved exactly), while a fresh
+      // decision point from now on gets the new auto-retry behavior.
+      const autoRetryEnabled = patched("auto-retry-non-stuck-deploy-v1");
+      if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES) {
         autoRetryCount++;
         state.stage = "deliver";
         console.log(`[workflow] Stage 6 deploy failed but not stuck (error signature changed) — auto-retrying without human escalation (${autoRetryCount}/${MAX_AUTO_RETRIES})`);

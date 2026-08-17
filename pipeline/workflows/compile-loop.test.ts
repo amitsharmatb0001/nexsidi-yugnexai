@@ -96,16 +96,43 @@ test("Stage 6 auto-retries a non-stuck deploy failure without human escalation, 
   const source = readFileSync(new URL("./project-build.ts", import.meta.url), "utf-8");
 
   expect(source).toContain("const MAX_AUTO_RETRIES = 3");
-  expect(source).toContain("if (!deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES)");
+  expect(source).toContain("if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES)");
 
   // the auto-retry branch must `continue` the loop, not fall through into
   // the human-escalation call below it — otherwise this is dead code that
   // never actually skips the escalation.
-  const autoRetryIdx = source.indexOf("if (!deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES)");
+  const autoRetryIdx = source.indexOf("if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES)");
   const nextEscalateIdx = source.indexOf("escalateAndAwaitRetryDecision(escalationReason)");
   const continueIdx = source.indexOf("continue;", autoRetryIdx);
   expect(continueIdx).toBeGreaterThan(autoRetryIdx);
   expect(continueIdx).toBeLessThan(nextEscalateIdx);
+});
+
+// 2026-08-17: real nondeterminism error hit LIVE on an in-flight workflow
+// (project-build-fulfillio1-deploy-resume) — the auto-retry branch above
+// was first shipped without its own patched() guard. Its history already
+// had a stuck-state-retry-signal-v1 marker recorded at this point (from the
+// OLD code, which always reached escalateAndAwaitRetryDecision); replaying
+// that history through the new code took the new `continue` branch instead
+// whenever deployResult.stuck was false, never re-reaching the old
+// patched() call, and Temporal correctly refused to proceed ("[TMPRL1100]
+// Non-deprecated patch marker encountered... but there is no corresponding
+// change command"). Verifies patched() is called UNCONDITIONALLY right
+// before the auto-retry check, the same convention every other patch
+// marker in this file already follows — never make the CALL to patched()
+// itself conditional on other runtime state.
+test("the auto-retry branch is gated by its own patched() marker, called unconditionally before the check", () => {
+  const source = readFileSync(new URL("./project-build.ts", import.meta.url), "utf-8");
+
+  expect(source).toContain('const autoRetryEnabled = patched("auto-retry-non-stuck-deploy-v1")');
+  const patchedIdx = source.indexOf('const autoRetryEnabled = patched("auto-retry-non-stuck-deploy-v1")');
+  const autoRetryIdx = source.indexOf("if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES)");
+  // patched() must be called on its own line, unconditionally, immediately
+  // before the branch that reads its result — not inlined inside the `if`
+  // condition itself, where it could end up not being called at all
+  // depending on evaluation order of the other conditions.
+  expect(patchedIdx).toBeGreaterThan(-1);
+  expect(patchedIdx).toBeLessThan(autoRetryIdx);
 });
 
 // 2026-08-10: real bug found live (project rivhdw1) — Stage 3 (parallel
