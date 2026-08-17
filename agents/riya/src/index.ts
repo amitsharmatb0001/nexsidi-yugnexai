@@ -724,11 +724,20 @@ function makeRealDbRowLookup(buildDir: string): (table: string, id: string) => R
         // a suffix match (table_name LIKE '%_classes') — only when it
         // resolves to EXACTLY ONE table (an ambiguous or absent match
         // can't be safely guessed, and stays a real finding).
+        // 2026-08-17: real second instance found live (fulfillio1) — the
+        // suffix fallback only covers naming where the resource segment is
+        // the LAST word (yoga_classes for "classes"). Fulfillio's resource
+        // segment is the FIRST word instead (inventory_items for
+        // "inventory", inventory_quantities for the same resource) — a
+        // suffix match on '%_inventory' finds nothing, since "inventory_
+        // items" doesn't END with "_inventory". Added the symmetric prefix
+        // match so both naming directions resolve; still requires exactly
+        // one combined candidate, same safety constraint as before.
         // resolvedTable comes from information_schema.tables itself (a
         // trusted source), so it's safe to interpolate into the SQL below.
         const candidates = sh(
           `docker exec ${cid} psql -U ${user} -d ${dbName} -tA -c ` +
-            `"SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE '%_${resolvedTable}'"`,
+            `"SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND (table_name LIKE '%_${resolvedTable}' OR table_name LIKE '${resolvedTable}_%')"`,
         ).split("\n").map((l) => l.trim()).filter(Boolean);
         if (candidates.length !== 1) return null;
         resolvedTable = candidates[0]!;
