@@ -684,6 +684,37 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
   }
 }
 
+// 2026-08-17 (follow-up to the prefix/suffix match above): a resource name
+// can legitimately prefix/suffix-match MORE than one real table — root-
+// caused live (fulfillio1): "inventory" matches both inventory_items AND
+// inventory_quantities, and the existing "exactly one candidate or give up"
+// rule correctly refuses to guess, but that means persistence can NEVER be
+// confirmed for this resource, a permanent false finding rather than a rare
+// one. Pure, exported so it's directly unit-testable without a real
+// Postgres connection — see makeRealDbRowLookup below for where the real
+// foreign-key lookup that feeds this gets built.
+//
+// Heuristic: among the ambiguous candidates, prefer the one that does NOT
+// have a foreign key referencing another candidate in the same set — that's
+// the "parent"/primary entity (inventory_items), not a child/detail table
+// that only exists to relate back to it (inventory_quantities, which has an
+// item_id FK). Deliberately conservative: if zero or more than one candidate
+// qualifies (no clear parent, or a genuine cycle), stays null rather than
+// guessing — a wrong table match that returns SOME row would be worse than
+// today's honest "can't confirm," since it would silently validate against
+// data that has nothing to do with what was actually created.
+export function pickPrimaryTable(
+  candidates: string[],
+  referencedTablesByCandidate: Record<string, string[]>,
+): string | null {
+  const candidateSet = new Set(candidates);
+  const withNoInternalReference = candidates.filter((table) => {
+    const referenced = referencedTablesByCandidate[table] ?? [];
+    return !referenced.some((ref) => candidateSet.has(ref));
+  });
+  return withNoInternalReference.length === 1 ? withNoInternalReference[0]! : null;
+}
+
 // The real docker-exec-backed row lookup verifyAllResourceCrud uses by
 // default. Derives its own cid/user/dbName from buildDir's docker-compose.yml
 // the same way applyMigrationsToDeployedDb does (self-contained, no shared
@@ -731,16 +762,47 @@ function makeRealDbRowLookup(buildDir: string): (table: string, id: string) => R
         // "inventory", inventory_quantities for the same resource) — a
         // suffix match on '%_inventory' finds nothing, since "inventory_
         // items" doesn't END with "_inventory". Added the symmetric prefix
-        // match so both naming directions resolve; still requires exactly
-        // one combined candidate, same safety constraint as before.
+        // match so both naming directions resolve. When that still produces
+        // MORE than one candidate (both inventory_items and
+        // inventory_quantities match), pickPrimaryTable below tries one more
+        // safe disambiguation (prefer the table with no FK referencing
+        // another candidate) before giving up — see its own header comment.
         // resolvedTable comes from information_schema.tables itself (a
         // trusted source), so it's safe to interpolate into the SQL below.
         const candidates = sh(
           `docker exec ${cid} psql -U ${user} -d ${dbName} -tA -c ` +
             `"SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND (table_name LIKE '%_${resolvedTable}' OR table_name LIKE '${resolvedTable}_%')"`,
         ).split("\n").map((l) => l.trim()).filter(Boolean);
-        if (candidates.length !== 1) return null;
-        resolvedTable = candidates[0]!;
+        let picked: string | null = candidates.length === 1 ? candidates[0]! : null;
+        // 2026-08-17: real second-order instance found live (fulfillio1) —
+        // "inventory" prefix-matches BOTH inventory_items AND
+        // inventory_quantities, so the exactly-one check above alone still
+        // gives up here. Before doing that, check whether exactly one
+        // candidate is the "parent" (no FK referencing another candidate)
+        // — see pickPrimaryTable's own header comment for the full
+        // reasoning and why a wrong guess would be worse than staying
+        // conservative. Same `-F "|"` cmd.exe-safe pattern already
+        // established below for the actual row query.
+        if (!picked && candidates.length > 1) {
+          const candidateList = candidates.map((c) => `'${c}'`).join(",");
+          const fkRows = sh(
+            `docker exec ${cid} psql -U ${user} -d ${dbName} -tA -F "|" -c ` +
+              `"SELECT tc.table_name, ccu.table_name FROM information_schema.table_constraints tc ` +
+              `JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name ` +
+              `WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name IN (${candidateList})"`,
+          ).split("\n").map((l) => l.trim()).filter(Boolean);
+          const referencedTablesByCandidate: Record<string, string[]> = {};
+          for (const c of candidates) referencedTablesByCandidate[c] = [];
+          for (const row of fkRows) {
+            const [fromTable, toTable] = row.split("|");
+            if (fromTable && toTable && referencedTablesByCandidate[fromTable]) {
+              referencedTablesByCandidate[fromTable].push(toTable);
+            }
+          }
+          picked = pickPrimaryTable(candidates, referencedTablesByCandidate);
+        }
+        if (!picked) return null;
+        resolvedTable = picked;
         cols = sh(
           `docker exec ${cid} psql -U ${user} -d ${dbName} -tA -c ` +
             `"SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='${resolvedTable}'"`,
