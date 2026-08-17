@@ -135,6 +135,37 @@ test("the auto-retry branch is gated by its own patched() marker, called uncondi
   expect(patchedIdx).toBeLessThan(autoRetryIdx);
 });
 
+// 2026-08-17: real, third-order instance of the SAME context-chain false-
+// positive class already fixed twice at the WORKFLOW level (see
+// recordDeployHandoffActivity's own header comment) — this one lives one
+// layer lower, in Temporal's OWN activity-level retry. runDeployWithLiveRetest
+// used to share orchestratorAct's maximumAttempts: 2 — confirmed live
+// (project-build-fulfillio1-deploy-resume) that Temporal silently retried
+// the WHOLE activity on a genuinely transient "Unable to connect" network
+// error (the failed activity's own `attempt` field was 2 in the real
+// error), re-running its internal verifyHandoff against a stale snapshot
+// from before attempt 1's real, legitimate deploy-config edits — a
+// guaranteed false mismatch the workflow's own record-before-each-attempt
+// pairing never got a chance to prevent, since Temporal's retry happens
+// one layer below where that pairing runs. Moved to its own dedicated
+// proxy with maximumAttempts: 1, so the workflow loop (which already
+// handles retry decisions for this exact activity correctly) is the only
+// layer retrying it.
+test("runDeployWithLiveRetest uses its own dedicated proxy with maximumAttempts: 1, not orchestratorAct's shared retry policy", () => {
+  const source = readFileSync(new URL("./project-build.ts", import.meta.url), "utf-8");
+
+  expect(source).toContain("const deployRetestAct = proxyActivities<typeof activities>({");
+  const proxyIdx = source.indexOf("const deployRetestAct = proxyActivities<typeof activities>({");
+  const proxyBlockEnd = source.indexOf("});", proxyIdx);
+  const proxyBlock = source.slice(proxyIdx, proxyBlockEnd);
+  expect(proxyBlock).toContain("maximumAttempts: 1");
+
+  // the actual call site must use the new proxy, not still route through
+  // orchestratorAct — otherwise the dedicated proxy above is dead code.
+  expect(source).toContain("deployResult = await deployRetestAct.runDeployWithLiveRetest(projectId);");
+  expect(source).not.toContain("deployResult = await orchestratorAct.runDeployWithLiveRetest(projectId);");
+});
+
 // 2026-08-10: real bug found live (project rivhdw1) — Stage 3 (parallel
 // generation) had NO handling at all for a generator activity failure
 // (e.g. generatorFailure()'s max-iterations-exceeded, deliberately

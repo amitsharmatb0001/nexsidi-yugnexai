@@ -143,7 +143,11 @@ test("post-QA compile repair's runCodeFix call is wrapped in a try/catch for bud
 // uncaught (runDeployWithLiveRetest now calls assertWithinBudget too) ───────
 
 test("Stage 6 deploy's runDeployWithLiveRetest call is wrapped in a try/catch for budget-exceeded", () => {
-  const callIdx = source.indexOf("deployResult = await orchestratorAct.runDeployWithLiveRetest(projectId);");
+  // 2026-08-17: runDeployWithLiveRetest moved from orchestratorAct to its
+  // own dedicated deployRetestAct proxy (maximumAttempts: 1) — see that
+  // proxy's own header comment for the real live nondeterminism bug this
+  // fixes. The budget-exceeded try/catch wiring itself is unaffected.
+  const callIdx = source.indexOf("deployResult = await deployRetestAct.runDeployWithLiveRetest(projectId);");
   expect(callIdx).toBeGreaterThan(-1);
   const surrounding = source.slice(Math.max(0, callIdx - 400), callIdx + 700);
   expect(surrounding).toContain("try {");

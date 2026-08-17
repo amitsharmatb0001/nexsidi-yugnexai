@@ -58,11 +58,12 @@ const genAct = proxyActivities<typeof activities>({
   retry: { maximumAttempts: 5 },   // more headroom while we tune the output format
 });
 
-// 2026-07-25 (Phase 2.1): deployAct (a "no heartbeatTimeout because
-// execSync blocks the event loop" proxy sized for runRiya's direct
+// 2026-07-25 (Phase 2.1): the ORIGINAL deployAct (a "no heartbeatTimeout
+// because execSync blocks the event loop" proxy sized for runRiya's direct
 // docker+GitHub archive path) was removed here — its only caller was the
 // deleted legacy loop's tail delivery step. The live unified path deploys
-// via orchestratorAct.runDeployWithLiveRetest below instead.
+// via runDeployWithLiveRetest below — see deployRetestAct further down for
+// why that call now uses its own dedicated proxy instead of orchestratorAct.
 
 // 2026-07-24 (P1): the real GAN (runQAFixLoopActivity) can run up to
 // MAX_FIX_ITERATIONS=5 full rounds, each round a complete QA pass (up to
@@ -78,6 +79,33 @@ const orchestratorAct = proxyActivities<typeof activities>({
   startToCloseTimeout: "2 hours",
   heartbeatTimeout: "3 minutes",
   retry: { maximumAttempts: 2 },
+});
+
+// 2026-08-17 (live, fulfillio1): real, third-order instance of the same
+// context-chain false-positive class fixed twice already at the WORKFLOW
+// level (recordDeployHandoffActivity re-recorded before every workflow-loop
+// iteration, and again per Stage 6 attempt) — this one lives one layer
+// lower, in Temporal's OWN activity-level retry. runDeployWithLiveRetest
+// was still proxied through orchestratorAct's maximumAttempts: 2 — when the
+// activity threw an uncaught, genuinely transient error ("Unable to
+// connect", a real docker/network hiccup, not a context-chain problem at
+// all), Temporal's SDK silently retried the WHOLE activity function itself
+// (confirmed live: the failed activity's own attempt field was 2), calling
+// its internal verifyHandoff AGAIN — but the workflow's own careful
+// recordDeployHandoffActivity-before-each-attempt pairing only runs in the
+// WORKFLOW's loop, one level above where Temporal's activity retry
+// operates, so attempt 2 verified against a snapshot taken before attempt
+// 1's real, legitimate deploy-config edits — a guaranteed false mismatch.
+// The workflow loop already owns retry decisions for this exact activity
+// (record → call → check success/stuck → auto-retry or escalate); having
+// Temporal ALSO retry underneath it is redundant and actively harmful here.
+// maximumAttempts: 1 pushes every retry decision to the layer that already
+// handles it correctly instead of two uncoordinated retry mechanisms
+// fighting each other.
+const deployRetestAct = proxyActivities<typeof activities>({
+  startToCloseTimeout: "2 hours",
+  heartbeatTimeout: "3 minutes",
+  retry: { maximumAttempts: 1 },
 });
 
 export const approveSpecSignal = defineSignal<[boolean]>("approveSpecSignal");
@@ -281,7 +309,7 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       // that would wedge the workflow instead of failing cleanly).
       let deployResult: DeployActivityResult;
       try {
-        deployResult = await orchestratorAct.runDeployWithLiveRetest(projectId);
+        deployResult = await deployRetestAct.runDeployWithLiveRetest(projectId);
       } catch (err) {
         if (!isBudgetExceededFailure(err)) throw err;
         state.stage = "error";
