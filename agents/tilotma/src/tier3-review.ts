@@ -99,16 +99,24 @@ const SCREENSHOT_ROOT = "tier3-review-screenshots";
 export async function runTier3Review(
   projectId: string,
   frontendOutputDir: string,
+  // 2026-08-17: real gap found live (fulfillio1) — this used to read
+  // TIER3_REVIEW_URL/TIER3_REVIEW_BACKEND_URL from process.env, defaulting
+  // to localhost:3000/3001. That's wrong for every project whose deployed
+  // ports were dynamically allocated (findFreePort) — this pipeline hasn't
+  // called runTier3Review from the live workflow at all since 2026-07-24
+  // (see project-build.ts's own comment on the deleted legacy QA loop), so
+  // the env-var default was never actually exercised against a real
+  // deployment. Worse: process.env is shared across every Temporal activity
+  // in this worker process — mutating it per-call to point at the right
+  // project would race the moment two projects' Stage 6 activities run
+  // concurrently. Real params, with the old env vars kept only as a
+  // fallback for direct/manual script invocations, close both gaps at once.
+  appUrl: string = process.env.TIER3_REVIEW_URL ?? "http://localhost:3000",
+  backendUrl: string = process.env.TIER3_REVIEW_BACKEND_URL ?? "http://localhost:3001",
 ): Promise<Tier3ReviewResult> {
   assertValidIdentifier(projectId, "projectId");
 
   const apiKey = process.env.NIM_API_KEY ?? "";
-  const appUrl = process.env.TIER3_REVIEW_URL ?? "http://localhost:3000";
-  // 2026-07-11: real bug found live — Tier 3 only ever knew the frontend
-  // URL and tested API endpoints against it, producing a false "no API
-  // route" finding on a project whose backend lives on a separate origin.
-  // Mirrors TIER3_REVIEW_URL's own override pattern.
-  const backendUrl = process.env.TIER3_REVIEW_BACKEND_URL ?? "http://localhost:3001";
   const screenshotDir = join(SCREENSHOT_ROOT, projectId).replace(/\\/g, "/");
   mkdirSync(join(process.cwd(), screenshotDir), { recursive: true });
 
