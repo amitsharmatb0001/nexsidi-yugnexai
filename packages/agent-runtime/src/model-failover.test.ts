@@ -72,11 +72,28 @@ test("sanitizeModelChain on a bare moonshotai model with no fallbacks produces a
 // the "one-time escalation only" comment there claimed. The disallowed
 // moonshotai/ exclusion itself is correct and unchanged (test above); the
 // actual bug was that Riya never gave itself anything else to fall back to.
-// Pins Riya's CURRENT real config (moonshotai primary + two allowed
-// fallbacks) to prove the chain is genuinely non-empty now.
-test("sanitizeModelChain on Riya's current real config (moonshotai primary + two allowed fallbacks) is non-empty", () => {
-  const result = sanitizeModelChain(["moonshotai/kimi-k2.6", "mistralai/mistral-medium-3.5-128b", "mistralai/mistral-nemotron"]);
-  expect(result).toEqual(["mistralai/mistral-medium-3.5-128b", "mistralai/mistral-nemotron"]);
+// First fix added mistral-medium-3.5-128b as a fallback too — live-verified
+// WRONG minutes later: it returns a real HTTP 410 Gone (EOL 2026-08-07),
+// now in KNOWN_DEAD_MODELS, so sanitizeModelChain correctly drops it
+// alongside the deliberately-excluded moonshotai/ entry. Pins Riya's
+// CURRENT real config (moonshotai primary + the one fallback whose failure
+// was never independently confirmed as a real availability problem) to
+// prove the chain is genuinely non-empty.
+test("sanitizeModelChain on Riya's current real config (moonshotai primary + one allowed, non-dead fallback) is non-empty", () => {
+  const result = sanitizeModelChain(["moonshotai/kimi-k2.6", "mistralai/mistral-nemotron"]);
+  expect(result).toEqual(["mistralai/mistral-nemotron"]);
+});
+
+// 2026-08-17: real bug found live (fulfillio1) — confirmed via NIM's own
+// response: "The model 'mistralai/mistral-medium-3.5-128b' has reached its
+// end of life on 2026-08-07T09:00:00Z". This is the SAME failure shape as
+// qwen3-next-80b above, and it's also AGENT_MODELS.aanya/AGENT_MODELS.shubham's
+// own configured PRIMARY (packages/llm-client/src/types.ts) — every one of
+// those agents' first raw-NIM attempt (whenever Gemini-tier routing isn't
+// active) is a guaranteed wasted 410 before falling through.
+test("sanitizeModelChain drops the known-dead mistral-medium-3.5-128b model even though its provider prefix is otherwise allowed", () => {
+  const result = sanitizeModelChain(["mistralai/mistral-medium-3.5-128b", "mistralai/mistral-nemotron"]);
+  expect(result).toEqual(["mistralai/mistral-nemotron"]);
 });
 
 test("runAgent fails fast with escalationReason cannot_finish when the sanitized model chain is empty, instead of silently reusing the disallowed model", () => {

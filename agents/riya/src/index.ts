@@ -1132,16 +1132,27 @@ export async function run(
   // chain meant EVERY single Riya deploy escalated straight to Sonnet 5,
   // regardless of how simple the task was — the "one-time escalation only
   // when NIM genuinely can't finish" comment above was aspirational, not
-  // what actually happened. Adding real fallbacks already on the allowlist
-  // (mistral-medium-3.5-128b: aanya/shubham's own primary, proven reliable
-  // for tool-calling/agentic work all night; mistral-nemotron: deepika/
-  // arjun's primary) gives Riya an actual NIM path to try before paying for
-  // the Sonnet-5 escalation, restoring the "hard-problem escalation only"
-  // intent instead of leaving Sonnet-5 as the de facto default.
+  // what actually happened.
+  // First fix attempt added mistral-medium-3.5-128b + mistral-nemotron as
+  // fallbacks, reasoning "aanya/shubham's own primary, proven reliable for
+  // tool-calling work all night" — that assumption was live-verified WRONG
+  // moments later: mistral-medium-3.5-128b returned a real HTTP 410 Gone
+  // (EOL 2026-08-07, over a week before that assumption was made — now in
+  // KNOWN_DEAD_MODELS, see packages/agent-runtime/src/loop.ts). A search
+  // across every agent log from tonight's entire session found ZERO
+  // successful raw-NIM calls anywhere — every agent ran exclusively through
+  // Gemini-tier routing this whole time, so "reliable all night" was
+  // actually observing Gemini having never actually exercised this model at
+  // all. Reduced to mistral-nemotron alone — the one fallback whose failure
+  // here was NOT independently confirmed as a real model-availability
+  // problem (no explicit error captured, and this agent's conversation had
+  // accumulated 166 messages across many manual interventions tonight,
+  // a plausible confound) — rather than keep guessing at a third candidate
+  // with the same unverified-assumption risk that caused this exact bug.
   const result = await runAgentEscalated({
     agentName: "riya",
     model: "moonshotai/kimi-k2.6",
-    fallbackModels: ["mistralai/mistral-medium-3.5-128b", "mistralai/mistral-nemotron"],
+    fallbackModels: ["mistralai/mistral-nemotron"],
     apiKey: process.env.NIM_API_KEY ?? "",
     systemPrompt: RIYA_AGENT_SYSTEM_PROMPT,
     initialMessage: buildAgentTask(projectId, buildDir, frontendPort, backendPort, dbPort, jwtSecret),

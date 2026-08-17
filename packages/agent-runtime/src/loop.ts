@@ -360,6 +360,22 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
 // reference, not a substitute for fixing the config.
 const KNOWN_DEAD_MODELS = new Set([
   "qwen/qwen3-next-80b-a3b-instruct", // HTTP 410 Gone, EOL 2026-07-27
+  // 2026-08-17: real bug found live (fulfillio1) — confirmed via NIM's own
+  // response: "The model 'mistralai/mistral-medium-3.5-128b' has reached
+  // its end of life on 2026-08-07T09:00:00Z and is no longer available."
+  // This was the fallback model just added to Riya's config as "aanya/
+  // shubham's own primary, proven reliable for tool-calling work all
+  // night" — that assumption was wrong: a broad search across every agent
+  // log from tonight's entire session found ZERO successful raw-NIM calls
+  // anywhere at all — every agent has been running exclusively through
+  // Gemini-tier routing (GENERATOR_TIER=gemini) this whole time, so
+  // "reliable all night" was actually observing Gemini, never this model.
+  // It's also AGENT_MODELS.aanya/AGENT_MODELS.shubham's own configured
+  // PRIMARY (packages/llm-client/src/types.ts) — every one of those
+  // agents' first raw-NIM attempt (whenever Gemini routing isn't active)
+  // is a guaranteed wasted 410 before falling through, same failure shape
+  // as the qwen3-next-80b entry above.
+  "mistralai/mistral-medium-3.5-128b", // HTTP 410 Gone, EOL 2026-08-07
 ]);
 
 export function sanitizeModelChain(models: string[]): string[] {
