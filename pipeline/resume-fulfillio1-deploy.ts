@@ -11,6 +11,16 @@
 // (deployRetestAct, maximumAttempts:1, commit 1fa47ae) existed). That fix
 // is now live on the running worker (commit f0ba2f7) but can't apply
 // retroactively to a closed workflow — needs a fresh run, hence "-2".
+//
+// "-deploy-resume-2" ALSO closed FAILED — the context-chain bug was
+// genuinely gone (confirmed: no hash-mismatch this run), but exposed a
+// real, different gap: run() always recomputes fresh ports even when the
+// project is already deployed and running, so the verification code hit a
+// port nothing was listening on ("Unable to connect"), which then threw
+// instead of returning a normal {success:false} — bypassing the auto-retry/
+// escalation logic entirely. Both fixed in commit 639beae (registerAndLogin-
+// TestUser try/catch + getRunningDeploymentPorts port reuse). "-3" for a
+// fresh run on that fixed code.
 import { Client, Connection } from "@temporalio/client";
 
 const projectId = "fulfillio1";
@@ -18,7 +28,7 @@ const conn = await Connection.connect({ address: "localhost:7233" });
 const client = new Client({ connection: conn });
 const handle = await client.workflow.start("projectBuildWorkflow", {
   taskQueue: "nexsidi-pipeline",
-  workflowId: `project-build-${projectId}-deploy-resume-2`,
+  workflowId: `project-build-${projectId}-deploy-resume-3`,
   args: [projectId, undefined, true],
 });
 console.log("Resume workflow started:", handle.workflowId);
