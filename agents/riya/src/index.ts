@@ -638,10 +638,24 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
       });
       if (!readRes.ok) return { ok: false, reason: `read-back ${getByIdEp.path} returned ${readRes.status} — the write didn't actually persist` };
       const readBody = (await readRes.json()) as Record<string, unknown>;
-      // Unwrap {success, data: {...}} envelope if present
+      // 2026-08-17: real false-deploy-failure found live (fulfillio1) —
+      // this used to hardcode readTitle = read.title ?? read.task?.title,
+      // assuming every app's resource has a "title" field (a shape that
+      // fits a demo tasks app, not a real generated app's actual schema —
+      // Fulfillio's inventory/orders use name/sku/order_reference, never
+      // "title"). The write genuinely succeeded (confirmed independently:
+      // manual sign-up + direct DB query both showed the row existed), but
+      // readTitle always evaluated to undefined regardless, burning a Stage
+      // 6 retry attempt on a false positive — the exact same class of bug
+      // findFirstObjectWithId (above) already fixed for the CREATE response
+      // unwrap, just never applied to this sibling check. Same fix shape as
+      // the create-response echoedMarker check just above: does the marker
+      // appear ANYWHERE in the read-back response, not under one guessed
+      // field name.
       const read = (readBody.data ?? readBody) as Record<string, unknown>;
-      const readTitle = (read.title ?? (read as { task?: { title?: string } }).task?.title) as string | undefined;
-      if (readTitle !== marker) return { ok: false, reason: `read-back title mismatch — expected "${marker}", got "${readTitle}"` };
+      const found = findFirstObjectWithId(read) ?? read;
+      const echoed = Object.values(found).some((v) => typeof v === "string" && v.includes(marker));
+      if (!echoed) return { ok: false, reason: `read-back ${getByIdEp.path} has no field containing the sent marker — the write may not have persisted: ${JSON.stringify(read).slice(0, 200)}` };
     }
 
     if (deleteEp) {
