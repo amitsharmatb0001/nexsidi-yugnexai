@@ -497,20 +497,42 @@ async function registerAndLoginTestUser(backendUrl: string, role?: string): Prom
   // path (auth.controller.ts: role:"admin" is allowed when no admin exists
   // yet) — real contract, not a guess; see the register-endpoint read that
   // found it live on freshtst1.
-  const regRes = await fetch(`${backendUrl}/api/v1/auth/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(role ? { email, password, name, role } : { email, password, name }),
-  });
+  // 2026-08-17: real bug found live (fulfillio1-deploy-resume-2) — every
+  // OTHER failure path in this function returns { error } as a value
+  // (verifyAllResourceCrud/verifyLiveAuthenticatedRoundTrip both rely on
+  // that — "if ('error' in auth) return ..." — this function is documented
+  // to never throw). But a raw fetch() that can't even reach the server
+  // (backend not listening on this URL, DNS failure, connection refused)
+  // throws BEFORE any `.ok` check runs, breaking that contract. That
+  // uncaught throw propagated all the way through verifyAllResourceCrud ->
+  // run() -> the Temporal activity -> the workflow, completely bypassing
+  // Stage 6's carefully-built auto-retry/human-escalation logic (which only
+  // triggers on a NORMAL {success:false} return, never on a thrown
+  // exception) and killing the whole workflow execution outright.
+  let regRes: Response;
+  try {
+    regRes = await fetch(`${backendUrl}/api/v1/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(role ? { email, password, name, role } : { email, password, name }),
+    });
+  } catch (err) {
+    return { error: `could not reach backend to register: ${String(err)}` };
+  }
   if (!regRes.ok) {
     return { error: `custom register failed: returned ${regRes.status}: ${(await regRes.text()).slice(0, 200)}` };
   }
 
-  const loginRes = await fetch(`${backendUrl}/api/v1/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
+  let loginRes: Response;
+  try {
+    loginRes = await fetch(`${backendUrl}/api/v1/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+  } catch (err) {
+    return { error: `could not reach backend to login: ${String(err)}` };
+  }
   if (!loginRes.ok) {
     return { error: `custom login failed: returned ${loginRes.status}: ${(await loginRes.text()).slice(0, 200)}` };
   }
@@ -1097,15 +1119,34 @@ export async function run(
   // before the build so the app can actually deploy.
   sanitizeGeneratedPackageJsons(buildDir);
 
+  // 2026-08-17: real bug found live (fulfillio1-deploy-resume-2) — this
+  // used to ALWAYS scan for fresh free ports, even when the project was
+  // already deployed and running (e.g. resumeFromDeploy re-verifying a live
+  // app). findFreePort correctly saw the existing containers' ports as
+  // occupied and picked DIFFERENT ones for this run's frontendPort/
+  // backendPort — but the agent, seeing a healthy already-running
+  // deployment, sensibly did nothing, leaving the OLD containers as the
+  // only thing actually listening. Every check below then hit a port
+  // nothing was bound to ("Unable to connect", see
+  // registerAndLoginTestUser's own fix above). Reusing the real, currently-
+  // listening ports when this exact project is already up avoids the
+  // mismatch entirely; a stale/torn-down deployment (compose file present
+  // but containers not actually running) still falls through to a real
+  // fresh deploy, unchanged.
+  const existingDeployment = getRunningDeploymentPorts(buildDir);
+  if (existingDeployment) {
+    console.log(`[riya-orchestrator] ${projectId} is already deployed and running — reusing its live ports instead of allocating new ones: frontend=${existingDeployment.frontendPort} backend=${existingDeployment.backendPort} db=${existingDeployment.dbPort}`);
+  }
+
   // Find an available port for this project. backendPort used to be
   // DERIVED (frontendPort + 100) and never itself checked — a real gap:
   // a correctly-picked free frontend port could still yield a colliding
   // backend port. Now searched for real too, starting from the preferred
   // "+100" convention so the common case still lands on the expected offset.
-  const frontendPort = await findFreePort(3200, 3299);
+  const frontendPort = existingDeployment?.frontendPort ?? (await findFreePort(3200, 3299));
   const preferredBackendPort = frontendPort + 100 < 3400 ? frontendPort + 100 : 3100;
-  const backendPort = await findFreePort(preferredBackendPort, preferredBackendPort + 99);
-  const dbPort = await findFreePort(5435, 5499);
+  const backendPort = existingDeployment?.backendPort ?? (await findFreePort(preferredBackendPort, preferredBackendPort + 99));
+  const dbPort = existingDeployment?.dbPort ?? (await findFreePort(5435, 5499));
   const appUrl = `http://localhost:${frontendPort}`;
   const backendUrl = `http://localhost:${backendPort}`;
 
@@ -1399,6 +1440,49 @@ export async function findFreePort(
     if (await hostCheck(port)) return port;
   }
   return start; // Fallback — every port in range genuinely occupied
+}
+
+// 2026-08-17: real bug found live (fulfillio1-deploy-resume-2) — see run()'s
+// call site for the full story. Reads the project's own docker-compose.yml
+// (the generator's real, consistent shape: services literally named
+// postgres/backend/frontend, "HOST:CONTAINER" port strings — confirmed
+// against the actual generated file) and returns its ports ONLY when those
+// containers are ACTUALLY up right now, per docker itself — a stale compose
+// file left over from a torn-down/crashed deployment must still go through
+// a real fresh deploy, not be blindly trusted.
+export function getRunningDeploymentPorts(
+  buildDir: string,
+  deps: {
+    readComposeFile?: (path: string) => string | null;
+    isPortUsedByDocker?: (port: number) => boolean;
+  } = {},
+): { frontendPort: number; backendPort: number; dbPort: number } | null {
+  const readComposeFile = deps.readComposeFile ?? ((path: string) => (existsSync(path) ? readFileSync(path, "utf-8") : null));
+  const dockerCheck = deps.isPortUsedByDocker ?? isPortUsedByDocker;
+
+  const compose = readComposeFile(join(buildDir, "docker-compose.yml"));
+  if (!compose) return null;
+
+  const portFor = (service: string): number | null => {
+    // Bounded by the next line that starts with EXACTLY 2 spaces + a
+    // non-space char (the next top-level service key) or end of string —
+    // NOT just "the next line with 2+ leading spaces", which would match
+    // this service's own nested keys (e.g. "    image:", 4 spaces) and
+    // truncate the block before its ports ever appear.
+    const blockMatch = compose.match(new RegExp(`\\n  ${service}:\\n([\\s\\S]*?)(?=\\n {2}\\S|$)`));
+    if (!blockMatch) return null;
+    const m = blockMatch[1].match(/-\s*"(\d+):\d+"/);
+    return m ? Number(m[1]) : null;
+  };
+
+  const frontendPort = portFor("frontend");
+  const backendPort = portFor("backend");
+  const dbPort = portFor("postgres");
+  if (frontendPort === null || backendPort === null || dbPort === null) return null;
+
+  if (!dockerCheck(frontendPort) || !dockerCheck(backendPort)) return null;
+
+  return { frontendPort, backendPort, dbPort };
 }
 
 async function archiveToGitHub(projectId: string, buildDir: string): Promise<string | null> {

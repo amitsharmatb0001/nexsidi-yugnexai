@@ -39,6 +39,41 @@ test("api-contract.json missing entirely is still a real failure (cannot discove
   expect(result.ok).toBe(false);
 });
 
+// 2026-08-17: real bug found live (fulfillio1-deploy-resume-2) — a backend
+// URL that's genuinely unreachable (nothing listening — the concrete case
+// that happened live was a computed port mismatch, see getRunningDeployment-
+// Ports' own header comment) made the raw fetch() inside
+// registerAndLoginTestUser THROW instead of returning {error}, unlike every
+// other failure path in that function (HTTP error status, missing token —
+// all captured as a value). That uncaught throw propagated through
+// verifyAllResourceCrud -> run() -> the Temporal activity -> the workflow,
+// completely bypassing Stage 6's auto-retry/escalation logic (which only
+// triggers on a normal {success:false} RETURN, never a thrown exception) and
+// killing the whole workflow execution outright. This must resolve with a
+// real { ok: false, reason } instead of rejecting.
+test("verifyLiveAuthenticatedRoundTrip resolves with ok:false (not a thrown/rejected promise) when the backend URL is completely unreachable", async () => {
+  writeContract([
+    { method: "POST", path: "/api/v1/auth/register", auth: false },
+    { method: "POST", path: "/api/v1/auth/login", auth: false },
+    { method: "POST", path: "/api/v1/properties", auth: true },
+  ]);
+  // Bind a real server to grab a genuinely free port, then close it —
+  // guarantees nothing is listening there, a real connection-refused case.
+  const probe = createServer();
+  const deadPort = await new Promise<number>((resolve) => {
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+      resolve(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+
+  const result = await verifyLiveAuthenticatedRoundTrip(dir, `http://127.0.0.1:${deadPort}`);
+
+  expect(result.ok).toBe(false);
+  expect(result.reason.toLowerCase()).toContain("register");
+});
+
 // 2026-07-27 (live, complex1): real gap found live — this check registers a
 // generic test user with NO role field, then picks the FIRST auth:true POST
 // endpoint blindly. On a role-gated app (property creation restricted to
