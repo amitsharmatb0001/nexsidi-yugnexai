@@ -24,6 +24,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import { identifyFaultAgent, type Finding, type Stage4Result } from "./stage4-multi-agent-dev.ts";
+import { scanProjectForDeadButtons } from "./dead-ui-check.ts";
 import { clearSharedFileReadCache } from "../../../packages/agent-runtime/src/qa-loop.ts";
 import { getOutputDir as getPranavOutputDir } from "../../../agents/generators/pranav/src/index.ts";
 import {
@@ -193,6 +194,18 @@ export async function runStage5WithAgents(
   // code. Safe no-op on a project's first-ever round (nothing cached yet).
   clearSharedFileReadCache(projectId);
 
+  // 2026-08-17: dead-UI-element static check — runs first, before any LLM QA
+  // round spends a token, and specifically before Navya/Karan/Deepika since
+  // none of them can catch this class of bug at all (see dead-ui-check.ts's
+  // header for the full root cause: a Button with no onClick reads
+  // identically to a working one in source, and neither text-based QA nor
+  // Riya's API-level live checks ever render a page or click anything).
+  // Synchronous and near-zero-cost — folded into the same findings/
+  // fault-routing pipeline as the three LLM agents' output, not a separate
+  // gate, so a project with both a dead button AND a real logic/security
+  // issue gets both fixed in the same round instead of needing two.
+  const deadButtonFindings = scanProjectForDeadButtons(projectId);
+
   const systemContext = plan ? buildSystemContext(plan) : undefined;
   const navyaPromise = agents.runNavya(projectId, stage4Result, systemContext, changedFiles, previousFindings?.navya);
   await sleep(staggerMs);
@@ -230,7 +243,7 @@ export async function runStage5WithAgents(
   // formula) directly — do not invent a second scorer for a convention
   // that already exists on their result.
   const security = scoreSecurityFindings(karanResult.findings);
-  const allPass = security.pass && navyaResult.passed && deepikaResult.passed;
+  const allPass = security.pass && navyaResult.passed && deepikaResult.passed && deadButtonFindings.length === 0;
 
   // 2026-08-09: real bug found live (project meridianbk4) — this used to
   // build `findings` only inside the `!allPass` branch and return
@@ -243,6 +256,7 @@ export async function runStage5WithAgents(
   // every finding an independent debate-based check regardless of whether
   // the severity-weighted arithmetic alone already "passed" it.
   const findings: Finding[] = [
+    ...deadButtonFindings,
     ...karanResult.findings.map(karanFindingToFinding),
     ...navyaResult.findings.map(navyaFindingToFinding),
     ...deepikaResult.findings.map(deepikaFindingToFinding),

@@ -192,6 +192,45 @@ test("runStage5WithAgents works with no plan (systemContext undefined) — backw
   expect(result.pass).toBe(true);
 });
 
+// ── Dead-UI-element static check (2026-08-17, live on fulfillio1) ──────────
+// A dead button ("Invite Staff" — no onClick at all) shipped through six
+// Navya/Karan/Deepika rounds undetected, since none of them ever render a
+// page or click anything. Verifies the wiring: a dead button on disk fails
+// the WHOLE round, alongside three otherwise-clean LLM agent results, and
+// Tier 3 never gets called (matching the existing "any failure short-
+// circuits before Tier 3" behavior every other finding type already has).
+test("runStage5WithAgents fails the round on a real dead button, even when Navya/Karan/Deepika all pass clean", async () => {
+  const root = mkdtempSync(join(tmpdir(), "nexsidi-dead-button-test-"));
+  const prevBuildDir = process.env.BUILD_DIR;
+  process.env.BUILD_DIR = root;
+  try {
+    const pageDir = join(root, "dead-button-proj", "frontend", "app");
+    mkdirSync(pageDir, { recursive: true });
+    writeFileSync(
+      join(pageDir, "page.tsx"),
+      `export default function Page() {\n  return <Button variant="solid">Do Something</Button>;\n}\n`,
+    );
+
+    let tier3Called = false;
+    const agents = makeAgents({ runTier3Review: async () => { tier3Called = true; return { pass: true, findings: [] }; } });
+
+    const result = await runStage5WithAgents("dead-button-proj", STAGE4_RESULT, agents);
+
+    expect(result.pass).toBe(false);
+    expect(tier3Called).toBe(false);
+    expect(result.findings.some((f) => f.issue.includes("dead UI"))).toBe(true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    if (prevBuildDir === undefined) delete process.env.BUILD_DIR;
+    else process.env.BUILD_DIR = prevBuildDir;
+  }
+});
+
+test("runStage5WithAgents passes cleanly when there are no dead buttons on disk (no BUILD_DIR project at all)", async () => {
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, makeAgents());
+  expect(result.pass).toBe(true);
+});
+
 // ── Round-scoped QA re-scan (token-waste-reduction plan, Task 1, 2026-08-16) ─
 // stage5-qa-fix-loop.ts threads forward what changed since the last round
 // (from Shubham/Aanya/Pranav's own filesWritten) plus each reviewer's own
