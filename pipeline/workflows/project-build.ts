@@ -242,6 +242,20 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     // ── Stage 6: deploy + live-browser retest, retried in-place on an
     // explicit human decision ───────────────────────────────────────────
     state.stage = "deliver";
+    // 2026-08-17 (live, fulfillio1): every deploy_failed/deploy_stuck used
+    // to escalate to a human EVERY time, regardless of deployResult.stuck —
+    // even though runDeployWithLiveRetest's OWN internal retry loop already
+    // computes exactly this signal (see its "Stuck: deploy attempt N has
+    // the identical error list as attempt N-1" log): stuck=true means the
+    // error signature repeated (confirmed loop, a human decision is
+    // genuinely warranted), stuck=false means it CHANGED between the
+    // activity's own internal attempts (real progress happening) — that
+    // distinction was computed and then thrown away, an unconditional human
+    // wait either way. Bounded to MAX_AUTO_RETRIES so a stuck=false verdict
+    // that never actually converges can't auto-retry forever without ever
+    // checking in with a human.
+    const MAX_AUTO_RETRIES = 3;
+    let autoRetryCount = 0;
     for (;;) {
       // 2026-08-17 (live, fulfillio1 — 3rd occurrence of the same false-
       // positive class as two prior ones): recordHandoff used to be called
@@ -284,13 +298,26 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       if (deployResult.success) break;
 
       state.stage = "error";
+      // deployResult.stuck === false: the activity's own internal loop saw
+      // the error signature genuinely change between its attempts — real
+      // progress, not a loop. Auto-retry without paging a human, same as
+      // any other transient/self-healing failure class already does
+      // elsewhere in this workflow, up to MAX_AUTO_RETRIES.
+      if (!deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES) {
+        autoRetryCount++;
+        state.stage = "deliver";
+        console.log(`[workflow] Stage 6 deploy failed but not stuck (error signature changed) — auto-retrying without human escalation (${autoRetryCount}/${MAX_AUTO_RETRIES})`);
+        continue;
+      }
+      const escalationReason = deployResult.stuck ? "deploy_stuck" : "deploy_failed";
       const retry = patched("stuck-state-retry-signal-v1")
-        ? await escalateAndAwaitRetryDecision(deployResult.stuck ? "deploy_stuck" : "deploy_failed")
+        ? await escalateAndAwaitRetryDecision(escalationReason)
         : false;
       if (!retry) {
-        await act.markProjectFailed(projectId, deployResult.stuck ? "deploy_stuck" : "deploy_failed");
+        await act.markProjectFailed(projectId, escalationReason);
         return;
       }
+      autoRetryCount = 0;
       state.stage = "deliver";
       console.log(`[workflow] retrying Stage 6 deploy after a human retry decision`);
     }

@@ -72,10 +72,40 @@ test("every escalation site awaits a retry decision before persisting failure, f
     // after the workflow already gave up.
     expect(source.indexOf(escalateCall)).toBeLessThan(source.indexOf(failCall));
   }
-  // deploy_failed/deploy_stuck share one escalation call (the reason is
-  // computed from deployResult.stuck at runtime, not a literal string).
-  expect(source).toContain("escalateAndAwaitRetryDecision(deployResult.stuck ? \"deploy_stuck\" : \"deploy_failed\")");
-  expect(source).toContain('await act.markProjectFailed(projectId, deployResult.stuck ? "deploy_stuck" : "deploy_failed")');
+  // deploy_failed/deploy_stuck share one escalation call. 2026-08-17: the
+  // reason used to be computed inline at both the escalate and fail call
+  // sites (deployResult.stuck ? "deploy_stuck" : "deploy_failed", written
+  // out twice) — now computed once into `escalationReason` so the
+  // auto-retry-when-not-stuck check below and both call sites can't drift
+  // out of sync with each other.
+  expect(source).toContain('const escalationReason = deployResult.stuck ? "deploy_stuck" : "deploy_failed"');
+  expect(source).toContain("escalateAndAwaitRetryDecision(escalationReason)");
+  expect(source).toContain("await act.markProjectFailed(projectId, escalationReason)");
+});
+
+// 2026-08-17 (live, fulfillio1): every Stage 6 failure used to escalate to a
+// human EVERY time, even when deployResult.stuck === false — even though
+// that flag means runDeployWithLiveRetest's OWN internal retry loop already
+// confirmed the error signature CHANGED between its attempts (real
+// progress, not a loop). Verifies the auto-retry path exists, is bounded
+// (can't drift forever without ever checking in with a human), and only
+// engages when stuck is specifically false — a confirmed loop (stuck=true)
+// must still escalate immediately, not spend 3 auto-retries on a case
+// that's already known to be futile.
+test("Stage 6 auto-retries a non-stuck deploy failure without human escalation, bounded, but still escalates immediately when stuck", () => {
+  const source = readFileSync(new URL("./project-build.ts", import.meta.url), "utf-8");
+
+  expect(source).toContain("const MAX_AUTO_RETRIES = 3");
+  expect(source).toContain("if (!deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES)");
+
+  // the auto-retry branch must `continue` the loop, not fall through into
+  // the human-escalation call below it — otherwise this is dead code that
+  // never actually skips the escalation.
+  const autoRetryIdx = source.indexOf("if (!deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES)");
+  const nextEscalateIdx = source.indexOf("escalateAndAwaitRetryDecision(escalationReason)");
+  const continueIdx = source.indexOf("continue;", autoRetryIdx);
+  expect(continueIdx).toBeGreaterThan(autoRetryIdx);
+  expect(continueIdx).toBeLessThan(nextEscalateIdx);
 });
 
 // 2026-08-10: real bug found live (project rivhdw1) — Stage 3 (parallel
