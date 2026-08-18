@@ -1216,13 +1216,20 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
     };
 
     ws.onopen = () => { wsRetryCount.current = 0; };
+    // 2026-08-17: real bug found live (gatherly1) — after 8 failed attempts
+    // (e.g. spanning a brief api restart) this gave up PERMANENTLY, leaving
+    // the last "Reconnecting in Ns..." message frozen on screen forever with
+    // no further attempts and no way to recover short of a full page reload
+    // — even though the underlying WS server was healthy again seconds
+    // later. A live log stream for a pipeline that can run for a long time
+    // should never permanently give up; the existing exponential backoff
+    // already caps the retry interval at 30s, so retrying indefinitely
+    // costs at most one attempt every 30s, not a tight loop.
     ws.onclose = () => {
       const delay = Math.min(1000 * 2 ** wsRetryCount.current, 30000);
       wsRetryCount.current++;
-      if (wsRetryCount.current <= 8) {
-        setTerminalEntries(prev => [...prev, { kind: "log", text: `\n⏳ Reconnecting in ${Math.round(delay/1000)}s...\n` }]);
-        wsRetryRef.current = setTimeout(connectWs, delay);
-      }
+      setTerminalEntries(prev => [...prev, { kind: "log", text: `\n⏳ Reconnecting in ${Math.round(delay/1000)}s...\n` }]);
+      wsRetryRef.current = setTimeout(connectWs, delay);
     };
   }
 
