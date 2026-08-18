@@ -13,6 +13,7 @@ import { loadSession, saveSession, newSession } from "../../../../agents/planner
 import { streamReply } from "../../../../agents/planner/src/index.ts";
 import { startProjectBuild } from "../utils/temporal.ts";
 import { db, projects } from "@nexsidi/db";
+import { eq } from "drizzle-orm";
 import { writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { createHash } from "node:crypto";
@@ -166,7 +167,33 @@ chatRouter.post("/", async (c) => {
 // ── GET /api/chat/:sessionId — load conversation history ─────────────────────
 chatRouter.get("/:sessionId", async (c) => {
   const state = await loadSession(c.req.param("sessionId"));
-  if (!state) return c.json({ messages: [], phase: "planning", projectId: null });
+  if (!state) {
+    // 2026-08-17: real bug found live (gatherly1) — PlannerState lives in an
+    // in-memory Map (agents/planner/src/session.ts) with no persistence. ANY
+    // api restart during an active build silently reverts this project's
+    // page back to the empty "planning" chat view, even though the project
+    // is genuinely mid-build (or done) on durable storage — the projects
+    // table, and the Temporal workflow itself, are both completely
+    // unaffected by an api restart. Falling back to the durable project
+    // record when the ephemeral chat session is gone lets the page correctly
+    // resume into the live build view instead of looking like the project
+    // was never started. sessionId IS the project id for every build that
+    // has actually been triggered (see normalizeProjectId above).
+    const [project] = await db
+      .select({ id: projects.id, status: projects.status })
+      .from(projects)
+      .where(eq(projects.id, c.req.param("sessionId")))
+      .limit(1);
+    if (project) {
+      return c.json({
+        messages:  [],
+        phase:     project.status === "done" ? "done" : "building",
+        projectId: project.id,
+        buildPlan: null,
+      });
+    }
+    return c.json({ messages: [], phase: "planning", projectId: null });
+  }
   // Return only display-safe messages — strip tool messages and tool_calls internal fields.
   // The planner uses state.messages (full) for context; the web app only needs text content.
   const displayMessages = state.messages
