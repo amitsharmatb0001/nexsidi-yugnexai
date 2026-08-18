@@ -16,6 +16,7 @@ import { db, projects } from "@nexsidi/db";
 import { writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { createHash } from "node:crypto";
+import { resolveOptionalUserId } from "../middleware/auth.ts";
 import type { PlannerState, BuildPlan, ProposedPlan } from "../../../../agents/planner/src/types.ts";
 
 // Ensure project IDs fit the varchar(12) DB column — hash anything longer
@@ -33,7 +34,7 @@ const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
 const ANON_UUID = "00000000-0000-0000-0000-000000000000";
 
 chatRouter.post("/", async (c) => {
-  const userId = c.req.header("x-user-id") ?? ANON_UUID;
+  const userId = await resolveOptionalUserId(c.req.raw, ANON_UUID);
   const apiKey = process.env.NIM_API_KEY ?? "";
 
   const body = await c.req.json<{ message: string; sessionId: string }>();
