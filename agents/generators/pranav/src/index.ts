@@ -222,10 +222,22 @@ function renderIndex(idx: any, tableName: string): string {
 
 // ── Deterministic Drizzle schema generation (no LLM needed for structure) ────
 // Arjun already spec'd the columns with drizzleType + constraints — just render it.
-function generateDrizzleSchema(tables: DrizzleTable[]): string {
+// 2026-08-18: real bug found live (RateGate) — Arjun's dbSchema-generation
+// call is LLM-authored JSON with no strict structured-output schema
+// enforcement, so it non-deterministically emitted `fields` (with per-field
+// `type`/`nullable`/`primaryKey`/`default`) instead of the documented
+// `columns` (DrizzleColumn[]) shape for this run — crashing here with
+// "TypeError: undefined is not an object (evaluating 't.columns.map')" and
+// killing the whole generation stage. normalizeColumn (below) already
+// handles BOTH per-column shapes correctly (col.drizzleType || col.type,
+// col.nullable, col.primaryKey, col.default) — the only actually broken
+// part was this outer table-level property name. Falling back to t.fields
+// when t.columns is absent closes the crash without needing to chase down
+// and constrain Arjun's own prompt/schema enforcement under time pressure.
+export function generateDrizzleSchema(tables: DrizzleTable[]): string {
   const normalizedTables = tables.map((t) => ({
     ...t,
-    columns: t.columns.map(normalizeColumn),
+    columns: (t.columns ?? (t as unknown as { fields?: unknown[] }).fields ?? []).map(normalizeColumn),
   }));
 
   const hasIndexes = normalizedTables.some(t => t.indexes && t.indexes.length > 0);
