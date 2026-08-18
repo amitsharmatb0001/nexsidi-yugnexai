@@ -342,6 +342,28 @@ async function checkNexsidiDbReachable(): Promise<boolean> {
 // fresh context, not just noise. A third would almost certainly be stuck too.
 const MAX_DEPLOY_ATTEMPTS = 2;
 const MAX_LIVE_FIX_ATTEMPTS = 3;
+
+// 2026-08-18: real bug found live (gatherly1) — both stuck-detection
+// signatures below (errorSignature at the deploy-attempt loop, findingsSig
+// at the live-retest fix loop) compared RAW error/finding text, which
+// routinely embeds a freshly-random value on every single attempt — a UUID
+// from a newly-created test row, e.g. "...did not persist to the database
+// (id=8866159a-...)". Since that UUID differs every attempt, neither
+// signature ever matched even when the underlying, STRUCTURAL problem was
+// 100% identical each time. Confirmed live: the exact same two findings
+// (a resource-name/table-name mismatch and a payload-generation gap, both
+// in Riya's own verification tooling, not the generated app) recurred
+// verbatim — modulo the UUID — across 6 consecutive attempts, burning
+// through this file's own two retry loops AND the workflow's own outer
+// auto-retry budget (which reads this activity's returned `stuck` flag,
+// itself corrupted by the same root cause) before finally, correctly
+// escalating. Stripping UUID-shaped substrings before comparing closes all
+// three at once, since they all ultimately derive from these two signature
+// computations.
+const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+export function normalizeForStuckComparison(text: string): string {
+  return text.replace(UUID_PATTERN, "<id>");
+}
 const LIVE_STUCK_THRESHOLD = 2;
 
 // 2026-08-05 (live, verify361300): distinguishes a redeploy failure caused by
@@ -475,7 +497,7 @@ export async function runStage6(
 
     if (deployResult.success) break;
 
-    const errorSignature = [...deployResult.errors].sort().join("\0");
+    const errorSignature = [...deployResult.errors].map(normalizeForStuckComparison).sort().join("\0");
     if (attempt > 1 && prevErrorSignature === errorSignature && errorSignature !== "") {
       stuck = true;
       console.log(
@@ -523,9 +545,9 @@ export async function runStage6(
     fixAttempt++;
     console.log(`[stage6] Live retest failed (attempt ${fixAttempt} of ${MAX_LIVE_FIX_ATTEMPTS}) — starting agentic fix loop`);
 
-    const findingsSig = Array.isArray(retest.findings) 
-      ? [...retest.findings].map(f => `${f.file}:${f.issue || f.detail}`).sort().join("\0")
-      : String(retest.findings);
+    const findingsSig = Array.isArray(retest.findings)
+      ? [...retest.findings].map(f => normalizeForStuckComparison(`${f.file}:${f.issue || f.detail}`)).sort().join("\0")
+      : normalizeForStuckComparison(String(retest.findings));
 
     if (fixAttempt > 1 && findingsSig === prevFindingsSig) {
       console.log(`[stage6] Stuck loop detected: findings signature did not change on attempt ${fixAttempt}`);

@@ -4,6 +4,7 @@ import {
   INTERNAL_AGENT_NAMES,
   isQuotaExhaustionError,
   deployWithQuotaRetry,
+  normalizeForStuckComparison,
   runStage6,
   type Stage6Deps,
 } from "./stage6-deployment.ts";
@@ -88,6 +89,87 @@ test("deployWithQuotaRetry gives up after MAX_QUOTA_RETRIES consecutive quota fa
 
   // 1 initial attempt + 2 retries = 3 total calls, then gives up.
   expect(calls).toBe(3);
+  expect(result.success).toBe(false);
+});
+
+// ── normalizeForStuckComparison (2026-08-18, live: gatherly1) ──────────────
+// Real bug: stuck-detection compared RAW error/finding text, which routinely
+// embeds a freshly-random UUID each attempt (a newly-created test row's real
+// id). The signature never matched even when the underlying problem was
+// structurally identical every time, so the pipeline kept treating a
+// deterministic, unfixable-by-redeploy failure as "new progress" — burning
+// through every retry layer (this file's own two loops, and the workflow's
+// outer auto-retry, which reads this activity's own `stuck` flag) before
+// finally, correctly escalating.
+
+test("normalizeForStuckComparison replaces a UUID with a stable placeholder", () => {
+  const text = "seller: create /api/v1/seller/store returned success but the row did not persist to the database (id=8866159a-4eed-4039-aaf0-64648c3b318c)";
+  const normalized = normalizeForStuckComparison(text);
+  expect(normalized).not.toContain("8866159a-4eed-4039-aaf0-64648c3b318c");
+  expect(normalized).toContain("<id>");
+});
+
+test("normalizeForStuckComparison makes two findings that differ ONLY by UUID compare equal", () => {
+  const first = "orders: create returned success but did not persist (id=8866159a-4eed-4039-aaf0-64648c3b318c)";
+  const second = "orders: create returned success but did not persist (id=f9d7e378-9d35-4177-aa03-48c7d052601a)";
+  expect(normalizeForStuckComparison(first)).toBe(normalizeForStuckComparison(second));
+});
+
+test("normalizeForStuckComparison leaves text with no UUID unchanged", () => {
+  const text = "docker compose up failed: port 3200 already in use";
+  expect(normalizeForStuckComparison(text)).toBe(text);
+});
+
+test("normalizeForStuckComparison strips multiple UUIDs in the same string", () => {
+  const text = "conflict between id=8866159a-4eed-4039-aaf0-64648c3b318c and id=f9d7e378-9d35-4177-aa03-48c7d052601a";
+  const normalized = normalizeForStuckComparison(text);
+  expect(normalized).toBe("conflict between id=<id> and id=<id>");
+});
+
+test("runStage6's deploy-attempt loop detects a UUID-varying-but-structurally-identical error as stuck", async () => {
+  let deployCalls = 0;
+  const deps: Stage6Deps = {
+    deployFn: async () => {
+      deployCalls++;
+      const id = deployCalls === 1 ? "8866159a-4eed-4039-aaf0-64648c3b318c" : "f9d7e378-9d35-4177-aa03-48c7d052601a";
+      return {
+        success: false,
+        appUrl: "",
+        backendUrl: "",
+        githubRepo: null,
+        errors: [`CRUD verification: seller: create returned success but did not persist (id=${id})`],
+      };
+    },
+  };
+
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps);
+
+  expect(deployCalls).toBe(2);
+  expect(result.success).toBe(false);
+  expect(result.stuck).toBe(true);
+});
+
+test("runStage6's live-retest fix loop detects UUID-varying-but-structurally-identical findings as stuck, not endless fix rounds", async () => {
+  let retestCalls = 0;
+  const fixCalls: number[] = [];
+  const makeFinding = (id: string) => [{ file: "backend/src/controllers/seller.controller.ts", issue: `did not persist to the database (id=${id})` }];
+  const deps: Stage6Deps = {
+    deployFn: async () => ({ success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] }),
+    liveRetestFn: async () => {
+      retestCalls++;
+      const id = retestCalls === 1 ? "8866159a-4eed-4039-aaf0-64648c3b318c" : "f9d7e378-9d35-4177-aa03-48c7d052601a";
+      return { pass: false, findings: makeFinding(id) };
+    },
+    fixShubham: async () => { fixCalls.push(1); return { success: true }; },
+  };
+  const plan = { projectId: "test-proj" } as never;
+
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, plan);
+
+  // Exactly ONE fix round should run — the second retest's UUID-only-
+  // different finding must be recognized as the same underlying problem and
+  // stop the loop, not trigger a second (futile) fix-and-redeploy round.
+  expect(fixCalls.length).toBe(1);
   expect(result.success).toBe(false);
 });
 
