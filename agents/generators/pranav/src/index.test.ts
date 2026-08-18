@@ -55,6 +55,35 @@ test("generateDrizzleSchema still works normally for the documented 'columns' sh
   expect(schema).toContain(".notNull()");
 });
 
+// 2026-08-18: real bug found live (RateGate) — normalizeColumn appends "()"
+// to a bare type name (e.g. "uuid" -> "uuid()"), then renderColumn
+// unconditionally appended "(\"name\")" AFTER that, producing double-call
+// syntax like `uuid()("id")` instead of valid Drizzle `uuid("id")`. This
+// crashes `drizzle-kit generate`/`migrate`/`studio` on every single column,
+// for every table — confirmed independently by both Navya and Karan against
+// the live-generated db/src/schema.ts, and got QA's fix-loop stuck (5
+// iterations, still failing) since Shubham's fix agent can't touch Pranav's
+// generator. Asserts the render never double-calls the type function.
+test("generateDrizzleSchema never emits double-call syntax like uuid()(\"id\") for any column", () => {
+  const tables = [
+    {
+      name: "users",
+      fields: [
+        { name: "id", type: "uuid", nullable: false, primaryKey: true, default: "gen_random_uuid()" },
+        { name: "email", type: "text", nullable: false, primaryKey: false, default: null },
+        { name: "created_at", type: "timestamp", nullable: false, primaryKey: false, default: "now()" },
+      ],
+    },
+  ] as unknown as DrizzleTable[];
+
+  const schema = generateDrizzleSchema(tables);
+
+  expect(schema).toContain('id: uuid("id")');
+  expect(schema).toContain('email: text("email")');
+  expect(schema).toContain('created_at: timestamp("created_at")');
+  expect(schema).not.toMatch(/\(\)\(/);
+});
+
 // 2026-07-24 (P3.W3.4, full agentic upgrade): Pranav previously had NO fix
 // path at all — a QA round whose findings were entirely db/-prefixed
 // stopped the real GAN's fix loop immediately ("no auto-fix path yet").

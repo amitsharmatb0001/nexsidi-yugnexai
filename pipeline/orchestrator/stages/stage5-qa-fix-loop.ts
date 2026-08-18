@@ -375,7 +375,12 @@ export async function runQAFixLoopWithDeps(
     // untouched, so D25's default-FAIL still correctly blocks deployment
     // and the finding is still visible in the report; it just never gets
     // handed to a generator.
-    const routableFindings = result.findings.filter((f) => !f.issue.includes("review-incomplete"));
+    // isKaranMetaFinding catches Karan's differently-worded equivalent
+    // ("review did not complete", no hyphen — see its own comment above) —
+    // "review-incomplete" alone only matches Navya/Deepika's category text.
+    const routableFindings = result.findings.filter(
+      (f) => !f.issue.includes("review-incomplete") && !isKaranMetaFinding(f.issue),
+    );
 
     // Real 2026-07-06 stress-test bug: findings can span BOTH backend/ and
     // frontend/ files in the same QA pass. Using only result.faultAgent

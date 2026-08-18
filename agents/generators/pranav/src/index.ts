@@ -279,7 +279,12 @@ function renderColumn(col: DrizzleColumn): string {
   const ref = col.references
     ? `.references(() => ${snakeToCamel(col.references.split(".")[0] ?? "")}.${col.references.split(".")[1] ?? "id"})`
     : "";
-  return `${col.name}: ${col.drizzleType}("${col.name}")${constraints}${ref}`;
+  // normalizeColumn always leaves drizzleType ending in "()" (either freshly
+  // appended for a bare type name, or already present from the documented
+  // shape) — the column name is the type function's OWN argument, e.g.
+  // `uuid("id")`, not a second call appended after it (`uuid()("id")`).
+  const typeCall = col.drizzleType.replace(/\(\)$/, `("${col.name}")`);
+  return `${col.name}: ${typeCall}${constraints}${ref}`;
 }
 
 function buildRelationsBlock(table: DrizzleTable, allTables: DrizzleTable[]): string {

@@ -812,6 +812,42 @@ test("a review-incomplete finding is never routed to a generator to fix — it s
   expect(result.findings[0]?.issue).toContain("review-incomplete"); // still visible in the final report
 });
 
+// 2026-08-18: real bug found live (project 6ec9787d5a81, RateGate) — Karan's
+// own meta-finding wording ("Karan's review did not complete: Gemini call
+// failed...") never contains the literal substring "review-incomplete" the
+// way Navya/Deepika's does (their category is literally named
+// "review-incomplete"; Karan's equivalent text just says "review did not
+// complete", no hyphen — see isKaranMetaFinding above, which already exists
+// and is used for the NEXT round's carry-forward filtering in
+// extractPreviousFindings but was never applied to THIS round's routing
+// filter). The underlying cause was the shared Gemini pool hitting quota —
+// an infrastructure failure — but Shubham was dispatched to "fix" it anyway
+// every round, confirmed live via the worker log showing a fix-agent task
+// prompt asking it to "confirm perfect compliance with the full API
+// contract" in response to a tooling crash, not a code defect.
+test("a Karan-worded meta-finding ('review did not complete', no hyphen) is never routed to a generator to fix", async () => {
+  let fixCalled = false;
+  const karanMetaOnly: Stage5Result = {
+    pass: false,
+    findings: [{ file: "", issue: "[security/CRITICAL] Karan's review did not complete: Gemini call failed on iteration 15: Error: [llm-client] routeToolsWithFallback exhausted all pool entries" }],
+  };
+  const deps: QAFixDeps = {
+    runStage5: async () => karanMetaOnly,
+    fixShubham: async () => {
+      fixCalled = true;
+      return { success: true };
+    },
+    fixAanya: async () => ({ success: true }),
+  };
+
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(fixCalled).toBe(false);
+  expect(result.pass).toBe(false);
+  expect(result.stuck).toBe(true);
+  expect(result.findings[0]?.issue).toContain("review did not complete");
+});
+
 // ── Round-scoped QA re-scan (token-waste-reduction plan, Task 1, 2026-08-16) ─
 // Every round after the first re-explored the ENTIRE codebase, even when a
 // fix pass only touched one or two files. This loop is where round N's
