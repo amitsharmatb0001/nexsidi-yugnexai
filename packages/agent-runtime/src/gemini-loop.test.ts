@@ -8,6 +8,7 @@ import {
   isQuotaExhaustionError,
   screenshotImagePathFor,
   isRelevantContextSelectionEnabled,
+  summarizeToolInput,
   COMPACTION_THRESHOLD_TOKENS,
 } from "./gemini-loop.ts";
 import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts";
@@ -289,4 +290,79 @@ test("touched files sent to selectRelevantContext come from the fact ledger's fi
 
 afterEach(() => {
   delete process.env.RELEVANT_CONTEXT_SELECTION_ENABLED;
+});
+
+// 2026-08-19: this loop had no emitEvent at all, so events.jsonl (the feed
+// /ws/pipeline/:projectId tails to render the UI's activity cards) was never
+// written for ANY project — confirmed live: zero such files existed across
+// every build ever produced, because NIM is effectively dead and every agent
+// runs through THIS loop. summarizeToolInput is what those events carry.
+
+test("summarizeToolInput records a write_file's path and byte count, never its content", () => {
+  const body = "x".repeat(50_000);
+  const out = summarizeToolInput("write_file", { path: "src/app.ts", content: body });
+
+  expect(out).toEqual({ path: "src/app.ts", bytes: 50_000 });
+  // The whole point: a full build writes hundreds of files, and the WS route
+  // replays events.jsonl in full on every reconnect.
+  expect(JSON.stringify(out)).not.toContain(body);
+  expect(JSON.stringify(out).length).toBeLessThan(200);
+});
+
+test("summarizeToolInput collapses a write_files batch to counts and paths, not bodies", () => {
+  const out = summarizeToolInput("write_files", {
+    files: [
+      { path: "a.ts", content: "aaaa" },
+      { path: "b.ts", content: "bbbbbb" },
+    ],
+  });
+
+  expect(out).toEqual({ count: 2, paths: ["a.ts", "b.ts"], bytes: 10 });
+});
+
+test("summarizeToolInput drops edit_file's old_str/new_str payloads, keeping only the path", () => {
+  const out = summarizeToolInput("edit_file", {
+    path: "src/x.ts",
+    old_str: "y".repeat(9000),
+    new_str: "z".repeat(9000),
+  });
+
+  expect(out).toEqual({ path: "src/x.ts" });
+});
+
+// CLAUDE.md CONFIDENTIALITY RULE: agent names must never reach a user-facing
+// surface. The WS sanitizer (sanitizePipelineEvent) only rewrites an event's
+// top-level `agent` field — anything smuggled into the input payload would
+// sail straight through it into the browser.
+test("summarizeToolInput never copies escalate_finding's internal target_agent into the event payload", () => {
+  const out = summarizeToolInput("escalate_finding", {
+    target_agent: "pranav",
+    finding: "missing index",
+    reason: "needs a composite index on usage_metrics",
+  });
+
+  expect(JSON.stringify(out)).not.toContain("pranav");
+  expect(out.reason).toBe("needs a composite index on usage_metrics");
+});
+
+test("summarizeToolInput truncates a long run_command instead of echoing it whole", () => {
+  const out = summarizeToolInput("run_command", { command: "echo " + "a".repeat(5000) });
+
+  expect((out.command as string).length).toBe(300);
+});
+
+test("summarizeToolInput passes through short scalars for an unknown/browser tool but drops large strings", () => {
+  const out = summarizeToolInput("browser_click", {
+    selector: "button.submit",
+    index: 2,
+    force: true,
+    hugeBlob: "q".repeat(5000),
+  });
+
+  expect(out).toEqual({ selector: "button.submit", index: 2, force: true });
+});
+
+test("summarizeToolInput returns an empty object for non-object args rather than throwing", () => {
+  expect(summarizeToolInput("read_file", null)).toEqual({});
+  expect(summarizeToolInput("read_file", "not-an-object")).toEqual({});
 });

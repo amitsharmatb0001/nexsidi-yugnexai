@@ -42,7 +42,8 @@ import { execFetchUrl } from "./tools/research.ts";
 import { recordEscalation, type Escalation } from "./tools/escalate.ts";
 import { execScreenshot } from "./tools/screenshot.ts";
 import { BrowserToolset, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { join } from "node:path";
 import { execDbQuery } from "./tools/db.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
@@ -214,11 +215,115 @@ export function screenshotImagePathFor(toolName: string, result: Record<string, 
   return typeof result?.output === "string" ? result.output : null;
 }
 
+// Compact, display-safe summary of a tool call's input for the UI event feed
+// (events.jsonl -> /ws/pipeline/:projectId -> activity cards).
+//
+// Deliberately NOT the raw args: a write_file/write_files call carries the
+// entire file body, and a full build writes hundreds of files — echoing that
+// verbatim would bloat events.jsonl past the size of the generated project
+// itself and push megabytes per file through the socket on every reconnect
+// (the WS route replays the whole file on connect). Emits the fields a
+// reader actually needs — which file, how big, which command — and a byte
+// count in place of content. Pure and exported for direct unit testing.
+export function summarizeToolInput(toolName: string, args: unknown): Record<string, unknown> {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return {};
+  const a = args as Record<string, unknown>;
+  const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+  switch (toolName) {
+    case "write_file":
+      return { path: str(a.path), bytes: typeof a.content === "string" ? a.content.length : 0 };
+    case "write_files": {
+      const files = Array.isArray(a.files) ? (a.files as Array<Record<string, unknown>>) : [];
+      return {
+        count: files.length,
+        paths: files.map((f) => str(f?.path)).filter((p): p is string => typeof p === "string").slice(0, 20),
+        bytes: files.reduce((sum, f) => sum + (typeof f?.content === "string" ? f.content.length : 0), 0),
+      };
+    }
+    case "edit_file":
+      // old_str/new_str can each be large; the path is what the UI renders.
+      return { path: str(a.path) };
+    case "read_file":
+    case "delete_file":
+    case "query_symbol":
+      return { path: str(a.path), symbol: str(a.symbol) };
+    case "list_files":
+      return { dir: str(a.dir) ?? ".", recursive: a.recursive === true };
+    case "run_command":
+      return { command: str(a.command)?.slice(0, 300) };
+    case "http_request":
+      return { method: str(a.method), url: str(a.url) };
+    case "docker_compose":
+      return { action: str(a.action), service: str(a.service) };
+    case "web_search":
+      return { query: str(a.query)?.slice(0, 200) };
+    case "fetch_url":
+      return { url: str(a.url) };
+    case "screenshot":
+      return { url: str(a.url), outputPath: str(a.outputPath) };
+    case "db_query":
+      return { query: str(a.query)?.slice(0, 300) };
+    case "escalate_finding":
+      // target_agent is an internal roster name — the WS layer's
+      // sanitizePipelineEvent only rewrites the top-level `agent` field, so
+      // it must never be copied into the event payload here (CLAUDE.md
+      // CONFIDENTIALITY RULE). Reason/finding text is user-safe.
+      return { reason: str(a.reason)?.slice(0, 300) };
+    case "task_complete":
+      return {
+        verification_passed: a.verification_passed === true,
+        files_written: Array.isArray(a.files_written) ? a.files_written.length : 0,
+      };
+    default: {
+      // Unknown/browser tools: pass through only short scalar fields, so a
+      // newly added tool still shows something useful without risking a
+      // large payload leaking into the feed.
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(a)) {
+        if (typeof v === "number" || typeof v === "boolean") out[k] = v;
+        else if (typeof v === "string" && v.length <= 200) out[k] = v;
+      }
+      return out;
+    }
+  }
+}
+
 export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentRunResult> {
   const nimTools = buildToolList(config);
   const tools: GeminiToolDef[] = nimTools.map(translateNimToolToGeminiTool);
   // Phase 5 Task 3: same evidence ledger + completion gate as loop.ts.
   const ledger = createEvidenceLedger();
+
+  // 2026-08-19: real bug found live (full-session audit) — loop.ts (NIM) and
+  // claude-loop.ts (Claude escalation) each call emitEvent at ~40 individual
+  // tool sites to write events.jsonl, which /ws/pipeline/:projectId tails to
+  // render rich tool-call cards in the UI. THIS loop had none. Since the NIM
+  // path has been effectively dead (every agent falls through to Gemini),
+  // essentially 100% of real agent work runs here — so events.jsonl was
+  // NEVER written for ANY project (confirmed: zero such files exist across
+  // every build ever produced). The UI wasn't "static by design"; its
+  // structured feed had no producer, leaving only raw log text.
+  //
+  // Emitted at the single dispatch choke point below rather than replicating
+  // 40 per-tool call sites: every tool is covered automatically (including
+  // any added later), and the two paths can't drift out of sync tool-by-tool
+  // the way the existing two already have.
+  const emitEvent = (event: Record<string, unknown>) => {
+    if (!config.projectId) return;
+    try {
+      const logDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", config.projectId, "logs");
+      mkdirSync(logDir, { recursive: true });
+      appendFileSync(
+        join(logDir, "events.jsonl"),
+        JSON.stringify({ ts: Date.now(), agent: config.agentName, ...event }) + "\n",
+        "utf-8",
+      );
+    } catch {
+      // Telemetry is an enrichment, never a hard dependency — a failed write
+      // must not break the agent run (same fail-open stance as loop.ts).
+    }
+  };
 
   // Phase 5 Task 6: same skills-at-runtime injection as loop.ts.
   const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt });
@@ -644,6 +749,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       const args = call.input;
 
       console.log(`[${config.agentName}:gemini-agent] Tool call: ${toolName}(${JSON.stringify(args).slice(0, 120)})`);
+      emitEvent({ type: "tool_call", tool: toolName, input: summarizeToolInput(toolName, args) });
 
       let result: Record<string, any>;
 
@@ -826,6 +932,14 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       }
 
       turnActivity.push({ toolName, args, result });
+      emitEvent({
+        type: "tool_result",
+        tool: toolName,
+        status: result.status,
+        summary: typeof result.summary === "string" ? result.summary.slice(0, 300) : undefined,
+        path: typeof (args as { path?: unknown }).path === "string" ? (args as { path: string }).path : undefined,
+        outputPath: typeof (args as { outputPath?: unknown }).outputPath === "string" ? (args as { outputPath: string }).outputPath : undefined,
+      });
       responseParts.push({ functionResponse: { name: toolName, response: result } });
 
       // Attach the ACTUAL image bytes right after the functionResponse for
