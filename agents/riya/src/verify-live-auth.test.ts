@@ -648,6 +648,67 @@ test("verifyAllResourceCrud fetches the created record back by id (GET /resource
   expect(result.findings.some((f) => f.includes("GET") && f.includes("appointments"))).toBe(true);
 });
 
+// 2026-08-19: real bug found live (project 6ec9787d5a81, RateGate) —
+// getByIdEp used bare hasPathParam(e.path), which matched ANY GET with a
+// path param, including a sub-resource endpoint one level deeper than the
+// resource itself (here: GET /api/v1/projects/:projectId/metrics, a metrics
+// aggregation route — not "fetch the project record by its own id", which
+// this contract never declares at all). It wrongly treated the metrics
+// response as if it should echo the project's own id, and flagged a false
+// positive every time ("doesn't contain the created record's own id") even
+// though the app has no bug — metrics endpoints aren't contracted to return
+// the resource itself. getByIdEp must only match a path exactly one segment
+// deeper than createEp's own path (the resource's real detail route), never
+// a deeper nested sub-resource.
+test("verifyAllResourceCrud does not mistake a nested sub-resource endpoint (GET /resource/:id/metrics) for the resource's own get-by-id route", async () => {
+  writeContract([
+    { method: "POST", path: "/api/v1/auth/register", auth: false },
+    { method: "POST", path: "/api/v1/auth/login", auth: false },
+    { method: "POST", path: "/api/v1/projects", auth: true, requestType: "{ name: string }" },
+    // No genuine GET /api/v1/projects/:id — only a deeper sub-resource route.
+    { method: "GET", path: "/api/v1/projects/:projectId/metrics", auth: true },
+  ]);
+  const db = new Map<string, Record<string, unknown>>();
+  let nextId = 1;
+  const srv = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const body = raw ? JSON.parse(raw) : {};
+      if (req.url === "/api/v1/auth/register" && req.method === "POST") { res.writeHead(201); res.end(JSON.stringify({ success: true })); return; }
+      if (req.url === "/api/v1/auth/login" && req.method === "POST") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ token: "t" })); return; }
+      if (req.url === "/api/v1/projects" && req.method === "POST") {
+        const id = `proj-${nextId++}`;
+        const row = { id, ...body };
+        db.set(`projects:${id}`, row);
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ data: row }));
+        return;
+      }
+      if (req.url?.match(/^\/api\/v1\/projects\/[^/]+\/metrics$/) && req.method === "GET") {
+        // Real shape: aggregated metrics only, deliberately no project id.
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ data: { metrics: [], current_bucket_fill: 0, overage_cost_usd: 0 } }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+  });
+  server = srv;
+  const url = await new Promise<string>((resolve) => {
+    srv.listen(0, "127.0.0.1", () => {
+      const address = srv.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      resolve(`http://127.0.0.1:${port}`);
+    });
+  });
+
+  const result = await verifyAllResourceCrud(dir, url, (table, id) => db.get(`${table}:${id}`) ?? null);
+
+  expect(result.ok).toBe(true);
+  expect(result.findings.some((f) => f.includes("doesn't contain the created record's own id"))).toBe(false);
+});
+
 test("verifyAllResourceCrud reports a specific finding when a created row doesn't actually exist in the DB", async () => {
   writeContract([
     { method: "POST", path: "/api/v1/auth/register", auth: false },

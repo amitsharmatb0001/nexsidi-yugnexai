@@ -420,6 +420,34 @@ function substitutePathParam(path: string, id: string): string {
   return path.replace(/:[a-zA-Z_][a-zA-Z0-9_]*/g, id).replace(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, id);
 }
 
+// 2026-08-19: real bug found live (project 6ec9787d5a81, RateGate) —
+// verifyAllResourceCrud's getByIdEp/updateEp/deleteEp all used bare
+// hasPathParam(e.path), which matches ANY path containing a param anywhere,
+// not just the resource's own "fetch/update/delete by id" endpoint. For
+// "projects" (createEp: POST /api/v1/projects), the only other GET with a
+// path param was GET /api/v1/projects/:projectId/metrics — a sub-resource
+// aggregation endpoint, not the project record itself — so getByIdEp
+// wrongly matched it, then flagged a false-positive finding ("response
+// doesn't contain the created record's own id") because a metrics response
+// was never supposed to echo the project's id. This is the same class of
+// bug verifyLiveAuthenticatedRoundTrip's detailPathFor already closed for
+// its own single-resource check (see that function's 2026-08-XX comment
+// above) — ported here as a general helper since createEp's param name
+// varies per project (":id" is the documented convention but not the only
+// one seen live, e.g. ":projectId"), so this matches on STRUCTURE (same
+// base path as createEp, plus exactly one more segment, and that segment is
+// a param) rather than the literal string ":id".
+function isDirectByIdPath(basePath: string, candidatePath: string): boolean {
+  const baseSegments = basePath.replace(/\/$/, "").split("/").filter(Boolean);
+  const candSegments = candidatePath.split("/").filter(Boolean);
+  if (candSegments.length !== baseSegments.length + 1) return false;
+  for (let i = 0; i < baseSegments.length; i++) {
+    if (candSegments[i] !== baseSegments[i]) return false;
+  }
+  const last = candSegments[candSegments.length - 1] ?? "";
+  return /^:[a-zA-Z_][a-zA-Z0-9_]*$/.test(last) || /^\{[a-zA-Z_][a-zA-Z0-9_]*\}$/.test(last);
+}
+
 // 2026-08-10: real bug found live (freshtst1) — the old inline heuristic
 // (`resource.endsWith("s") ? resource : resource+"s"`) treated "class" as
 // ALREADY plural because the singular word itself happens to end in the
@@ -1021,7 +1049,7 @@ export async function verifyAllResourceCrud(
       // endpoint — some real apps legitimately never expose a get-by-id
       // route, matching this file's own "don't invent a check for
       // something never claimed" convention.
-      const getByIdEp = eps.find((e) => e.method === "GET" && hasPathParam(e.path));
+      const getByIdEp = eps.find((e) => e.method === "GET" && isDirectByIdPath(createEp.path, e.path));
       if (getByIdEp) {
         const getRes = await fetch(`${backendUrl}${substitutePathParam(getByIdEp.path, createdId)}`, { headers: { Authorization: `Bearer ${activeToken}` } });
         if (!getRes.ok) {
@@ -1031,7 +1059,7 @@ export async function verifyAllResourceCrud(
         }
       }
 
-      const updateEp = eps.find((e) => (e.method === "PATCH" || e.method === "PUT") && hasPathParam(e.path));
+      const updateEp = eps.find((e) => (e.method === "PATCH" || e.method === "PUT") && isDirectByIdPath(createEp.path, e.path));
       if (updateEp) {
         const updateMarker = `${marker}-updated`;
         const updatePayload = (updateEp.requestType && updateEp.requestType !== "null"
@@ -1057,7 +1085,7 @@ export async function verifyAllResourceCrud(
         }
       }
 
-      const deleteEp = eps.find((e) => e.method === "DELETE" && hasPathParam(e.path));
+      const deleteEp = eps.find((e) => e.method === "DELETE" && isDirectByIdPath(createEp.path, e.path));
       if (deleteEp && dependedOnResources.has(resource)) {
         // Skip: this resource's seed row is what a downstream resource's
         // resolveForeignKeyId call needs to find later THIS run — deleting
