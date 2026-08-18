@@ -1184,6 +1184,21 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   }, [id]);
 
   // For projects already in building/done phase on page load (not from chat stream)
+  // 2026-08-18: real bug found live (RateGate, navigated here straight from
+  // Gatherly's build page) — this was keyed on [phase] only. Navigating
+  // client-side between two DIFFERENT projects' build pages that happen to
+  // be in the SAME phase (e.g. both "building") never re-ran this effect at
+  // all, so the OLD project's EventSource/WebSocket were never torn down and
+  // a fresh connection for the NEW project's id was never opened either —
+  // the `!esRef.current` guard saw the old (still-truthy, merely closed)
+  // ref and skipped startBuildWatching() entirely. Confirmed live: the Live
+  // Output panel stayed stuck on "Reconnecting..." for the new project
+  // using stale retry state from the previous one, and only a full page
+  // reload (a fresh component mount) recovered it. Adding `id` to the
+  // dependency array, and explicitly nulling the refs (not just calling
+  // .close(), which doesn't clear them) plus resetting wsRetryCount, makes
+  // every project switch tear down the old connections and start the new
+  // one with a genuinely clean slate.
   useEffect(() => {
     if (phase !== "planning") {
       if (!esRef.current) startBuildWatching(); // guard here — only on load, not on stream event
@@ -1192,11 +1207,14 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
     }
     return () => {
       esRef.current?.close();
+      esRef.current = null;
       wsRef.current?.close();
+      wsRef.current = null;
       if (wsRetryRef.current) clearTimeout(wsRetryRef.current);
+      wsRetryCount.current = 0;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase]);
+  }, [phase, id]);
 
   function connectWs() {
     if (wsRetryRef.current) clearTimeout(wsRetryRef.current);
