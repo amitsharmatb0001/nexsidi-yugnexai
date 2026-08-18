@@ -166,7 +166,19 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // + ~8 build-fix iterations = 40 (cap). 60 gives a safe 20-iteration
     // margin. Non-retryable failure is already in place (generatorFailure()),
     // so a cap hit costs one attempt only.
-    maxIterations: 60,
+    // 2026-08-18: raised to 90. Measured live in RateGate (6 pages, dual-role
+    // auth, admin dashboard, interactive landing simulation — a genuinely
+    // larger app than nextech7) — 60 was hit FOUR consecutive times, always
+    // during real, convergent end-to-end verification (a full browser-driven
+    // sign-up/admin flow plus methodical backend investigation of a real
+    // auth issue), never a repeating/circular pattern. Since each cap hit
+    // starts a fresh attempt with no progress carried over (by design — see
+    // the note above), a budget that's merely tight for a project's actual
+    // size produces the SAME futile outcome every single retry, not
+    // self-healing variance. 90 gives real margin for larger, multi-role
+    // apps while keeping the existing "cap hit costs one attempt" safety net
+    // for genuinely pathological cases.
+    maxIterations: 90,
   });
 
   return {
