@@ -97,6 +97,34 @@ export function applyMigrationsToDeployedDb(buildDir: string): boolean {
     const user = (() => { try { return sh(`docker exec ${cid} printenv POSTGRES_USER`); } catch { return ""; } })() || "postgres";
     const dbName = (() => { try { return sh(`docker exec ${cid} printenv POSTGRES_DB`); } catch { return ""; } })() || user;
 
+    // 2026-08-19: real bug found live (project 6ec9787d5a81, RateGate) — a
+    // Gemini-fallback redeploy cycle rewrote docker-compose.yml with a
+    // DIFFERENT POSTGRES_DB value ("app") than the one the Postgres data
+    // volume was actually initialized with ("rategate"). Postgres's own
+    // image only runs its init scripts (including CREATE DATABASE
+    // $POSTGRES_DB) on a genuinely empty data directory — on a REUSED
+    // volume (docker compose down without -v), changing POSTGRES_DB in the
+    // compose file has no effect on the already-initialized cluster, so
+    // every subsequent `docker exec ... -d $dbName` call below failed
+    // outright with "database does not exist" (confirmed live via direct
+    // psql), which every downstream layer (schema reset, migration apply)
+    // misread as a generic "command failed" and identically re-failed on
+    // retry, correctly tripping stuck-detection but for an entirely
+    // fixable cause. The LLM-authored compose file is not a reliable
+    // source of truth for what's actually in the volume — verify the
+    // target database exists (via the "postgres" maintenance db, which
+    // always exists) and create it if not, rather than trusting the env
+    // var blindly.
+    try {
+      const exists = sh(`docker exec ${cid} psql -U ${user} -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='${dbName}'"`) === "1";
+      if (!exists) {
+        sh(`docker exec ${cid} psql -U ${user} -d postgres -c "CREATE DATABASE ${dbName}"`);
+        console.log(`[riya] target database "${dbName}" did not exist in the deployed Postgres volume — created it`);
+      }
+    } catch (e) {
+      console.warn(`[riya] database-exists check/create failed (non-fatal, continuing): ${String(e).split("\n")[0]}`);
+    }
+
     const countTables = (): number => {
       try {
         return parseInt(sh(`docker exec ${cid} psql -U ${user} -d ${dbName} -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"`), 10) || 0;
