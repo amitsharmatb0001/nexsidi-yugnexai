@@ -166,39 +166,50 @@ chatRouter.post("/", async (c) => {
 
 // ── GET /api/chat/:sessionId — load conversation history ─────────────────────
 chatRouter.get("/:sessionId", async (c) => {
-  const state = await loadSession(c.req.param("sessionId"));
-  if (!state) {
-    // 2026-08-17: real bug found live (gatherly1) — PlannerState lives in an
-    // in-memory Map (agents/planner/src/session.ts) with no persistence. ANY
-    // api restart during an active build silently reverts this project's
-    // page back to the empty "planning" chat view, even though the project
-    // is genuinely mid-build (or done) on durable storage — the projects
-    // table, and the Temporal workflow itself, are both completely
-    // unaffected by an api restart. Falling back to the durable project
-    // record when the ephemeral chat session is gone lets the page correctly
-    // resume into the live build view instead of looking like the project
-    // was never started. sessionId IS the project id for every build that
-    // has actually been triggered (see normalizeProjectId above).
-    const [project] = await db
-      .select({ id: projects.id, status: projects.status })
-      .from(projects)
-      .where(eq(projects.id, c.req.param("sessionId")))
-      .limit(1);
-    if (project) {
-      return c.json({
-        messages:  [],
-        phase:     project.status === "done" ? "done" : "building",
-        projectId: project.id,
-        buildPlan: null,
-      });
-    }
-    return c.json({ messages: [], phase: "planning", projectId: null });
-  }
+  const sessionId = c.req.param("sessionId");
+  const state = await loadSession(sessionId);
+
   // Return only display-safe messages — strip tool messages and tool_calls internal fields.
   // The planner uses state.messages (full) for context; the web app only needs text content.
-  const displayMessages = state.messages
-    .filter(m => m.role === "user" || (m.role === "assistant" && m.content?.trim()))
-    .map(m => ({ role: m.role, content: m.content, ts: m.ts }));
+  const displayMessages = state
+    ? state.messages
+        .filter(m => m.role === "user" || (m.role === "assistant" && m.content?.trim()))
+        .map(m => ({ role: m.role, content: m.content, ts: m.ts }))
+    : [];
+
+  // 2026-08-17: real bug found live (gatherly1) — trigger_build correctly
+  // inserts the projects row and starts the Temporal workflow, but a
+  // separate real bug left THIS session's own state.phase stuck at
+  // "planning" even once the project was genuinely building (confirmed
+  // live: the DB row and Temporal workflow both existed and progressed
+  // normally the whole time this session's stored phase never changed —
+  // Redis session data existing but wrong, not missing). The build page
+  // reads phase to decide whether to show the live workspace or the empty
+  // planning chat, so a stale "planning" here silently reverted an
+  // in-progress build's page back to "never started". The projects table
+  // was confirmed reliable throughout (direct Temporal checks) while the
+  // chat session's self-reported phase was not — so once a project row
+  // exists for this id, ITS status is authoritative for phase/projectId,
+  // never the ephemeral chat state's own claim. sessionId IS the project id
+  // for any build that was actually triggered (see normalizeProjectId
+  // above).
+  const [project] = await db
+    .select({ id: projects.id, status: projects.status })
+    .from(projects)
+    .where(eq(projects.id, sessionId))
+    .limit(1);
+
+  if (project) {
+    return c.json({
+      messages:  displayMessages,
+      phase:     project.status === "done" ? "done" : "building",
+      projectId: project.id,
+      buildPlan: state?.buildPlan ?? null,
+    });
+  }
+
+  if (!state) return c.json({ messages: [], phase: "planning", projectId: null });
+
   return c.json({
     messages:  displayMessages,
     phase:     state.phase,
