@@ -59,6 +59,15 @@ const IGNORED = new Set([
   ".turbo", ".cache", "__pycache__",
 ]);
 
+/**
+ * Normalises a filesystem-relative path to forward slashes for the wire.
+ * Exported for direct unit testing, since the surrounding walker needs a real
+ * directory tree to exercise.
+ */
+export function toPosixPath(p: string): string {
+  return p.split(/[\\/]+/).filter(Boolean).join("/");
+}
+
 async function buildTree(dir: string, base: string): Promise<FileNode[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const nodes: FileNode[] = [];
@@ -67,7 +76,16 @@ async function buildTree(dir: string, base: string): Promise<FileNode[]> {
     if (IGNORED.has(entry.name)) continue;
 
     const abs  = join(dir, entry.name);
-    const rel  = abs.slice(base.length + 1);  // relative to project root
+    // 2026-08-19: real bug found live — `rel` came straight off join(), so on
+    // Windows every emitted path used backslashes ("backend\src\app.ts").
+    // That is an OS detail leaking into a wire format: the web client splits
+    // these on "/" to build its folder tree, so nothing ever nested and the
+    // explorer rendered one flat row per file with the raw backslash path as
+    // its name. The same string is also handed back as ?path= on the file
+    // endpoint, so the wire format has to be platform-independent regardless.
+    // resolve() on the read side accepts either separator, so normalising
+    // here is safe for existing callers.
+    const rel  = toPosixPath(abs.slice(base.length + 1));  // relative to project root
 
     if (entry.isDirectory()) {
       nodes.push({

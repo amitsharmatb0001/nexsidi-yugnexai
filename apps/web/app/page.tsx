@@ -7,8 +7,8 @@ export default function Home() {
     <main className={s.root}>
       <nav className={s.nav}>
         <div className={s.navBrand}>
-          <div className={s.navLogo}>N</div>
-          NexSidi
+          <div className={s.navLogo}>Y</div>
+          YugNex
         </div>
         <Link href="/sign-in" className={s.signInBtn}>Sign in</Link>
       </nav>
@@ -28,7 +28,7 @@ export default function Home() {
         />
 
         <p className={s.subline}>
-          NexSidi turns a plain-English description into a complete,
+          YugNex turns a plain-English description into a complete,
           working application — design, backend, database, deployment.
           No setup. No config. One prompt.
         </p>

@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState, use, useCallback } from "react";
 import Link from "next/link";
 import s from "./build.module.css";
+import Console from "../../../components/console/Console";
+import type { ApiNode } from "../../../components/console/FileExplorer";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -955,8 +957,8 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   const [stage,           setStage]           = useState("spec");
   const [stageMessage,    setStageMessage]    = useState("Initializing...");
   const [result,          setResult]          = useState<ProjectResult | null>(null);
-  const [tree,            setTree]            = useState<TreeNode[]>([]);
-  const [selFile,         setSelFile]         = useState<TreeNode | null>(null);
+  const [tree,            setTree]            = useState<ApiNode[]>([]);
+  const [selFile,         setSelFile]         = useState<ApiNode | null>(null);
   const [fileContent,     setFileContent]     = useState<string | null>(null);
   const [fileLoading,     setFileLoading]     = useState(false);
   const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([
@@ -1266,16 +1268,16 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
     try {
       const r = await fetch(`${API}/api/artifacts/${id}/tree`);
       if (!r.ok) return;
-      const data = await r.json() as { tree: any[] };
-      if (data.tree?.length) {
-        const flatten = (nodes: any[]): FileNode[] =>
-          nodes.flatMap(n =>
-            n.type === "directory"
-              ? flatten(n.children ?? [])
-              : [{ path: n.path, type: "file" as const, ext: n.path.split(".").pop() }]
-          );
-        setTree(buildTree(flatten(data.tree)));
-      }
+      const data = await r.json() as { tree: ApiNode[] };
+      // 2026-08-19: this used to flatten the API's already-nested tree down to
+      // a file list and then rebuild the hierarchy client-side by splitting
+      // each path on "/". On Windows the API emitted backslash paths, so the
+      // split never matched and every file landed at the root as a single row
+      // labelled with its full raw path ("backend\src\controllers\admin.ts").
+      // The separator is now normalised server-side (see toPosixPath in
+      // apps/api/src/routes/artifacts.ts), and the nesting the API already
+      // provides is used directly rather than being discarded and guessed at.
+      if (data.tree?.length) setTree(data.tree);
     } catch {}
   }
 
@@ -1346,8 +1348,8 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       <div className={s.root} style={{ height: "100vh", overflow: "hidden" }}>
         <nav className={s.nav} style={{ height: "50px", borderBottom: "1px solid var(--nx-border)", background: "var(--nx-bg-elevated)", padding: "0 20px" }}>
           <Link href="/dashboard" className={s.navBrand}>
-            <div className={s.navLogo}>N</div>
-            NexSidi
+            <div className={s.navLogo}>Y</div>
+            YugNex
           </Link>
           <span className={s.navSep}>/</span>
           <span className={s.navProject}>New Project</span>
@@ -1362,9 +1364,9 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
           {/* LEFT: Chat */}
           <div style={{ width: "50%", borderRight: "1px solid var(--nx-border)", display: "flex", flexDirection: "column" }}>
             <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--nx-border)", background: "var(--nx-bg-elevated)", display: "flex", alignItems: "center", gap: "10px" }}>
-              <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: "var(--nx-accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", color: "var(--nx-text-inv)", fontWeight: 700 }}>N</div>
+              <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: "var(--nx-accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", color: "var(--nx-text-inv)", fontWeight: 700 }}>Y</div>
               <div>
-                <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--nx-text)" }}>NexSidi Assistant</div>
+                <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--nx-text)" }}>YugNex Assistant</div>
                 <div style={{ fontSize: "11px", color: "var(--nx-text3)" }}>Describe your app — I'll plan and build it</div>
               </div>
             </div>
@@ -1483,189 +1485,39 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   }
 
   // ── Render: Build / IDE Mode ──────────────────────────────────────────────
+  // ── Render: Live Console ──────────────────────────────────────────────────
+  // 2026-08-19: replaced the previous fixed three-panel build view. That view
+  // could only ever show a flat file list, a raw text terminal and a five-dot
+  // progress bar, because the structured event feed it was designed around
+  // had no producer on the path every agent actually runs (see emitEvent in
+  // packages/agent-runtime/src/gemini-loop.ts). With real events flowing, the
+  // console renders per-workstream activity, live model telemetry and the
+  // file tree as it is written.
 
   return (
-    <div className={s.root} style={{ height: "100vh", overflow: "hidden" }}>
-      <nav className={s.nav} style={{ height: "50px", borderBottom: "1px solid var(--nx-border)", background: "var(--nx-bg-elevated)", padding: "0 20px" }}>
-        <Link href="/dashboard" className={s.navBrand}>
-          <div className={s.navLogo}>N</div>
-          NexSidi Workspace
-        </Link>
-        <span className={s.navSep}>/</span>
-        <span className={s.navProject}>{result?.name || buildPlan?.appName || `Project ${id.slice(0, 8)}`}</span>
-        <div className={s.navSpacer} />
-        <div style={{ marginRight: "20px", display: "flex", alignItems: "center", gap: "8px" }}>
-          <span className={`${s.statusDot} ${s[status === "building" ? "building" : isDone ? "done" : "waiting"]}`} />
-          <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--nx-accent-text)" }}>{stageMessage}</span>
-        </div>
-        {isDone && result?.appUrl && (
-          <a href={result.appUrl} target="_blank" rel="noreferrer" className={`${s.navBtn} ${s.primary}`}>
-            <i className="nxi nxi-link" style={{ fontSize: 12 }} />
-            Open App
-          </a>
-        )}
-      </nav>
-
-      <div style={{ display: "flex", height: "calc(100vh - 50px)", width: "100vw", background: "var(--nx-bg-base)" }}>
-        {/* PANEL 1: File Explorer (20%) */}
-        <div style={{ width: "20%", minWidth: "220px", borderRight: "1px solid var(--nx-border)", background: "var(--nx-bg-elevated)", display: "flex", flexDirection: "column" }}>
-          <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--nx-border)", fontSize: "11px", fontWeight: "bold", textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--nx-text3)", display: "flex", justifyContent: "space-between" }}>
-            <span>Explorer</span>
-            {tree.length > 0 && <span style={{ fontSize: "10px", color: "var(--nx-green)" }}>{tree.length} items</span>}
-          </div>
-          <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
-            {!isDone && tree.length === 0 ? (
-              <div style={{ padding: "16px", color: "var(--nx-text3)", fontSize: "12px" }}>
-                <div style={{ marginBottom: "12px" }}>Files appear here during generation...</div>
-                {[60, 80, 45, 70].map((w, i) => (
-                  <div key={i} className={s.skeletonLine} style={{ width: `${w}%`, margin: "6px 0", height: "10px" }} />
-                ))}
-              </div>
-            ) : tree.map(node => (
-              <FileTreeNode key={node.path} node={node} depth={0} selected={selFile?.path ?? null}
-                onSelect={(n) => { setSelFile(n); if (n.type === "file") fetchFileContent(n.path); }} />
-            ))}
-          </div>
-        </div>
-
-        {/* PANEL 2: Code Editor + Terminal (45%) */}
-        <div style={{ width: "45%", borderRight: "1px solid var(--nx-border)", display: "flex", flexDirection: "column", height: "100%" }}>
-          <div style={{ height: "60%", borderBottom: "1px solid var(--nx-border)", display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "8px 16px", borderBottom: "1px solid var(--nx-border)", background: "var(--nx-bg-elevated)", display: "flex", alignItems: "center", gap: "8px" }}>
-              <i className="nxi nxi-code" style={{ color: "var(--nx-accent)" }} />
-              <span style={{ fontFamily: "var(--nx-ff-mono)", fontSize: "12px", color: "var(--nx-text)" }}>
-                {selFile ? selFile.path : "Workspace Editor"}
-              </span>
-              {fileContent && (
-                <button onClick={() => navigator.clipboard.writeText(fileContent)}
-                  style={{ marginLeft: "auto", background: "none", border: "1px solid var(--nx-border)", color: "var(--nx-text2)", fontSize: "11px", padding: "2px 8px", borderRadius: "4px", cursor: "pointer" }}>
-                  Copy
-                </button>
-              )}
-            </div>
-            <div style={{ flex: 1, overflow: "auto", padding: "16px" }}>
-              {fileLoading ? (
-                <div style={{ color: "var(--nx-text3)", fontSize: "12px", fontFamily: "var(--nx-ff-mono)" }}>Loading...</div>
-              ) : selFile ? (
-                <pre style={{ margin: 0, fontFamily: "var(--nx-ff-mono)", fontSize: "12px", color: "var(--nx-text)", lineHeight: 1.5, tabSize: 2, whiteSpace: "pre-wrap" }}>
-                  {fileContent ?? "// Empty file"}
-                </pre>
-              ) : (
-                <div style={{ height: "100%", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", color: "var(--nx-text3)", gap: "8px" }}>
-                  <i className="nxi nxi-file" style={{ fontSize: "28px" }} />
-                  <span style={{ fontSize: "13px" }}>Select a file from Explorer</span>
-                </div>
-              )}
-            </div>
-          </div>
-          <div style={{ height: "40%", display: "flex", flexDirection: "column", background: "#0D1117" }}>
-            <div style={{ padding: "6px 14px", borderBottom: "1px solid #21262D", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: "11px", fontWeight: "bold", textTransform: "uppercase", letterSpacing: "0.05em", color: "#8B949E" }}>💻 Live Output</span>
-              <button onClick={() => setTerminalEntries([])} style={{ background: "none", border: "none", color: "#8B949E", cursor: "pointer", fontSize: "11px" }}>Clear</button>
-            </div>
-            <div style={{ flex: 1, overflowY: "auto", padding: "10px 14px", fontFamily: "var(--nx-ff-mono)", fontSize: "11px", color: "#C9D1D9", lineHeight: 1.5 }}>
-              {terminalEntries.map((entry, i) =>
-                entry.kind === "log"
-                  ? <pre key={i} style={{ margin: 0, whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: "inherit" }}>{entry.text}</pre>
-                  : <ActionCard key={i} ev={entry.event} />
-              )}
-              <div ref={termEndRef} />
-            </div>
-            <BuildAnalyticsPanel entries={terminalEntries} />
-          </div>
-        </div>
-
-        {/* PANEL 3: Activity Feed during build → Live Preview when done (35%) */}
-        <div style={{ width: "35%", display: "flex", flexDirection: "column", height: "100%", background: "var(--nx-bg-elevated)" }}>
-          {/* Browser chrome — shown only when done (preview is live) */}
-          {isDone && (
-            <div style={{ height: "38px", borderBottom: "1px solid var(--nx-border)", display: "flex", alignItems: "center", padding: "0 12px", gap: "8px", flexShrink: 0 }}>
-              <div style={{ display: "flex", gap: "4px" }}>
-                <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#FF5F56" }} />
-                <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#FFBD2E" }} />
-                <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#27C93F" }} />
-              </div>
-              <button onClick={() => setPreviewKey(k => k + 1)} style={{ background: "none", border: "none", color: "var(--nx-text2)", cursor: "pointer" }} title="Refresh">🔄</button>
-              <div style={{ flex: 1, height: "24px", background: "var(--nx-bg-base)", border: "1px solid var(--nx-border)", borderRadius: "12px", display: "flex", alignItems: "center", padding: "0 10px", fontSize: "11px", color: "var(--nx-text3)", fontFamily: "var(--nx-ff-mono)" }}>
-                {result?.appUrl ?? "Waiting for deployment..."}
-              </div>
-            </div>
-          )}
-          <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-            {isDone && result?.appUrl ? (
-              <iframe key={previewKey} src={result.appUrl} style={{ width: "100%", height: "100%", border: "none" }} sandbox="allow-same-origin allow-scripts allow-forms" />
-            ) : (
-              <LiveActivityFeed
-                entries={terminalEntries}
-                stage={stage}
-                stageMessage={stageMessage}
-              />
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Modal: Spec Approval (legacy Saanvi flow) */}
-      {stage === "await_spec_approval" && buildPlanModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 1000, display: "flex", justifyContent: "center", alignItems: "center", padding: "24px" }}>
-          <div style={{ background: "var(--nx-bg-elevated)", border: "1px solid var(--nx-border)", borderRadius: "8px", maxWidth: "600px", width: "100%", padding: "24px", display: "flex", flexDirection: "column", gap: "16px", maxHeight: "80vh", overflowY: "auto" }}>
-            <h3 style={{ fontSize: "1.5rem", color: "var(--nx-accent)", fontWeight: "bold" }}>
-              📋 Review Build Plan: {buildPlanModal.appName}
-            </h3>
-            <p style={{ color: "var(--nx-text2)", fontSize: "13px" }}>{buildPlanModal.appDescription}</p>
-            <div style={{ border: "1px solid var(--nx-border)", borderRadius: "6px", padding: "12px", background: "var(--nx-bg-base)" }}>
-              <span style={{ fontSize: "11px", fontWeight: "bold", textTransform: "uppercase", color: "var(--nx-text3)" }}>Frontend Pages:</span>
-              <ul style={{ paddingLeft: "16px", margin: "8px 0 0", fontSize: "12px", color: "var(--nx-text)" }}>
-                {(buildPlanModal.frontendTasks ?? buildPlanModal.aanyaTasks ?? []).map((t, idx) => (
-                  <li key={idx} style={{ margin: "4px 0" }}>
-                    <strong>{t.description}</strong>
-                    <div style={{ fontSize: "11px", color: "var(--nx-text2)" }}>{t.outputFiles.join(", ")}</div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            {buildPlanModal.apiContract?.endpoints?.length && (
-              <div style={{ border: "1px solid var(--nx-border)", borderRadius: "6px", padding: "12px", background: "var(--nx-bg-base)" }}>
-                <span style={{ fontSize: "11px", fontWeight: "bold", textTransform: "uppercase", color: "var(--nx-text3)" }}>Backend Endpoints:</span>
-                <div style={{ fontSize: "12px", color: "var(--nx-text)", marginTop: "8px" }}>
-                  {buildPlanModal.apiContract.endpoints.map((e, idx) => (
-                    <div key={idx} style={{ margin: "4px 0", fontFamily: "var(--nx-ff-mono)" }}>
-                      <span style={{ color: "var(--nx-accent-text)" }}>{e.method}</span> {e.route}
-                      <span style={{ fontFamily: "var(--nx-ff-sans)", color: "var(--nx-text2)", marginLeft: "8px" }}>{e.description}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              <label style={{ fontSize: "11px", fontWeight: "bold", textTransform: "uppercase", color: "var(--nx-text3)" }}>Request changes (optional)</label>
-              <textarea value={changeRequest} onChange={e => setChangeRequest(e.target.value)}
-                placeholder="e.g. Add dark mode, change primary color..."
-                rows={3} style={{ background: "var(--nx-bg-base)", border: "1px solid var(--nx-border)", borderRadius: "6px", color: "var(--nx-text)", fontSize: "12px", padding: "8px 10px", resize: "vertical", outline: "none" }} />
-            </div>
-            <button onClick={approveSpec} disabled={submitting}
-              style={{ height: "40px", background: "var(--nx-accent)", border: "none", color: "var(--nx-text-inv)", borderRadius: "6px", fontWeight: "bold", cursor: "pointer", fontSize: "14px" }}>
-              {submitting ? "Approving..." : changeRequest.trim() ? "Approve with Changes" : "Approve and Build"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Deploy Approval */}
-      {stage === "await_deploy_approval" && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 1000, display: "flex", justifyContent: "center", alignItems: "center" }}>
-          <div style={{ background: "var(--nx-bg-elevated)", border: "1px solid var(--nx-border)", borderRadius: "8px", maxWidth: "480px", width: "100%", padding: "24px", display: "flex", flexDirection: "column", gap: "16px", textAlign: "center" }}>
-            <h3 style={{ fontSize: "1.5rem", color: "var(--nx-green)", fontWeight: "bold" }}>✅ Quality Checks Passed</h3>
-            <p style={{ color: "var(--nx-text2)", fontSize: "13px" }}>
-              The codebase compiled and passed quality checks. Approve to launch your local containers.
-            </p>
-            <button onClick={approveDeploy} disabled={submitting}
-              style={{ height: "44px", background: "var(--nx-green)", border: "none", color: "var(--nx-text-inv)", borderRadius: "6px", fontWeight: "bold", cursor: "pointer", fontSize: "14px", marginTop: "8px" }}>
-              {submitting ? "Deploying..." : "Approve and Launch"}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+    <Console
+      projectId={id}
+      projectName={result?.name || buildPlan?.appName || `Project ${id.slice(0, 8)}`}
+      appUrl={result?.appUrl ?? null}
+      isDone={isDone}
+      failed={status === "failed"}
+      stage={stage}
+      stageMessage={stageMessage}
+      tree={tree}
+      selectedPath={selFile?.path ?? null}
+      fileContent={fileContent}
+      fileLoading={fileLoading}
+      onSelectFile={(n) => {
+        setSelFile(n);
+        if (n.type === "file") fetchFileContent(n.path);
+      }}
+      awaitingSpecApproval={Boolean(buildPlanModal)}
+      awaitingDeployApproval={stage === "await_deploy_approval"}
+      submitting={submitting}
+      changeRequest={changeRequest}
+      onChangeRequest={setChangeRequest}
+      onApproveSpec={approveSpec}
+      onApproveDeploy={approveDeploy}
+    />
   );
 }

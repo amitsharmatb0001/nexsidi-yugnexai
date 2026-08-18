@@ -5,7 +5,7 @@ import { NexuiProvider } from "@yugnex/nexui-react/provider";
 import { ToastProvider, Toaster } from "@yugnex/nexui-react/toast";
 
 export const metadata: Metadata = {
-  title: "NexSidi — Autonomous Software Business Operator",
+  title: "YugNex — Autonomous Software Operator",
   description: "Describe your idea. Get a working app.",
 };
 

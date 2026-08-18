@@ -77,8 +77,8 @@ export default function DashboardPage() {
     <div className={s.root}>
       <nav className={s.nav}>
         <div className={s.navBrand}>
-          <div className={s.navLogo}>N</div>
-          NexSidi
+          <div className={s.navLogo}>Y</div>
+          YugNex
         </div>
         <div className={s.navRight}>
           <a href="/compare" className={s.navBtn}>
