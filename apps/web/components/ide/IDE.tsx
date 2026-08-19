@@ -16,11 +16,15 @@ const FRESH_WINDOW_MS = 45_000;
 
 type View = "files" | "changes" | "floor" | "preview";
 
+type DiffFileStatus = "added" | "modified" | "deleted";
+
 interface DiffFile {
   path: string;
   added: number | null;
   removed: number | null;
   binary: boolean;
+  status: DiffFileStatus;
+  reviewed: boolean;
 }
 
 /** One open editor tab. Content is fetched and cached per-path, independent
@@ -170,6 +174,70 @@ export default function IDE(props: IDEProps) {
 
   useEffect(() => { if (view === "changes") void loadDiff(); }, [view, loadDiff]);
 
+  // Which single row is showing its inline "revert this file?" confirm, or
+  // "__all__" when the toolbar's Reject all is showing its own confirm.
+  const [confirmReject, setConfirmReject] = useState<string | null>(null);
+
+  const acceptFile = useCallback(async (path: string) => {
+    setDiff((prev) => prev.map((f) => (f.path === path ? { ...f, reviewed: true } : f)));
+    try {
+      await fetch(`${API}/api/artifacts/${projectId}/diff/accept`, {
+        method: "POST", credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+    } catch {
+      // Accept is purely a review mark — a failed request just means the
+      // next full reload won't remember it, not that anything broke.
+    }
+  }, [projectId]);
+
+  const acceptAll = useCallback(async () => {
+    setDiff((prev) => prev.map((f) => ({ ...f, reviewed: true })));
+    try {
+      await fetch(`${API}/api/artifacts/${projectId}/diff/accept-all`, { method: "POST", credentials: "include" });
+    } catch {
+      // Same as acceptFile — no rollback needed for a review mark.
+    }
+  }, [projectId]);
+
+  const rejectFile = useCallback(async (path: string) => {
+    setConfirmReject(null);
+    const prevDiff = diff;
+    setDiff((prev) => prev.filter((f) => f.path !== path));
+    if (patchPath === path) { setPatchPath(null); setPatch(null); }
+    closeTab(path);
+    try {
+      const r = await fetch(`${API}/api/artifacts/${projectId}/diff/reject`, {
+        method: "POST", credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      if (!r.ok) throw new Error();
+    } catch {
+      // The server never actually reverted the file — the optimistic
+      // removal was wrong, so put it back rather than silently disagree
+      // with what's really on disk.
+      setDiff(prevDiff);
+    }
+  }, [projectId, diff, patchPath, closeTab]);
+
+  const rejectAll = useCallback(async () => {
+    setConfirmReject(null);
+    const prevDiff = diff;
+    const paths = diff.map((f) => f.path);
+    setDiff([]);
+    setPatchPath(null);
+    setPatch(null);
+    paths.forEach(closeTab);
+    try {
+      const r = await fetch(`${API}/api/artifacts/${projectId}/diff/reject-all`, { method: "POST", credentials: "include" });
+      if (!r.ok) throw new Error();
+    } catch {
+      setDiff(prevDiff);
+    }
+  }, [projectId, diff, closeTab]);
+
   const openPatch = useCallback(async (path: string) => {
     setPatchPath(path);
     setPatch(null);
@@ -256,6 +324,25 @@ export default function IDE(props: IDEProps) {
               {view === "changes" ? diff.length : tree.length}
             </span>
           </div>
+          {view === "changes" && diff.length > 0 && (
+            confirmReject === "__all__" ? (
+              <div className={s.diffToolbarConfirm}>
+                <span>Revert all {diff.length} files?</span>
+                <span className={s.diffConfirmSpacer} />
+                <button type="button" className={s.diffConfirmCancel} onClick={() => setConfirmReject(null)}>Cancel</button>
+                <button type="button" className={s.diffConfirmDanger} onClick={rejectAll}>Revert all</button>
+              </div>
+            ) : (
+              <div className={s.diffToolbar}>
+                <button type="button" className={s.diffToolbarBtn} onClick={acceptAll}>Accept all</button>
+                <button type="button" className={`${s.diffToolbarBtn} ${s.diffToolbarBtnDanger}`}
+                  onClick={() => setConfirmReject("__all__")}>
+                  Reject all
+                </button>
+              </div>
+            )
+          )}
+
           <div className={s.sideBody}>
             {view === "changes" ? (
               diff.length === 0 ? (
@@ -263,23 +350,49 @@ export default function IDE(props: IDEProps) {
                   <div className={s.emptyHint}>No file changes recorded for this build.</div>
                 </div>
               ) : (
-                diff.map((f) => (
-                  <button key={f.path} type="button" onClick={() => openPatch(f.path)}
-                    className={`${s.row} ${patchPath === f.path ? s.rowSelected : ""}`} title={f.path}>
-                    <span className={s.mark} style={{ color: fileMark(baseName(f.path)).color }}>
-                      {fileMark(baseName(f.path)).tag}
-                    </span>
-                    <span className={s.name}>{baseName(f.path)}</span>
-                    <span className={s.diffStat}>
-                      {f.binary ? <span className={s.del}>bin</span> : (
-                        <>
-                          {f.added ? <span className={s.add}>+{f.added}</span> : null}
-                          {f.removed ? <span className={s.del}>−{f.removed}</span> : null}
-                        </>
-                      )}
-                    </span>
-                  </button>
-                ))
+                diff.map((f) =>
+                  confirmReject === f.path ? (
+                    <div key={f.path} className={s.diffConfirmRow}>
+                      <span className={s.diffConfirmText}>Revert {baseName(f.path)}?</span>
+                      <button type="button" className={s.diffConfirmCancel} onClick={() => setConfirmReject(null)}>Cancel</button>
+                      <button type="button" className={s.diffConfirmDanger} onClick={() => rejectFile(f.path)}>Revert</button>
+                    </div>
+                  ) : (
+                    <div key={f.path} title={f.path}
+                      onClick={() => openPatch(f.path)}
+                      className={[s.row, patchPath === f.path ? s.rowSelected : "", f.reviewed ? s.rowReviewed : ""].filter(Boolean).join(" ")}>
+                      <span className={[s.diffStatusBadge, statusBadgeClass(f.status)].join(" ")}>
+                        {statusLetter(f.status)}
+                      </span>
+                      <span className={s.mark} style={{ color: fileMark(baseName(f.path)).color }}>
+                        {fileMark(baseName(f.path)).tag}
+                      </span>
+                      <span className={s.name}>{baseName(f.path)}</span>
+                      <span className={s.diffStat}>
+                        {f.binary ? <span className={s.del}>bin</span> : (
+                          <>
+                            {f.added ? <span className={s.add}>+{f.added}</span> : null}
+                            {f.removed ? <span className={s.del}>−{f.removed}</span> : null}
+                          </>
+                        )}
+                      </span>
+                      <div className={s.diffRowActions}>
+                        {f.reviewed ? (
+                          <span className={s.reviewedCheck} title="Reviewed"><CheckIcon /></span>
+                        ) : (
+                          <button type="button" className={s.iconBtnSm} title="Accept"
+                            onClick={(e) => { e.stopPropagation(); acceptFile(f.path); }}>
+                            <CheckIcon />
+                          </button>
+                        )}
+                        <button type="button" className={`${s.iconBtnSm} ${s.iconBtnDangerSm}`} title="Revert"
+                          onClick={(e) => { e.stopPropagation(); setConfirmReject(f.path); }}>
+                          <RevertIcon />
+                        </button>
+                      </div>
+                    </div>
+                  ),
+                )
               )
             ) : tree.length === 0 ? (
               <div className={s.empty}>
@@ -429,6 +542,31 @@ function Glyph({ d, stroke }: { d: string; stroke?: boolean }) {
 function baseName(p: string): string {
   const i = p.lastIndexOf("/");
   return i === -1 ? p : p.slice(i + 1);
+}
+
+function statusLetter(status: DiffFileStatus): string {
+  return status === "added" ? "N" : status === "deleted" ? "D" : "M";
+}
+
+function statusBadgeClass(status: DiffFileStatus): string {
+  return status === "added" ? s.statusAdded : status === "deleted" ? s.statusDeleted : s.statusModified;
+}
+
+function CheckIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 8.5 6.2 12 13 4" />
+    </svg>
+  );
+}
+
+function RevertIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 4v4h4" />
+      <path d="M4.5 8a5 5 0 1 1 1.5 3.5" />
+    </svg>
+  );
 }
 
 function Tree({ nodes, depth, expanded, selected, fresh, writing, activeDirs, onToggle, onSelect }: {

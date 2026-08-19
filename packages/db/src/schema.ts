@@ -287,6 +287,33 @@ export const buildRuns = pgTable("build_runs", {
   }).onDelete("cascade"),
 ]);
 
+// ─── Diff Reviews (accept/reject state for the IDE's Changes view) ───────────
+// Only "accepted" is ever stored — a file the user marked reviewed with
+// nothing to change. "Rejected" is an action (git checkout/rm of the
+// baseline state + a commit — see apps/api/src/routes/artifacts.ts), not a
+// status: once rejected the file has no diff against the baseline, so
+// there is nothing left to persist. Scoped to (projectId, baseline, path,
+// contentHash) — contentHash is the file's git blob hash at HEAD (or the
+// literal "deleted" for a removed file), so "accepted" means exactly one
+// specific version of that file's diff. Baseline alone isn't enough: two
+// different diffs for the same path can share one still-unchanged baseline
+// (see 0008_diff_reviews_content_hash.sql for the live bug this closed).
+export const diffReviews = pgTable("diff_reviews", {
+  id:          uuid("id").primaryKey().defaultRandom(),
+  projectId:   varchar("project_id", { length: 12 }).notNull(),
+  baseline:    char("baseline", { length: 7 }).notNull(),
+  path:        text("path").notNull(),
+  contentHash: text("content_hash").notNull(),
+  reviewedAt:  timestamp("reviewed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("diff_reviews_project_baseline_path_hash_key").on(t.projectId, t.baseline, t.path, t.contentHash),
+  foreignKey({
+    name: "diff_reviews_project_id_fkey",
+    columns: [t.projectId],
+    foreignColumns: [projects.id],
+  }).onDelete("cascade"),
+]);
+
 export const workspaceEvents = pgTable("workspace_events", {
   cursor: bigserial("cursor", { mode: "number" }).primaryKey(),
   id: uuid("id").notNull().defaultRandom(),

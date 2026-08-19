@@ -52,6 +52,18 @@ const tabCloseClass = css({
   "&:hover": { background: theme.color.muted },
 });
 
+// Same "define first, reference via computed key" technique — hidden until
+// the Changes row itself is hovered (see `row`'s own hover rule below).
+const diffRowActionsClass = css({
+  display: "flex",
+  alignItems: "center",
+  gap: "1px",
+  flex: "none",
+  marginLeft: "auto",
+  opacity: 0,
+  transition: `opacity ${theme.duration.fast} ${ease}`,
+});
+
 export const ide = {
   root: css({
     display: "grid",
@@ -181,8 +193,10 @@ export const ide = {
     padding: "3.5px 10px",
     fontSize: theme.fontSize.sm,
     color: theme.color.mutedForeground,
+    cursor: "pointer",
     transition: `background ${theme.duration.fast} ${ease}`,
     "&:hover": { background: theme.color.muted },
+    [`&:hover .${diffRowActionsClass}`]: { opacity: 1 },
   }),
   rowSelected: css({ background: theme.color.muted, color: theme.color.foreground }),
   caret: css({
@@ -241,7 +255,6 @@ export const ide = {
     animation: `${writePulse} 1.1s ${ease} infinite`,
   }),
   diffStat: css({
-    marginLeft: "auto",
     display: "flex",
     gap: "7px",
     fontFamily: "var(--nx-ff-mono)",
@@ -250,6 +263,89 @@ export const ide = {
   }),
   add: css({ color: theme.color.success }),
   del: css({ color: theme.color.destructive }),
+
+  // ── Changes: accept/reject ───────────────────────────────────────────
+  diffToolbar: css({
+    display: "flex",
+    gap: theme.space[2],
+    padding: "0 14px 10px",
+  }),
+  diffToolbarBtn: css({
+    flex: 1,
+    padding: "5px 0",
+    borderRadius: theme.radius.sm,
+    border: `1px solid ${theme.color.border}`,
+    fontSize: "12px",
+    fontWeight: theme.fontWeight.medium,
+    color: theme.color.mutedForeground,
+    transition: `background ${theme.duration.fast} ${ease}, color ${theme.duration.fast} ${ease}`,
+    "&:hover": { background: theme.color.muted, color: theme.color.foreground },
+  }),
+  diffToolbarBtnDanger: css({
+    "&:hover": { background: `color-mix(in srgb, ${theme.color.destructive} 10%, transparent)`, color: theme.color.destructive },
+  }),
+  diffToolbarConfirm: css({
+    display: "flex",
+    alignItems: "center",
+    gap: theme.space[2],
+    padding: "8px 14px",
+    margin: "0 0 10px",
+    fontSize: "12px",
+    color: theme.color.foreground,
+    background: `color-mix(in srgb, ${theme.color.destructive} 8%, transparent)`,
+  }),
+  diffConfirmSpacer: css({ flex: 1 }),
+
+  diffStatusBadge: css({
+    flex: "none",
+    width: "13px",
+    fontFamily: "var(--nx-ff-mono)",
+    fontSize: "10px",
+    fontWeight: theme.fontWeight.semibold,
+    textAlign: "center",
+  }),
+  statusAdded: css({ color: theme.color.success }),
+  statusModified: css({ color: theme.color.warning }),
+  statusDeleted: css({ color: theme.color.destructive }),
+
+  rowReviewed: css({ opacity: 0.5 }),
+  reviewedCheck: css({ flex: "none", color: theme.color.success, display: "inline-flex" }),
+
+  // Defined ahead of `row` so its resolved class name can be targeted by a
+  // descendant hover selector below, same technique as `tabClose`.
+  diffRowActions: diffRowActionsClass,
+  iconBtnSm: css({
+    display: "grid",
+    placeItems: "center",
+    width: "20px",
+    height: "20px",
+    borderRadius: theme.radius.sm,
+    color: inkQuiet,
+    transition: `color ${theme.duration.fast} ${ease}, background ${theme.duration.fast} ${ease}`,
+    "&:hover": { color: theme.color.mutedForeground, background: theme.color.muted },
+  }),
+  iconBtnDangerSm: css({
+    "&:hover": { color: theme.color.destructive, background: `color-mix(in srgb, ${theme.color.destructive} 10%, transparent)` },
+  }),
+
+  diffConfirmRow: css({
+    display: "flex",
+    alignItems: "center",
+    gap: theme.space[2],
+    padding: "3.5px 10px",
+    fontSize: "12px",
+    background: `color-mix(in srgb, ${theme.color.destructive} 8%, transparent)`,
+  }),
+  diffConfirmText: css({ flex: 1, color: theme.color.foreground, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
+  diffConfirmCancel: css({ color: inkQuiet, padding: "2px 6px", "&:hover": { color: theme.color.mutedForeground } }),
+  diffConfirmDanger: css({
+    padding: "2px 8px",
+    borderRadius: theme.radius.sm,
+    fontWeight: theme.fontWeight.semibold,
+    background: theme.color.destructive,
+    color: theme.color.destructiveForeground,
+    "&:hover": { opacity: 0.85 },
+  }),
 
   // ── Editor ───────────────────────────────────────────────────────────
   editor: css({ display: "grid", gridTemplateRows: "auto 1fr", minHeight: 0, minWidth: 0 }),
