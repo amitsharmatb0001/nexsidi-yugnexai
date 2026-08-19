@@ -1,46 +1,27 @@
 "use client";
 
-/**
- * YugNex mark — three strokes converging to a single point.
- *
- * The convergence is the product idea, not decoration: many independent
- * workstreams resolving into one delivered thing. Drawn on a 24-unit grid so
- * it stays crisp at the 20–22px it is actually used at, with butt caps and a
- * single stroke width so it reads as one continuous form rather than three
- * separate lines.
- */
+// The real YugNex mark (public/brand/yugnex-mark.png — the gold arch-and-N
+// monogram, sourced from yugnex-website's own asset set) with a soft
+// breathing halo behind it. Replaces the earlier placeholder line-drawing
+// that stood in before the brand asset was available.
+import { logo as s } from "./YugnexLogo.styles";
+
 export default function YugnexLogo({ size = 22, title }: { size?: number; title?: string }) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      role={title ? "img" : "presentation"}
-      aria-label={title}
-      aria-hidden={title ? undefined : true}
-    >
-      {/* Two outer strokes fall inward to the stem's top. */}
-      <path
-        d="M4 4 L12 13.5"
-        stroke="currentColor"
-        strokeWidth="2.1"
-        strokeLinecap="round"
+    <span className={s.mark} style={{ width: size, height: size }}>
+      <span className={s.halo} aria-hidden="true" />
+      {/* eslint-disable-next-line @next/next/no-img-element -- a fixed local
+          brand asset at small fixed sizes; next/image's overhead buys nothing here. */}
+      <img
+        src="/brand/yugnex-mark.png"
+        alt={title ?? ""}
+        role={title ? "img" : "presentation"}
+        aria-hidden={title ? undefined : true}
+        width={size}
+        height={size}
+        className={s.img}
+        style={{ width: size, height: size }}
       />
-      <path
-        d="M20 4 L12 13.5"
-        stroke="currentColor"
-        strokeWidth="2.1"
-        strokeLinecap="round"
-      />
-      {/* The stem — what the three become. */}
-      <path
-        d="M12 13.5 L12 20"
-        stroke="currentColor"
-        strokeWidth="2.1"
-        strokeLinecap="round"
-        opacity="0.55"
-      />
-    </svg>
+    </span>
   );
 }

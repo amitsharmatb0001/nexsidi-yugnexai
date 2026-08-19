@@ -386,6 +386,10 @@ export const ide = {
     "&:focus": { borderColor: theme.color.ring },
   }),
 
+  // Glow only on hover/focus — a permanent halo on a neutral foreground
+  // button would fight the button's own colour rather than accent it.
+  // Modelled on yugnex.com's .glow-button-primary (box-shadow: 0 0 15px
+  // <accent>40) with the same alpha, keyed to the platform's primary token.
   btn: css({
     padding: "7px 14px",
     borderRadius: theme.radius.sm,
@@ -394,8 +398,12 @@ export const ide = {
     whiteSpace: "nowrap",
     background: theme.color.foreground,
     color: theme.color.background,
-    transition: `opacity ${theme.duration.base} ${ease}`,
-    "&:hover:not(:disabled)": { opacity: 0.85 },
+    boxShadow: "0 0 0 0 transparent",
+    transition: `opacity ${theme.duration.base} ${ease}, box-shadow ${theme.duration.base} ${ease}`,
+    "&:hover:not(:disabled)": {
+      opacity: 0.85,
+      boxShadow: `0 0 16px color-mix(in srgb, ${theme.color.primary} 45%, transparent)`,
+    },
     "&:disabled": { opacity: 0.4, cursor: "not-allowed" },
   }),
   btnGhost: css({

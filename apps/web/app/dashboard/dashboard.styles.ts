@@ -40,6 +40,7 @@ const rowActionsClass = css({
 
 export const dashboard = {
   root: css({
+    position: "relative",
     display: "grid",
     gridTemplateRows: "48px 1fr",
     minHeight: "100dvh",
@@ -51,6 +52,8 @@ export const dashboard = {
 
   // ── Title bar — identical to the workspace's ──────────────────────────
   nav: css({
+    position: "relative",
+    zIndex: 1,
     display: "flex",
     alignItems: "center",
     gap: "14px",
@@ -138,6 +141,8 @@ export const dashboard = {
 
   // ── Main ─────────────────────────────────────────────────────────────
   main: css({
+    position: "relative",
+    zIndex: 1,
     width: "100%",
     maxWidth: "760px",
     margin: "0 auto",
@@ -186,6 +191,8 @@ export const dashboard = {
     animation: `${pulse} 1.4s ${ease} infinite`,
   }),
 
+  // Glow only on hover — matches the IDE's own gate button (IDE.styles.ts
+  // `btn`), both modelled on yugnex.com's .glow-button-primary treatment.
   newBtn: css({
     display: "inline-flex",
     alignItems: "center",
@@ -197,8 +204,12 @@ export const dashboard = {
     fontSize: "12.5px",
     fontWeight: theme.fontWeight.semibold,
     whiteSpace: "nowrap",
-    transition: `opacity ${theme.duration.base} ${ease}`,
-    "&:hover": { opacity: 0.86 },
+    boxShadow: "0 0 0 0 transparent",
+    transition: `opacity ${theme.duration.base} ${ease}, box-shadow ${theme.duration.base} ${ease}`,
+    "&:hover": {
+      opacity: 0.86,
+      boxShadow: `0 0 16px color-mix(in srgb, ${theme.color.primary} 45%, transparent)`,
+    },
   }),
 
   // ── Projects ─────────────────────────────────────────────────────────

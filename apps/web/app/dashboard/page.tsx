@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import YugnexLogo from "../../components/ide/YugnexLogo";
+import AmbientField from "../../components/effects/AmbientField";
 import { dashboard as s } from "./dashboard.styles";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
@@ -169,6 +170,7 @@ export default function DashboardPage() {
 
   return (
     <div className={s.root}>
+      <AmbientField />
       <nav className={s.nav}>
         <div className={s.navBrand}>
           <span className={s.navLogo}><YugnexLogo size={19} /></span>
