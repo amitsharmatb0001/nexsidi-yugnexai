@@ -1,8 +1,13 @@
 "use client";
 
-// YugNex start screen — styles on @yugnex/core, matching the IDE's tokens
-// so entering a project is continuous rather than a jump between two
-// products. Same 1:1 key-name convention as components/ide/IDE.styles.ts.
+// YugNex dashboard — styles on @yugnex/core, matching the IDE's tokens so
+// entering a project is continuous rather than a jump between two products.
+// Same 1:1 key-name convention as components/ide/IDE.styles.ts.
+//
+// This is a dashboard now, not a "describe your app" landing page: no large
+// prompt box. Describing a new app happens in the planning chat a fresh
+// project opens into (app/build/[id]/page.tsx's phase==="planning" view) —
+// this page's job is account + the project list.
 
 import { css, keyframes, themeVars as theme } from "@yugnex/core";
 
@@ -12,6 +17,25 @@ const inkQuiet = `color-mix(in srgb, ${theme.color.mutedForeground} 62%, transpa
 const cardIn = keyframes({
   from: { opacity: 0, transform: "translateY(3px)" },
   to: { opacity: 1, transform: "none" },
+});
+
+const pulse = keyframes({
+  "0%, 100%": { opacity: 1 },
+  "50%": { opacity: 0.35 },
+});
+
+// Defined ahead of projectRow so its resolved class name can be targeted by
+// a descendant selector below — two independently-atomic classes have no
+// cascade relationship otherwise (the CSS-module ".row:hover .actions" rule
+// this replaces relied on both living in the same stylesheet). Kept visible
+// on focus too, not just hover, so the actions are reachable by keyboard.
+const rowActionsClass = css({
+  display: "flex",
+  alignItems: "center",
+  gap: "2px",
+  flex: "none",
+  opacity: 0,
+  transition: `opacity ${theme.duration.fast} ${ease}`,
 });
 
 export const dashboard = {
@@ -43,49 +67,85 @@ export const dashboard = {
   }),
   navLogo: css({ color: theme.color.primary, display: "inline-flex" }),
   navRight: css({ marginLeft: "auto", display: "flex", alignItems: "center", gap: theme.space[2] }),
-  navAvatar: css({
+
+  // ── Account ──────────────────────────────────────────────────────────
+  account: css({ position: "relative" }),
+  accountBtn: css({
+    display: "flex",
+    alignItems: "center",
+    gap: theme.space[2],
+    padding: "4px 8px 4px 4px",
+    borderRadius: theme.radius.full,
+    transition: `background ${theme.duration.base} ${ease}`,
+    "&:hover": { background: theme.color.card },
+  }),
+  accountAvatar: css({
     width: "26px",
     height: "26px",
+    flex: "none",
     display: "grid",
     placeItems: "center",
     borderRadius: theme.radius.full,
     background: theme.color.muted,
-    color: inkQuiet,
-    fontSize: "12px",
+    color: theme.color.mutedForeground,
+    fontSize: "11.5px",
+    fontWeight: theme.fontWeight.semibold,
   }),
+  accountName: css({
+    fontSize: "12.5px",
+    color: theme.color.mutedForeground,
+    maxWidth: "140px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    "@media (max-width: 620px)": { display: "none" },
+  }),
+  accountMenu: css({
+    position: "absolute",
+    top: "36px",
+    right: 0,
+    minWidth: "200px",
+    padding: theme.space[1],
+    borderRadius: theme.radius.md,
+    border: `1px solid ${theme.color.border}`,
+    background: theme.color.card,
+    boxShadow: theme.shadow.lg,
+    zIndex: theme.zIndex.dropdown,
+    animation: `${cardIn} ${theme.duration.fast} ${ease} both`,
+  }),
+  accountMenuEmail: css({
+    padding: "8px 10px 6px",
+    fontSize: "12px",
+    color: inkQuiet,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    borderBottom: `1px solid ${theme.color.border}`,
+    marginBottom: theme.space[1],
+  }),
+  accountMenuItem: css({
+    display: "block",
+    width: "100%",
+    textAlign: "left",
+    padding: "8px 10px",
+    borderRadius: theme.radius.sm,
+    fontSize: theme.fontSize.sm,
+    color: theme.color.mutedForeground,
+    transition: `background ${theme.duration.fast} ${ease}, color ${theme.duration.fast} ${ease}`,
+    "&:hover": { background: theme.color.muted, color: theme.color.foreground },
+  }),
+  accountMenuItemAlert: css({ "&:hover": { background: `color-mix(in srgb, ${theme.color.destructive} 10%, transparent)`, color: theme.color.destructive } }),
 
-  // ── Main ───────────────────────────────────────────────────────────────
+  // ── Main ─────────────────────────────────────────────────────────────
   main: css({
     width: "100%",
     maxWidth: "760px",
     margin: "0 auto",
-    padding: "76px 24px 80px",
+    padding: "56px 24px 80px",
     display: "flex",
     flexDirection: "column",
-    gap: theme.space[16] ?? "56px",
-    "@media (max-width: 620px)": {
-      padding: "44px 18px 56px",
-      gap: theme.space[10],
-    },
-  }),
-
-  // ── Prompt ───────────────────────────────────────────────────────────
-  newProjectCard: css({ display: "flex", flexDirection: "column", gap: "14px" }),
-  newProjectTitle: css({
-    fontSize: theme.fontSize["3xl"],
-    fontWeight: theme.fontWeight.semibold,
-    letterSpacing: "-0.03em",
-    textWrap: "balance",
-    "@media (max-width: 620px)": { fontSize: theme.fontSize["2xl"] },
-  }),
-  newProjectSub: css({ fontSize: theme.fontSize.sm, color: inkQuiet, lineHeight: 1.6, maxWidth: "62ch" }),
-  kbd: css({
-    marginLeft: theme.space[2],
-    padding: "1px 6px",
-    borderRadius: theme.radius.sm,
-    border: `1px solid ${theme.color.border}`,
-    fontSize: "11.5px",
-    color: inkQuiet,
+    gap: theme.space[10],
+    "@media (max-width: 620px)": { padding: "36px 18px 56px" },
   }),
 
   errorBanner: css({
@@ -99,85 +159,66 @@ export const dashboard = {
     fontSize: theme.fontSize.sm,
   }),
 
-  // The field is the page's one bold element — everything else stays quiet.
-  inputRow: css({
+  // ── Section header ───────────────────────────────────────────────────
+  sectionHead: css({
     display: "flex",
-    flexDirection: "column",
-    gap: theme.space[2.5],
-    padding: "14px",
-    borderRadius: theme.radius.lg,
-    border: `1px solid ${theme.color.border}`,
-    background: theme.color.card,
-    transition: `border-color ${theme.duration.base} ${ease}`,
-    "&:focus-within": { borderColor: `color-mix(in srgb, ${theme.color.primary} 55%, transparent)` },
-  }),
-  textarea: css({
-    width: "100%",
-    border: "none",
-    background: "none",
-    color: theme.color.foreground,
-    fontFamily: "inherit",
-    fontSize: theme.fontSize.base,
-    lineHeight: 1.55,
-    resize: "none",
-    outline: "none",
-    "&::placeholder": { color: inkQuiet },
-  }),
-
-  inputActions: css({ display: "flex", alignItems: "center", gap: theme.space[2.5] }),
-  inputHint: css({ fontSize: "12.5px", color: inkQuiet }),
-
-  buildBtn: css({
-    marginLeft: "auto",
-    padding: `${theme.space[2]} 18px`,
-    borderRadius: theme.radius.md,
-    background: theme.color.foreground,
-    color: theme.color.background,
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.semibold,
-    transition: `opacity ${theme.duration.base} ${ease}`,
-    "&:hover:not(:disabled)": { opacity: 0.86 },
-    "&:disabled": { opacity: 0.32, cursor: "not-allowed" },
-  }),
-
-  // Examples read as suggestions, not as buttons competing with Build.
-  examples: css({ display: "flex", flexWrap: "wrap", gap: "7px" }),
-  exampleChip: css({
-    padding: `${theme.space[1.5]} 11px`,
-    borderRadius: theme.radius.full,
-    border: `1px solid ${theme.color.border}`,
-    background: "none",
-    color: inkQuiet,
-    fontSize: "12.5px",
-    textAlign: "left",
-    transition: `color ${theme.duration.base} ${ease}, border-color ${theme.duration.base} ${ease}`,
-    "&:hover": { color: theme.color.mutedForeground, borderColor: theme.color.ring },
-  }),
-
-  // ── Projects ─────────────────────────────────────────────────────────
-  sectionTitle: css({
-    fontSize: "12.5px",
-    color: inkQuiet,
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: theme.space[3],
     paddingBottom: theme.space[2.5],
     borderBottom: `1px solid ${theme.color.border}`,
   }),
+  sectionTitleGroup: css({ display: "flex", alignItems: "baseline", gap: theme.space[2] }),
+  sectionTitle: css({ fontSize: theme.fontSize.lg, fontWeight: theme.fontWeight.semibold, letterSpacing: "-0.02em" }),
+  sectionCount: css({ fontSize: "12.5px", color: inkQuiet, fontVariantNumeric: "tabular-nums" }),
+  liveTicker: css({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    fontSize: "12px",
+    color: theme.color.primary,
+  }),
+  liveDot: css({
+    width: "5px",
+    height: "5px",
+    borderRadius: theme.radius.full,
+    background: "currentColor",
+    animation: `${pulse} 1.4s ${ease} infinite`,
+  }),
 
-  // A list, the way an editor lists recent work — not a grid of large cards.
+  newBtn: css({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: theme.space[1.5],
+    padding: "7px 13px",
+    borderRadius: theme.radius.md,
+    background: theme.color.foreground,
+    color: theme.color.background,
+    fontSize: "12.5px",
+    fontWeight: theme.fontWeight.semibold,
+    whiteSpace: "nowrap",
+    transition: `opacity ${theme.duration.base} ${ease}`,
+    "&:hover": { opacity: 0.86 },
+  }),
+
+  // ── Projects ─────────────────────────────────────────────────────────
   projectGrid: css({ display: "flex", flexDirection: "column" }),
 
-  projectCard: css({
+  projectRow: css({
     display: "flex",
     alignItems: "center",
     gap: "14px",
     padding: "13px 10px",
     borderBottom: `1px solid ${theme.color.border}`,
-    color: "inherit",
-    textDecoration: "none",
+    borderRadius: theme.radius.sm,
     transition: `background ${theme.duration.base} ${ease}`,
     animation: `${cardIn} ${theme.duration.slow} ${ease} both`,
-    "&:hover": { background: theme.color.card, textDecoration: "none" },
+    "&:hover": { background: theme.color.card },
+    [`&:hover .${rowActionsClass}`]: { opacity: 1 },
+    [`&:focus-within .${rowActionsClass}`]: { opacity: 1 },
   }),
 
+  projectLink: css({ display: "flex", alignItems: "center", flex: 1, minWidth: 0, gap: "14px", color: "inherit", textDecoration: "none", "&:hover": { textDecoration: "none" } }),
   projectMeta: css({ flex: 1, minWidth: 0 }),
   projectName: css({ fontSize: theme.fontSize.sm, fontWeight: theme.fontWeight.medium, color: theme.color.foreground }),
   projectDesc: css({
@@ -190,26 +231,95 @@ export const dashboard = {
     "@media (max-width: 620px)": { display: "none" },
   }),
 
-  projectStatus: css({ display: "inline-flex", alignItems: "center", gap: "7px", fontSize: "12.5px", color: inkQuiet }),
-  // Status colour is applied directly to the dot at the call site (one of
-  // the three below) rather than via a ".done .statusDot" descendant rule —
-  // that relied on two rules sharing one stylesheet, which independently
-  // hashed atomic classes don't.
-  statusDot: css({ width: "5px", height: "5px", borderRadius: theme.radius.full, background: inkQuiet }),
+  projectStatus: css({ display: "inline-flex", alignItems: "center", gap: "7px", fontSize: "12.5px", color: inkQuiet, flex: "none" }),
+  // Status colour is applied directly to the dot at the call site rather
+  // than via a ".done .statusDot" descendant rule — atomic classes don't
+  // share a stylesheet the way two CSS-module classes did.
   statusDotDone: css({ width: "5px", height: "5px", borderRadius: theme.radius.full, background: theme.color.success }),
-  statusDotBuilding: css({ width: "5px", height: "5px", borderRadius: theme.radius.full, background: theme.color.primary }),
+  statusDotBuilding: css({
+    width: "5px",
+    height: "5px",
+    borderRadius: theme.radius.full,
+    background: theme.color.primary,
+    animation: `${pulse} 1.4s ${ease} infinite`,
+  }),
   statusDotFailed: css({ width: "5px", height: "5px", borderRadius: theme.radius.full, background: theme.color.destructive }),
 
   projectTime: css({
-    width: "72px",
+    width: "64px",
     textAlign: "right",
     fontSize: "12.5px",
     color: inkQuiet,
     fontVariantNumeric: "tabular-nums",
+    flex: "none",
     "@media (max-width: 620px)": { display: "none" },
   }),
 
-  empty: css({ padding: "26px 10px", color: inkQuiet, fontSize: theme.fontSize.sm }),
+  // Row actions — hidden until the row is hovered or focused (see
+  // projectRow's own hover/focus-within rules above, which target this
+  // exact class), so the list reads clean at rest.
+  rowActions: rowActionsClass,
+  iconBtn: css({
+    display: "grid",
+    placeItems: "center",
+    width: "26px",
+    height: "26px",
+    borderRadius: theme.radius.sm,
+    color: inkQuiet,
+    transition: `color ${theme.duration.fast} ${ease}, background ${theme.duration.fast} ${ease}`,
+    "&:hover": { color: theme.color.mutedForeground, background: theme.color.muted },
+  }),
+  iconBtnDanger: css({ "&:hover": { color: theme.color.destructive, background: `color-mix(in srgb, ${theme.color.destructive} 10%, transparent)` } }),
+
+  // Inline rename
+  renameInput: css({
+    flex: 1,
+    minWidth: 0,
+    padding: "3px 7px",
+    borderRadius: theme.radius.sm,
+    border: `1px solid ${theme.color.ring}`,
+    background: theme.color.background,
+    color: theme.color.foreground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
+    outline: "none",
+  }),
+
+  // Inline delete confirm — replaces the row's content, no native dialog.
+  confirmRow: css({
+    display: "flex",
+    alignItems: "center",
+    gap: theme.space[2.5],
+    padding: "13px 10px",
+    borderBottom: `1px solid ${theme.color.border}`,
+    borderRadius: theme.radius.sm,
+    background: `color-mix(in srgb, ${theme.color.destructive} 6%, transparent)`,
+  }),
+  confirmText: css({ flex: 1, fontSize: theme.fontSize.sm, color: theme.color.foreground }),
+  confirmBtn: css({
+    padding: "5px 11px",
+    borderRadius: theme.radius.sm,
+    fontSize: "12.5px",
+    fontWeight: theme.fontWeight.semibold,
+    background: theme.color.destructive,
+    color: theme.color.destructiveForeground,
+    transition: `opacity ${theme.duration.base} ${ease}`,
+    "&:hover": { opacity: 0.85 },
+  }),
+  cancelBtn: css({
+    padding: "5px 11px",
+    borderRadius: theme.radius.sm,
+    fontSize: "12.5px",
+    color: inkQuiet,
+    "&:hover": { color: theme.color.mutedForeground },
+  }),
+
+  empty: css({
+    padding: "40px 10px",
+    textAlign: "center",
+    color: inkQuiet,
+    fontSize: theme.fontSize.sm,
+  }),
 
   skeleton: css({ height: "14px", borderRadius: theme.radius.sm, background: theme.color.muted }),
 };

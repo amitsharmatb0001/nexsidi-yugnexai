@@ -17,22 +17,20 @@ interface Project {
   appUrl?: string;
 }
 
-const EXAMPLES = [
-  "Company website for my IT services startup with services, about, and contact pages",
-  "SaaS dashboard for a project management tool with team roles and task tracking",
-  "E-commerce storefront with product catalog, cart, and checkout",
-  "Client portal for a consulting firm — clients log in to view deliverables",
-  "Internal tool for tracking sales leads with pipeline stages and notes",
-  "Restaurant website with menu, reservations, and location pages",
-];
+interface Account {
+  id: string;
+  email: string;
+  name: string;
+}
 
-// Colour is applied directly to the dot rather than via a ".done .statusDot"
-// descendant rule — atomic classes don't share a stylesheet the way two
-// CSS-module classes on ancestor/descendant elements did.
 function statusDotClass(status: Project["status"]): string {
   if (status === "done") return s.statusDotDone;
   if (status === "building") return s.statusDotBuilding;
   return s.statusDotFailed;
+}
+
+function statusLabel(status: Project["status"]): string {
+  return status === "building" ? "Building" : status === "done" ? "Ready" : "Failed";
 }
 
 function relativeTime(iso: string): string {
@@ -45,42 +43,129 @@ function relativeTime(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+function initials(nameOrEmail: string): string {
+  const trimmed = nameOrEmail.trim();
+  if (!trimmed) return "?";
+  const parts = trimmed.split(/\s+/);
+  if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase();
+  return trimmed.slice(0, 2).toUpperCase();
+}
+
 export default function DashboardPage() {
-  const router    = useRouter();
-  const taRef     = useRef<HTMLTextAreaElement>(null);
-  const [request, setRequest]   = useState("");
-  const [loading, setLoading]   = useState(false);
-  const [error, setError]       = useState<string | null>(null);
+  const router = useRouter();
+  const [account, setAccount] = useState<Account | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [fetching, setFetching] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetch(`${API}/api/projects`, { credentials: "include" })
-      .then(r => r.ok ? r.json() : Promise.reject(r.status))
-      .then(data => setProjects(data.projects ?? []))
-      .catch(() => {})
-      .finally(() => setFetching(false));
+  const [creating, setCreating] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  const loadProjects = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/projects`, { credentials: "include" });
+      if (!r.ok) return;
+      const data = await r.json();
+      setProjects(data.projects ?? []);
+    } catch {
+      // A refresh failing keeps the last-known list rather than clearing it.
+    } finally {
+      setFetching(false);
+    }
   }, []);
 
-  const startBuild = useCallback(async () => {
-    const req = request.trim();
-    if (!req || loading) return;
-    setError(null);
-    setLoading(true);
-    try {
-      // Generate a session ID that will also serve as the project ID
-      const sessionId = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-      // Navigate to the build page — it will send the first message on load
-      router.push(`/build/${sessionId}?q=${encodeURIComponent(req)}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to start");
-      setLoading(false);
-    }
-  }, [request, loading, router]);
+  useEffect(() => {
+    fetch(`${API}/api/auth/me`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((data) => setAccount(data.user ?? null))
+      .catch(() => router.push("/sign-in"));
+  }, [router]);
 
-  const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) startBuild();
+  useEffect(() => { void loadProjects(); }, [loadProjects]);
+
+  // Live-ish tracking: while anything is building, refresh the list every
+  // few seconds so status/progress across multiple in-flight projects is
+  // visible without a manual reload. Idle otherwise — no point polling a
+  // dashboard where nothing is changing.
+  const hasBuilding = projects.some((p) => p.status === "building");
+  useEffect(() => {
+    if (!hasBuilding) return;
+    const t = setInterval(() => void loadProjects(), 4000);
+    return () => clearInterval(t);
+  }, [hasBuilding, loadProjects]);
+
+  // Close the account menu on an outside click.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menuOpen]);
+
+  useEffect(() => {
+    if (renamingId) renameInputRef.current?.focus();
+  }, [renamingId]);
+
+  const newProject = useCallback(() => {
+    if (creating) return;
+    setCreating(true);
+    // Describing the app happens in the project's own planning chat, not on
+    // the dashboard — this just opens a fresh one.
+    const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    router.push(`/build/${id}`);
+  }, [creating, router]);
+
+  const signOut = useCallback(async () => {
+    await fetch(`${API}/api/auth/sign-out`, { method: "POST", credentials: "include" }).catch(() => {});
+    router.push("/sign-in");
+  }, [router]);
+
+  const startRename = (p: Project) => {
+    setConfirmingId(null);
+    setRenamingId(p.id);
+    setRenameValue(p.name || "");
   };
+
+  const commitRename = useCallback(async (id: string) => {
+    const name = renameValue.trim();
+    setRenamingId(null);
+    if (!name) return;
+    const prev = projects;
+    setProjects((cur) => cur.map((p) => (p.id === id ? { ...p, name } : p)));
+    try {
+      const r = await fetch(`${API}/api/projects/${id}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!r.ok) throw new Error();
+    } catch {
+      setProjects(prev); // roll back an optimistic update the server rejected
+      setError("Couldn't rename that project.");
+    }
+  }, [renameValue, projects]);
+
+  const confirmDelete = useCallback(async (id: string) => {
+    setConfirmingId(null);
+    const prev = projects;
+    setProjects((cur) => cur.filter((p) => p.id !== id));
+    try {
+      const r = await fetch(`${API}/api/projects/${id}`, { method: "DELETE", credentials: "include" });
+      if (!r.ok) throw new Error();
+    } catch {
+      setProjects(prev);
+      setError("Couldn't delete that project.");
+    }
+  }, [projects]);
 
   return (
     <div className={s.root}>
@@ -90,97 +175,125 @@ export default function DashboardPage() {
           YugNex
         </div>
         <div className={s.navRight}>
-          <div className={s.navAvatar}>
-            <i className="nxi nxi-user" style={{ fontSize: 13 }} />
-          </div>
+          {account && (
+            <div className={s.account} ref={menuRef}>
+              <button type="button" className={s.accountBtn} onClick={() => setMenuOpen((v) => !v)}>
+                <span className={s.accountAvatar}>{initials(account.name || account.email)}</span>
+                <span className={s.accountName}>{account.name || account.email}</span>
+              </button>
+              {menuOpen && (
+                <div className={s.accountMenu}>
+                  <div className={s.accountMenuEmail}>{account.email}</div>
+                  <button type="button" className={`${s.accountMenuItem} ${s.accountMenuItemAlert}`} onClick={signOut}>
+                    Sign out
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </nav>
 
       <main className={s.main}>
-        <div className={s.newProjectCard}>
-          <h1 className={s.newProjectTitle}>What are you building?</h1>
-          <p className={s.newProjectSub}>
-            Describe it in plain English. Design, code, database and deployment are all handled.
-          </p>
-
-          {error && <div className={s.errorBanner}>{error}</div>}
-
-          <div className={s.inputRow}>
-            <textarea
-              ref={taRef}
-              className={s.textarea}
-              value={request}
-              onChange={e => setRequest(e.target.value)}
-              onKeyDown={handleKey}
-              placeholder="A client portal for a consulting firm — clients log in to view deliverables, leave comments, and download invoices."
-              rows={3}
-              disabled={loading}
-            />
-            <div className={s.inputActions}>
-              <span className={s.inputHint}>
-                <span className={s.kbd}>⌘ Enter</span> to start
-              </span>
-              <button
-                type="button"
-                className={s.buildBtn}
-                onClick={startBuild}
-                disabled={!request.trim() || loading}
-              >
-                {loading ? "Starting…" : "Build"}
-              </button>
-            </div>
-          </div>
-
-          <div className={s.examples}>
-            {EXAMPLES.map(ex => (
-              <button
-                key={ex}
-                type="button"
-                className={s.exampleChip}
-                onClick={() => { setRequest(ex); taRef.current?.focus(); }}
-              >
-                {ex}
-              </button>
-            ))}
-          </div>
-        </div>
+        {error && <div className={s.errorBanner}>{error}</div>}
 
         <section>
-          <div className={s.sectionTitle}>Your projects</div>
+          <div className={s.sectionHead}>
+            <div className={s.sectionTitleGroup}>
+              <span className={s.sectionTitle}>Projects</span>
+              <span className={s.sectionCount}>{projects.length}</span>
+              {hasBuilding && (
+                <span className={s.liveTicker}>
+                  <span className={s.liveDot} />
+                  {projects.filter((p) => p.status === "building").length} building
+                </span>
+              )}
+            </div>
+            <button type="button" className={s.newBtn} onClick={newProject} disabled={creating}>
+              + New project
+            </button>
+          </div>
+
           <div className={s.projectGrid}>
             {fetching ? (
-              [0, 1, 2].map(i => (
-                <div key={i} className={s.projectCard} style={{ cursor: "default", opacity: 0.35 }}>
+              [0, 1, 2].map((i) => (
+                <div key={i} className={s.projectRow} style={{ opacity: 0.35 }}>
                   <div className={s.projectMeta}>
                     <div className={s.skeleton} style={{ width: "34%" }} />
                   </div>
                 </div>
               ))
             ) : projects.length === 0 ? (
-              <div className={s.empty}>No projects yet — describe your first one above.</div>
+              <div className={s.empty}>No projects yet — start one above.</div>
             ) : (
-              projects.map((p, i) => (
-                <Link
-                  key={p.id}
-                  href={`/build/${p.id}`}
-                  className={s.projectCard}
-                  style={{ animationDelay: `${i * 40}ms` }}
-                >
-                  <div className={s.projectMeta}>
-                    <div className={s.projectName}>{p.name || "Untitled project"}</div>
-                    {p.description && <div className={s.projectDesc}>{p.description}</div>}
+              projects.map((p) =>
+                confirmingId === p.id ? (
+                  <div key={p.id} className={s.confirmRow}>
+                    <span className={s.confirmText}>Delete &ldquo;{p.name || "Untitled project"}&rdquo;? This can&apos;t be undone.</span>
+                    <button type="button" className={s.cancelBtn} onClick={() => setConfirmingId(null)}>Cancel</button>
+                    <button type="button" className={s.confirmBtn} onClick={() => confirmDelete(p.id)}>Delete</button>
                   </div>
-                  <div className={s.projectStatus}>
-                    <span className={statusDotClass(p.status)} />
-                    {p.status === "building" ? "Building" : p.status === "done" ? "Ready" : "Failed"}
+                ) : (
+                  <div key={p.id} className={s.projectRow}>
+                    {renamingId === p.id ? (
+                      <input
+                        ref={renameInputRef}
+                        className={s.renameInput}
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitRename(p.id);
+                          if (e.key === "Escape") setRenamingId(null);
+                        }}
+                        onBlur={() => commitRename(p.id)}
+                      />
+                    ) : (
+                      <Link href={`/build/${p.id}`} className={s.projectLink}>
+                        <div className={s.projectMeta}>
+                          <div className={s.projectName}>{p.name || "Untitled project"}</div>
+                          {p.description && <div className={s.projectDesc}>{p.description}</div>}
+                        </div>
+                        <div className={s.projectStatus}>
+                          <span className={statusDotClass(p.status)} />
+                          {statusLabel(p.status)}
+                        </div>
+                        <div className={s.projectTime}>{relativeTime(p.createdAt)}</div>
+                      </Link>
+                    )}
+
+                    {renamingId !== p.id && (
+                      <div className={s.rowActions}>
+                        <button type="button" className={s.iconBtn} title="Rename" onClick={() => startRename(p)}>
+                          <PencilIcon />
+                        </button>
+                        <button type="button" className={`${s.iconBtn} ${s.iconBtnDanger}`} title="Delete" onClick={() => setConfirmingId(p.id)}>
+                          <TrashIcon />
+                        </button>
+                      </div>
+                    )}
                   </div>
-                  <div className={s.projectTime}>{relativeTime(p.createdAt)}</div>
-                </Link>
-              ))
+                ),
+              )
             )}
           </div>
         </section>
       </main>
     </div>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M11 2.5 13.5 5 5 13.5 2 14l.5-3z" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 4.5h10M6.5 4.5v-1a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1M4.5 4.5 5 13a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1l.5-8.5" />
+    </svg>
   );
 }
