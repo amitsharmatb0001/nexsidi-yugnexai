@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Button } from "@yugnex/nexui-react";
+import YugnexLogo from "../../components/ide/YugnexLogo";
 import s from "./dashboard.module.css";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
@@ -77,34 +77,24 @@ export default function DashboardPage() {
     <div className={s.root}>
       <nav className={s.nav}>
         <div className={s.navBrand}>
-          <div className={s.navLogo}>Y</div>
+          <span className={s.navLogo}><YugnexLogo size={19} /></span>
           YugNex
         </div>
         <div className={s.navRight}>
-          <a href="/compare" className={s.navBtn}>
-            <i className="nxi nxi-code" style={{ fontSize: 14 }} />
-            Compare UI
-          </a>
           <div className={s.navAvatar}>
-            <i className="nxi nxi-user" style={{ fontSize: 14 }} />
+            <i className="nxi nxi-user" style={{ fontSize: 13 }} />
           </div>
         </div>
       </nav>
 
       <main className={s.main}>
         <div className={s.newProjectCard}>
-          <div className={s.newProjectTitle}>What are you building?</div>
-          <div className={s.newProjectSub}>
-            Describe your app in plain English — design, code, database, deployment are all handled.
-            <span style={{ color: "var(--nx-text3)", marginLeft: 8 }}>⌘+Enter to start</span>
-          </div>
+          <h1 className={s.newProjectTitle}>What are you building?</h1>
+          <p className={s.newProjectSub}>
+            Describe it in plain English. Design, code, database and deployment are all handled.
+          </p>
 
-          {error && (
-            <div className={s.errorBanner}>
-              <i className="nxi nxi-warning" style={{ fontSize: 14 }} />
-              {error}
-            </div>
-          )}
+          {error && <div className={s.errorBanner}>{error}</div>}
 
           <div className={s.inputRow}>
             <textarea
@@ -113,25 +103,30 @@ export default function DashboardPage() {
               value={request}
               onChange={e => setRequest(e.target.value)}
               onKeyDown={handleKey}
-              placeholder="e.g. Build a website for NexTech, my IT services startup — pages for Vision, Mission, Services (cloud, cybersecurity, software dev), and Contact"
+              placeholder="A client portal for a consulting firm — clients log in to view deliverables, leave comments, and download invoices."
               rows={3}
               disabled={loading}
             />
-            <Button
-              variant="primary"
-              size="md"
-              onClick={startBuild}
-              disabled={!request.trim() || loading}
-              loading={loading}
-            >
-              {loading ? "Building…" : "Build"}
-            </Button>
+            <div className={s.inputActions}>
+              <span className={s.inputHint}>
+                <span className={s.kbd}>⌘ Enter</span> to start
+              </span>
+              <button
+                type="button"
+                className={s.buildBtn}
+                onClick={startBuild}
+                disabled={!request.trim() || loading}
+              >
+                {loading ? "Starting…" : "Build"}
+              </button>
+            </div>
           </div>
 
           <div className={s.examples}>
             {EXAMPLES.map(ex => (
               <button
                 key={ex}
+                type="button"
                 className={s.exampleChip}
                 onClick={() => { setRequest(ex); taRef.current?.focus(); }}
               >
@@ -141,50 +136,41 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className={s.sectionTitle}>Your Projects</div>
-        <div className={s.projectGrid}>
-          {fetching ? (
-            [0,1,2].map(i => (
-              <div key={i} className={s.projectCard} style={{ cursor:"default", opacity:0.4 }}>
-                <div className={s.projectIcon}>
-                  <i className="nxi nxi-folder" style={{ fontSize:16 }} />
+        <section>
+          <div className={s.sectionTitle}>Your projects</div>
+          <div className={s.projectGrid}>
+            {fetching ? (
+              [0, 1, 2].map(i => (
+                <div key={i} className={s.projectCard} style={{ cursor: "default", opacity: 0.35 }}>
+                  <div className={s.projectMeta}>
+                    <div className={s.skeleton} style={{ width: "34%" }} />
+                  </div>
                 </div>
-                <div className={s.projectMeta}>
-                  <div className={s.projectName} style={{ background:"var(--nx-bg-muted)", width:"40%", height:14, borderRadius:"var(--nx-r-sm)", marginBottom:6 }} />
-                  <div style={{ background:"var(--nx-bg-muted)", width:"70%", height:10, borderRadius:"var(--nx-r-sm)" }} />
-                </div>
-              </div>
-            ))
-          ) : projects.length === 0 ? (
-            <div className={s.empty}>
-              No projects yet — describe your first app above.
-            </div>
-          ) : (
-            projects.map((p, i) => (
-              <Link
-                key={p.id}
-                href={`/build/${p.id}`}
-                className={s.projectCard}
-                style={{ animationDelay: `${i * 40}ms` }}
-              >
-                <div className={s.projectIcon}>
-                  <i className="nxi nxi-folder" style={{ fontSize:16 }} />
-                </div>
-                <div className={s.projectMeta}>
-                  <div className={s.projectName}>{p.name || "Untitled Project"}</div>
-                  <div className={s.projectDesc}>{p.description}</div>
-                </div>
-                <div className={s.projectStatus}>
-                  <span className={`${s.statusDot} ${s[p.status as keyof typeof s]}`} />
-                  <span className={s.statusLabel}>
-                    {p.status === "building" ? "Building" : p.status === "done" ? "Complete" : "Failed"}
-                  </span>
-                </div>
-                <div className={s.projectTime}>{relativeTime(p.createdAt)}</div>
-              </Link>
-            ))
-          )}
-        </div>
+              ))
+            ) : projects.length === 0 ? (
+              <div className={s.empty}>No projects yet — describe your first one above.</div>
+            ) : (
+              projects.map((p, i) => (
+                <Link
+                  key={p.id}
+                  href={`/build/${p.id}`}
+                  className={s.projectCard}
+                  style={{ animationDelay: `${i * 40}ms` }}
+                >
+                  <div className={s.projectMeta}>
+                    <div className={s.projectName}>{p.name || "Untitled project"}</div>
+                    {p.description && <div className={s.projectDesc}>{p.description}</div>}
+                  </div>
+                  <div className={`${s.projectStatus} ${s[p.status as keyof typeof s] ?? ""}`}>
+                    <span className={s.statusDot} />
+                    {p.status === "building" ? "Building" : p.status === "done" ? "Ready" : "Failed"}
+                  </div>
+                  <div className={s.projectTime}>{relativeTime(p.createdAt)}</div>
+                </Link>
+              ))
+            )}
+          </div>
+        </section>
       </main>
     </div>
   );

@@ -7,41 +7,44 @@
 import { NEXUI_FONT_SIZE, NEXUI_FONT_FAMILY, NEXUI_LINE_HEIGHT } from "../tokens/type";
 import { NEXUI_KEYFRAMES } from "../tokens/motion";
 
-// @font-face declarations pointing to the in-house WOFF2 files in /fonts/.
-// Consumers must serve the /fonts/ directory as static assets.
-// Next.js: copy packages/nexui/fonts/ to public/nexui-fonts/ and update the paths below,
-//   OR use the path helper: import { NEXUI_FONT_PATH } from "@yugnex/nexui/assets/typography"
-// The fonts/ directory is in the @yugnex/nexui package root (published with "files").
-const FONT_FACE_BLOCK = `
+/**
+ * Where the in-house WOFF2 files are served from.
+ *
+ * 2026-08-19: real bug found live — these URLs were written as './fonts/…'.
+ * This sheet is injected as a <style> element, and a relative url() inside an
+ * inline stylesheet resolves against the *document*, not against any file. So
+ * the browser asked for whatever the current route happened to be plus
+ * "fonts/": "/fonts/NexuiSans-Medium.woff2" on /dashboard and
+ * "/build/fonts/NexuiSans-Bold.woff2" on /build/:id — the same font 404-ing at
+ * two different paths in one session, which is what gave the cause away. Every
+ * NexuiSans/NexuiMono weight silently fell back to a system face on every page.
+ *
+ * Absolute, and overridable: NexSidi's own app serves these from
+ * /nexui-fonts/, and a generated app that vendors NexUI elsewhere can pass its
+ * own base rather than being forced onto this layout.
+ */
+export const NEXUI_FONT_PATH = "/nexui-fonts";
+
+export function nexuiFontFaceBlock(basePath: string = NEXUI_FONT_PATH): string {
+  const base = basePath.replace(/\/+$/, "");
+  const face = (family: string, weight: number, file: string) => `
 @font-face {
-  font-family: 'NexuiSans';
+  font-family: '${family}';
   font-style: normal;
-  font-weight: 400;
+  font-weight: ${weight};
   font-display: swap;
-  src: url('./fonts/NexuiSans-Regular.woff2') format('woff2');
+  src: url('${base}/${file}') format('woff2');
+}`;
+
+  return [
+    face("NexuiSans", 400, "NexuiSans-Regular.woff2"),
+    face("NexuiSans", 500, "NexuiSans-Medium.woff2"),
+    face("NexuiSans", 700, "NexuiSans-Bold.woff2"),
+    face("NexuiMono", 400, "NexuiMono-Regular.woff2"),
+  ].join("\n").trim();
 }
-@font-face {
-  font-family: 'NexuiSans';
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('./fonts/NexuiSans-Medium.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'NexuiSans';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('./fonts/NexuiSans-Bold.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'NexuiMono';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('./fonts/NexuiMono-Regular.woff2') format('woff2');
-}
-`.trim();
+
+const FONT_FACE_BLOCK = nexuiFontFaceBlock();
 
 // Fluid type custom properties on :root
 const FLUID_VARS_BLOCK = `:root {
