@@ -19,10 +19,21 @@ export interface BuildPlan {
   features?: Array<{ name: string; description: string; userStories?: string[] }>;
   apiContract?: {
     baseUrl?: string;
-    endpoints: Array<{ method: string; path: string; description: string }>;
+    endpoints: Array<{
+      method: string;
+      path: string;
+      description: string;
+      auth?: boolean;
+      requestType?: string;
+      responseType?: string;
+      errorCodes?: number[];
+    }>;
   };
   dbSchema?: {
-    tables: Array<{ name: string; fields: Array<{ name: string; type: string; primaryKey?: boolean }> }>;
+    tables: Array<{
+      name: string;
+      fields: Array<{ name: string; type: string; nullable?: boolean; primaryKey?: boolean; default?: string | null }>;
+    }>;
   };
   // Public workstream labels below, never the internal agent names these
   // fields are keyed by — the confidentiality rule (CLAUDE.md) applies to
@@ -32,49 +43,70 @@ export interface BuildPlan {
   pranavTasks?: Task[];
 }
 
-/** The real spec the pipeline is about to build against — rendered so the
- * approval gate shows what's actually being approved, not just a title. */
+function Section({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
+  return (
+    <div className={s.section}>
+      <div className={s.sectionHead}>
+        <span className={s.sectionNum}>{String(n).padStart(2, "0")}</span>
+        <span className={s.sectionTitle}>{title}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** The real spec the pipeline is about to build against — rendered as an
+ * actual document (numbered sections, real tables) so the approval gate
+ * shows what's being approved, not a compact summary of it. */
 export default function PlanPreview({ plan }: { plan: BuildPlan }) {
   const design = plan.designBrief;
   const workstreams: Array<{ label: string; tasks: Task[] | undefined }> = [
     { label: "Frontend", tasks: plan.aanyaTasks },
     { label: "Backend", tasks: plan.shubhamTasks },
     { label: "Database", tasks: plan.pranavTasks },
-  ];
+  ].filter((w) => w.tasks?.length);
+
+  let n = 0;
 
   return (
     <div className={s.root}>
-      <div>
+      <div className={s.header}>
         <div className={s.appName}>{plan.appName}</div>
         <div className={s.appDesc}>{plan.appDescription}</div>
       </div>
 
-      {design && (design.mood || design.palette?.length) ? (
-        <div className={s.section}>
-          <div className={s.sectionTitle}>Design Direction</div>
-          {design.mood && <div className={s.mood}>{design.mood}</div>}
+      {design && (design.mood || design.palette?.length || design.layoutConcept) ? (
+        <Section n={++n} title="Design Direction">
+          {design.mood && <p className={s.prose}>{design.mood}</p>}
           {design.palette?.length ? (
             <div className={s.palette}>
               {design.palette.map((c, i) => (
-                <div key={i} className={s.swatch} title={c.hex}>
+                <div key={i} className={s.swatch}>
                   <span className={s.swatchDot} style={{ background: c.hex }} />
-                  <span className={s.swatchLabel}>{c.name}</span>
+                  <span className={s.swatchText}>
+                    <span className={s.swatchName}>{c.name}</span>
+                    <span className={s.swatchHex}>{c.hex}</span>
+                  </span>
                 </div>
               ))}
             </div>
           ) : null}
           {design.typography && (design.typography.display || design.typography.body) && (
             <div className={s.typography}>
-              {design.typography.display && <span>Display: {design.typography.display}</span>}
-              {design.typography.body && <span>Body: {design.typography.body}</span>}
+              {design.typography.display && (
+                <span><span className={s.typographyLabel}>Display</span><span className={s.typographyValue}>{design.typography.display}</span></span>
+              )}
+              {design.typography.body && (
+                <span><span className={s.typographyLabel}>Body</span><span className={s.typographyValue}>{design.typography.body}</span></span>
+              )}
             </div>
           )}
-        </div>
+          {design.layoutConcept && <p className={s.prose} style={{ marginTop: "16px" }}>{design.layoutConcept}</p>}
+        </Section>
       ) : null}
 
       {plan.features?.length ? (
-        <div className={s.section}>
-          <div className={s.sectionTitle}>Features</div>
+        <Section n={++n} title="Features">
           {plan.features.map((f, i) => (
             <div key={i} className={s.feature}>
               <div className={s.featureName}>{f.name}</div>
@@ -86,45 +118,90 @@ export default function PlanPreview({ plan }: { plan: BuildPlan }) {
               ) : null}
             </div>
           ))}
-        </div>
+        </Section>
       ) : null}
 
       {plan.apiContract?.endpoints?.length ? (
-        <div className={s.section}>
-          <div className={s.sectionTitle}>API Endpoints</div>
-          {plan.apiContract.endpoints.map((ep, i) => (
-            <div key={i} className={s.endpointRow}>
-              <span className={s.methodBadge} style={{ color: methodColor(ep.method) }}>{ep.method}</span>
-              <span className={s.endpointRoute}>{ep.path}</span>
-            </div>
-          ))}
-        </div>
+        <Section n={++n} title="API Contract">
+          {plan.apiContract.baseUrl && <span className={s.baseUrl}>{plan.apiContract.baseUrl}</span>}
+          <div className={s.tableWrap}>
+            <table className={s.table}>
+              <thead>
+                <tr>
+                  <th className={s.th}>Method</th>
+                  <th className={s.th}>Path</th>
+                  <th className={s.th}>Description</th>
+                  <th className={s.th}>Auth</th>
+                </tr>
+              </thead>
+              <tbody>
+                {plan.apiContract.endpoints.map((ep, i) => (
+                  <tr key={i}>
+                    <td className={s.td}><span className={s.methodBadge} style={{ color: methodColor(ep.method) }}>{ep.method}</span></td>
+                    <td className={`${s.td} ${s.mono}`}>{ep.path}</td>
+                    <td className={s.td}>{ep.description}</td>
+                    <td className={s.td}>
+                      <span className={ep.auth ? s.authYes : s.authNo}>{ep.auth ? "Required" : "Public"}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Section>
       ) : null}
 
       {plan.dbSchema?.tables?.length ? (
-        <div className={s.section}>
-          <div className={s.sectionTitle}>Database Tables</div>
+        <Section n={++n} title="Database Schema">
           {plan.dbSchema.tables.map((t, i) => (
-            <div key={i} className={s.table}>
-              <span className={s.tableName}>{t.name}</span>
-              <div className={s.fieldList}>
-                {t.fields.map((f, j) => (
-                  <span key={j} className={s.field}>
-                    {f.primaryKey ? "🔑 " : ""}{f.name}: {f.type}
-                  </span>
-                ))}
-              </div>
+            <div key={i} className={s.tableWrap}>
+              <div className={s.tableName}>{t.name}</div>
+              <table className={s.table}>
+                <thead>
+                  <tr>
+                    <th className={s.th}>Field</th>
+                    <th className={s.th}>Type</th>
+                    <th className={s.th}>Nullable</th>
+                    <th className={s.th}>Default</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {t.fields.map((f, j) => (
+                    <tr key={j}>
+                      <td className={`${s.td} ${s.mono}`}>
+                        {f.primaryKey && <span className={s.keyIcon}>🔑</span>}{f.name}
+                      </td>
+                      <td className={`${s.td} ${s.mono}`}>{f.type}</td>
+                      <td className={s.td}>{f.nullable ? "yes" : "no"}</td>
+                      <td className={`${s.td} ${s.mono}`}>{f.default ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ))}
-        </div>
+        </Section>
       ) : null}
 
-      {workstreams.map(({ label, tasks }) => tasks?.length ? (
-        <div key={label} className={s.section}>
-          <div className={s.sectionTitle}>{label} Tasks</div>
-          {tasks.map((t, i) => <div key={i} className={s.task}>{t.description}</div>)}
-        </div>
-      ) : null)}
+      {workstreams.length ? (
+        <Section n={++n} title="Build Plan">
+          {workstreams.map(({ label, tasks }) => (
+            <div key={label} className={s.taskGroup}>
+              <div className={s.taskGroupTitle}>{label}</div>
+              {tasks!.map((t, i) => (
+                <div key={i} className={s.task}>
+                  <div className={s.taskDesc}>{t.description}</div>
+                  {t.outputFiles?.length ? (
+                    <div className={s.taskFiles}>
+                      {t.outputFiles.map((f, j) => <span key={j} className={s.taskFile}>{f}</span>)}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ))}
+        </Section>
+      ) : null}
     </div>
   );
 }

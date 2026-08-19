@@ -865,6 +865,15 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   const { id } = use(params);
 
   // ── Planner phase state ───────────────────────────────────────────────────
+  // `phase` defaults to "planning" because that's the correct state for a
+  // genuinely new session — but for a REFRESH of an existing one, the real
+  // phase is only known once the mount-restore fetch below resolves. Without
+  // this gate, every refresh flashed the empty planning chat first, then
+  // snapped to the real screen (IDE, or a resumed conversation) a moment
+  // later — the exact "message starts over, then the plan reappears"
+  // inconsistency reported live. Nothing renders on the phase/messages axis
+  // until session restore has had its one chance to run.
+  const [sessionResolved, setSessionResolved] = useState(false);
   const [phase,        setPhase]        = useState<SessionPhase>("planning");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput,    setChatInput]    = useState("");
@@ -921,7 +930,11 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
         if (data.phase)     setPhase(data.phase);
         if (data.buildPlan) setBuildPlan(data.buildPlan);
       })
-      .catch(() => {});
+      .catch(() => {})
+      // Resolved either way — a session that genuinely doesn't exist yet
+      // (brand-new id, 404) is just as "known" as one that does; the gate
+      // is about not rendering on a guess, not about the fetch succeeding.
+      .finally(() => setSessionResolved(true));
   }, [id]);
 
   // ── Send initial message from URL param (?q=...) on first load ───────────
@@ -1245,6 +1258,19 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   }
 
   const isDone = status === "done" || (status === "failed" && !!result?.appUrl);
+
+  // ── Render: Resolving session ─────────────────────────────────────────────
+  // See the sessionResolved comment at its declaration — this is the actual
+  // gate. One neutral screen on every load, never the wrong one first.
+
+  if (!sessionResolved) {
+    return (
+      <div className={s.root} style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--nx-bg-base)" }}>
+        <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--nx-accent)", animation: "nx-session-pulse 1.1s ease-in-out infinite" }} />
+        <style>{"@keyframes nx-session-pulse { 0%, 100% { opacity: 0.3; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1.15); } }"}</style>
+      </div>
+    );
+  }
 
   // ── Render: Planning Mode ─────────────────────────────────────────────────
 
