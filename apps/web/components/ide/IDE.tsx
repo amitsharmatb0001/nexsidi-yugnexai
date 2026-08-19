@@ -7,7 +7,6 @@ import { type ApiNode, sortNodes, defaultExpanded, findNode } from "../../lib/tr
 import Floor from "./Floor";
 import { fileMark } from "./fileIcons";
 import { narrate } from "./narrate";
-import Pipeline3D from "./Pipeline3D";
 import YugnexLogo from "./YugnexLogo";
 import { ide as s } from "./IDE.styles";
 
@@ -27,8 +26,6 @@ export interface IDEProps {
   projectName: string;
   appUrl?: string | null;
   isDone: boolean;
-  failed?: boolean;
-  stage: string;
   stageMessage: string;
   tree: ApiNode[];
   selectedPath: string | null;
@@ -46,7 +43,7 @@ export interface IDEProps {
 
 export default function IDE(props: IDEProps) {
   const {
-    projectId, projectName, appUrl, isDone, failed, stage, stageMessage,
+    projectId, projectName, appUrl, isDone, stageMessage,
     tree, selectedPath, fileContent, fileLoading, onSelectFile,
     awaitingSpecApproval, awaitingDeployApproval, submitting,
     changeRequest, onChangeRequest, onApproveSpec, onApproveDeploy,
@@ -172,7 +169,6 @@ export default function IDE(props: IDEProps) {
         </span>
 
         <div className={s.titleRight}>
-          <Pipeline3D stage={stage} failed={failed} done={isDone} />
           {appUrl && (
             <a href={appUrl} target="_blank" rel="noreferrer" className={s.openBtn}>Open app</a>
           )}

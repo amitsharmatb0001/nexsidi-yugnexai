@@ -1500,8 +1500,6 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       projectName={result?.name || buildPlan?.appName || `Project ${id.slice(0, 8)}`}
       appUrl={result?.appUrl ?? null}
       isDone={isDone}
-      failed={status === "failed"}
-      stage={stage}
       stageMessage={stageMessage}
       tree={tree}
       selectedPath={selFile?.path ?? null}
