@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { deriveWorkstreams, deriveTouchedFiles, type StreamItem, type ToolEvent } from "./live.ts";
+import { deriveWorkstreams, deriveTouchedFiles, deriveActiveWrites, type StreamItem, type ToolEvent } from "./live.ts";
 
 function ev(partial: Partial<ToolEvent> & { agent: string; tool: string; ts: number }): ToolEvent {
   return { type: "tool_call", ...partial } as ToolEvent;
@@ -110,4 +110,38 @@ test("deriveTouchedFiles excludes reads — a file that was only looked at was n
   );
 
   expect(deriveTouchedFiles(items).map((f) => f.path)).toEqual(["src/written.ts"]);
+});
+
+// ── deriveActiveWrites ───────────────────────────────────────────────────────
+
+test("deriveActiveWrites marks a file written inside the recency window as actively writing", () => {
+  const now = 10_000;
+  const items = stream(ev({ agent: "Backend", tool: "write_file", ts: 9_000, input: { path: "src/a.ts" } }));
+
+  expect(deriveActiveWrites(items, now).has("src/a.ts")).toBe(true);
+});
+
+test("deriveActiveWrites drops a file once its write falls outside the window — it becomes 'freshly written', not 'writing now'", () => {
+  const now = 20_000;
+  const items = stream(ev({ agent: "Backend", tool: "write_file", ts: 9_000, input: { path: "src/a.ts" } }));
+
+  expect(deriveActiveWrites(items, now, 6_000).has("src/a.ts")).toBe(false);
+});
+
+test("deriveActiveWrites includes every path from a write_files batch", () => {
+  const now = 10_000;
+  const items = stream(
+    ev({ agent: "Frontend", tool: "write_files", ts: 9_500, input: { paths: ["a.tsx", "b.tsx"] } }),
+  );
+
+  const active = deriveActiveWrites(items, now);
+  expect(active.has("a.tsx")).toBe(true);
+  expect(active.has("b.tsx")).toBe(true);
+});
+
+test("deriveActiveWrites excludes reads — only write-shaped tools count as 'being written'", () => {
+  const now = 10_000;
+  const items = stream(ev({ agent: "Backend", tool: "read_file", ts: 9_900, input: { path: "src/a.ts" } }));
+
+  expect(deriveActiveWrites(items, now).size).toBe(0);
 });

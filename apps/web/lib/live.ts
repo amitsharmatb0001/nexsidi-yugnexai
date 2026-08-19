@@ -313,3 +313,22 @@ export function deriveTouchedFiles(items: StreamItem[]): { path: string; at: num
 }
 
 const WRITE_TOOLS = new Set(["write_file", "write_files", "edit_file", "delete_file"]);
+
+/**
+ * Files with a write tool call inside the last `windowMs` — the console's
+ * "being written right now" signal.
+ *
+ * This is deliberately NOT "has a call with no matching result yet": a
+ * write_files batch result never records per-file paths (only the call's own
+ * input does — see summarizeToolInput in the runtime), so there is no
+ * reliable per-file close event to wait for without a larger backend change.
+ * A short recency window is honest with the data that actually exists — the
+ * call genuinely fired at that timestamp — rather than pretending to track
+ * completion state the event stream doesn't carry. Real content is never
+ * fabricated to simulate typing; this only drives a "writing…" indicator,
+ * never invented characters.
+ */
+export function deriveActiveWrites(items: StreamItem[], now: number, windowMs = 6_000): Set<string> {
+  const touched = deriveTouchedFiles(items);
+  return new Set(touched.filter((f) => now - f.at < windowMs).map((f) => f.path));
+}

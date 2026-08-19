@@ -30,6 +30,11 @@ const fadeInUp = keyframes({
   to: { opacity: 1, transform: "none" },
 });
 
+const writePulse = keyframes({
+  "0%, 100%": { opacity: 1 },
+  "50%": { opacity: 0.4 },
+});
+
 export const ide = {
   root: css({
     display: "grid",
@@ -185,6 +190,10 @@ export const ide = {
   name: css({ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }),
   nameFresh: css({ color: theme.color.success }),
   dirName: css({ color: theme.color.mutedForeground, fontWeight: theme.fontWeight.medium }),
+  // An ancestor folder of a file being written right now — quiet tint, no
+  // pulse, so attention still lands on the file itself rather than every
+  // folder up the tree competing for it.
+  dirNameActive: css({ color: theme.color.primary }),
   freshPip: css({
     flex: "none",
     marginLeft: "auto",
@@ -192,6 +201,19 @@ export const ide = {
     height: "4px",
     borderRadius: theme.radius.full,
     background: theme.color.success,
+  }),
+  // A file with a write call inside the live recency window — distinct from
+  // the static "freshly written" green (nameFresh/freshPip): this pulses,
+  // because content is changing right now, not settled a moment ago.
+  nameWriting: css({ color: theme.color.primary, animation: `${writePulse} 1.1s ${ease} infinite` }),
+  writingPip: css({
+    flex: "none",
+    marginLeft: "auto",
+    width: "4px",
+    height: "4px",
+    borderRadius: theme.radius.full,
+    background: theme.color.primary,
+    animation: `${writePulse} 1.1s ${ease} infinite`,
   }),
   diffStat: css({
     marginLeft: "auto",
@@ -227,6 +249,21 @@ export const ide = {
     "&:hover": { color: theme.color.mutedForeground },
   }),
   tabActive: css({ color: theme.color.foreground, background: theme.color.card }),
+  tabWriting: css({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "5px",
+    marginLeft: theme.space[2],
+    color: theme.color.primary,
+    fontSize: "11px",
+  }),
+  tabWritingDot: css({
+    width: "4px",
+    height: "4px",
+    borderRadius: theme.radius.full,
+    background: "currentColor",
+    animation: `${writePulse} 1.1s ${ease} infinite`,
+  }),
   pane: css({ minHeight: 0, overflow: "auto" }),
   code: css({
     margin: 0,

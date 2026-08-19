@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { API, useBuildStream, useSystemVitals, deriveWorkstreams, deriveTouchedFiles } from "../../lib/live";
-import { type ApiNode, sortNodes, defaultExpanded } from "../../lib/tree";
+import { API, useBuildStream, useSystemVitals, deriveWorkstreams, deriveTouchedFiles, deriveActiveWrites } from "../../lib/live";
+import { type ApiNode, sortNodes, defaultExpanded, findNode } from "../../lib/tree";
 import Floor from "./Floor";
 import { fileMark } from "./fileIcons";
 import { narrate } from "./narrate";
@@ -84,6 +84,29 @@ export default function IDE(props: IDEProps) {
     () => new Set(touched.filter((f) => now - f.at < FRESH_WINDOW_MS).map((f) => f.path)),
     [touched, now],
   );
+  const activeWrites = useMemo(() => deriveActiveWrites(items, now), [items, now]);
+  // Ancestor directories of a file being written right now, so a closed
+  // folder still hints that something inside it is live.
+  const activeDirs = useMemo(() => {
+    const dirs = new Set<string>();
+    for (const path of activeWrites) {
+      const parts = path.split("/");
+      for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
+    }
+    return dirs;
+  }, [activeWrites]);
+
+  // Once the open file's write completes, silently re-fetch its content so
+  // the reader sees the result without manually re-clicking it.
+  const wasWritingRef = useRef(false);
+  useEffect(() => {
+    const stillWriting = selectedPath ? activeWrites.has(selectedPath) : false;
+    if (wasWritingRef.current && !stillWriting && selectedPath) {
+      const node = findNode(tree, selectedPath);
+      if (node) onSelectFile(node);
+    }
+    wasWritingRef.current = stillWriting;
+  }, [activeWrites, selectedPath, tree, onSelectFile]);
 
   const activeNames = useMemo(
     () => new Set(workstreams.filter((w) => w.active).map((w) => w.agent)),
@@ -218,7 +241,8 @@ export default function IDE(props: IDEProps) {
               </div>
             ) : (
               <Tree nodes={tree} depth={0} expanded={expanded} selected={selectedPath}
-                fresh={freshPaths} onToggle={toggle} onSelect={onSelectFile} />
+                fresh={freshPaths} writing={activeWrites} activeDirs={activeDirs}
+                onToggle={toggle} onSelect={onSelectFile} />
             )}
           </div>
         </aside>
@@ -249,7 +273,12 @@ export default function IDE(props: IDEProps) {
             )}
             {view === "floor" && <span className={`${s.tab} ${s.tabActive}`}>Workstreams</span>}
             {view === "files" && (
-              <span className={`${s.tab} ${s.tabActive}`}>{selectedPath ?? "No file open"}</span>
+              <span className={`${s.tab} ${s.tabActive}`}>
+                {selectedPath ?? "No file open"}
+                {selectedPath && activeWrites.has(selectedPath) && (
+                  <span className={s.tabWriting}><span className={s.tabWritingDot} />writing…</span>
+                )}
+              </span>
             )}
           </div>
 
@@ -324,9 +353,10 @@ function baseName(p: string): string {
   return i === -1 ? p : p.slice(i + 1);
 }
 
-function Tree({ nodes, depth, expanded, selected, fresh, onToggle, onSelect }: {
+function Tree({ nodes, depth, expanded, selected, fresh, writing, activeDirs, onToggle, onSelect }: {
   nodes: ApiNode[]; depth: number; expanded: Set<string>; selected: string | null;
-  fresh: Set<string>; onToggle: (p: string) => void; onSelect: (n: ApiNode) => void;
+  fresh: Set<string>; writing: Set<string>; activeDirs: Set<string>;
+  onToggle: (p: string) => void; onSelect: (n: ApiNode) => void;
 }) {
   return (
     <>
@@ -334,6 +364,8 @@ function Tree({ nodes, depth, expanded, selected, fresh, onToggle, onSelect }: {
         const isDir = n.type === "directory";
         const open = expanded.has(n.path);
         const isFresh = fresh.has(n.path);
+        const isWriting = writing.has(n.path);
+        const isActiveDir = isDir && activeDirs.has(n.path);
         const mark = fileMark(n.name);
 
         return (
@@ -346,14 +378,20 @@ function Tree({ nodes, depth, expanded, selected, fresh, onToggle, onSelect }: {
               {isDir
                 ? <span className={s.folderMark}>{open ? "▾" : "▪"}</span>
                 : <span className={s.mark} style={{ color: mark.color }}>{mark.tag}</span>}
-              <span className={[s.name, isDir ? s.dirName : "", isFresh && !isDir ? s.nameFresh : ""].filter(Boolean).join(" ")}>
+              <span className={[
+                s.name,
+                isDir ? s.dirName : "",
+                isActiveDir ? s.dirNameActive : "",
+                isWriting && !isDir ? s.nameWriting : (isFresh && !isDir ? s.nameFresh : ""),
+              ].filter(Boolean).join(" ")}>
                 {n.name}
               </span>
-              {isFresh && !isDir && <span className={s.freshPip} />}
+              {!isDir && (isWriting ? <span className={s.writingPip} /> : isFresh ? <span className={s.freshPip} /> : null)}
             </button>
             {isDir && open && (
               <Tree nodes={n.children ?? []} depth={depth + 1} expanded={expanded}
-                selected={selected} fresh={fresh} onToggle={onToggle} onSelect={onSelect} />
+                selected={selected} fresh={fresh} writing={writing} activeDirs={activeDirs}
+                onToggle={onToggle} onSelect={onSelect} />
             )}
           </div>
         );
