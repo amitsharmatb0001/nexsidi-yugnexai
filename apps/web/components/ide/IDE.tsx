@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import AccountMenu from "../AccountMenu";
 import { API, useBuildStream, useSystemVitals, deriveWorkstreams, deriveTouchedFiles, deriveActiveWrites } from "../../lib/live";
-import { type ApiNode, sortNodes, defaultExpanded, findNode } from "../../lib/tree";
+import { type ApiNode, sortNodes, defaultExpanded } from "../../lib/tree";
 import Floor from "./Floor";
 import { fileMark } from "./fileIcons";
 import { narrate } from "./narrate";
@@ -21,6 +22,14 @@ interface DiffFile {
   binary: boolean;
 }
 
+/** One open editor tab. Content is fetched and cached per-path, independent
+ * of which tab is currently active, so switching tabs never re-fetches. */
+interface OpenTab {
+  path: string;
+  content: string | null;
+  loading: boolean;
+}
+
 export interface IDEProps {
   projectId: string;
   projectName: string;
@@ -28,10 +37,6 @@ export interface IDEProps {
   isDone: boolean;
   stageMessage: string;
   tree: ApiNode[];
-  selectedPath: string | null;
-  fileContent: string | null;
-  fileLoading: boolean;
-  onSelectFile: (node: ApiNode) => void;
   awaitingSpecApproval: boolean;
   awaitingDeployApproval: boolean;
   submitting: boolean;
@@ -44,8 +49,7 @@ export interface IDEProps {
 export default function IDE(props: IDEProps) {
   const {
     projectId, projectName, appUrl, isDone, stageMessage,
-    tree, selectedPath, fileContent, fileLoading, onSelectFile,
-    awaitingSpecApproval, awaitingDeployApproval, submitting,
+    tree, awaitingSpecApproval, awaitingDeployApproval, submitting,
     changeRequest, onChangeRequest, onApproveSpec, onApproveDeploy,
   } = props;
 
@@ -58,6 +62,47 @@ export default function IDE(props: IDEProps) {
   const [patch, setPatch] = useState<string | null>(null);
   const [patchPath, setPatchPath] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+
+  // Multiple files stay open at once, like any real editor — opening a new
+  // one adds a tab instead of replacing whatever was already open.
+  const [tabs, setTabs] = useState<OpenTab[]>([]);
+  const [activePath, setActivePath] = useState<string | null>(null);
+
+  const fetchFile = useCallback(async (path: string) => {
+    setTabs((prev) => prev.map((t) => (t.path === path ? { ...t, loading: true } : t)));
+    try {
+      const r = await fetch(
+        `${API}/api/artifacts/${projectId}/file?path=${encodeURIComponent(path)}`,
+        { credentials: "include" },
+      );
+      const content = r.ok ? ((await r.json()) as { content: string }).content : "// Could not load file";
+      setTabs((prev) => prev.map((t) => (t.path === path ? { path, content, loading: false } : t)));
+    } catch {
+      setTabs((prev) => prev.map((t) => (t.path === path ? { path, content: "// Error loading file", loading: false } : t)));
+    }
+  }, [projectId]);
+
+  const openFile = useCallback((node: ApiNode) => {
+    if (node.type !== "file") return;
+    setActivePath(node.path);
+    setTabs((prev) => {
+      if (prev.some((t) => t.path === node.path)) return prev;
+      return [...prev, { path: node.path, content: null, loading: true }];
+    });
+    void fetchFile(node.path);
+  }, [fetchFile]);
+
+  const closeTab = useCallback((path: string) => {
+    setTabs((prev) => {
+      const idx = prev.findIndex((t) => t.path === path);
+      const next = prev.filter((t) => t.path !== path);
+      if (activePath === path) {
+        const neighbor = prev[idx + 1] ?? prev[idx - 1] ?? null;
+        setActivePath(neighbor ? neighbor.path : null);
+      }
+      return next;
+    });
+  }, [activePath]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -93,17 +138,17 @@ export default function IDE(props: IDEProps) {
     return dirs;
   }, [activeWrites]);
 
-  // Once the open file's write completes, silently re-fetch its content so
-  // the reader sees the result without manually re-clicking it.
-  const wasWritingRef = useRef(false);
+  // Once an open tab's write completes, silently re-fetch its content so the
+  // reader sees the result without manually re-clicking it — for every open
+  // tab, not just the active one, since several can be mid-write at once.
+  const prevWritingRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const stillWriting = selectedPath ? activeWrites.has(selectedPath) : false;
-    if (wasWritingRef.current && !stillWriting && selectedPath) {
-      const node = findNode(tree, selectedPath);
-      if (node) onSelectFile(node);
+    const prevWriting = prevWritingRef.current;
+    for (const tab of tabs) {
+      if (prevWriting.has(tab.path) && !activeWrites.has(tab.path)) void fetchFile(tab.path);
     }
-    wasWritingRef.current = stillWriting;
-  }, [activeWrites, selectedPath, tree, onSelectFile]);
+    prevWritingRef.current = new Set(activeWrites);
+  }, [activeWrites, tabs, fetchFile]);
 
   const activeNames = useMemo(
     () => new Set(workstreams.filter((w) => w.active).map((w) => w.agent)),
@@ -172,6 +217,7 @@ export default function IDE(props: IDEProps) {
           {appUrl && (
             <a href={appUrl} target="_blank" rel="noreferrer" className={s.openBtn}>Open app</a>
           )}
+          <AccountMenu />
         </div>
       </header>
 
@@ -236,9 +282,9 @@ export default function IDE(props: IDEProps) {
                 <div className={s.emptyHint}>Generated files appear here as they are written.</div>
               </div>
             ) : (
-              <Tree nodes={tree} depth={0} expanded={expanded} selected={selectedPath}
+              <Tree nodes={tree} depth={0} expanded={expanded} selected={activePath}
                 fresh={freshPaths} writing={activeWrites} activeDirs={activeDirs}
-                onToggle={toggle} onSelect={onSelectFile} />
+                onToggle={toggle} onSelect={openFile} />
             )}
           </div>
         </aside>
@@ -269,12 +315,25 @@ export default function IDE(props: IDEProps) {
             )}
             {view === "floor" && <span className={`${s.tab} ${s.tabActive}`}>Workstreams</span>}
             {view === "files" && (
-              <span className={`${s.tab} ${s.tabActive}`}>
-                {selectedPath ?? "No file open"}
-                {selectedPath && activeWrites.has(selectedPath) && (
-                  <span className={s.tabWriting}><span className={s.tabWritingDot} />writing…</span>
-                )}
-              </span>
+              tabs.length === 0 ? (
+                <span className={`${s.tab} ${s.tabActive}`}>No file open</span>
+              ) : (
+                tabs.map((t) => (
+                  <div key={t.path} title={t.path}
+                    className={`${s.tab} ${t.path === activePath ? s.tabActive : ""}`}
+                    onClick={() => setActivePath(t.path)}>
+                    {baseName(t.path)}
+                    {activeWrites.has(t.path) && (
+                      <span className={s.tabWriting}><span className={s.tabWritingDot} />writing…</span>
+                    )}
+                    <button type="button" className={s.tabClose}
+                      onClick={(e) => { e.stopPropagation(); closeTab(t.path); }}
+                      aria-label={`Close ${baseName(t.path)}`}>
+                      ×
+                    </button>
+                  </div>
+                ))
+              )
             )}
           </div>
 
@@ -294,11 +353,13 @@ export default function IDE(props: IDEProps) {
               : <Blank title="Nothing selected" hint="Pick a changed file to see exactly what the agents altered." />
             )}
 
-            {view === "files" && (
-              fileLoading ? <div className={s.code}>Loading…</div>
-              : fileContent !== null ? <pre className={s.code}>{fileContent}</pre>
-              : <Blank title="No file open" hint="Files the agents just wrote are marked in the explorer." />
-            )}
+            {view === "files" && (() => {
+              const active = tabs.find((t) => t.path === activePath);
+              return !active
+                ? <Blank title="No file open" hint="Files the agents just wrote are marked in the explorer." />
+                : active.loading ? <div className={s.code}>Loading…</div>
+                : <pre className={s.code}>{active.content}</pre>;
+            })()}
           </div>
         </main>
 

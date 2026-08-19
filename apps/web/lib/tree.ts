@@ -38,15 +38,3 @@ export function defaultExpanded(nodes: ApiNode[], depth = 0): string[] {
   }
   return out;
 }
-
-/** Finds a node anywhere in the tree by its exact path, depth-first. */
-export function findNode(nodes: ApiNode[], path: string): ApiNode | null {
-  for (const n of nodes) {
-    if (n.path === path) return n;
-    if (n.children) {
-      const found = findNode(n.children, path);
-      if (found) return found;
-    }
-  }
-  return null;
-}

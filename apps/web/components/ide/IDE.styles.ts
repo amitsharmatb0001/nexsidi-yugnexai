@@ -35,6 +35,23 @@ const writePulse = keyframes({
   "50%": { opacity: 0.4 },
 });
 
+// Colour is set by `tab`'s own hover rule below (a descendant selector, so
+// it only applies once); this only owns the background highlight for
+// hovering the × itself, which doesn't conflict with the parent's rule
+// since the two touch different properties.
+const tabCloseClass = css({
+  display: "grid",
+  placeItems: "center",
+  width: "16px",
+  height: "16px",
+  borderRadius: theme.radius.sm,
+  fontSize: "13px",
+  lineHeight: 1,
+  color: "transparent",
+  transition: `color ${theme.duration.fast} ${ease}, background ${theme.duration.fast} ${ease}`,
+  "&:hover": { background: theme.color.muted },
+});
+
 export const ide = {
   root: css({
     display: "grid",
@@ -236,19 +253,31 @@ export const ide = {
     borderBottom: `1px solid ${theme.color.border}`,
     overflowX: "auto",
   }),
+  // Defined ahead of `tab` so its resolved class name can be targeted by a
+  // descendant selector below — two independently-atomic classes have no
+  // cascade relationship otherwise. Hidden until the tab is hovered or
+  // active; a strip of permanently visible × buttons on a dozen open tabs
+  // reads as noise.
+  tabClose: tabCloseClass,
   tab: css({
     display: "inline-flex",
     alignItems: "center",
     gap: theme.space[2],
-    padding: "0 14px",
+    padding: "0 10px 0 14px",
     fontSize: theme.fontSize.sm,
     color: inkQuiet,
     whiteSpace: "nowrap",
+    cursor: "pointer",
     borderRight: `1px solid ${theme.color.border}`,
     transition: `color ${theme.duration.base} ${ease}, background ${theme.duration.base} ${ease}`,
     "&:hover": { color: theme.color.mutedForeground },
+    [`&:hover .${tabCloseClass}`]: { color: inkQuiet },
   }),
-  tabActive: css({ color: theme.color.foreground, background: theme.color.card }),
+  tabActive: css({
+    color: theme.color.foreground,
+    background: theme.color.card,
+    [`& .${tabCloseClass}`]: { color: inkQuiet },
+  }),
   tabWriting: css({
     display: "inline-flex",
     alignItems: "center",

@@ -958,9 +958,6 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   const [stageMessage,    setStageMessage]    = useState("Initializing...");
   const [result,          setResult]          = useState<ProjectResult | null>(null);
   const [tree,            setTree]            = useState<ApiNode[]>([]);
-  const [selFile,         setSelFile]         = useState<ApiNode | null>(null);
-  const [fileContent,     setFileContent]     = useState<string | null>(null);
-  const [fileLoading,     setFileLoading]     = useState(false);
   const [terminalEntries, setTerminalEntries] = useState<TerminalEntry[]>([
     { kind: "log", text: "🚀 Build started.\nConnecting to workspace log stream...\n" },
   ]);
@@ -1281,18 +1278,6 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
     } catch {}
   }
 
-  async function fetchFileContent(path: string) {
-    setFileLoading(true);
-    setFileContent(null);
-    try {
-      const r = await fetch(`${API}/api/artifacts/${id}/file?path=${encodeURIComponent(path)}`);
-      if (!r.ok) { setFileContent("// Could not load file"); return; }
-      const data = await r.json() as { content: string };
-      setFileContent(data.content);
-    } catch { setFileContent("// Error loading file"); }
-    finally { setFileLoading(false); }
-  }
-
   async function fetchBuildPlanForModal(attempts = 6) {
     for (let i = 0; i < attempts; i++) {
       try {
@@ -1502,13 +1487,6 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       isDone={isDone}
       stageMessage={stageMessage}
       tree={tree}
-      selectedPath={selFile?.path ?? null}
-      fileContent={fileContent}
-      fileLoading={fileLoading}
-      onSelectFile={(n) => {
-        setSelFile(n);
-        if (n.type === "file") fetchFileContent(n.path);
-      }}
       awaitingSpecApproval={Boolean(buildPlanModal)}
       awaitingDeployApproval={stage === "await_deploy_approval"}
       submitting={submitting}

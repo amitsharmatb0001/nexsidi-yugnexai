@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import YugnexLogo from "../../components/ide/YugnexLogo";
 import AmbientField from "../../components/effects/AmbientField";
+import AccountMenu from "../../components/AccountMenu";
 import { dashboard as s } from "./dashboard.styles";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
@@ -16,12 +17,6 @@ interface Project {
   status: "building" | "done" | "failed";
   createdAt: string;
   appUrl?: string;
-}
-
-interface Account {
-  id: string;
-  email: string;
-  name: string;
 }
 
 function statusDotClass(status: Project["status"]): string {
@@ -44,20 +39,8 @@ function relativeTime(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-function initials(nameOrEmail: string): string {
-  const trimmed = nameOrEmail.trim();
-  if (!trimmed) return "?";
-  const parts = trimmed.split(/\s+/);
-  if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase();
-  return trimmed.slice(0, 2).toUpperCase();
-}
-
 export default function DashboardPage() {
   const router = useRouter();
-  const [account, setAccount] = useState<Account | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
   const [projects, setProjects] = useState<Project[]>([]);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -81,13 +64,6 @@ export default function DashboardPage() {
     }
   }, []);
 
-  useEffect(() => {
-    fetch(`${API}/api/auth/me`, { credentials: "include" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then((data) => setAccount(data.user ?? null))
-      .catch(() => router.push("/sign-in"));
-  }, [router]);
-
   useEffect(() => { void loadProjects(); }, [loadProjects]);
 
   // Live-ish tracking: while anything is building, refresh the list every
@@ -101,16 +77,6 @@ export default function DashboardPage() {
     return () => clearInterval(t);
   }, [hasBuilding, loadProjects]);
 
-  // Close the account menu on an outside click.
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [menuOpen]);
-
   useEffect(() => {
     if (renamingId) renameInputRef.current?.focus();
   }, [renamingId]);
@@ -123,11 +89,6 @@ export default function DashboardPage() {
     const id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     router.push(`/build/${id}`);
   }, [creating, router]);
-
-  const signOut = useCallback(async () => {
-    await fetch(`${API}/api/auth/sign-out`, { method: "POST", credentials: "include" }).catch(() => {});
-    router.push("/sign-in");
-  }, [router]);
 
   const startRename = (p: Project) => {
     setConfirmingId(null);
@@ -177,22 +138,7 @@ export default function DashboardPage() {
           YugNex
         </div>
         <div className={s.navRight}>
-          {account && (
-            <div className={s.account} ref={menuRef}>
-              <button type="button" className={s.accountBtn} onClick={() => setMenuOpen((v) => !v)}>
-                <span className={s.accountAvatar}>{initials(account.name || account.email)}</span>
-                <span className={s.accountName}>{account.name || account.email}</span>
-              </button>
-              {menuOpen && (
-                <div className={s.accountMenu}>
-                  <div className={s.accountMenuEmail}>{account.email}</div>
-                  <button type="button" className={`${s.accountMenuItem} ${s.accountMenuItemAlert}`} onClick={signOut}>
-                    Sign out
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+          <AccountMenu />
         </div>
       </nav>
 
