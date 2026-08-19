@@ -19,7 +19,6 @@ import s from "./floor.module.css";
 export interface Station {
   /** Public workstream label — matches the API's sanitised event `agent`. */
   id: string;
-  short: string;
   x: number;
   y: number;
   /** Column band, used for the connecting edges. */
@@ -30,18 +29,18 @@ const VB_W = 1000;
 const VB_H = 360;
 
 export const STATIONS: Station[] = [
-  { id: "Requirements",    short: "REQ",   x:  70, y: 180, band: "intake" },
-  { id: "Planning",        short: "PLAN",  x: 210, y: 180, band: "intake" },
+  { id: "Requirements",    x:  70, y: 180, band: "intake" },
+  { id: "Planning",        x: 210, y: 180, band: "intake" },
 
-  { id: "Backend",         short: "API",   x: 400, y:  80, band: "make" },
-  { id: "Frontend",        short: "UI",    x: 400, y: 180, band: "make" },
-  { id: "Database",        short: "DATA",  x: 400, y: 280, band: "make" },
+  { id: "Backend",         x: 400, y:  80, band: "make" },
+  { id: "Frontend",        x: 400, y: 180, band: "make" },
+  { id: "Database",        x: 400, y: 280, band: "make" },
 
-  { id: "Logic QA",        short: "LOGIC", x: 620, y:  80, band: "attack" },
-  { id: "Security QA",     short: "SEC",   x: 620, y: 180, band: "attack" },
-  { id: "Performance QA",  short: "PERF",  x: 620, y: 280, band: "attack" },
+  { id: "Logic QA",        x: 620, y:  80, band: "attack" },
+  { id: "Security QA",     x: 620, y: 180, band: "attack" },
+  { id: "Performance QA",  x: 620, y: 280, band: "attack" },
 
-  { id: "Deployment",      short: "SHIP",  x: 820, y: 180, band: "ship" },
+  { id: "Deployment",      x: 820, y: 180, band: "ship" },
 ];
 
 const MAKERS = STATIONS.filter((s) => s.band === "make");
@@ -189,27 +188,12 @@ export default function Floor({
       </div>
 
       <svg className={s.svg} viewBox={`0 0 ${VB_W} ${VB_H}`} role="img" aria-label="Pipeline floor">
-        <defs>
-          <linearGradient id="flowGrad" x1="0" x2="1">
-            <stop offset="0%"   stopColor="var(--nx-cyan)" stopOpacity="0" />
-            <stop offset="50%"  stopColor="var(--nx-cyan)" stopOpacity="0.9" />
-            <stop offset="100%" stopColor="var(--nx-cyan)" stopOpacity="0" />
-          </linearGradient>
-          <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
-            <feGaussianBlur stdDeviation="5" result="b" />
-            <feMerge>
-              <feMergeNode in="b" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-
-        {/* Band labels — the three things this organisation actually does. */}
-        <g className={s.bandLabels}>
-          <text x={140} y={26} className={s.bandLabel}>INTAKE</text>
-          <text x={400} y={26} className={s.bandLabel}>BUILD</text>
-          <text x={620} y={26} className={s.bandLabel}>ADVERSARIAL REVIEW</text>
-          <text x={820} y={26} className={s.bandLabel}>SHIP</text>
+        {/* Band labels — the things this organisation actually does. */}
+        <g>
+          <text x={140} y={30} className={s.bandLabel}>Intake</text>
+          <text x={400} y={30} className={s.bandLabel}>Build</text>
+          <text x={620} y={30} className={s.bandLabel}>Review</text>
+          <text x={820} y={30} className={s.bandLabel}>Ship</text>
         </g>
 
         {/* Forward handoffs */}
@@ -252,9 +236,11 @@ export default function Floor({
                 role="button"
                 tabIndex={0}
               >
-                {isActive && <circle r={30} className={s.pulse} />}
+                {isActive && <circle className={s.pulse} />}
+                {/* Generous invisible hit area — the visible mark is small. */}
+                <circle r={18} fill="transparent" />
                 <circle
-                  r={22}
+                  r={5}
                   className={[
                     s.node,
                     st.band === "attack" ? s.nodeAttack : "",
@@ -264,12 +250,10 @@ export default function Floor({
                   ]
                     .filter(Boolean)
                     .join(" ")}
-                  filter={isActive ? "url(#glow)" : undefined}
                 />
-                <text className={s.nodeShort} y={4}>{st.short}</text>
-                <text className={s.nodeName} y={42}>{st.id}</text>
+                <text className={s.nodeName} y={26}>{st.id}</text>
                 {w && (
-                  <text className={s.nodeMeta} y={57}>
+                  <text className={s.nodeMeta} y={43}>
                     {hasErrors ? `${w.errors} err · ` : ""}
                     {w.calls} {w.calls === 1 ? "call" : "calls"}
                   </text>
