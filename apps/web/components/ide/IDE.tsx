@@ -9,7 +9,7 @@ import { fileMark } from "./fileIcons";
 import { narrate } from "./narrate";
 import Pipeline3D from "./Pipeline3D";
 import YugnexLogo from "./YugnexLogo";
-import s from "./ide.module.css";
+import { ide as s } from "./IDE.styles";
 
 const FRESH_WINDOW_MS = 45_000;
 
@@ -290,7 +290,7 @@ export default function IDE(props: IDEProps) {
       {/* ── Status bar ────────────────────────────────────────────────── */}
       <footer className={s.status}>
         <span className={`${s.statusItem} ${conn === "live" ? s.statusLive : ""}`}>
-          <span className={s.statusDot} />
+          <span className={conn === "live" ? s.statusDotLive : s.statusDot} />
           {conn === "live" ? "Connected" : conn === "retrying" ? "Reconnecting" : "Connecting"}
         </span>
         <span className={s.statusItem}>{isDone ? "Delivered" : stageMessage}</span>
@@ -340,13 +340,15 @@ function Tree({ nodes, depth, expanded, selected, fresh, onToggle, onSelect }: {
           <div key={n.path}>
             <button type="button" title={n.path}
               onClick={() => (isDir ? onToggle(n.path) : onSelect(n))}
-              className={[s.row, selected === n.path ? s.rowSelected : "", isFresh ? s.rowFresh : ""].filter(Boolean).join(" ")}
+              className={[s.row, selected === n.path ? s.rowSelected : ""].filter(Boolean).join(" ")}
               style={{ paddingLeft: 10 + depth * 13 }}>
               <span className={`${s.caret} ${isDir && open ? s.caretOpen : ""}`}>{isDir ? "▸" : ""}</span>
               {isDir
                 ? <span className={s.folderMark}>{open ? "▾" : "▪"}</span>
                 : <span className={s.mark} style={{ color: mark.color }}>{mark.tag}</span>}
-              <span className={`${s.name} ${isDir ? s.dirName : ""}`}>{n.name}</span>
+              <span className={[s.name, isDir ? s.dirName : "", isFresh && !isDir ? s.nameFresh : ""].filter(Boolean).join(" ")}>
+                {n.name}
+              </span>
               {isFresh && !isDir && <span className={s.freshPip} />}
             </button>
             {isDir && open && (

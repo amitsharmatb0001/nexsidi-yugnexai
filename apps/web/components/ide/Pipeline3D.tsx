@@ -1,7 +1,7 @@
 "use client";
 
 import { STAGES, stageIndexFor } from "../../lib/stages";
-import s from "./pipeline3d.module.css";
+import { pipeline3d as s } from "./Pipeline3D.styles";
 
 /**
  * The run, shown as depth rather than as a progress bar.

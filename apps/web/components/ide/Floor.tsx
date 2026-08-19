@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import type { StreamItem, WorkstreamActivity } from "../../lib/live";
-import s from "./floor.module.css";
+import { floor as s } from "./Floor.styles";
 
 /**
  * The Floor — the pipeline drawn as the organisation it actually is, rather

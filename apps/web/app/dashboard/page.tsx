@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import YugnexLogo from "../../components/ide/YugnexLogo";
-import s from "./dashboard.module.css";
+import { dashboard as s } from "./dashboard.styles";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -25,6 +25,15 @@ const EXAMPLES = [
   "Internal tool for tracking sales leads with pipeline stages and notes",
   "Restaurant website with menu, reservations, and location pages",
 ];
+
+// Colour is applied directly to the dot rather than via a ".done .statusDot"
+// descendant rule — atomic classes don't share a stylesheet the way two
+// CSS-module classes on ancestor/descendant elements did.
+function statusDotClass(status: Project["status"]): string {
+  if (status === "done") return s.statusDotDone;
+  if (status === "building") return s.statusDotBuilding;
+  return s.statusDotFailed;
+}
 
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -161,8 +170,8 @@ export default function DashboardPage() {
                     <div className={s.projectName}>{p.name || "Untitled project"}</div>
                     {p.description && <div className={s.projectDesc}>{p.description}</div>}
                   </div>
-                  <div className={`${s.projectStatus} ${s[p.status as keyof typeof s] ?? ""}`}>
-                    <span className={s.statusDot} />
+                  <div className={s.projectStatus}>
+                    <span className={statusDotClass(p.status)} />
                     {p.status === "building" ? "Building" : p.status === "done" ? "Ready" : "Failed"}
                   </div>
                   <div className={s.projectTime}>{relativeTime(p.createdAt)}</div>
