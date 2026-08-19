@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { sortNodes, defaultExpanded, type ApiNode } from "./FileExplorer.tsx";
+import { sortNodes, defaultExpanded, type ApiNode } from "./tree.ts";
 
 function dir(name: string, children: ApiNode[] = []): ApiNode {
   return { name, path: name, type: "directory", children };

@@ -225,6 +225,50 @@ export function screenshotImagePathFor(toolName: string, result: Record<string, 
 // (the WS route replays the whole file on connect). Emits the fields a
 // reader actually needs — which file, how big, which command — and a byte
 // count in place of content. Pure and exported for direct unit testing.
+/**
+ * Reduces an agent's raw reasoning block to one plain-language line for the
+ * console's narration feed.
+ *
+ * Agents write reasoning in two shapes: a structured plan opening with
+ * "TASK:" (followed by DONE MEANS / UNKNOWNS / ASSUMPTION / STEP n), and
+ * free prose ("Let's inspect the existing docker-compose.yml ..."). The
+ * structured form's TASK line is the honest one-line summary of the whole
+ * block; for prose the first sentence carries the intent. Everything after
+ * that is detail the narration feed should not be dumping on screen.
+ *
+ * Pure and exported for direct unit testing.
+ */
+export function summarizeThinking(raw: string, maxLen = 220): string {
+  const text = raw.replace(/\r/g, "").trim();
+  if (!text) return "";
+
+  const taskLine = text.match(/^\s*TASK:\s*(.+)$/m)?.[1]?.trim();
+  const candidate = taskLine || firstSentence(text);
+
+  const cleaned = candidate
+    .replace(/`+/g, "")            // inline code fences read as noise in prose
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (cleaned.length <= maxLen) return cleaned;
+  // Cut on a word boundary rather than mid-word.
+  const cut = cleaned.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > maxLen * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
+function firstSentence(text: string): string {
+  // Skip leading scaffolding lines that carry no meaning on their own.
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !/^(okay|ok|alright|now|so)[.,:]?$/i.test(l));
+
+  const first = lines[0] ?? text;
+  const stop = first.search(/[.!?](\s|$)/);
+  return stop === -1 ? first : first.slice(0, stop + 1);
+}
+
 export function summarizeToolInput(toolName: string, args: unknown): Record<string, unknown> {
   if (!args || typeof args !== "object" || Array.isArray(args)) return {};
   const a = args as Record<string, unknown>;
@@ -646,6 +690,12 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       const thinkingMatch = response.content.match(/<thinking>([\s\S]*?)<\/thinking>/);
       if (thinkingMatch?.[1]) {
         console.log(`[${config.agentName}:gemini-agent] Thinking:\n${thinkingMatch[1].trim()}`);
+        // The agent's own reasoning is the only plain-language account of what
+        // it is doing and why. It was previously buried in the raw log, so the
+        // UI had nothing readable to show and fell back to printing the log
+        // verbatim. Emitted as a structured event so the console can narrate
+        // the run in sentences instead of exposing a terminal.
+        emitEvent({ type: "thinking", text: summarizeThinking(thinkingMatch[1]) });
       } else {
         console.log(`[${config.agentName}:gemini-agent] Response:\n${response.content.trim()}`);
       }

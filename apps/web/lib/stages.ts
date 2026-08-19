@@ -1,6 +1,3 @@
-"use client";
-
-import s from "./console.module.css";
 
 /**
  * Canonical pipeline stages, in execution order.
@@ -38,62 +35,4 @@ export function stageIndexFor(raw: string): number {
     }
   }
   return best;
-}
-
-function formatElapsed(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "—";
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m ${secs % 60}s`;
-  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
-}
-
-export default function PipelineRibbon({
-  stage,
-  failed,
-  startedAt,
-  now,
-}: {
-  stage: string;
-  failed?: boolean;
-  /** When the current stage began, for the live elapsed counter. */
-  startedAt?: number | null;
-  now: number;
-}) {
-  const current = stageIndexFor(stage);
-
-  return (
-    <div className={s.ribbon}>
-      {STAGES.map((st, i) => {
-        const isCurrent = i === current;
-        const isDone = current >= 0 && i < current;
-        const cls = [
-          s.stage,
-          isDone ? s.stageDone : "",
-          isCurrent && !failed ? s.stageCurrent : "",
-          isCurrent && failed ? s.stageFail : "",
-        ]
-          .filter(Boolean)
-          .join(" ");
-
-        return (
-          <div key={st.key} className={cls}>
-            <span className={s.stageLabel}>{st.label}</span>
-            <span className={s.stageMeta}>
-              {isCurrent
-                ? failed
-                  ? "needs attention"
-                  : startedAt
-                    ? formatElapsed(now - startedAt)
-                    : "running"
-                : isDone
-                  ? "done"
-                  : "—"}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
 }

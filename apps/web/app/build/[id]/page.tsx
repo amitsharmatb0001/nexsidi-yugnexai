@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState, use, useCallback } from "react";
 import Link from "next/link";
 import s from "./build.module.css";
-import Console from "../../../components/console/Console";
-import type { ApiNode } from "../../../components/console/FileExplorer";
+import IDE from "../../../components/ide/IDE";
+import type { ApiNode } from "../../../lib/tree";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -1495,7 +1495,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   // file tree as it is written.
 
   return (
-    <Console
+    <IDE
       projectId={id}
       projectName={result?.name || buildPlan?.appName || `Project ${id.slice(0, 8)}`}
       appUrl={result?.appUrl ?? null}

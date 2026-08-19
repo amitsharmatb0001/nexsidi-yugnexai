@@ -39,3 +39,33 @@ test("toPosixPath produces segments a client can split on '/' to nest correctly"
     "index.ts",
   ]);
 });
+
+// The Changes view answers "what did this build produce". The pipeline's own
+// logs and QA bookkeeping dominate that diff by line count (a single run's
+// pipeline.log was +914 lines against ~60 lines of real source edits), so
+// they are excluded from the file list.
+import { isPipelineBookkeeping } from "./artifacts.ts";
+
+test("isPipelineBookkeeping excludes the run's own log directory", () => {
+  expect(isPipelineBookkeeping("logs/pipeline.log")).toBe(true);
+  expect(isPipelineBookkeeping("logs/events.jsonl")).toBe(true);
+});
+
+test("isPipelineBookkeeping excludes per-agent history and QA submission files", () => {
+  expect(isPipelineBookkeeping("history-riya.json")).toBe(true);
+  expect(isPipelineBookkeeping("qa-submissions.json")).toBe(true);
+});
+
+test("isPipelineBookkeeping keeps real generated source and config", () => {
+  expect(isPipelineBookkeeping("docker-compose.yml")).toBe(false);
+  expect(isPipelineBookkeeping("frontend/Dockerfile")).toBe(false);
+  expect(isPipelineBookkeeping("backend/src/app.ts")).toBe(false);
+  expect(isPipelineBookkeeping("db/migrations/0000_initial.sql")).toBe(false);
+});
+
+test("isPipelineBookkeeping does not exclude an app file that merely mentions history", () => {
+  // The pattern is anchored, so a real source file is never mistaken for one
+  // of the pipeline's own records.
+  expect(isPipelineBookkeeping("frontend/lib/history-store.ts")).toBe(false);
+  expect(isPipelineBookkeeping("backend/src/logs.ts")).toBe(false);
+});

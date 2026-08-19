@@ -1,0 +1,387 @@
+/* YugNex IDE — the workspace a project opens into.
+   Quiet surfaces, one accent, no chrome that isn't load-bearing. */
+
+.root {
+  --i-bg:       #0A0A0B;
+  --i-panel:    #101012;
+  --i-raised:   #16161A;
+  --i-line:     rgba(255, 255, 255, 0.06);
+  --i-line-2:   rgba(255, 255, 255, 0.10);
+  --i-ink:      #F4F4F6;
+  --i-ink-2:    #96969E;
+  --i-ink-3:    #5E5E67;
+  --i-accent:   #FF9F0A;
+  --i-live:     #3DDC97;
+  --i-alert:    #FF6B5E;
+  --i-add:      #3DDC97;
+  --i-del:      #FF6B5E;
+  --i-ease:     cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  display: grid;
+  grid-template-rows: 48px 1fr 26px;
+  height: 100dvh;
+  background: var(--i-bg);
+  color: var(--i-ink);
+  overflow: hidden;
+  font-family: var(--nx-ff-sans);
+  font-size: 13.5px;
+  letter-spacing: -0.01em;
+}
+
+/* ── Title bar ──────────────────────────────────────────────────────────── */
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--i-line);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--i-ink);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 14px;
+}
+.brand:hover { text-decoration: none; opacity: 0.8; }
+.brandMark { color: var(--i-accent); display: inline-flex; }
+
+.project {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: var(--i-ink-2);
+}
+.projectSep { color: var(--i-ink-3); }
+.projectName { color: var(--i-ink); font-weight: 500; }
+
+.titleRight { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+
+.openBtn {
+  padding: 6px 13px;
+  border-radius: 7px;
+  background: var(--i-ink);
+  color: #0A0A0B;
+  font-size: 13px;
+  font-weight: 550;
+  transition: opacity 150ms var(--i-ease);
+}
+.openBtn:hover { opacity: 0.85; }
+
+/* ── Workbench ──────────────────────────────────────────────────────────── */
+
+.workbench {
+  display: grid;
+  grid-template-columns: 46px 244px minmax(0, 1fr) var(--narration-w, 300px);
+  min-height: 0;
+  overflow: hidden;
+}
+.workbenchNarrow { grid-template-columns: 46px 244px minmax(0, 1fr) 0; }
+
+/* Activity bar */
+.activity {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 0;
+  border-right: 1px solid var(--i-line);
+}
+
+.actBtn {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--i-ink-3);
+  transition: color 150ms var(--i-ease), background 150ms var(--i-ease);
+}
+.actBtn:hover { color: var(--i-ink-2); background: var(--i-panel); }
+.actBtnActive { color: var(--i-ink); background: var(--i-raised); }
+
+/* A single dot marks "something changed here" — no numeric badges. */
+.actDot {
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--i-live);
+}
+.actDotAlert { background: var(--i-alert); }
+
+/* Side panel */
+.side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--i-line);
+  background: var(--i-panel);
+}
+.sideHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 13px 14px 9px;
+  font-size: 12px;
+  color: var(--i-ink-3);
+}
+.sideCount { font-variant-numeric: tabular-nums; }
+.sideBody { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 16px; }
+
+/* ── Explorer tree ──────────────────────────────────────────────────────── */
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  text-align: left;
+  padding: 3.5px 10px;
+  font-size: 13px;
+  color: var(--i-ink-2);
+  transition: background 130ms var(--i-ease);
+}
+.row:hover { background: var(--i-raised); }
+.rowSelected { background: var(--i-raised); color: var(--i-ink); }
+
+.caret {
+  flex: none;
+  width: 11px;
+  color: var(--i-ink-3);
+  font-size: 9px;
+  transition: transform 150ms var(--i-ease);
+}
+.caretOpen { transform: rotate(90deg); }
+
+.mark {
+  flex: none;
+  width: 17px;
+  font-family: var(--nx-ff-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  text-align: center;
+  opacity: 0.85;
+}
+.folderMark { flex: none; width: 17px; text-align: center; color: var(--i-ink-3); font-size: 11px; }
+
+.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dirName { color: var(--i-ink-2); font-weight: 500; }
+
+.freshPip {
+  flex: none;
+  margin-left: auto;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--i-live);
+}
+.rowFresh .name { color: var(--i-live); }
+
+/* Changed-file rows carry their own +/- counts. */
+.diffStat {
+  margin-left: auto;
+  display: flex;
+  gap: 7px;
+  font-family: var(--nx-ff-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.add { color: var(--i-add); }
+.del { color: var(--i-del); }
+
+/* ── Editor area ────────────────────────────────────────────────────────── */
+
+.editor {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  min-width: 0;
+}
+
+.tabbar {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  min-height: 36px;
+  border-bottom: 1px solid var(--i-line);
+  overflow-x: auto;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  font-size: 13px;
+  color: var(--i-ink-3);
+  white-space: nowrap;
+  border-right: 1px solid var(--i-line);
+  transition: color 140ms var(--i-ease), background 140ms var(--i-ease);
+}
+.tab:hover { color: var(--i-ink-2); }
+.tabActive { color: var(--i-ink); background: var(--i-panel); }
+
+.pane { min-height: 0; overflow: auto; }
+
+.code {
+  margin: 0;
+  padding: 14px 18px 32px;
+  font-family: var(--nx-ff-mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--i-ink-2);
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* Diff */
+.patch { margin: 0; padding: 12px 0 32px; font-family: var(--nx-ff-mono); font-size: 12.5px; line-height: 1.65; }
+.patchLine { padding: 0 18px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--i-ink-3); }
+.patchAdd { background: rgba(61, 220, 151, 0.09); color: #A8E9CB; }
+.patchDel { background: rgba(255, 107, 94, 0.09); color: #F5B3AC; }
+.patchHunk { color: var(--i-ink-3); background: rgba(255,255,255,0.03); }
+.patchMeta { color: var(--i-ink-3); opacity: 0.7; }
+
+.frame { width: 100%; height: 100%; border: 0; background: #fff; }
+
+.empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  height: 100%;
+  padding: 44px;
+  text-align: center;
+  gap: 7px;
+}
+.emptyTitle { font-size: 14.5px; font-weight: 500; color: var(--i-ink-2); }
+.emptyHint { font-size: 13px; color: var(--i-ink-3); max-width: 40ch; line-height: 1.6; }
+
+/* ── Narration ──────────────────────────────────────────────────────────── */
+
+.narration {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--i-line);
+  background: var(--i-panel);
+  overflow: hidden;
+}
+.narrHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 13px 16px 9px;
+  font-size: 12px;
+  color: var(--i-ink-3);
+}
+.narrBody { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 16px 20px; }
+
+/* One thought per block: who, then the sentence. No timestamps in the
+   reading column — they belong in the hover title, not the prose. */
+.thought {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--i-line);
+  animation: i-in 240ms var(--i-ease) both;
+}
+.thought:last-child { border-bottom: none; }
+@keyframes i-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.thoughtWho {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--i-ink-3);
+  margin-bottom: 3px;
+}
+.whoDot { width: 4px; height: 4px; border-radius: 50%; background: var(--i-ink-3); }
+.whoDotLive { background: var(--i-live); }
+
+.thoughtText { font-size: 13px; line-height: 1.55; color: var(--i-ink-2); }
+.thoughtDoing { color: var(--i-ink); }
+
+.thoughtMeta {
+  margin-top: 3px;
+  font-family: var(--nx-ff-mono);
+  font-size: 11.5px;
+  color: var(--i-ink-3);
+  overflow-wrap: anywhere;
+}
+.thoughtErr { color: var(--i-alert); }
+
+/* ── Status bar ─────────────────────────────────────────────────────────── */
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 14px;
+  border-top: 1px solid var(--i-line);
+  font-size: 12px;
+  color: var(--i-ink-3);
+}
+.statusItem { display: inline-flex; align-items: center; gap: 6px; }
+.statusDot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.statusLive { color: var(--i-ink-2); }
+.statusLive .statusDot { background: var(--i-live); }
+.statusPush { margin-left: auto; }
+
+/* ── Gate ───────────────────────────────────────────────────────────────── */
+
+.gate {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--i-line);
+  background: var(--i-raised);
+}
+.gateText { flex: 1; min-width: 0; }
+.gateTitle { font-size: 13px; font-weight: 550; }
+.gateHint { font-size: 12px; color: var(--i-ink-3); margin-top: 1px; }
+.gateInput {
+  min-width: 0;
+  max-width: 320px;
+  flex: 1;
+  padding: 7px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--i-line-2);
+  background: var(--i-bg);
+  color: var(--i-ink);
+  font-size: 13px;
+  outline: none;
+}
+.gateInput:focus { border-color: rgba(255,255,255,0.22); }
+
+.btn {
+  padding: 7px 14px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 550;
+  white-space: nowrap;
+  background: var(--i-ink);
+  color: #0A0A0B;
+  transition: opacity 150ms var(--i-ease);
+}
+.btn:hover:not(:disabled) { opacity: 0.85; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btnGhost { background: transparent; color: var(--i-ink-3); }
+.btnGhost:hover { color: var(--i-ink-2); background: var(--i-raised); }
+
+@media (max-width: 1240px) {
+  .workbench { grid-template-columns: 46px 220px minmax(0, 1fr) 0; }
+}
+@media (max-width: 900px) {
+  .workbench { grid-template-columns: 46px minmax(0, 1fr) 0 0; }
+  .side { display: none; }
+}

@@ -41,8 +41,14 @@ export interface SystemVitals {
 export interface ToolEvent {
   ts: number;
   agent: string;
-  type: "tool_call" | "tool_result" | "repair";
+  /**
+   * "thinking" carries the agent's own plain-language reasoning, which is
+   * what the narration panel renders instead of raw log text.
+   */
+  type: "tool_call" | "tool_result" | "repair" | "thinking";
   tool: string;
+  /** Present on "thinking" events — one summarised sentence. */
+  text?: string;
   input?: Record<string, unknown>;
   status?: string;
   summary?: string;

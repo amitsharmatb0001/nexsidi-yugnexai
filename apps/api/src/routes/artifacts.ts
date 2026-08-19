@@ -11,6 +11,7 @@ import { Hono } from "hono";
 import { readdir, readFile, stat } from "fs/promises";
 import { existsSync } from "fs";
 import { join, resolve, extname, sep } from "path";
+import { execFileSync } from "child_process";
 import { db, projects } from "@nexsidi/db";
 import { and, eq } from "drizzle-orm";
 
@@ -140,6 +141,142 @@ artifactsRouter.get("/:projectId/tree", async (c) => {
 
   const tree = await buildTree(projectDir, projectDir);
   return c.json({ projectId, tree });
+});
+
+/**
+ * The commit to diff against: the EARLIEST "nexsidi-initial-state".
+ *
+ * The pipeline writes one of these bookend commits at the start of every
+ * deploy cycle, so a project that was redeployed has several. Taking the most
+ * recent one answers "what changed since the last redeploy" — usually two
+ * bookkeeping files — when the question a reviewer has is "what did this
+ * build produce". Falls back to the repo's root commit for projects created
+ * before the bookend convention.
+ */
+function resolveBaseline(git: (args: string[]) => string): string {
+  // `git log -n 1` would apply the limit before ordering, so the whole list is
+  // read and the last (oldest) entry taken.
+  const all = git(["log", "--format=%H", "--grep=nexsidi-initial-state"])
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return all[all.length - 1] ?? git(["rev-list", "--max-parents=0", "HEAD", "-n", "1"]);
+}
+
+/**
+ * Files the pipeline writes about itself, rather than files belonging to the
+ * generated app. A reviewer looking at "what changed" wants their own source,
+ * not the run's logs and QA bookkeeping — those dominate the diff by line
+ * count and bury the handful of real edits.
+ */
+export function isPipelineBookkeeping(path: string): boolean {
+  return (
+    path.startsWith("logs/") ||
+    path.endsWith(".jsonl") ||
+    /^history-[a-z]+\.json$/.test(path) ||
+    path === "qa-submissions.json"
+  );
+}
+
+// ── GET /api/artifacts/:projectId/diff ────────────────────────────────────────
+// What the agents actually changed, as a real diff.
+//
+// Every build dir is a git repo, and the pipeline tags its own bookends:
+// a "nexsidi-initial-state" commit before the agents touch anything, and an
+// "Initial delivery" commit after. Diffing HEAD against the most recent
+// initial-state commit is therefore exactly "what this build produced",
+// which is the question a reviewer actually has.
+artifactsRouter.get("/:projectId/diff", async (c) => {
+  const userId    = c.get("userId") as string | undefined;
+  const projectId = c.req.param("projectId");
+
+  if (userId && !await assertOwns(projectId, userId)) {
+    return c.json({ error: "not_found" }, 404);
+  }
+
+  const projectDir = resolve(BUILD_DIR, projectId);
+  if (!existsSync(projectDir)) {
+    return c.json({ error: "build_not_ready" }, 404);
+  }
+
+  try {
+    const git = (args: string[]) =>
+      execFileSync("git", args, {
+        cwd: projectDir,
+        encoding: "utf-8",
+        maxBuffer: 12 * 1024 * 1024,
+        // A repo with no commits, or no git binary, must degrade to "no diff
+        // available" rather than take the console's Changes tab down with it.
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+
+    const baseline = resolveBaseline(git);
+    if (!baseline) return c.json({ projectId, base: null, files: [] });
+
+    const stat = git(["diff", "--numstat", `${baseline}..HEAD`]);
+    const files = stat
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const [added, removed, path] = line.split("\t");
+        return {
+          path: toPosixPath(path ?? ""),
+          // "-" marks a binary file in numstat; report it as such rather than
+          // coercing it to a misleading 0.
+          added: added === "-" ? null : Number(added),
+          removed: removed === "-" ? null : Number(removed),
+          binary: added === "-",
+        };
+      })
+      .filter((f) => f.path && !isPipelineBookkeeping(f.path));
+
+    return c.json({ projectId, base: baseline.slice(0, 7), files });
+  } catch (err) {
+    return c.json({ projectId, base: null, files: [], error: String(err).slice(0, 200) });
+  }
+});
+
+// ── GET /api/artifacts/:projectId/diff/file?path= ─────────────────────────────
+// The unified patch for one file, so the console can render it inline.
+artifactsRouter.get("/:projectId/diff/file", async (c) => {
+  const userId      = c.get("userId") as string | undefined;
+  const projectId   = c.req.param("projectId");
+  const requestPath = c.req.query("path") ?? "";
+
+  if (!requestPath) return c.json({ error: "path required" }, 400);
+  if (userId && !await assertOwns(projectId, userId)) {
+    return c.json({ error: "not_found" }, 404);
+  }
+
+  const projectDir = resolve(BUILD_DIR, projectId);
+  if (!existsSync(projectDir)) return c.json({ error: "build_not_ready" }, 404);
+
+  // Same containment rule the file endpoint uses — a path arriving from the
+  // client must not be able to address anything outside the project.
+  const fullPath = resolve(projectDir, requestPath);
+  if (!fullPath.startsWith(projectDir + sep) && fullPath !== projectDir) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+
+  try {
+    const git = (args: string[]) =>
+      execFileSync("git", args, {
+        cwd: projectDir,
+        encoding: "utf-8",
+        maxBuffer: 8 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+
+    const baseline = resolveBaseline(git);
+    if (!baseline) return c.json({ path: requestPath, patch: "" });
+
+    // "--" separates the revision range from the pathspec, so a filename that
+    // looks like a flag or a ref cannot be reinterpreted as one.
+    const patch = git(["diff", `${baseline}..HEAD`, "--", requestPath]);
+    return c.json({ path: requestPath, patch });
+  } catch (err) {
+    return c.json({ path: requestPath, patch: "", error: String(err).slice(0, 200) });
+  }
 });
 
 // ── GET /api/artifacts/:projectId/build-plan.json ─────────────────────────────

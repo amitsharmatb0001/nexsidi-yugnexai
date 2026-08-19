@@ -9,6 +9,7 @@ import {
   screenshotImagePathFor,
   isRelevantContextSelectionEnabled,
   summarizeToolInput,
+  summarizeThinking,
   COMPACTION_THRESHOLD_TOKENS,
 } from "./gemini-loop.ts";
 import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts";
@@ -365,4 +366,52 @@ test("summarizeToolInput passes through short scalars for an unknown/browser too
 test("summarizeToolInput returns an empty object for non-object args rather than throwing", () => {
   expect(summarizeToolInput("read_file", null)).toEqual({});
   expect(summarizeToolInput("read_file", "not-an-object")).toEqual({});
+});
+
+// The console narrates a run in plain language instead of exposing a raw
+// terminal. The agents' own reasoning blocks are the only human-readable
+// account of what is happening, so this is what that feed renders.
+
+test("summarizeThinking uses the TASK line as the headline for a structured plan", () => {
+  const raw = `TASK: Deploy a full-stack project with PostgreSQL, Express backend, and Next.js frontend
+DONE MEANS: All containers are running and health checks pass
+UNKNOWNS: Are there additional environment variables needed?
+
+STEP 1: Write docker-compose.yml → CHECK: File exists`;
+
+  expect(summarizeThinking(raw)).toBe(
+    "Deploy a full-stack project with PostgreSQL, Express backend, and Next.js frontend",
+  );
+});
+
+test("summarizeThinking takes the first sentence of free-form reasoning", () => {
+  const raw = "Let's inspect the existing docker-compose.yml file to see what was written. Then we will decide whether it meets the requirements.";
+  expect(summarizeThinking(raw)).toBe(
+    "Let's inspect the existing docker-compose.yml file to see what was written.",
+  );
+});
+
+test("summarizeThinking strips backticks so paths read as prose, not markup", () => {
+  const raw = "Let's read `backend/package.json` to see how the backend is structured.";
+  expect(summarizeThinking(raw)).toBe(
+    "Let's read backend/package.json to see how the backend is structured.",
+  );
+});
+
+test("summarizeThinking skips a bare filler opener and uses the real first line", () => {
+  const raw = "Okay\nWe need to read the project directory structure first.";
+  expect(summarizeThinking(raw)).toBe("We need to read the project directory structure first.");
+});
+
+test("summarizeThinking truncates on a word boundary rather than mid-word", () => {
+  const raw = `TASK: ${"alpha ".repeat(60)}`;
+  const out = summarizeThinking(raw, 40);
+
+  expect(out.length).toBeLessThanOrEqual(41); // 40 + ellipsis
+  expect(out.endsWith("…")).toBe(true);
+  expect(out).not.toMatch(/alp…$/); // did not cut inside a word
+});
+
+test("summarizeThinking returns empty string for blank reasoning rather than throwing", () => {
+  expect(summarizeThinking("   \n  ")).toBe("");
 });
