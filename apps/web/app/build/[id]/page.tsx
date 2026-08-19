@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, use, useCallback } from "react";
 import Link from "next/link";
 import s from "./build.module.css";
 import IDE from "../../../components/ide/IDE";
+import PlanPreview, { type BuildPlan } from "../../../components/ide/PlanPreview";
 import type { ApiNode } from "../../../lib/tree";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
@@ -39,19 +40,6 @@ interface FileNode {
   type:     "file" | "dir";
   content?: string;
   ext?:     string;
-}
-
-interface BuildPlan {
-  appName: string;
-  appDescription: string;
-  pages?: Array<{ name: string; path: string; description: string }>;
-  authType?: "none" | "jwt";
-  // support both old (aanyaTasks) and new (frontendTasks) field names
-  frontendTasks?: Array<{ description: string; outputFiles: string[] }>;
-  aanyaTasks?:   Array<{ description: string; outputFiles: string[] }>;
-  backendTasks?:  Array<{ description: string; outputFiles: string[] }>;
-  apiContract?: { endpoints: Array<{ route: string; method: string; description: string }> };
-  dbSchema?: { tables: Array<{ name: string; fields: Array<{ name: string; type: string }> }> };
 }
 
 interface ToolEvent {
@@ -509,89 +497,21 @@ function FileTreeNode({ node, depth, selected, onSelect }: {
   );
 }
 
-// ── Plan Preview card (shown in Planning Mode right panel) ────────────────────
+// ── Empty plan placeholder (shown in Planning Mode right panel, before the
+// assistant has proposed anything) ─────────────────────────────────────────
 
-function PlanPreview({ plan }: { plan: BuildPlan | null }) {
-  if (!plan) {
-    return (
-      <div style={{ height: "100%", display: "flex", flexDirection: "column", justifyContent: "center",
-                    alignItems: "center", color: "var(--nx-text3)", gap: "12px", padding: "40px", textAlign: "center" }}>
-        <div style={{ fontSize: "28px" }}>📋</div>
-        <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--nx-text2)" }}>Build Specification</span>
-        <p style={{ fontSize: "12px", maxWidth: "240px", lineHeight: 1.6 }}>
-          Chat with the assistant to plan your app. The confirmed specification will appear here.
-        </p>
-        {[65, 80, 55, 70].map((w, i) => (
-          <div key={i} className={s.skeletonLine} style={{ width: `${w}%`, height: "8px", marginTop: "4px" }} />
-        ))}
-      </div>
-    );
-  }
-
-  const frontendTasks = plan.frontendTasks ?? plan.aanyaTasks ?? [];
-
+function EmptyPlanPreview() {
   return (
-    <div style={{ height: "100%", overflowY: "auto", padding: "20px" }}>
-      <div style={{ marginBottom: "16px" }}>
-        <div style={{ fontSize: "16px", fontWeight: 700, color: "var(--nx-accent)", marginBottom: "4px" }}>{plan.appName}</div>
-        <div style={{ fontSize: "12px", color: "var(--nx-text2)", lineHeight: 1.6 }}>{plan.appDescription}</div>
-      </div>
-
-      {plan.pages?.length ? (
-        <div style={{ marginBottom: "14px" }}>
-          <div style={{ fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--nx-text3)", marginBottom: "8px" }}>Pages</div>
-          {plan.pages.map((p, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "8px", marginBottom: "6px" }}>
-              <span style={{ fontFamily: "var(--nx-ff-mono)", fontSize: "11px", color: "var(--nx-accent-text)", background: "var(--nx-bg-subtle)", padding: "1px 6px", borderRadius: "4px", flexShrink: 0 }}>{p.path}</span>
-              <span style={{ fontSize: "12px", color: "var(--nx-text2)" }}>{p.description}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      {plan.authType && (
-        <div style={{ marginBottom: "14px" }}>
-          <div style={{ fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--nx-text3)", marginBottom: "6px" }}>Auth</div>
-          <span style={{ fontSize: "12px", color: "var(--nx-text)", background: "var(--nx-bg-subtle)", padding: "2px 8px", borderRadius: "4px" }}>
-            {plan.authType === "jwt" ? "Sign up / Login (JWT)" : "No authentication"}
-          </span>
-        </div>
-      )}
-
-      {plan.apiContract?.endpoints?.length ? (
-        <div style={{ marginBottom: "14px" }}>
-          <div style={{ fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--nx-text3)", marginBottom: "8px" }}>API Endpoints</div>
-          {plan.apiContract.endpoints.map((ep, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px", fontFamily: "var(--nx-ff-mono)", fontSize: "11px" }}>
-              <span style={{ color: "var(--nx-accent-text)", fontWeight: 700, width: "44px", flexShrink: 0 }}>{ep.method}</span>
-              <span style={{ color: "var(--nx-text2)" }}>{ep.route}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      {plan.dbSchema?.tables?.length ? (
-        <div style={{ marginBottom: "14px" }}>
-          <div style={{ fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--nx-text3)", marginBottom: "8px" }}>Database Tables</div>
-          {plan.dbSchema.tables.map((t, i) => (
-            <div key={i} style={{ marginBottom: "4px", fontSize: "12px" }}>
-              <span style={{ color: "var(--nx-text)", fontFamily: "var(--nx-ff-mono)" }}>{t.name}</span>
-              <span style={{ color: "var(--nx-text3)", marginLeft: "8px" }}>({t.fields.length} fields)</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      {frontendTasks.length ? (
-        <div>
-          <div style={{ fontSize: "10px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--nx-text3)", marginBottom: "8px" }}>Frontend Tasks</div>
-          {frontendTasks.map((t, i) => (
-            <div key={i} style={{ fontSize: "12px", color: "var(--nx-text2)", marginBottom: "4px", paddingLeft: "8px", borderLeft: "2px solid var(--nx-border)" }}>
-              {t.description}
-            </div>
-          ))}
-        </div>
-      ) : null}
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", justifyContent: "center",
+                  alignItems: "center", color: "var(--nx-text3)", gap: "12px", padding: "40px", textAlign: "center" }}>
+      <div style={{ fontSize: "28px" }}>📋</div>
+      <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--nx-text2)" }}>Build Specification</span>
+      <p style={{ fontSize: "12px", maxWidth: "240px", lineHeight: 1.6 }}>
+        Chat with the assistant to plan your app. The confirmed specification will appear here.
+      </p>
+      {[65, 80, 55, 70].map((w, i) => (
+        <div key={i} className={s.skeletonLine} style={{ width: `${w}%`, height: "8px", marginTop: "4px" }} />
+      ))}
     </div>
   );
 }
@@ -1460,7 +1380,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
                   }}
                 />
               ) : (
-                <PlanPreview plan={buildPlan} />
+                buildPlan ? <PlanPreview plan={buildPlan} /> : <EmptyPlanPreview />
               )}
             </div>
           </div>
@@ -1488,6 +1408,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       stageMessage={stageMessage}
       tree={tree}
       awaitingSpecApproval={Boolean(buildPlanModal)}
+      buildPlan={buildPlanModal}
       awaitingDeployApproval={stage === "await_deploy_approval"}
       submitting={submitting}
       changeRequest={changeRequest}

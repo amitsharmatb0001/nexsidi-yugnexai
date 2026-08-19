@@ -8,6 +8,7 @@ import { type ApiNode, sortNodes, defaultExpanded } from "../../lib/tree";
 import Floor from "./Floor";
 import { fileMark } from "./fileIcons";
 import { narrate } from "./narrate";
+import PlanPreview, { type BuildPlan } from "./PlanPreview";
 import YugnexLogo from "./YugnexLogo";
 import { ide as s } from "./IDE.styles";
 
@@ -38,6 +39,7 @@ export interface IDEProps {
   stageMessage: string;
   tree: ApiNode[];
   awaitingSpecApproval: boolean;
+  buildPlan: BuildPlan | null;
   awaitingDeployApproval: boolean;
   submitting: boolean;
   changeRequest: string;
@@ -49,7 +51,7 @@ export interface IDEProps {
 export default function IDE(props: IDEProps) {
   const {
     projectId, projectName, appUrl, isDone, stageMessage,
-    tree, awaitingSpecApproval, awaitingDeployApproval, submitting,
+    tree, awaitingSpecApproval, buildPlan, awaitingDeployApproval, submitting,
     changeRequest, onChangeRequest, onApproveSpec, onApproveDeploy,
   } = props;
 
@@ -196,6 +198,8 @@ export default function IDE(props: IDEProps) {
       ? { title: "Build verified", hint: "Quality checks passed. Approve to launch it locally.", cta: submitting ? "Deploying…" : "Approve & launch", onGo: onApproveDeploy, input: false }
       : null;
 
+  const showPlan = awaitingSpecApproval && Boolean(buildPlan);
+
   const openCircuits = vitals
     ? Object.values(vitals.circuits).filter((c) => c === "OPEN").length
     : 0;
@@ -309,57 +313,74 @@ export default function IDE(props: IDEProps) {
           )}
 
           <div className={s.tabbar}>
-            {view === "preview" && appUrl && <span className={`${s.tab} ${s.tabActive}`}>{appUrl}</span>}
-            {view === "changes" && (
-              <span className={`${s.tab} ${s.tabActive}`}>{patchPath ?? "Select a change"}</span>
-            )}
-            {view === "floor" && <span className={`${s.tab} ${s.tabActive}`}>Workstreams</span>}
-            {view === "files" && (
-              tabs.length === 0 ? (
-                <span className={`${s.tab} ${s.tabActive}`}>No file open</span>
-              ) : (
-                tabs.map((t) => (
-                  <div key={t.path} title={t.path}
-                    className={`${s.tab} ${t.path === activePath ? s.tabActive : ""}`}
-                    onClick={() => setActivePath(t.path)}>
-                    {baseName(t.path)}
-                    {activeWrites.has(t.path) && (
-                      <span className={s.tabWriting}><span className={s.tabWritingDot} />writing…</span>
-                    )}
-                    <button type="button" className={s.tabClose}
-                      onClick={(e) => { e.stopPropagation(); closeTab(t.path); }}
-                      aria-label={`Close ${baseName(t.path)}`}>
-                      ×
-                    </button>
-                  </div>
-                ))
-              )
-            )}
+            {(() => {
+              if (showPlan) {
+                return <span className={`${s.tab} ${s.tabActive}`}>Specification</span>;
+              }
+              if (view === "preview" && appUrl) {
+                return <span className={`${s.tab} ${s.tabActive}`}>{appUrl}</span>;
+              }
+              if (view === "changes") {
+                return <span className={`${s.tab} ${s.tabActive}`}>{patchPath ?? "Select a change"}</span>;
+              }
+              if (view === "floor") {
+                return <span className={`${s.tab} ${s.tabActive}`}>Workstreams</span>;
+              }
+              if (view === "files") {
+                return tabs.length === 0 ? (
+                  <span className={`${s.tab} ${s.tabActive}`}>No file open</span>
+                ) : (
+                  tabs.map((t) => (
+                    <div key={t.path} title={t.path}
+                      className={`${s.tab} ${t.path === activePath ? s.tabActive : ""}`}
+                      onClick={() => setActivePath(t.path)}>
+                      <span className={s.tabMark} style={{ color: fileMark(baseName(t.path)).color }}>
+                        {fileMark(baseName(t.path)).tag}
+                      </span>
+                      {baseName(t.path)}
+                      {activeWrites.has(t.path) && (
+                        <span className={s.tabWriting}><span className={s.tabWritingDot} />writing…</span>
+                      )}
+                      <button type="button" className={s.tabClose}
+                        onClick={(e) => { e.stopPropagation(); closeTab(t.path); }}
+                        aria-label={`Close ${baseName(t.path)}`}>
+                        ×
+                      </button>
+                    </div>
+                  ))
+                );
+              }
+              return null;
+            })()}
           </div>
 
           <div className={s.pane}>
-            {view === "floor" && (
-              <Floor workstreams={workstreams} items={items} now={now}
-                stage={isDone ? "delivered" : stageMessage}
-                selected={null} onSelect={() => {}} />
+            {showPlan ? <PlanPreview plan={buildPlan as BuildPlan} /> : (
+              <>
+                {view === "floor" && (
+                  <Floor workstreams={workstreams} items={items} now={now}
+                    stage={isDone ? "delivered" : stageMessage}
+                    selected={null} onSelect={() => {}} />
+                )}
+
+                {view === "preview" && appUrl && <iframe src={appUrl} className={s.frame}
+                  sandbox="allow-same-origin allow-scripts allow-forms" />}
+
+                {view === "changes" && (
+                  patch === null && patchPath ? <div className={s.code}>Loading…</div>
+                  : patch ? <Patch text={patch} />
+                  : <Blank title="Nothing selected" hint="Pick a changed file to see exactly what the agents altered." />
+                )}
+
+                {view === "files" && (() => {
+                  const active = tabs.find((t) => t.path === activePath);
+                  return !active
+                    ? <Blank title="No file open" hint="Files the agents just wrote are marked in the explorer." />
+                    : active.loading ? <div className={s.code}>Loading…</div>
+                    : <pre className={s.code}>{active.content}</pre>;
+                })()}
+              </>
             )}
-
-            {view === "preview" && appUrl && <iframe src={appUrl} className={s.frame}
-              sandbox="allow-same-origin allow-scripts allow-forms" />}
-
-            {view === "changes" && (
-              patch === null && patchPath ? <div className={s.code}>Loading…</div>
-              : patch ? <Patch text={patch} />
-              : <Blank title="Nothing selected" hint="Pick a changed file to see exactly what the agents altered." />
-            )}
-
-            {view === "files" && (() => {
-              const active = tabs.find((t) => t.path === activePath);
-              return !active
-                ? <Blank title="No file open" hint="Files the agents just wrote are marked in the explorer." />
-                : active.loading ? <div className={s.code}>Loading…</div>
-                : <pre className={s.code}>{active.content}</pre>;
-            })()}
           </div>
         </main>
 
