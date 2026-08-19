@@ -69,3 +69,70 @@ test("sign-up rejects weak passwords before calling the persistence layer", asyn
   expect(response.status).toBe(400);
   expect(called).toBe(false);
 });
+
+// GET /api/auth/me — the dashboard's account area needs the signed-in user's
+// name/email, and this router is mounted BEFORE the app-wide auth middleware
+// (sign-up must work with no session yet), so /me has to check the session
+// itself rather than relying on c.get("userId") the way every other
+// protected route does.
+
+function testAppWithAccount(service: AuthService, getUserById: (id: string) => Promise<{ id: string; email: string; name: string } | null>) {
+  return new Hono().route("/api/auth", createAuthRouter(service, getUserById));
+}
+
+test("GET /me returns 401 with no session cookie at all", async () => {
+  const app = testApp({
+    signUp: async () => null, signIn: async () => null, signOut: async () => {},
+    userIdForSession: async () => null,
+  });
+
+  const response = await app.request("/api/auth/me");
+
+  expect(response.status).toBe(401);
+});
+
+test("GET /me returns 401 when the session cookie doesn't resolve to a real user", async () => {
+  const app = testApp({
+    signUp: async () => null, signIn: async () => null, signOut: async () => {},
+    userIdForSession: async () => null, // revoked/expired/garbage token
+  });
+
+  const response = await app.request("/api/auth/me", {
+    headers: { cookie: "nexsidi_session=stale-token" },
+  });
+
+  expect(response.status).toBe(401);
+});
+
+test("GET /me returns the account for a genuinely valid session", async () => {
+  const app = testAppWithAccount(
+    {
+      signUp: async () => null, signIn: async () => null, signOut: async () => {},
+      userIdForSession: async (token) => (token === "real-token" ? "user-42" : null),
+    },
+    async (id) => (id === "user-42" ? { id: "user-42", email: "amit@yugnex.dev", name: "Amit" } : null),
+  );
+
+  const response = await app.request("/api/auth/me", {
+    headers: { cookie: "nexsidi_session=real-token" },
+  });
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ user: { id: "user-42", email: "amit@yugnex.dev", name: "Amit" } });
+});
+
+test("GET /me returns 401 if the session is valid but the user row is gone (deleted account)", async () => {
+  const app = testAppWithAccount(
+    {
+      signUp: async () => null, signIn: async () => null, signOut: async () => {},
+      userIdForSession: async () => "user-orphaned",
+    },
+    async () => null,
+  );
+
+  const response = await app.request("/api/auth/me", {
+    headers: { cookie: "nexsidi_session=some-token" },
+  });
+
+  expect(response.status).toBe(401);
+});

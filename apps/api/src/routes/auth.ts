@@ -9,6 +9,24 @@ export interface AuthService {
   userIdForSession(token: string): Promise<string | null>;
 }
 
+export interface AccountRecord {
+  id: string;
+  email: string;
+  name: string;
+}
+
+/** Real lookup, injectable so route tests never need a live database. */
+async function defaultGetUserById(userId: string): Promise<AccountRecord | null> {
+  const { db, users } = await import("@nexsidi/db");
+  const { eq } = await import("drizzle-orm");
+  const [row] = await db
+    .select({ id: users.id, email: users.email, name: users.name })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return row ?? null;
+}
+
 function credentials(value: unknown): { email: string; password: string } | null {
   if (!value || typeof value !== "object") return null;
   const { email, password } = value as Record<string, unknown>;
@@ -23,7 +41,7 @@ async function defaultService(): Promise<AuthService> {
   return (await import("../auth/service.ts")).authService;
 }
 
-export function createAuthRouter(injectedService?: AuthService) {
+export function createAuthRouter(injectedService?: AuthService, getUserById: (userId: string) => Promise<AccountRecord | null> = defaultGetUserById) {
   const router = new Hono();
   const service = () => injectedService ? Promise.resolve(injectedService) : defaultService();
   router.post("/sign-up", async (c) => {
@@ -47,6 +65,21 @@ export function createAuthRouter(injectedService?: AuthService) {
     if (token) await (await service()).signOut(token);
     deleteCookie(c, SESSION_COOKIE_NAME, { path: "/" });
     return c.body(null, 204);
+  });
+  // GET /api/auth/me — the dashboard's account area. This router is mounted
+  // BEFORE the app-wide auth middleware (sign-up/sign-in must work with no
+  // session yet), so unlike every other protected route this one resolves
+  // and checks the session itself rather than reading c.get("userId").
+  router.get("/me", async (c) => {
+    const token = sessionTokenFromRequest(c.req.raw);
+    if (!token) return c.json({ error: "unauthorized" }, 401);
+    const userId = await (await service()).userIdForSession(token);
+    if (!userId) return c.json({ error: "unauthorized" }, 401);
+
+    const account = await getUserById(userId);
+    if (!account) return c.json({ error: "unauthorized" }, 401);
+
+    return c.json({ user: account });
   });
   return router;
 }
