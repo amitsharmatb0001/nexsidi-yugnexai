@@ -7,6 +7,14 @@ interface Task {
   outputFiles: string[];
 }
 
+interface DbField {
+  name: string;
+  type: string;
+  nullable?: boolean;
+  primaryKey?: boolean;
+  default?: string | null;
+}
+
 export interface BuildPlan {
   appName: string;
   appDescription: string;
@@ -29,10 +37,17 @@ export interface BuildPlan {
       errorCodes?: number[];
     }>;
   };
+  // Real pipeline runs have produced both { name, fields } and
+  // { tableName, columns } for the same dbSchema.tables shape across
+  // different builds — Arjun's output isn't schema-locked on this field
+  // naming. Both are accepted and normalized below rather than assuming
+  // either is authoritative.
   dbSchema?: {
     tables: Array<{
-      name: string;
-      fields: Array<{ name: string; type: string; nullable?: boolean; primaryKey?: boolean; default?: string | null }>;
+      name?: string;
+      tableName?: string;
+      fields?: Array<DbField>;
+      columns?: Array<DbField>;
     }>;
   };
   // Public workstream labels below, never the internal agent names these
@@ -153,33 +168,37 @@ export default function PlanPreview({ plan }: { plan: BuildPlan }) {
 
       {plan.dbSchema?.tables?.length ? (
         <Section n={++n} title="Database Schema">
-          {plan.dbSchema.tables.map((t, i) => (
-            <div key={i} className={s.tableWrap}>
-              <div className={s.tableName}>{t.name}</div>
-              <table className={s.table}>
-                <thead>
-                  <tr>
-                    <th className={s.th}>Field</th>
-                    <th className={s.th}>Type</th>
-                    <th className={s.th}>Nullable</th>
-                    <th className={s.th}>Default</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {t.fields.map((f, j) => (
-                    <tr key={j}>
-                      <td className={`${s.td} ${s.mono}`}>
-                        {f.primaryKey && <span className={s.keyIcon}>🔑</span>}{f.name}
-                      </td>
-                      <td className={`${s.td} ${s.mono}`}>{f.type}</td>
-                      <td className={s.td}>{f.nullable ? "yes" : "no"}</td>
-                      <td className={`${s.td} ${s.mono}`}>{f.default ?? "—"}</td>
+          {plan.dbSchema.tables.map((t, i) => {
+            const tableName = t.name ?? t.tableName ?? "table";
+            const fields = t.fields ?? t.columns ?? [];
+            return (
+              <div key={i} className={s.tableWrap}>
+                <div className={s.tableName}>{tableName}</div>
+                <table className={s.table}>
+                  <thead>
+                    <tr>
+                      <th className={s.th}>Field</th>
+                      <th className={s.th}>Type</th>
+                      <th className={s.th}>Nullable</th>
+                      <th className={s.th}>Default</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
+                  </thead>
+                  <tbody>
+                    {fields.map((f, j) => (
+                      <tr key={j}>
+                        <td className={`${s.td} ${s.mono}`}>
+                          {f.primaryKey && <span className={s.keyIcon}>🔑</span>}{f.name}
+                        </td>
+                        <td className={`${s.td} ${s.mono}`}>{f.type}</td>
+                        <td className={s.td}>{f.nullable ? "yes" : "no"}</td>
+                        <td className={`${s.td} ${s.mono}`}>{f.default ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
         </Section>
       ) : null}
 

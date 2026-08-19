@@ -184,20 +184,66 @@ export function isPipelineBookkeeping(path: string): boolean {
   );
 }
 
-/** A git subprocess runner bound to one project's working directory — the
+/**
+ * A git subprocess runner bound to one project's working directory — the
  * same execFileSync options every route in this file that touches git needs,
- * factored out once rather than repeated at each call site. */
+ * factored out once rather than repeated at each call site.
+ *
+ * Real incident found live (Brightline Consulting test build): a project
+ * whose generators ran `npm install`/`next build` for their own
+ * verification (real, routine — no .gitignore is ever written for a
+ * generated project, so there is nothing to stop `git add -A` at delivery
+ * from tracking node_modules) produced a repo with tens of thousands of
+ * files. `git diff --numstat`/`--name-status` against it took long enough
+ * to exceed nothing (no timeout existed) and hung — and because
+ * execFileSync is SYNCHRONOUS, that one request froze the entire
+ * single-threaded API process, timing out every other in-flight request,
+ * not just this one. `timeout` here is the fix that actually bounds the
+ * blast radius; getDiffFiles below additionally excludes the common bloat
+ * directories via pathspec so a normal project never gets close to the
+ * timeout in the first place.
+ */
 function gitRunner(projectDir: string): (args: string[]) => string {
   return (args: string[]) =>
     execFileSync("git", args, {
       cwd: projectDir,
       encoding: "utf-8",
       maxBuffer: 12 * 1024 * 1024,
+      // 30s, not a tighter bound: measured live against a real repo with
+      // ~15k untracked node_modules files still walked by pathspec exclusion
+      // (excluding a path's DIFF doesn't skip walking it), each of the two
+      // sequential calls in getDiffFiles took anywhere from ~4s to >15s
+      // across repeated runs on the same machine — Windows Defender
+      // real-time scanning touching every file git walks is the likely
+      // cause, not anything this code controls. The real fix is upstream
+      // (a .gitignore so node_modules is never tracked at all — see
+      // getDiffFiles' own comment); this bound only has to be generous
+      // enough not to fail a normal, non-bloated project's real diff.
+      timeout: 30_000,
       // A repo with no commits, or no git binary, must degrade to "no diff
       // available" rather than take the console's Changes tab down with it.
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
 }
+
+/**
+ * Pathspec exclusions for directories that are never real generated
+ * source — dependency trees and build output a generated project's own
+ * verification commands (npm install, next build, tsc) can leave behind
+ * with nothing ever having written a .gitignore to keep them out of git in
+ * the first place. Applied directly to the git diff command (not filtered
+ * from its output afterward) so git never has to walk or diff their
+ * contents at all — the actual fix for the hang above, not just a display
+ * nicety.
+ */
+const DIFF_EXCLUDE_PATHSPECS = [
+  ":(exclude)**/node_modules/**",
+  ":(exclude)**/.next/**",
+  ":(exclude)**/dist/**",
+  ":(exclude)**/build/**",
+  ":(exclude)**/.turbo/**",
+  ":(exclude)**/__pycache__/**",
+];
 
 export type DiffFileStatus = "added" | "modified" | "deleted";
 
@@ -265,8 +311,10 @@ export function parseNameStatus(raw: string): Map<string, DiffFileStatus> {
  * sees and what a reject call is willing to act on.
  */
 export function getDiffFiles(git: (args: string[]) => string, baseline: string): DiffFile[] {
-  const statLines = git(["diff", "--numstat", `${baseline}..HEAD`]);
-  const statusByPath = parseNameStatus(git(["diff", "--name-status", `${baseline}..HEAD`]));
+  const statLines = git(["diff", "--numstat", `${baseline}..HEAD`, "--", ".", ...DIFF_EXCLUDE_PATHSPECS]);
+  const statusByPath = parseNameStatus(
+    git(["diff", "--name-status", `${baseline}..HEAD`, "--", ".", ...DIFF_EXCLUDE_PATHSPECS]),
+  );
 
   return statLines
     .split("\n")

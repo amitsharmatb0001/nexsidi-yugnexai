@@ -290,6 +290,26 @@ export function deriveWorkstreams(items: StreamItem[], now: number, activeWindow
     .sort((a, b) => b.lastAt - a.lastAt);
 }
 
+/**
+ * Each generator agent runs with its own subdirectory as its tool sandbox
+ * root (see agents/generators/{aanya,shubham,pranav}/src/index.ts — each
+ * hardcodes `join(BUILD_DIR, projectId, "<dir>")`, not something that varies
+ * per project), so a write tool call's own path is relative to THAT
+ * subdirectory, not the project root the Explorer tree's paths are relative
+ * to. Real bug found live (Brightline Consulting test build): every write
+ * event's path — "docker-compose.yml" — silently failed to match the tree's
+ * "frontend/docker-compose.yml", so no file ever showed as fresh or being
+ * written, for the entire duration of a real build. Public workstream label
+ * (already sanitized server-side) is exactly the same string used to route
+ * the fallback-model rate limiting elsewhere, so it's a stable, already-relied-on
+ * key — not a new assumption.
+ */
+const AGENT_ROOT: Record<string, string> = {
+  Backend: "backend/",
+  Frontend: "frontend/",
+  Database: "db/",
+};
+
 /** Files touched by write/edit/delete events, most recent first. */
 export function deriveTouchedFiles(items: StreamItem[]): { path: string; at: number; tool: string }[] {
   const byPath = new Map<string, { path: string; at: number; tool: string }>();
@@ -299,11 +319,12 @@ export function deriveTouchedFiles(items: StreamItem[]): { path: string; at: num
     const ev = item.event;
     if (ev.type !== "tool_call") continue;
 
+    const root = AGENT_ROOT[ev.agent] ?? "";
     const paths: string[] = [];
     const single = (ev.input?.path ?? ev.path) as unknown;
-    if (typeof single === "string") paths.push(single);
+    if (typeof single === "string") paths.push(root + single);
     const many = ev.input?.paths as unknown;
-    if (Array.isArray(many)) for (const p of many) if (typeof p === "string") paths.push(p);
+    if (Array.isArray(many)) for (const p of many) if (typeof p === "string") paths.push(root + p);
 
     if (!WRITE_TOOLS.has(ev.tool)) continue;
     for (const p of paths) byPath.set(p, { path: p, at: ev.ts, tool: ev.tool });

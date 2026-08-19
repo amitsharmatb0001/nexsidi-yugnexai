@@ -1148,6 +1148,25 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, id]);
 
+  // Real bug found live (Brightline Consulting test build): fetchTree() was
+  // only ever called once on load and again at completion — never while
+  // status stayed "building" in between. The generators write dozens of
+  // real files to disk during that window (confirmed via the worker's own
+  // logs: 10 backend files, several frontend files, a docker-compose.yml —
+  // none of it ever reached the explorer), so the IDE's whole "watch files
+  // stream in live" experience was unreachable: the tree just sat frozen on
+  // whatever existed at page load until the build finished and everything
+  // "snapped" in at once. Polling here, at the same 4s cadence the
+  // dashboard already uses for its own "hasBuilding" list refresh, is what
+  // actually lets the explorer (and the write-in-progress pulse built on
+  // top of it) show anything real during a build.
+  useEffect(() => {
+    if (status !== "building") return;
+    const t = setInterval(() => void fetchTree(), 4000);
+    return () => clearInterval(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, id]);
+
   function connectWs() {
     if (wsRetryRef.current) clearTimeout(wsRetryRef.current);
     const wsUrl = `${API.replace(/^http/, "ws")}/ws/pipeline/${id}`;
