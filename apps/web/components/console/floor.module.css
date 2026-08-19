@@ -1,0 +1,170 @@
+/* The Floor — live organisation map. */
+
+.wrap {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100%;
+  min-height: 0;
+  background:
+    radial-gradient(ellipse at 50% 40%, rgba(57, 208, 216, 0.05), transparent 62%),
+    var(--nx-bg-base);
+}
+
+.svg { width: 100%; height: 100%; min-height: 0; display: block; }
+
+/* ── Legend ─────────────────────────────────────────────────────────────── */
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: var(--nx-sp-4);
+  padding: 8px var(--nx-sp-4);
+  border-bottom: 1px solid var(--nx-border-muted);
+}
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--nx-ff-mono);
+  font-size: var(--nx-fs-xs);
+  color: var(--nx-text2);
+}
+.swatch { width: 14px; height: 2px; border-radius: 2px; display: inline-block; }
+.swatchFlow   { background: var(--nx-cyan); }
+.swatchAttack { background: var(--nx-red); }
+.legendCount {
+  margin-left: auto;
+  font-family: var(--nx-ff-mono);
+  font-size: var(--nx-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--nx-text3);
+}
+
+/* ── Bands ──────────────────────────────────────────────────────────────── */
+
+.bandLabel {
+  fill: var(--nx-text3);
+  font-family: var(--nx-ff-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-anchor: middle;
+}
+
+/* ── Edges ──────────────────────────────────────────────────────────────── */
+
+.edge {
+  fill: none;
+  stroke: var(--nx-border);
+  stroke-width: 1;
+  transition: stroke var(--nx-dur-slow) var(--nx-ease-out),
+              stroke-width var(--nx-dur-slow) var(--nx-ease-out);
+}
+
+/* A live edge carries a travelling dash, so direction of flow is visible
+   rather than implied. */
+.edgeLive {
+  stroke: var(--nx-cyan);
+  stroke-width: 1.6;
+  stroke-dasharray: 5 12;
+  animation: floor-flow 1.1s linear infinite;
+}
+@keyframes floor-flow {
+  to { stroke-dashoffset: -34; }
+}
+
+/* ── Adversarial return path ────────────────────────────────────────────── */
+
+.attack {
+  fill: none;
+  stroke: rgba(248, 81, 73, 0.10);
+  stroke-width: 1;
+  stroke-dasharray: 3 9;
+  transition: stroke var(--nx-dur-slow) var(--nx-ease-out);
+}
+.attackLive {
+  stroke: var(--nx-red);
+  stroke-width: 1.8;
+  /* Runs backwards — findings travel toward the code that caused them. */
+  animation: floor-attack 0.85s linear infinite;
+}
+@keyframes floor-attack {
+  to { stroke-dashoffset: 24; }
+}
+
+/* ── Stations ───────────────────────────────────────────────────────────── */
+
+.station { cursor: pointer; }
+.station:focus-visible { outline: none; }
+
+.node {
+  fill: var(--nx-bg-elevated);
+  stroke: var(--nx-border);
+  stroke-width: 1.5;
+  transition: fill var(--nx-dur-base) var(--nx-ease-out),
+              stroke var(--nx-dur-base) var(--nx-ease-out);
+}
+.station:hover .node { stroke: var(--nx-text3); }
+
+.nodeAttack { stroke: rgba(248, 81, 73, 0.4); }
+
+.nodeActive {
+  fill: rgba(57, 208, 216, 0.12);
+  stroke: var(--nx-cyan);
+  stroke-width: 2;
+}
+.nodeError { stroke: var(--nx-red); }
+.nodeSelected { stroke: var(--nx-accent); stroke-width: 2.5; }
+
+.pulse {
+  fill: none;
+  stroke: var(--nx-cyan);
+  stroke-width: 1.5;
+  opacity: 0;
+  transform-origin: center;
+  animation: floor-pulse 2.1s var(--nx-ease-out) infinite;
+}
+@keyframes floor-pulse {
+  0%   { opacity: 0.55; r: 22; }
+  100% { opacity: 0;    r: 38; }
+}
+
+.nodeShort {
+  fill: var(--nx-text);
+  font-family: var(--nx-ff-display);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-anchor: middle;
+  pointer-events: none;
+}
+.nodeName {
+  fill: var(--nx-text2);
+  font-family: var(--nx-ff-display);
+  font-size: 11px;
+  font-weight: 600;
+  text-anchor: middle;
+  pointer-events: none;
+}
+.nodeMeta {
+  fill: var(--nx-text3);
+  font-family: var(--nx-ff-mono);
+  font-size: 10px;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+/* ── Caption ────────────────────────────────────────────────────────────── */
+
+.caption {
+  padding: 9px var(--nx-sp-4);
+  border-top: 1px solid var(--nx-border-muted);
+  font-size: var(--nx-fs-sm);
+  color: var(--nx-text2);
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edgeLive, .attackLive, .pulse { animation: none; }
+  .pulse { opacity: 0.3; }
+}

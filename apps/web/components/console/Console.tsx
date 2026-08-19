@@ -10,6 +10,7 @@ import {
 } from "../../lib/live";
 import ActivityStream from "./ActivityStream";
 import FileExplorer, { type ApiNode } from "./FileExplorer";
+import Floor from "./Floor";
 import PipelineRibbon from "./PipelineRibbon";
 import SystemVitals from "./SystemVitals";
 import WorkstreamRoster from "./WorkstreamRoster";
@@ -18,7 +19,7 @@ import s from "./console.module.css";
 /** How long a freshly written file stays highlighted in the explorer. */
 const FRESH_WINDOW_MS = 45_000;
 
-type Tab = "activity" | "files" | "preview";
+type Tab = "floor" | "activity" | "files" | "preview";
 
 export interface ConsoleProps {
   projectId: string;
@@ -71,7 +72,7 @@ export default function Console(props: ConsoleProps) {
   const { items, conn } = useBuildStream(projectId);
   const { vitals } = useSystemVitals();
 
-  const [tab, setTab] = useState<Tab>("activity");
+  const [tab, setTab] = useState<Tab>("floor");
   const [filterAgent, setFilterAgent] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(true);
   const [previewKey, setPreviewKey] = useState(0);
@@ -210,6 +211,19 @@ export default function Console(props: ConsoleProps) {
           <div className={s.tabs}>
             <button
               type="button"
+              className={`${s.tab} ${tab === "floor" ? s.tabActive : ""}`}
+              onClick={() => setTab("floor")}
+            >
+              Floor
+              {workstreams.some((w) => w.active) && (
+                <span className={`${s.tabBadge} ${s.tabBadgeLive}`}>
+                  {workstreams.filter((w) => w.active).length}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
               className={`${s.tab} ${tab === "activity" ? s.tabActive : ""}`}
               onClick={() => setTab("activity")}
             >
@@ -260,6 +274,25 @@ export default function Console(props: ConsoleProps) {
               )}
             </div>
           </div>
+
+          {tab === "floor" && (
+            <div className={s.pane}>
+              <Floor
+                workstreams={workstreams}
+                items={items}
+                now={now}
+                stage={isDone ? "delivered" : stageMessage}
+                selected={filterAgent}
+                onSelect={(agent) => {
+                  setFilterAgent(agent);
+                  // Selecting a station is a question about what it is doing —
+                  // answer it immediately instead of leaving the reader to
+                  // find the stream themselves.
+                  if (agent) setTab("activity");
+                }}
+              />
+            </div>
+          )}
 
           {tab === "activity" && (
             <ActivityStream items={items} filterAgent={filterAgent} showLogs={showLogs} />
