@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@nexsidi/workspace-contract": "workspace:*",
+    "@yugnex/core": "^0.1.0",
     "@yugnex/nexui": "^2.0.0",
     "@yugnex/nexui-react": "^2.0.0",
     "nanoid": "^5.0.0",

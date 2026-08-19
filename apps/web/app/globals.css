@@ -100,13 +100,19 @@ html {
   font-feature-settings: "kern" 1, "liga" 1, "cv02" 1, "cv03" 1, "cv04" 1;
 }
 
+/* The ground comes from the @yugnex/core theme, with the legacy token as a
+   fallback only. Both systems currently emit `--nx-*`: the theme engine
+   builds its names from the token path (--nx-color-background), while the
+   hand-written tokens below predate it (--nx-bg-base). Until the remaining
+   components are migrated off the old set, the theme has to win here or the
+   app paints its base surface in one palette and its components in another. */
 body {
   margin: 0;
   font-family: var(--nx-ff-sans);
   font-size: var(--nx-fs-base);
   line-height: var(--nx-lh-relaxed);
-  color: var(--nx-text);
-  background-color: var(--nx-bg-base);
+  color: var(--nx-color-foreground, var(--nx-text));
+  background-color: var(--nx-color-background, var(--nx-bg-base));
 }
 
 h1,h2,h3,h4,h5,h6 {

@@ -181,6 +181,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@nexsidi/workspace-contract": "workspace:*",
+        "@yugnex/core": "^0.1.0",
         "@yugnex/nexui": "^2.0.0",
         "@yugnex/nexui-react": "^2.0.0",
         "nanoid": "^5.0.0",
@@ -656,6 +657,8 @@
     "@xtuc/ieee754": ["@xtuc/ieee754@1.2.0", "", {}, "sha512-DX8nKgqcGwsc0eJSqYt5lwP4DH5FlHnmuWWBRy7X0NcaGR0ZtuyeESgMwTYVEtxmsNGY+qit4QYT/MIYTOTPeA=="],
 
     "@xtuc/long": ["@xtuc/long@4.2.2", "", {}, "sha512-NuHqBY1PB/D8xU6s/thBgOAiAP7HOYDQ32+BFZILJ8ivkUkAHQnWfn6WhL79Owj1qmUnoN/YPhktdIoucipkAQ=="],
+
+    "@yugnex/core": ["@yugnex/core@0.1.0", "", { "peerDependencies": { "next": ">=14.0.0", "react": ">=18.0.0", "react-dom": ">=18.0.0" }, "optionalPeers": ["next"] }, "sha512-51pSmXi2ysdAQIxWr1wIRvlNoahnOfIHA/cPP1NXFs286Nd+2uMpSPLK0SPxOdS6f91Fm//Nv+a2FO2sZrPm7Q=="],
 
     "@yugnex/nexui": ["@yugnex/nexui@workspace:packages/nexui"],
 
