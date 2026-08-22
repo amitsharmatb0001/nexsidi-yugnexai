@@ -21,10 +21,17 @@ function initials(nameOrEmail: string): string {
 }
 
 /**
- * The account entry point every authenticated page shares — dashboard nav
- * and IDE title bar both mount this rather than each rolling their own copy.
- * Redirects to /sign-in on an unauthenticated response, the same guard the
- * dashboard already had, now applied uniformly instead of only there.
+ * The account entry point every authenticated page shares — the sidebar
+ * shell and the IDE title bar both mount this rather than each rolling their
+ * own copy, and each screen's separate bell/help icons and the dashboard's
+ * standalone profile card have folded into this one menu instead.
+ *
+ * Settings and Sign out are real. Help links to a real page. Language and
+ * Notifications are listed because the redesign calls for them, but nothing
+ * on the backend produces a language preference or a notification feed yet —
+ * they render disabled with a "Soon" tag rather than pretend to work, since a
+ * control that looks live but silently does nothing is worse than one that's
+ * honestly not there yet.
  */
 export default function AccountMenu() {
   const router = useRouter();
@@ -44,8 +51,15 @@ export default function AccountMenu() {
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
     document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onEsc);
+    };
   }, [open]);
 
   const signOut = useCallback(async () => {
@@ -57,14 +71,70 @@ export default function AccountMenu() {
 
   return (
     <div className={s.root} ref={ref}>
-      <button type="button" className={s.btn} onClick={() => setOpen((v) => !v)}>
+      <button
+        type="button"
+        className={s.btn}
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
         <span className={s.avatar}>{initials(account.name || account.email)}</span>
         <span className={s.name}>{account.name || account.email}</span>
       </button>
       {open && (
-        <div className={s.menu}>
+        <div className={s.menu} role="menu">
           <div className={s.menuEmail}>{account.email}</div>
-          <button type="button" className={`${s.menuItem} ${s.menuItemAlert}`} onClick={signOut}>
+
+          <button
+            type="button"
+            role="menuitem"
+            className={s.menuItem}
+            onClick={() => {
+              setOpen(false);
+              router.push("/settings");
+            }}
+          >
+            Settings
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={s.menuItem}
+            onClick={() => {
+              setOpen(false);
+              router.push("/help");
+            }}
+          >
+            Help
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            aria-disabled="true"
+            className={`${s.menuItem} ${s.menuItemDisabled}`}
+          >
+            Language
+            <span className={s.menuItemSoon}>Soon</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            aria-disabled="true"
+            className={`${s.menuItem} ${s.menuItemDisabled}`}
+          >
+            Notifications
+            <span className={s.menuItemSoon}>Soon</span>
+          </button>
+
+          <div className={s.menuSep} />
+
+          <button
+            type="button"
+            role="menuitem"
+            className={`${s.menuItem} ${s.menuItemAlert}`}
+            onClick={signOut}
+          >
             Sign out
           </button>
         </div>

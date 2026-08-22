@@ -3,8 +3,11 @@
 import { useEffect, useRef, useState, use, useCallback } from "react";
 import Link from "next/link";
 import s from "./build.module.css";
-import IDE from "../../../components/ide/IDE";
+import IDE from "../../../components/ide/IdeWorkspace";
+import { ws as ideStyles } from "../../../components/ide/IdeWorkspace.styles";
 import PlanPreview, { type BuildPlan } from "../../../components/ide/PlanPreview";
+import { useReviewState } from "@/components/nexui/review-gate";
+import { Button } from "@/components/nexui/button";
 import type { ApiNode } from "../../../lib/tree";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
@@ -497,45 +500,14 @@ function FileTreeNode({ node, depth, selected, onSelect }: {
   );
 }
 
-// ── Empty plan placeholder (shown in Planning Mode right panel, before the
-// assistant has proposed anything) ─────────────────────────────────────────
-
-function EmptyPlanPreview() {
-  return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", justifyContent: "center",
-                  alignItems: "center", color: "var(--nx-text3)", gap: "12px", padding: "40px", textAlign: "center" }}>
-      <div style={{ fontSize: "28px" }}>📋</div>
-      <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--nx-text2)" }}>Build Specification</span>
-      <p style={{ fontSize: "12px", maxWidth: "240px", lineHeight: 1.6 }}>
-        Chat with the assistant to plan your app. The confirmed specification will appear here.
-      </p>
-      {[65, 80, 55, 70].map((w, i) => (
-        <div key={i} className={s.skeletonLine} style={{ width: `${w}%`, height: "8px", marginTop: "4px" }} />
-      ))}
-    </div>
-  );
-}
-
 // ── Proposed Plan Panel (Claude Code-style) ───────────────────────────────────
 
-function ProposedPlanPanel({
-  plan,
-  onAccept,
-  onRevise,
-  onReject,
-  reviseInput,
-  onReviseInput,
-  revising,
-}: {
-  plan: ProposedPlan;
-  onAccept: () => void;
-  onRevise: (msg: string) => void;
-  onReject: () => void;
-  reviseInput: string;
-  onReviseInput: (v: string) => void;
-  revising: boolean;
-}) {
-  const [showRevise, setShowRevise] = useState(false);
+/**
+ * Renders a proposed plan. Presentation only — accepting, rejecting, or asking
+ * for changes is the ReviewGate's job (rendered in IdeWorkspace's Plan drawer),
+ * so this panel no longer carries a second, competing set of controls.
+ */
+function ProposedPlanPanel({ plan }: { plan: ProposedPlan }) {
 
   const dbTables = Array.isArray(plan.dbTables) ? plan.dbTables : [];
   const publicPages = Array.isArray(plan.publicPages) ? plan.publicPages : [];
@@ -648,82 +620,17 @@ function ProposedPlanPanel({
         )}
       </div>
 
-      {/* Revise text box (shown when Revise is clicked) */}
-      {showRevise && (
-        <div style={{ padding: "12px 16px", borderTop: "1px solid var(--nx-border)", background: "var(--nx-bg-base)" }}>
-          <textarea
-            autoFocus
-            value={reviseInput}
-            onChange={e => onReviseInput(e.target.value)}
-            placeholder="Describe what you'd like to change..."
-            rows={2}
-            style={{ width: "100%", background: "var(--nx-bg-elevated)", border: "1px solid var(--nx-border)", borderRadius: "8px", color: "var(--nx-text)", fontSize: "12px", padding: "8px 12px", fontFamily: "var(--nx-ff-sans)", resize: "none", outline: "none", boxSizing: "border-box" }}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (reviseInput.trim()) { onRevise(reviseInput); setShowRevise(false); } } }}
-          />
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "8px" }}>
-            <button onClick={() => setShowRevise(false)} style={{ fontSize: "12px", padding: "5px 14px", borderRadius: "6px", border: "1px solid var(--nx-border)", background: "transparent", color: "var(--nx-text2)", cursor: "pointer" }}>Cancel</button>
-            <button
-              onClick={() => { if (reviseInput.trim()) { onRevise(reviseInput); setShowRevise(false); } }}
-              disabled={!reviseInput.trim() || revising}
-              style={{ fontSize: "12px", padding: "5px 14px", borderRadius: "6px", border: "none", background: "var(--nx-accent)", color: "var(--nx-text-inv)", cursor: "pointer", opacity: (!reviseInput.trim() || revising) ? 0.5 : 1 }}
-            >
-              Send
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Accept / Revise / Reject action bar */}
-      <div style={{ padding: "14px 16px", borderTop: "1px solid var(--nx-border)", background: "var(--nx-bg-elevated)", display: "flex", alignItems: "center", gap: "10px" }}>
-        <span style={{ fontSize: "12px", color: "var(--nx-text3)", flex: 1 }}>Plan ready for review</span>
-        <button
-          onClick={onReject}
-          style={{ fontSize: "12px", padding: "7px 16px", borderRadius: "7px", border: "1px solid var(--nx-border)", background: "transparent", color: "var(--nx-text2)", cursor: "pointer", fontWeight: 600 }}
-        >
-          Reject
-        </button>
-        <button
-          onClick={() => setShowRevise(v => !v)}
-          style={{ fontSize: "12px", padding: "7px 16px", borderRadius: "7px", border: "1px solid var(--nx-accent)", background: "transparent", color: "var(--nx-accent-text)", cursor: "pointer", fontWeight: 600 }}
-        >
-          Revise…
-        </button>
-        <button
-          onClick={onAccept}
-          disabled={revising}
-          style={{ fontSize: "12px", padding: "7px 20px", borderRadius: "7px", border: "none", background: "var(--nx-accent)", color: "var(--nx-text-inv)", cursor: "pointer", fontWeight: 700, opacity: revising ? 0.6 : 1 }}
-        >
-          Accept
-        </button>
-      </div>
     </div>
   );
 }
 
-// ── Chat bubble ───────────────────────────────────────────────────────────────
-
-function ChatBubble({ msg }: { msg: ChatMessage }) {
-  const isUser = msg.role === "user";
-  return (
-    <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start", marginBottom: "12px" }}>
-      <div style={{
-        maxWidth: "80%",
-        background: isUser ? "var(--nx-accent)" : "var(--nx-bg-elevated)",
-        color: isUser ? "var(--nx-text-inv)" : "var(--nx-text)",
-        borderRadius: isUser ? "12px 12px 2px 12px" : "12px 12px 12px 2px",
-        padding: "10px 14px",
-        fontSize: "13px",
-        lineHeight: 1.6,
-        border: isUser ? "none" : "1px solid var(--nx-border)",
-        whiteSpace: "pre-wrap",
-      }}>
-        {msg.content}
-      </div>
-    </div>
-  );
-}
-
-// ── Elicitation Widget — structured question tiles (NexSidi-unique design) ───
+// ── Elicitation Widget — clarifying-question card ───────────────────────────
+// Rebuilt on the same token system as IdeWorkspace (IdeWorkspace.styles.ts)
+// instead of its own hard-coded indigo/glow palette — a decision gate is
+// already an established shape there (gateCard, for spec/deploy approval),
+// so this reuses that family rather than inventing a second visual language
+// for what is functionally the same kind of moment: the pipeline waiting on
+// a choice only the user can make.
 
 function ElicitationWidget({
   question,
@@ -752,107 +659,46 @@ function ElicitationWidget({
   };
 
   return (
-    <div style={{
-      margin: "0 0 12px 0",
-      background: "rgba(10, 14, 26, 0.97)",
-      border: "1px solid rgba(99, 102, 241, 0.35)",
-      borderRadius: "12px",
-      padding: "16px",
-      backdropFilter: "blur(16px)",
-      boxShadow: "0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)",
-    }}>
-      {/* Question label */}
-      <div style={{ fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--nx-accent-text)", marginBottom: "10px", display: "flex", alignItems: "center", gap: "6px" }}>
-        <span style={{ width: "5px", height: "5px", borderRadius: "50%", background: "var(--nx-accent)", display: "inline-block" }} />
+    <div className={ideStyles.elicit}>
+      <div className={ideStyles.elicitLabel}>
+        <span className={ideStyles.elicitLabelDot} />
         Clarifying question
       </div>
-      <div style={{ fontSize: "14px", fontWeight: 600, color: "var(--nx-text)", marginBottom: "12px", lineHeight: 1.5 }}>
-        {question.text}
-      </div>
+      <div className={ideStyles.elicitQuestion}>{question.text}</div>
 
-      {/* Option tiles */}
-      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+      <div className={ideStyles.elicitOptions}>
         {question.options.map(opt => {
           const isSel = selected.has(opt.value);
           return (
             <button
               key={opt.value}
+              type="button"
               onClick={() => handleOption(opt.value)}
-              style={{
-                display: "flex", alignItems: "center", gap: "10px",
-                padding: "10px 14px", borderRadius: "9px", cursor: "pointer",
-                border: isSel
-                  ? "1px solid var(--nx-accent)"
-                  : opt.recommended
-                  ? "1px solid rgba(99,102,241,0.45)"
-                  : "1px solid var(--nx-border)",
-                background: isSel
-                  ? "rgba(99,102,241,0.18)"
-                  : opt.recommended
-                  ? "rgba(99,102,241,0.07)"
-                  : "rgba(255,255,255,0.03)",
-                textAlign: "left", transition: "all 0.12s ease",
-                boxShadow: isSel ? "0 0 0 1px rgba(99,102,241,0.3)" : "none",
-              }}
+              className={`${ideStyles.elicitOption} ${isSel ? ideStyles.elicitOptionSelected : opt.recommended ? ideStyles.elicitOptionRecommended : ""}`}
             >
-              {/* Multi-select checkbox */}
               {question.type === "multi" && (
-                <div style={{
-                  width: "15px", height: "15px", borderRadius: "4px", flexShrink: 0,
-                  border: `1px solid ${isSel ? "var(--nx-accent)" : "var(--nx-border)"}`,
-                  background: isSel ? "var(--nx-accent)" : "transparent",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}>
-                  {isSel && <span style={{ fontSize: "9px", color: "#fff", lineHeight: 1 }}>✓</span>}
-                </div>
+                <span className={`${ideStyles.elicitCheckbox} ${isSel ? ideStyles.elicitCheckboxChecked : ""}`}>
+                  {isSel ? "✓" : null}
+                </span>
               )}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                  <span style={{ fontSize: "13px", fontWeight: 600, color: isSel ? "var(--nx-accent-text)" : "var(--nx-text)" }}>
-                    {opt.label}
-                  </span>
-                  {opt.recommended && (
-                    <span style={{
-                      fontSize: "9px", fontWeight: 700, padding: "1px 6px", borderRadius: "999px",
-                      background: "rgba(251,191,36,0.18)", color: "#FBBF24",
-                      border: "1px solid rgba(251,191,36,0.3)", letterSpacing: "0.05em",
-                    }}>
-                      RECOMMENDED
-                    </span>
-                  )}
+              <div className={ideStyles.elicitOptionBody}>
+                <div className={ideStyles.elicitOptionTop}>
+                  <span className={ideStyles.elicitOptionLabel}>{opt.label}</span>
+                  {opt.recommended && <span className={ideStyles.elicitOptionRecTag}>Recommended</span>}
                 </div>
-                {opt.description && (
-                  <div style={{ fontSize: "11px", color: "var(--nx-text3)", marginTop: "2px", lineHeight: 1.4 }}>
-                    {opt.description}
-                  </div>
-                )}
+                {opt.description && <div className={ideStyles.elicitOptionDesc}>{opt.description}</div>}
               </div>
-              {/* Single: arrow indicator */}
-              {question.type === "single" && (
-                <span style={{ fontSize: "12px", color: "var(--nx-text3)", flexShrink: 0 }}>→</span>
-              )}
+              {question.type === "single" && <span className={ideStyles.elicitArrow}>→</span>}
             </button>
           );
         })}
       </div>
 
-      {/* Multi-select submit */}
       {question.type === "multi" && (
-        <div style={{ marginTop: "10px", display: "flex", justifyContent: "flex-end" }}>
-          <button
-            onClick={handleMultiSubmit}
-            disabled={selected.size === 0}
-            style={{
-              padding: "7px 18px", borderRadius: "7px", border: "none",
-              background: selected.size > 0 ? "var(--nx-accent)" : "var(--nx-bg-subtle)",
-              color: selected.size > 0 ? "var(--nx-text-inv)" : "var(--nx-text3)",
-              fontSize: "12px", fontWeight: 700,
-              cursor: selected.size > 0 ? "pointer" : "default",
-              transition: "all 0.12s ease",
-            }}
-          >
+        <div className={ideStyles.elicitSubmitRow}>
+          <Button size="sm" onClick={handleMultiSubmit} disabled={selected.size === 0}>
             Continue ({selected.size} selected)
-          </button>
+          </Button>
         </div>
       )}
     </div>
@@ -880,6 +726,12 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   const [chatLoading,  setChatLoading]  = useState(false);
   const [streamingMsg, setStreamingMsg] = useState("");
   const [buildPlan,    setBuildPlan]    = useState<BuildPlan | null>(null);
+  // The name given at creation (POST /api/projects) — real from the first
+  // moment, unlike buildPlan.appName which the planner only infers once the
+  // conversation produces a spec. Nothing before this fetched the project's
+  // own row at all during planning, so the title bar had no real name to
+  // show until a plan existed.
+  const [realProjectName, setRealProjectName] = useState<string | null>(null);
 
   // ── Build phase state ─────────────────────────────────────────────────────
   const [status,          setStatus]          = useState<BuildStatus>("waiting");
@@ -893,6 +745,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   const [buildPlanModal, setBuildPlanModal] = useState<BuildPlan | null>(null);
   const [proposedPlan,      setProposedPlan]      = useState<ProposedPlan | null>(null);
   const [elicitationQuestion, setElicitationQuestion] = useState<ElicitationQuestion | null>(null);
+  const planReview = useReviewState();
   const [reviseInput,    setReviseInput]    = useState("");
   const [revising,       setRevising]       = useState(false);
   const [changeRequest,  setChangeRequest]  = useState("");
@@ -915,6 +768,17 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, streamingMsg]);
   useEffect(() => { termEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [terminalEntries]);
+
+  // ── Load the project's own name on mount ──────────────────────────────────
+  // 404s harmlessly for a project id that was only ever generated client-side
+  // and never created through POST /api/projects — the appName-inferred
+  // fallbacks below still cover that case.
+  useEffect(() => {
+    fetch(`${API}/api/projects/${id}`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data?.name) setRealProjectName(data.name); })
+      .catch(() => {});
+  }, [id]);
 
   // ── Load existing session on mount ────────────────────────────────────────
   useEffect(() => {
@@ -1293,161 +1157,30 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
 
   // ── Render: Planning Mode ─────────────────────────────────────────────────
 
-  if (phase === "planning") {
-    return (
-      <div className={s.root} style={{ height: "100vh", overflow: "hidden" }}>
-        <nav className={s.nav} style={{ height: "50px", borderBottom: "1px solid var(--nx-border)", background: "var(--nx-bg-elevated)", padding: "0 20px" }}>
-          <Link href="/dashboard" className={s.navBrand}>
-            <div className={s.navLogo}>Y</div>
-            YugNex
-          </Link>
-          <span className={s.navSep}>/</span>
-          <span className={s.navProject}>New Project</span>
-          <div className={s.navSpacer} />
-          <span style={{ fontSize: "11px", color: "var(--nx-text3)", display: "flex", alignItems: "center", gap: "6px" }}>
-            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--nx-accent)", display: "inline-block" }} />
-            Planning
-          </span>
-        </nav>
-
-        <div style={{ display: "flex", height: "calc(100vh - 50px)", background: "var(--nx-bg-base)" }}>
-          {/* LEFT: Chat */}
-          <div style={{ width: "50%", borderRight: "1px solid var(--nx-border)", display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--nx-border)", background: "var(--nx-bg-elevated)", display: "flex", alignItems: "center", gap: "10px" }}>
-              <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: "var(--nx-accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "12px", color: "var(--nx-text-inv)", fontWeight: 700 }}>Y</div>
-              <div>
-                <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--nx-text)" }}>YugNex Assistant</div>
-                <div style={{ fontSize: "11px", color: "var(--nx-text3)" }}>Describe your app — I'll plan and build it</div>
-              </div>
-            </div>
-
-            <div style={{ flex: 1, overflowY: "auto", padding: "20px" }}>
-              {chatMessages.length === 0 && !streamingMsg && !chatLoading && (
-                <div style={{ textAlign: "center", color: "var(--nx-text3)", fontSize: "13px", marginTop: "60px" }}>
-                  <div style={{ fontSize: "32px", marginBottom: "12px" }}>💬</div>
-                  <p>Tell me what you want to build.<br />I'll ask if I need details, then start immediately.</p>
-                </div>
-              )}
-              {chatMessages.map((msg, i) => <ChatBubble key={i} msg={msg} />)}
-              {(streamingMsg || chatLoading) && (
-                <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: "12px" }}>
-                  <div style={{ maxWidth: "80%", background: "var(--nx-bg-elevated)", color: "var(--nx-text)", borderRadius: "12px 12px 12px 2px", padding: "10px 14px", fontSize: "13px", lineHeight: 1.6, border: "1px solid var(--nx-border)", whiteSpace: "pre-wrap" }}>
-                    {streamingMsg || <span style={{ color: "var(--nx-text3)" }}>Thinking...</span>}
-                  </div>
-                </div>
-              )}
-              <div ref={chatEndRef} />
-            </div>
-
-            <div style={{ borderTop: "1px solid var(--nx-border)", background: "var(--nx-bg-elevated)" }}>
-              {/* Elicitation widget — slides in above the input when a question is pending */}
-              {elicitationQuestion && (
-                <div style={{ padding: "12px 16px 0" }}>
-                  <ElicitationWidget
-                    question={elicitationQuestion}
-                    onAnswer={(answer) => {
-                      setElicitationQuestion(null);
-                      sendChatMessage(answer);
-                    }}
-                  />
-                </div>
-              )}
-
-              <div style={{ padding: "16px 20px" }}>
-                <input
-                  ref={attachInputRef}
-                  type="file"
-                  accept="image/*,.pdf,.txt,.md,.json,.csv"
-                  style={{ display: "none" }}
-                  onChange={handleAttachFile}
-                />
-                <div style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
-                  <button
-                    onClick={() => attachInputRef.current?.click()}
-                    disabled={chatLoading || !!elicitationQuestion}
-                    title="Attach file"
-                    style={{ height: "56px", width: "40px", background: "transparent", border: "1px solid var(--nx-border)", borderRadius: "8px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, color: "var(--nx-text3)", opacity: (chatLoading || !!elicitationQuestion) ? 0.4 : 1 }}
-                  >
-                    📎
-                  </button>
-                  <textarea
-                    value={chatInput}
-                    onChange={e => setChatInput(e.target.value)}
-                    onKeyDown={handleChatKey}
-                    placeholder={elicitationQuestion ? "Answer the question above by clicking an option…" : "Describe your app... (Enter to send, Shift+Enter for new line)"}
-                    disabled={chatLoading || !!elicitationQuestion}
-                    rows={2}
-                    style={{ flex: 1, background: "var(--nx-bg-base)", border: "1px solid var(--nx-border)", borderRadius: "8px", color: "var(--nx-text)", fontSize: "13px", padding: "8px 12px", fontFamily: "var(--nx-ff-sans)", resize: "none", outline: "none", opacity: elicitationQuestion ? 0.5 : 1 }}
-                  />
-                  <button
-                    onClick={() => sendChatMessage(chatInput)}
-                    disabled={chatLoading || !chatInput.trim() || !!elicitationQuestion}
-                    style={{ height: "56px", width: "56px", background: "var(--nx-accent)", border: "none", borderRadius: "8px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, opacity: (chatLoading || !chatInput.trim() || !!elicitationQuestion) ? 0.5 : 1 }}
-                  >
-                    <i className="nxi nxi-arrow-r" style={{ fontSize: 16, color: "var(--nx-text-inv)" }} />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* RIGHT: Plan Panel — ProposedPlanPanel when plan is ready, PlanPreview otherwise */}
-          <div style={{ width: "50%", display: "flex", flexDirection: "column", background: "var(--nx-bg-elevated)" }}>
-            <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--nx-border)", fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--nx-text3)", display: "flex", alignItems: "center", gap: "8px" }}>
-              {proposedPlan ? (
-                <>
-                  <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: "var(--nx-accent)", display: "inline-block" }} />
-                  Plan Proposed
-                </>
-              ) : "Build Specification Preview"}
-            </div>
-            <div style={{ flex: 1, overflow: "hidden" }}>
-              {proposedPlan ? (
-                <ProposedPlanPanel
-                  plan={proposedPlan}
-                  reviseInput={reviseInput}
-                  onReviseInput={setReviseInput}
-                  revising={revising}
-                  onAccept={() => {
-                    setRevising(true);
-                    sendChatMessage("build it");
-                    setProposedPlan(null);
-                  }}
-                  onRevise={(msg) => {
-                    setRevising(false);
-                    setReviseInput("");
-                    sendChatMessage(msg);
-                    setProposedPlan(null);
-                  }}
-                  onReject={() => {
-                    setProposedPlan(null);
-                    sendChatMessage("Please start over with a different approach.");
-                  }}
-                />
-              ) : (
-                buildPlan ? <PlanPreview plan={buildPlan} /> : <EmptyPlanPreview />
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Render: Build / IDE Mode ──────────────────────────────────────────────
-  // ── Render: Live Console ──────────────────────────────────────────────────
-  // 2026-08-19: replaced the previous fixed three-panel build view. That view
-  // could only ever show a flat file list, a raw text terminal and a five-dot
-  // progress bar, because the structured event feed it was designed around
-  // had no producer on the path every agent actually runs (see emitEvent in
-  // packages/agent-runtime/src/gemini-loop.ts). With real events flowing, the
-  // console renders per-workstream activity, live model telemetry and the
-  // file tree as it is written.
+  // ── Render ─────────────────────────────────────────────────────────────
+  // Always the same workspace shell (rail, sidebar, title bar, drawer) —
+  // 2026-08-22: a project used to land on a completely separate planning
+  // screen, then jump to this one once a build started. Landing in one
+  // continuous IDE from the moment a project is created (with the plan
+  // conversation as this shell's own "planning" content, see IdeWorkspace's
+  // own header comment) is what "create a project → go straight to the IDE"
+  // actually means; two different screens for one project's lifecycle was
+  // the "old page" a fresh project used to open into.
+  //
+  // 2026-08-19 (still true): the build-phase stream renders per-workstream
+  // activity, live model telemetry and the file tree as it is written,
+  // replacing the earlier fixed three-panel view that could only show a flat
+  // file list, a raw terminal and a five-dot progress bar.
 
   return (
     <IDE
       projectId={id}
-      projectName={result?.name || buildPlan?.appName || `Project ${id.slice(0, 8)}`}
+      projectName={
+        realProjectName
+          ?? (phase === "planning"
+            ? (proposedPlan?.appName ?? buildPlan?.appName ?? "New project")
+            : (result?.name || buildPlan?.appName || `Project ${id.slice(0, 8)}`))
+      }
       appUrl={result?.appUrl ?? null}
       isDone={isDone}
       stageMessage={stageMessage}
@@ -1460,6 +1193,59 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       onChangeRequest={setChangeRequest}
       onApproveSpec={approveSpec}
       onApproveDeploy={approveDeploy}
+      planning={
+        phase === "planning"
+          ? {
+              messages: chatMessages,
+              streamingMessage: streamingMsg,
+              loading: chatLoading,
+              input: chatInput,
+              onInputChange: setChatInput,
+              onSend: (value) => { if (value.trim()) sendChatMessage(value); },
+              composerDisabled: Boolean(elicitationQuestion),
+              elicitation: elicitationQuestion ? (
+                <ElicitationWidget
+                  question={elicitationQuestion}
+                  onAnswer={(answer) => {
+                    setElicitationQuestion(null);
+                    sendChatMessage(answer);
+                  }}
+                />
+              ) : undefined,
+              // The planner streams prose first and only emits a structured
+              // plan at the end, so "writing" is keyed off the chat stream
+              // rather than off partial plan data that does not exist yet.
+              planStreaming: chatLoading || Boolean(streamingMsg),
+              plan: proposedPlan ? (
+                <ProposedPlanPanel plan={proposedPlan} />
+              ) : buildPlan ? (
+                <PlanPreview plan={buildPlan} />
+              ) : undefined,
+              review: proposedPlan
+                ? {
+                    state: planReview.state,
+                    onDecide: (decision) => {
+                      planReview.decide(decision.scope, decision.id, decision.verdict, decision.note);
+                      // The gate is the only place a plan decision is made, so
+                      // each verdict maps straight onto the message the
+                      // planner expects.
+                      if (decision.verdict === "accepted") {
+                        setProposedPlan(null);
+                        sendChatMessage("build it");
+                      } else if (decision.verdict === "changes-requested") {
+                        setProposedPlan(null);
+                        sendChatMessage(decision.note ?? "Please revise the plan.");
+                      } else if (decision.verdict === "rejected") {
+                        setProposedPlan(null);
+                        sendChatMessage("Please start over with a different approach.");
+                      }
+                    },
+                    onClear: planReview.clear,
+                  }
+                : undefined,
+            }
+          : undefined
+      }
     />
   );
 }

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://nexuikit.dev/schema.json",
+  "tsx": true,
+  "aliases": {
+    "components": "@/components/nexui",
+    "lib": "@/lib"
+  },
+  "dirs": {
+    "components": "components/nexui",
+    "lib": "lib"
+  },
+  "registryUrl": "https://new.yugnex.com"
+}

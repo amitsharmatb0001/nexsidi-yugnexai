@@ -1,17 +1,93 @@
 /* NexSidi Web App — Global Styles
-   Display: Space Grotesk (loaded via fonts.bunny.net)
-   Body:    Inter (loaded via fonts.bunny.net)
-   Mono:    JetBrains Mono (loaded via fonts.bunny.net)
-   Icons:   NexuiIcons (local WOFF2 — /nexui-fonts/NexuiIcons.woff2)
+
+   Every face below is self-hosted from /public/nexui-fonts. The previous
+   version of this file named Space Grotesk, Inter and JetBrains Mono in its
+   font stacks and documented them as "loaded via fonts.bunny.net", but no
+   @import, <link> or next/font call ever loaded them — the whole app rendered
+   in the system fallback. Shipping the files removes that gap and the CDN
+   round-trip with it.
+
+   Display: JetBrains Mono — headings, chrome labels, the wordmark.
+   Body:    Inter
+   Mono:    JetBrains Mono — code, paths and numerics.
+   Icons:   NexuiIcons
+
+   On the display face: NexuiSans (packages/nexui/scripts/build-fonts.py, a
+   procedurally-drawn geometric face) was tried here first and pulled. Its
+   advance widths are self-consistent, but the outlines themselves are
+   malformed at display size — set at 34px, "Projects" renders with colliding
+   and misshapen glyphs. It is a prototype, not a shippable text face, so it
+   is loaded by nothing below.
+
+   Setting display in the mono face instead is a deliberate call rather than a
+   fallback: this product is an instrument, and a mono-set heading over
+   mono-set readouts is what makes it read as one. Inter carries running prose,
+   where mono would hurt reading speed.
 */
 
-/* ── NexuiIcons (local WOFF2) ──────────────────────────────── */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/nexui-fonts/Inter-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/nexui-fonts/Inter-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/nexui-fonts/Inter-SemiBold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/nexui-fonts/Inter-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/nexui-fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/nexui-fonts/JetBrainsMono-Medium.woff2') format('woff2');
+}
 @font-face {
   font-family: 'NexuiIcons';
-  font-style:  normal;
+  font-style: normal;
   font-weight: normal;
   font-display: block;
   src: url('/nexui-fonts/NexuiIcons.woff2') format('woff2');
+}
+
+/* Feed the loaded faces into @yugnex/core's own token variables, so every
+   registry component reading theme.fontFamily.* picks them up.
+
+   The repeated :root is a deliberate specificity bump, not a typo. ThemeProvider
+   emits its tokens under `:root[data-nx-theme="<id>"]` (0,2,0) from a <style>
+   tag that StyleRegistry re-injects after this stylesheet on every flush, so a
+   plain `:root` override here (0,1,0) can never win regardless of import order.
+   `:root:root:root` is (0,3,0) and out-specifies it without needing !important,
+   which would otherwise leak into every component that composes these tokens. */
+:root:root:root {
+  --nx-font-family-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --nx-font-family-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+  --nx-font-family-display: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
 }
 
 /* ── Design Tokens ─────────────────────────────────────────── */
@@ -52,9 +128,11 @@
   --nx-orange-muted: rgba(240, 136, 62, 0.12);
 
   /* Space Grotesk first — loaded via bunny.net CDN */
-  --nx-ff-sans:    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --nx-ff-mono:    'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
-  --nx-ff-display: 'Space Grotesk', 'Inter', -apple-system, sans-serif;
+  /* Aliases onto the core token layer above, so the stacks are declared once.
+     They previously named Space Grotesk, which nothing ever loaded. */
+  --nx-ff-sans:    var(--nx-font-family-sans);
+  --nx-ff-mono:    var(--nx-font-family-mono);
+  --nx-ff-display: var(--nx-font-family-display);
   --nx-ff-icons:   'NexuiIcons';
 
   --nx-fs-xs:   11px;  --nx-fs-sm:  13px;  --nx-fs-base: 14px;
@@ -108,7 +186,7 @@ html {
    app paints its base surface in one palette and its components in another. */
 body {
   margin: 0;
-  font-family: var(--nx-ff-sans);
+  font-family: var(--nx-font-family-sans);
   font-size: var(--nx-fs-base);
   line-height: var(--nx-lh-relaxed);
   color: var(--nx-color-foreground, var(--nx-text));
@@ -117,7 +195,7 @@ body {
 
 h1,h2,h3,h4,h5,h6 {
   margin: 0;
-  font-family: var(--nx-ff-display);
+  font-family: var(--nx-font-family-display);
   line-height: var(--nx-lh-tight);
   letter-spacing: -0.02em;
 }
@@ -132,7 +210,7 @@ a:hover { text-decoration: underline; }
 
 button { cursor: pointer; border: none; background: none; font: inherit; }
 input, textarea, select { font: inherit; }
-code, pre { font-family: var(--nx-ff-mono); }
+code, pre { font-family: var(--nx-font-family-mono); }
 img, svg  { display: block; max-width: 100%; }
 
 /* ── Scrollbar ─────────────────────────────────────────────── */

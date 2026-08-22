@@ -20,6 +20,7 @@ import { join, resolve, extname, sep } from "path";
 import { execFileSync } from "child_process";
 import { db, projects, diffReviews } from "@nexsidi/db";
 import { and, eq } from "drizzle-orm";
+import { isSecretPath } from "../utils/secret-paths.ts";
 
 type Env = { Variables: { userId: string } };
 export const artifactsRouter = new Hono<Env>();
@@ -409,6 +410,9 @@ artifactsRouter.get("/:projectId/diff/file", async (c) => {
   const requestPath = c.req.query("path") ?? "";
 
   if (!requestPath) return c.json({ error: "path required" }, 400);
+  // Same content-class guard as the plain file route, applied here too: a
+  // patch against a credential file still contains the credential's value.
+  if (isSecretPath(requestPath)) return c.json({ error: "forbidden" }, 403);
   if (userId && !await assertOwns(projectId, userId)) {
     return c.json({ error: "not_found" }, 404);
   }
@@ -628,6 +632,11 @@ artifactsRouter.get("/:projectId/file", async (c) => {
   const requestPath = c.req.query("path") ?? "";
 
   if (!requestPath) return c.json({ error: "path required" }, 400);
+
+  // Unconditional — this endpoint is unauthenticated by design for pre-signup
+  // build viewing (see isSecretPath's own header comment), so ownership alone
+  // can't be the gate for anything credential-shaped.
+  if (isSecretPath(requestPath)) return c.json({ error: "forbidden" }, 403);
 
   if (userId && !await assertOwns(projectId, userId)) {
     return c.json({ error: "not_found" }, 404);

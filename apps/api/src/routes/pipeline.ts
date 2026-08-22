@@ -13,30 +13,14 @@ import { db, projects } from "@nexsidi/db";
 import { eq } from "drizzle-orm";
 import Redis from "ioredis";
 import { randomUUID } from "crypto";
+// Shared with routes/projects.ts — see utils/stage-labels.ts for why this
+// must be the single copy.
+import { translateStage } from "../utils/stage-labels.ts";
 
 type Env = { Variables: { userId: string } };
 export const pipelineRouter = new Hono<Env>();
 
-// ── Layer 7: deny-by-default stage translator ─────────────────────────────────
-const USER_STAGE_MESSAGES: Record<string, string> = {
-  spec:                 "Getting started on your app...",
-  decompose:            "Planning out the build...",
-  await_spec_approval:  "Plan ready! Please approve the plan on the dashboard to start code generation.",
-  generate:             "Writing your code. This usually takes 2-4 minutes.",
-  qa:                   "Running quality checks...",
-  qa_fix:               "Improving the code based on quality checks...",
-  live_test:            "Testing the live app...",
-  await_deploy_approval:"Verification complete! Please approve the build to deliver the app.",
-  deliver:              "Almost done — packaging everything up.",
-  done:                 "Your app is ready!",
-  error:                "Something went wrong. We're on it.",
-};
-
-function translateStage(stage: string): { stage: string; message: string } | null {
-  const message = USER_STAGE_MESSAGES[stage];
-  if (!message) return null; // deny — unknown/internal stage
-  return { stage, message };
-}
+// ── Layer 7: deny-by-default stage translator ──────────────────────────────
 
 // ── POST /api/pipeline/start — INTERNAL ONLY ─────────────────────────────────
 // The chat route triggers builds directly via startProjectBuild().

@@ -1,0 +1,46 @@
+diff --git a/docker-compose.yml b/docker-compose.yml
+index ae0e6e8..8738399 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -7,7 +7,7 @@ services:
+       POSTGRES_PASSWORD: postgres
+       POSTGRES_DB: freshtst1
+     ports:
+-      - "5435:5432"
++      - "5436:5432"
+     volumes:
+       - postgres_data:/var/lib/postgresql/data
+       - ./db/migrations:/docker-entrypoint-initdb.d:ro
+@@ -25,13 +25,13 @@ services:
+       dockerfile: Dockerfile
+     restart: always
+     ports:
+-      - "3300:3001"
++      - "3301:3001"
+     environment:
+       PORT: 3001
+       NODE_ENV: production
+       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/freshtst1
+-      JWT_SECRET: 0064b19c5251fcbae1023902798f714ec4534d6e33bb4706f803eed03e43e014
+-      CORS_ORIGIN: http://localhost:3200
++      JWT_SECRET: 5c72c597ccb3ecc567ab10d9894e20e69db0648c9a7c9a6db065b7f9bf101a6e
++      CORS_ORIGIN: http://localhost:3201
+     depends_on:
+       postgres:
+         condition: service_healthy
+@@ -43,12 +43,12 @@ services:
+       context: ./frontend
+       dockerfile: Dockerfile
+       args:
+-        NEXT_PUBLIC_API_URL: http://localhost:3300
++        NEXT_PUBLIC_API_URL: http://localhost:3301
+     restart: always
+     ports:
+-      - "3200:3000"
++      - "3201:3000"
+     environment:
+-      NEXT_PUBLIC_API_URL: http://localhost:3300
++      NEXT_PUBLIC_API_URL: http://localhost:3301
+     depends_on:
+       - backend
+     networks:

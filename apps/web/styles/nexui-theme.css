@@ -1,0 +1,2 @@
+/* NexUI's <ThemeProvider> injects its :root token layer at runtime. */
+/* Add manual overrides below — they cascade after the injected variables. */

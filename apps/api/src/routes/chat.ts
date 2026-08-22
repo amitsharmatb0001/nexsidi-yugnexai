@@ -124,7 +124,17 @@ chatRouter.post("/", async (c) => {
           "utf-8",
         );
 
-        // Persist project to DB before pipeline start
+        // Persist project to DB before pipeline start.
+        //
+        // 2026-08-22: this used to be onConflictDoNothing() when a row could
+        // only ever come from THIS insert. Now a row commonly already exists
+        // at status "planning" (created up front by POST /api/projects, with
+        // the name the user actually typed) — doing nothing on conflict left
+        // that row stuck at "planning" forever once a real build started, so
+        // GET /api/chat/:id's "planning" carve-out (see its own comment)
+        // never handed off to the authoritative building/done path. Update
+        // status/updatedAt on conflict; keep the user's own name rather than
+        // overwrite it with the planner's inferred appName.
         await db.insert(projects).values({
           id:        triggeredProjectId,
           userId,
@@ -132,7 +142,10 @@ chatRouter.post("/", async (c) => {
           status:    "building",
           createdAt: new Date(),
           updatedAt: new Date(),
-        }).onConflictDoNothing();
+        }).onConflictDoUpdate({
+          target: projects.id,
+          set: { status: "building", updatedAt: new Date() },
+        });
 
         // Start the Temporal pipeline — workflow will detect build-plan.json and skip spec/decompose
         const userRequest = [
@@ -199,7 +212,15 @@ chatRouter.get("/:sessionId", async (c) => {
     .where(eq(projects.id, sessionId))
     .limit(1);
 
-  if (project) {
+  // 2026-08-22: the "a row exists ⇒ authoritatively building" rule above
+  // held exactly because a row used to come into existence only when
+  // trigger_build fired. POST /api/projects (the real name+context creation
+  // flow) now inserts a row immediately, at status "planning", before any
+  // conversation has happened — treating that row the same as a genuine
+  // build-in-progress reverted a brand-new project straight to the build
+  // view with an empty stream. "planning" is the one status this rule must
+  // still defer to the chat session's own (correctly-tracked) phase for.
+  if (project && project.status !== "planning") {
     return c.json({
       messages:  displayMessages,
       phase:     project.status === "done" ? "done" : "building",

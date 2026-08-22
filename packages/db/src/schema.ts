@@ -51,6 +51,11 @@ export const projects = pgTable("projects", {
   userId:     uuid("user_id").notNull(),
   name:       text("name").notNull(),
   spec:       jsonb("spec"),
+  // The founder's own text — what they're building, who for. Given at
+  // creation, editable afterward. Separate from `spec` (the AI-produced
+  // structured plan) and from the planning chat log — this is the
+  // human-authored context those are built from.
+  context:    text("context"),
   status:     text("status").notNull().default("pending"),
   appUrl:     text("app_url"),                         // set by Riya after docker-compose up
   githubRepo: text("github_repo"),                     // Fix #9: Riya sets this after archival

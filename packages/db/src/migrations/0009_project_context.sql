@@ -1,0 +1,12 @@
+-- Real, persisted per-project context — the text a founder gives at
+-- creation (what they're building, who for) and can keep adding to
+-- afterward, kept separate from every other project's own context and from
+-- the ephemeral planning chat log. Before this, the "context" typed into
+-- the creation form was only ever used as the seed message for the
+-- planning chat (agents/planner/src/session.ts's Redis-backed session
+-- state) — nowhere durable, nothing a later screen could read back or let
+-- the founder edit. This column is that durable home.
+--
+-- IF NOT EXISTS keeps this safe to re-run (migrate.ts applies every .sql
+-- file on every invocation).
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS context TEXT;

@@ -69,7 +69,10 @@ export const account = {
     marginBottom: theme.space[1],
   }),
   menuItem: css({
-    display: "block",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.space[2],
     width: "100%",
     textAlign: "left",
     padding: "8px 10px",
@@ -84,5 +87,24 @@ export const account = {
       background: `color-mix(in srgb, ${theme.color.destructive} 10%, transparent)`,
       color: theme.color.destructive,
     },
+  }),
+  /** Listed but not wired to anything real yet — see the item's own comment
+   * in AccountMenu.tsx for exactly what's missing. Never hides that fact
+   * behind a normal-looking, silently-inert control. */
+  menuItemDisabled: css({
+    cursor: "default",
+    "&:hover": { background: "transparent", color: theme.color.mutedForeground },
+  }),
+  menuItemSoon: css({
+    fontSize: "10px",
+    letterSpacing: "0.06em",
+    textTransform: "uppercase",
+    color: theme.color.mutedForeground,
+    opacity: 0.6,
+  }),
+  menuSep: css({
+    height: "1px",
+    margin: `${theme.space[1]} ${theme.space[1]}`,
+    background: theme.color.border,
   }),
 };

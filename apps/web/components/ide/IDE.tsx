@@ -6,11 +6,15 @@ import AccountMenu from "../AccountMenu";
 import { API, useBuildStream, useSystemVitals, deriveWorkstreams, deriveTouchedFiles, deriveActiveWrites } from "../../lib/live";
 import { type ApiNode, sortNodes, defaultExpanded } from "../../lib/tree";
 import Floor from "./Floor";
-import { fileMark } from "./fileIcons";
 import { narrate } from "./narrate";
 import PlanPreview, { type BuildPlan } from "./PlanPreview";
 import YugnexLogo from "./YugnexLogo";
 import { ide as s } from "./IDE.styles";
+import { Syntax } from "@/components/nexui/syntax";
+import { DiffView } from "@/components/nexui/diff-view";
+import { FileTabs, type OpenFile } from "@/components/nexui/file-tabs";
+import { FileIcon } from "@/components/nexui/file-icon";
+import { patchToBeforeAfter } from "@/lib/patch";
 
 const FRESH_WINDOW_MS = 45_000;
 
@@ -164,11 +168,25 @@ export default function IDE(props: IDEProps) {
   const loadDiff = useCallback(async () => {
     try {
       const r = await fetch(`${API}/api/artifacts/${projectId}/diff`, { credentials: "include" });
-      if (!r.ok) return;
+      if (!r.ok) {
+        setDiffError(
+          r.status === 404 || r.status === 403
+            ? "This project isn't available on your account."
+            : "Couldn't load changes.",
+        );
+        return;
+      }
       const j = await r.json();
+      setDiffError(null);
       setDiff(Array.isArray(j.files) ? j.files : []);
     } catch {
-      // The Changes view degrades to empty rather than taking the IDE down.
+      // The Changes view degrades to a stated failure rather than taking the
+      // IDE down — but it must not degrade to *silence*: rendering a failed
+      // load as "no file changes recorded" tells the reader the build produced
+      // nothing, which is a different and much worse claim than "I could not
+      // fetch this". Found live: a cross-account 404 was indistinguishable
+      // from a clean build.
+      setDiffError("Couldn't load changes.");
     }
   }, [projectId]);
 
@@ -177,6 +195,7 @@ export default function IDE(props: IDEProps) {
   // Which single row is showing its inline "revert this file?" confirm, or
   // "__all__" when the toolbar's Reject all is showing its own confirm.
   const [confirmReject, setConfirmReject] = useState<string | null>(null);
+  const [diffError, setDiffError] = useState<string | null>(null);
 
   const acceptFile = useCallback(async (path: string) => {
     setDiff((prev) => prev.map((f) => (f.path === path ? { ...f, reviewed: true } : f)));
@@ -347,7 +366,9 @@ export default function IDE(props: IDEProps) {
             {view === "changes" ? (
               diff.length === 0 ? (
                 <div className={s.empty}>
-                  <div className={s.emptyHint}>No file changes recorded for this build.</div>
+                  <div className={s.emptyHint}>
+                    {diffError ?? "No file changes recorded for this build."}
+                  </div>
                 </div>
               ) : (
                 diff.map((f) =>
@@ -364,8 +385,8 @@ export default function IDE(props: IDEProps) {
                       <span className={[s.diffStatusBadge, statusBadgeClass(f.status)].join(" ")}>
                         {statusLetter(f.status)}
                       </span>
-                      <span className={s.mark} style={{ color: fileMark(baseName(f.path)).color }}>
-                        {fileMark(baseName(f.path)).tag}
+                      <span className={s.mark}>
+                        <FileIcon filename={baseName(f.path)} size={14} />
                       </span>
                       <span className={s.name}>{baseName(f.path)}</span>
                       <span className={s.diffStat}>
@@ -443,24 +464,19 @@ export default function IDE(props: IDEProps) {
                 return tabs.length === 0 ? (
                   <span className={`${s.tab} ${s.tabActive}`}>No file open</span>
                 ) : (
-                  tabs.map((t) => (
-                    <div key={t.path} title={t.path}
-                      className={`${s.tab} ${t.path === activePath ? s.tabActive : ""}`}
-                      onClick={() => setActivePath(t.path)}>
-                      <span className={s.tabMark} style={{ color: fileMark(baseName(t.path)).color }}>
-                        {fileMark(baseName(t.path)).tag}
-                      </span>
-                      {baseName(t.path)}
-                      {activeWrites.has(t.path) && (
-                        <span className={s.tabWriting}><span className={s.tabWritingDot} />writing…</span>
-                      )}
-                      <button type="button" className={s.tabClose}
-                        onClick={(e) => { e.stopPropagation(); closeTab(t.path); }}
-                        aria-label={`Close ${baseName(t.path)}`}>
-                        ×
-                      </button>
-                    </div>
-                  ))
+                  // `dirty` is reused to mean "an agent is writing this right
+                  // now": FileTabs renders a dot instead of the close button
+                  // for a dirty tab, which is exactly the affordance wanted —
+                  // it stops you closing a file mid-write by reflex.
+                  <FileTabs
+                    files={tabs.map<OpenFile>((t) => ({
+                      path: t.path,
+                      dirty: activeWrites.has(t.path),
+                    }))}
+                    active={activePath ?? undefined}
+                    onActivate={setActivePath}
+                    onClose={closeTab}
+                  />
                 );
               }
               return null;
@@ -479,18 +495,31 @@ export default function IDE(props: IDEProps) {
                 {view === "preview" && appUrl && <iframe src={appUrl} className={s.frame}
                   sandbox="allow-same-origin allow-scripts allow-forms" />}
 
-                {view === "changes" && (
-                  patch === null && patchPath ? <div className={s.code}>Loading…</div>
-                  : patch ? <Patch text={patch} />
-                  : <Blank title="Nothing selected" hint="Pick a changed file to see exactly what the agents altered." />
-                )}
+                {view === "changes" && (() => {
+                  if (patch === null && patchPath) return <div className={s.code}>Loading…</div>;
+                  if (!patch) {
+                    return <Blank title="Nothing selected" hint="Pick a changed file to see exactly what the agents altered." />;
+                  }
+                  // DiffView derives its own hunks from the two sides, which is
+                  // what gives word-level highlighting inside a changed line —
+                  // a raw unified patch can only ever colour whole lines.
+                  const { before, after } = patchToBeforeAfter(patch);
+                  return (
+                    <DiffView
+                      before={before}
+                      after={after}
+                      filename={patchPath ?? undefined}
+                      showLineNumbers
+                    />
+                  );
+                })()}
 
                 {view === "files" && (() => {
                   const active = tabs.find((t) => t.path === activePath);
                   return !active
                     ? <Blank title="No file open" hint="Files the agents just wrote are marked in the explorer." />
                     : active.loading ? <div className={s.code}>Loading…</div>
-                    : <pre className={s.code}>{active.content}</pre>;
+                    : <Syntax code={active.content ?? ""} filename={active.path} showLineNumbers />;
                 })()}
               </>
             )}
@@ -582,7 +611,6 @@ function Tree({ nodes, depth, expanded, selected, fresh, writing, activeDirs, on
         const isFresh = fresh.has(n.path);
         const isWriting = writing.has(n.path);
         const isActiveDir = isDir && activeDirs.has(n.path);
-        const mark = fileMark(n.name);
 
         return (
           <div key={n.path}>
@@ -591,9 +619,14 @@ function Tree({ nodes, depth, expanded, selected, fresh, writing, activeDirs, on
               className={[s.row, selected === n.path ? s.rowSelected : ""].filter(Boolean).join(" ")}
               style={{ paddingLeft: 10 + depth * 13 }}>
               <span className={`${s.caret} ${isDir && open ? s.caretOpen : ""}`}>{isDir ? "▸" : ""}</span>
-              {isDir
-                ? <span className={s.folderMark}>{open ? "▾" : "▪"}</span>
-                : <span className={s.mark} style={{ color: mark.color }}>{mark.tag}</span>}
+              <span className={s.mark}>
+                <FileIcon
+                  filename={n.name}
+                  size={14}
+                  variant={isDir ? (open ? "folder-open" : "folder") : "file"}
+                  muted={isDir}
+                />
+              </span>
               <span className={[
                 s.name,
                 isDir ? s.dirName : "",

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { StyleRegistry, ThemeProvider } from "@yugnex/core/client";
 import { createTheme, NoFoucScript } from "@yugnex/core";
+import { ground, signal } from "@/lib/design";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -10,37 +11,52 @@ export const metadata: Metadata = {
 };
 
 /**
- * The YugNex palette, as semantic theme tokens rather than another set of
- * hand-rolled custom properties.
+ * The semantic layer every registry component reads.
  *
- * This is the same engine Aanya generates every app against (@yugnex/core),
- * so the platform and the apps it produces share one styling system instead
- * of the platform running on an older wrapper library while the generated
- * apps run on the current one.
+ * Values come from `lib/design`, so the theme and the product's own signal
+ * system cannot drift apart — `primary` *is* the human channel, and a
+ * component reaching for `theme.color.primary` therefore lands on the same
+ * amber that means "waiting on you" everywhere else.
  *
- * The product commits to a dark surface — it is a workspace people sit in
- * for long stretches — so both modes resolve to the same values rather than
- * shipping a light theme nobody designed.
+ * Both modes resolve to the same values. This is a workspace people sit in
+ * for hours; it commits to the dark ground rather than shipping a light
+ * theme nobody designed.
  */
-const yugnexPalette = {
-  background:          "#0A0A0B",
-  foreground:          "#F4F4F6",
-  card:                "#101012",
-  cardForeground:      "#F4F4F6",
-  popover:             "#16161A",
-  popoverForeground:   "#F4F4F6",
-  border:              "#1C1C21",
-  input:               "#1C1C21",
-  muted:               "#16161A",
-  mutedForeground:     "#96969E",
-  secondary:           "#16161A",
-  secondaryForeground: "#F4F4F6",
-  primary:             "#FF9F0A",
-  primaryForeground:   "#0A0A0B",
-  ring:                "#FF9F0A",
+const palette = {
+  background: ground.base,
+  foreground: "#E8EDF7",
+  card: ground.panel,
+  cardForeground: "#E8EDF7",
+  popover: ground.overlay,
+  popoverForeground: "#E8EDF7",
+  muted: ground.raised,
+  mutedForeground: "#7D8899",
+  secondary: ground.raised,
+  secondaryForeground: "#E8EDF7",
+  border: ground.seam,
+  input: ground.seamStrong,
+
+  primary: signal.human,
+  primaryForeground: "#0A0D12",
+  accent: signal.humanDim,
+  accentForeground: signal.humanBright,
+  ring: signal.human,
+
+  success: signal.ok,
+  successForeground: "#07090D",
+  warning: signal.human,
+  warningForeground: "#07090D",
+  destructive: signal.fail,
+  destructiveForeground: "#07090D",
+
+  // 0.72 read as clearly-legible background text through the New Project
+  // modal's backdrop, confirmed live (reproduced the exact bleed-through
+  // the report described) — this dark-on-dark palette needs a much heavier
+  // dim before background content is actually obscured, not just tinted.
+  overlay: "rgba(5, 6, 9, 0.94)",
 };
 
-const yugnexTheme = createTheme({ light: yugnexPalette, dark: yugnexPalette });
+const yugnexTheme = createTheme({ light: palette, dark: palette });
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
