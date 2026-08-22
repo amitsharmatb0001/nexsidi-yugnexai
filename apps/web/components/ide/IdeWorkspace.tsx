@@ -237,6 +237,66 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
 
+  const [attachedItems, setAttachedItems] = useState<Array<{ name: string; type: string; content: string }>>([]);
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const voiceRecRef = useRef<any>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const toggleVoiceRecording = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Speech recognition is not supported in this browser. Please use Chrome or Edge.");
+      return;
+    }
+
+    if (isRecordingVoice) {
+      voiceRecRef.current?.stop();
+      setIsRecordingVoice(false);
+      return;
+    }
+
+    try {
+      const rec = new SpeechRecognition();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.onstart = () => setIsRecordingVoice(true);
+      rec.onresult = (e: any) => {
+        let transcript = "";
+        for (let i = e.resultIndex; i < e.results.length; ++i) {
+          transcript += e.results[i][0].transcript;
+        }
+        if (transcript && planning) {
+          planning.onInputChange(planning.input ? `${planning.input} ${transcript}` : transcript);
+        }
+      };
+      rec.onerror = () => setIsRecordingVoice(false);
+      rec.onend = () => setIsRecordingVoice(false);
+      voiceRecRef.current = rec;
+      rec.start();
+    } catch {
+      setIsRecordingVoice(false);
+    }
+  }, [isRecordingVoice, planning]);
+
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    Array.from(files).forEach((file) => {
+      const reader = new FileReader();
+      const isText = file.type.startsWith("text/") || /\.(txt|md|json|ts|tsx|js|jsx|css|html|xml|yaml|yml|csv|py|rb|go|rs|sh|env|toml|ini)$/i.test(file.name);
+      reader.onload = (ev) => {
+        const content = String(ev.target?.result ?? "");
+        setAttachedItems((prev) => [...prev, { name: file.name, type: file.type || "application/octet-stream", content }]);
+      };
+      if (isText) reader.readAsText(file);
+      else reader.readAsDataURL(file);
+    });
+
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
+
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
@@ -758,20 +818,95 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
               </div>
 
               <div className={s.capsuleWrap}>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={handleFileSelect}
+                />
+
+                {isRecordingVoice && (
+                  <div style={{
+                    padding: "6px 12px", borderRadius: "8px", background: "rgba(239, 68, 68, 0.2)",
+                    border: "1px solid rgba(239, 68, 68, 0.5)", color: "#EF4444", fontSize: "11px",
+                    fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px"
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#EF4444", display: "inline-block" }} />
+                      <span>🎙️ Voice Recorder Active — speak requirement...</span>
+                    </div>
+                    <button type="button" onClick={toggleVoiceRecording} style={{ background: "none", border: "none", color: "#FFF", cursor: "pointer", fontWeight: 700 }}>Done</button>
+                  </div>
+                )}
+
                 {planning.elicitation && <div style={{ marginBottom: 8 }}>{planning.elicitation}</div>}
                 <PromptInput
                   value={planning.input}
                   onValueChange={planning.onInputChange}
-                  onSubmit={planning.onSend}
+                  onSubmit={(val) => {
+                    let msg = val;
+                    if (attachedItems.length > 0) {
+                      const attachContext = attachedItems.map(a => {
+                        if (a.type.startsWith("image/")) return `[Attached screenshot/image: ${a.name}]`;
+                        const prev = a.content.length > 8000 ? a.content.slice(0, 8000) + "\n...(truncated)" : a.content;
+                        return `--- Attached file: ${a.name} ---\n${prev}\n--- End of ${a.name} ---`;
+                      }).join("\n\n");
+                      msg = `${msg}\n\n${attachContext}`.trim();
+                    }
+                    if (msg) planning.onSend(msg);
+                    setAttachedItems([]);
+                  }}
                   isLoading={planning.loading}
                   disabled={planning.composerDisabled}
                   minRows={2}
-                  placeholder={planning.composerDisabled ? "Pick an option above to continue…" : "Describe your app…"}
+                  placeholder={planning.composerDisabled ? "Pick an option above to continue…" : "Describe your app or paste screenshot (Ctrl+V)…"}
+                  attachments={attachedItems}
+                  onAttachItem={(item) => setAttachedItems((prev) => [...prev, item])}
+                  onRemoveAttachment={(name) => setAttachedItems((prev) => prev.filter((a) => a.name !== name))}
+                  leading={
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={planning.loading || planning.composerDisabled}
+                        title="Attach file (text, code, image)"
+                        style={{ background: "none", border: "none", color: "var(--text-secondary)", fontSize: "16px", cursor: "pointer" }}
+                      >
+                        📎
+                      </button>
+                      <button
+                        type="button"
+                        onClick={toggleVoiceRecording}
+                        disabled={planning.loading || planning.composerDisabled}
+                        title="Voice recorder (speak requirements)"
+                        style={{
+                          background: isRecordingVoice ? "rgba(239, 68, 68, 0.25)" : "none",
+                          border: "none", borderRadius: "6px", color: isRecordingVoice ? "#EF4444" : "#A78BFA",
+                          fontSize: "16px", cursor: "pointer", padding: "2px 4px"
+                        }}
+                      >
+                        🎤
+                      </button>
+                    </div>
+                  }
                   actions={
                     <Button
                       size="sm"
-                      onClick={() => planning.onSend(planning.input)}
-                      disabled={planning.loading || planning.composerDisabled || !planning.input.trim()}
+                      onClick={() => {
+                        let msg = planning.input;
+                        if (attachedItems.length > 0) {
+                          const attachContext = attachedItems.map(a => {
+                            if (a.type.startsWith("image/")) return `[Attached screenshot/image: ${a.name}]`;
+                            const prev = a.content.length > 8000 ? a.content.slice(0, 8000) + "\n...(truncated)" : a.content;
+                            return `--- Attached file: ${a.name} ---\n${prev}\n--- End of ${a.name} ---`;
+                          }).join("\n\n");
+                          msg = `${msg}\n\n${attachContext}`.trim();
+                        }
+                        if (msg) planning.onSend(msg);
+                        setAttachedItems([]);
+                      }}
+                      disabled={planning.loading || planning.composerDisabled || (!planning.input.trim() && attachedItems.length === 0)}
                     >
                       Send
                     </Button>

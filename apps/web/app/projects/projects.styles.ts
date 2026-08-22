@@ -72,6 +72,7 @@ export const projects = {
     transitionDuration: theme.duration.fast,
     "&:first-of-type": { borderTop: "none" },
     "&:hover": { backgroundColor: ground.raised },
+    "&:hover [class*='actions']": { opacity: 1 },
   }),
 
   rowEdge: css({
@@ -175,7 +176,8 @@ export const projects = {
     flexDirection: "column",
     alignItems: "flex-end",
     gap: "1px",
-    minWidth: "72px",
+    width: "76px",
+    flexShrink: 0,
   }),
   metaColLabel: css({
     fontSize: "9px",
@@ -203,11 +205,13 @@ export const projects = {
   actions: css({
     display: "flex",
     alignItems: "center",
+    justifyContent: "flex-end",
     gap: theme.space[1],
-    opacity: 0,
+    width: "60px",
+    flexShrink: 0,
+    opacity: 1,
     transitionProperty: "opacity",
     transitionDuration: theme.duration.fast,
-    "&:focus-within": { opacity: 1 },
   }),
 
   iconBtn: css({

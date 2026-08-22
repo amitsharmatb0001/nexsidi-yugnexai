@@ -133,7 +133,6 @@ export default function NewProjectModal({
             disabled={submitting}
           />
         </div>
-        <p className={hint}>Saved as this project&apos;s context — you&apos;ll start the conversation yourself once it opens.</p>
 
         {error && <p className={errorText}>{error}</p>}
 

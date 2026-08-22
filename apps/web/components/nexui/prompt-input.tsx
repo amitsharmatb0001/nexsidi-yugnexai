@@ -18,14 +18,14 @@ const shellClass = css({
   gap: theme.space[2],
   padding: theme.space[3],
   borderRadius: theme.radius.lg,
-  border: `1px solid ${theme.color.input}`,
-  backgroundColor: theme.color.card,
-  transitionProperty: "border-color, box-shadow",
+  border: "none",
+  backgroundColor: "rgba(0, 0, 0, 0.4)",
+  transitionProperty: "background-color",
   transitionDuration: theme.duration.fast,
   transitionTimingFunction: theme.easing.standard,
   "&:focus-within": {
-    borderColor: theme.color.ring,
-    boxShadow: `0 0 0 3px ${theme.color.accent}`,
+    border: "none",
+    boxShadow: "none",
   },
   '&[data-disabled="true"]': {
     opacity: 0.6,
@@ -57,35 +57,31 @@ const footerClass = css({
   gap: theme.space[2],
 });
 
-const hintClass = css({
-  fontSize: theme.fontSize.xs,
-  color: theme.color.mutedForeground,
-});
-
-const counterOverClass = css({ color: theme.color.destructive });
+export interface AttachedItem {
+  name: string;
+  type: string;
+  content: string;
+}
 
 export interface PromptInputProps
   extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "onChange" | "onSubmit"> {
   value?: string;
   defaultValue?: string;
   onValueChange?: (value: string) => void;
-  /** Fired on Enter (without Shift) and by any submit affordance you render in `actions`. */
   onSubmit?: (value: string) => void;
-  /** Rendered on the right of the footer — typically a send Button. */
   actions?: ReactNode;
-  /** Rendered on the left of the footer — attachments, model picker, etc. */
   leading?: ReactNode;
-  /** Show a "characters used" counter and mark it destructive past this length. */
   maxLength?: number;
-  /** Rows to start at before auto-growing. */
   minRows?: number;
   isLoading?: boolean;
+  onAttachItem?: (item: AttachedItem) => void;
+  attachments?: AttachedItem[];
+  onRemoveAttachment?: (name: string) => void;
 }
 
 /**
- * The prompt box for a chat or agent UI: auto-grows with content, submits on
- * Enter (Shift+Enter inserts a newline), and exposes footer slots for a send
- * button, attachments, or a model picker.
+ * Borderless prompt input supporting clipboard screenshot paste (Ctrl+V / PrtScn),
+ * file attachments (📎), and voice recording (🎤).
  */
 export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(function PromptInput(
   {
@@ -102,6 +98,9 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(fun
     placeholder = "Send a message…",
     onKeyDown,
     className,
+    onAttachItem,
+    attachments = [],
+    onRemoveAttachment,
     ...props
   },
   ref,
@@ -118,7 +117,6 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(fun
   const resize = useCallback(() => {
     const el = innerRef.current;
     if (!el) return;
-    // Reset first so the scrollHeight reflects a shrink, not just growth.
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
   }, []);
@@ -132,14 +130,71 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(fun
     if (event.defaultPrevented) return;
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      if (!isDisabled && text.trim()) onSubmit?.(text);
+      if (!isDisabled && (text.trim() || attachments.length > 0)) onSubmit?.(text);
     }
   }
 
-  const over = maxLength != null && text.length > maxLength;
+  function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const items = event.clipboardData?.items;
+    if (!items || !onAttachItem) return;
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item && item.type.indexOf("image") !== -1) {
+        event.preventDefault();
+        const file = item.getAsFile();
+        if (!file) continue;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const content = String(e.target?.result ?? "");
+          onAttachItem({
+            name: `pasted-screenshot-${Date.now().toString().slice(-4)}.png`,
+            type: file.type || "image/png",
+            content,
+          });
+        };
+        reader.readAsDataURL(file);
+      }
+    }
+  }
 
   return (
     <div className={className ? `${shellClass} ${className}` : shellClass} data-disabled={isDisabled || undefined}>
+      {/* Attached file & screenshot chips */}
+      {attachments.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "6px" }}>
+          {attachments.map((att) => (
+            <div
+              key={att.name}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "4px",
+                padding: "2px 8px",
+                borderRadius: "999px",
+                background: "rgba(6, 182, 212, 0.18)",
+                border: "1px solid rgba(6, 182, 212, 0.3)",
+                color: "#22D3EE",
+                fontSize: "11px",
+              }}
+            >
+              <span>{att.type.startsWith("image/") ? "🖼️" : "📄"}</span>
+              <span>{att.name}</span>
+              {onRemoveAttachment && (
+                <button
+                  type="button"
+                  onClick={() => onRemoveAttachment(att.name)}
+                  style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", marginLeft: "2px" }}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       <textarea
         ref={(node) => {
           innerRef.current = node;
@@ -149,26 +204,17 @@ export const PromptInput = forwardRef<HTMLTextAreaElement, PromptInputProps>(fun
         rows={minRows}
         className={textareaClass}
         value={text}
-        placeholder={placeholder}
         disabled={isDisabled}
-        aria-busy={isLoading || undefined}
-        onChange={(event) => setText(event.target.value)}
+        placeholder={placeholder}
+        onChange={(e) => setText(e.target.value)}
         onKeyDown={handleKeyDown}
+        onPaste={handlePaste}
         {...props}
       />
-      {actions || leading || maxLength != null ? (
-        <div className={footerClass}>
-          <div className={hintClass}>{leading}</div>
-          <div className={footerClass}>
-            {maxLength != null ? (
-              <span className={over ? `${hintClass} ${counterOverClass}` : hintClass}>
-                {text.length}/{maxLength}
-              </span>
-            ) : null}
-            {actions}
-          </div>
-        </div>
-      ) : null}
+      <div className={footerClass}>
+        <div>{leading}</div>
+        <div>{actions}</div>
+      </div>
     </div>
   );
 });

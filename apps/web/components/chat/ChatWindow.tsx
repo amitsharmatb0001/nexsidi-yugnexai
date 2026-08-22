@@ -208,6 +208,46 @@ export function ChatWindow() {
     if (e.dataTransfer.files.length) void handleFiles(e.dataTransfer.files);
   }
 
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  const toggleVoiceRecording = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Speech recognition is not supported in this browser. Please use Chrome or Edge.");
+      return;
+    }
+
+    if (isRecording) {
+      recognitionRef.current?.stop();
+      setIsRecording(false);
+      return;
+    }
+
+    try {
+      const rec = new SpeechRecognition();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.onstart = () => setIsRecording(true);
+      rec.onresult = (e: any) => {
+        let transcript = "";
+        for (let i = e.resultIndex; i < e.results.length; ++i) {
+          transcript += e.results[i][0].transcript;
+        }
+        if (transcript) {
+          setInput((prev) => (prev ? `${prev} ${transcript}` : transcript));
+        }
+      };
+      rec.onerror = () => setIsRecording(false);
+      rec.onend = () => setIsRecording(false);
+      recognitionRef.current = rec;
+      rec.start();
+    } catch {
+      setIsRecording(false);
+    }
+  }, [isRecording]);
+
   return (
     <div className="flex flex-col h-full">
       {/* Message list */}
@@ -271,6 +311,17 @@ export function ChatWindow() {
           onChange={(e) => { if (e.target.files) void handleFiles(e.target.files); e.target.value = ""; }}
         />
 
+        {/* Voice recording banner */}
+        {isRecording && (
+          <div className="flex items-center justify-between px-3 py-1.5 mb-2 bg-red-950/40 border border-red-500/40 rounded-xl text-xs text-red-400 max-w-3xl mx-auto">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+              <span>🎙️ Voice recorder active — speak requirements...</span>
+            </div>
+            <button onClick={toggleVoiceRecording} className="text-red-300 font-bold hover:underline">Done</button>
+          </div>
+        )}
+
         {/* Attachment chips */}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-2 max-w-3xl mx-auto">
@@ -300,6 +351,20 @@ export function ChatWindow() {
             className="shrink-0 w-10 h-10 flex items-center justify-center rounded-xl bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 hover:text-gray-200 disabled:opacity-40 transition text-lg"
           >
             📎
+          </button>
+
+          {/* Voice recorder button */}
+          <button
+            onClick={toggleVoiceRecording}
+            disabled={streaming}
+            title="Voice recording (speak requirements)"
+            className={`shrink-0 w-10 h-10 flex items-center justify-center rounded-xl border transition text-lg ${
+              isRecording
+                ? "bg-red-900/50 border-red-500 text-red-400 animate-pulse"
+                : "bg-gray-800 hover:bg-gray-700 border-gray-700 text-purple-400 hover:text-purple-300"
+            }`}
+          >
+            🎤
           </button>
 
           <textarea

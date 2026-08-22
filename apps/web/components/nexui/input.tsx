@@ -8,22 +8,27 @@ const inputVariants = createVariants({
     display: "block",
     width: "100%",
     borderRadius: theme.radius.md,
-    border: `1px solid ${theme.color.input}`,
-    backgroundColor: theme.color.background,
+    border: "none",
+    backgroundColor: "rgba(0, 0, 0, 0.4)",
     color: theme.color.foreground,
     fontFamily: theme.fontFamily.sans,
     fontSize: theme.fontSize.sm,
     height: "2.5rem",
     paddingLeft: theme.space[3],
     paddingRight: theme.space[3],
-    transitionProperty: "border-color, box-shadow",
+    transitionProperty: "background-color",
     transitionDuration: theme.duration.fast,
     transitionTimingFunction: theme.easing.standard,
     "&::placeholder": { color: theme.color.mutedForeground },
+    "&:focus": {
+      outline: "none",
+      boxShadow: "none",
+      border: "none",
+    },
     "&:focus-visible": {
       outline: "none",
-      borderColor: theme.color.ring,
-      boxShadow: `0 0 0 3px ${theme.color.accent}`,
+      boxShadow: "none",
+      border: "none",
     },
     "&:disabled": {
       opacity: 0.5,
@@ -32,7 +37,7 @@ const inputVariants = createVariants({
   },
   variants: {
     invalid: {
-      true: { borderColor: theme.color.destructive },
+      true: { border: "none" },
     },
   },
 });
