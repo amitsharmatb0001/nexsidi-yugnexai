@@ -39,7 +39,9 @@ Open Follow-Up #5). Build GCP support only when Amit says it's needed.
 
 - Frontend: first free port in 3200–3299
 - Backend: frontend + 100 (wraps to 3100 if ≥ 3300)
-- DB: 5433
+- DB: first free port in 5435–5499 (real base, verified against
+  findFreePort(5435, 5499) in agents/riya/src/index.ts — this doctrine
+  previously said a hardcoded "5433", contradicting the very next rule below)
 - appUrl = `http://localhost:<frontendPort>`
 
 Always probe for a FREE port — never hardcode; parallel builds collide.

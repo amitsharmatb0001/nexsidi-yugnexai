@@ -436,9 +436,25 @@ Output a single JSON object matching this schema exactly. No markdown fences, no
 
 Rules:
 - sharedTypes: full TypeScript — interfaces, enums, no imports needed (standalone).
-- Every endpoint must have auth=true unless it's a public health check, registration, or login endpoint.
+- Every endpoint must have auth=true unless it's a public health check, registration, login
+  endpoint, OR a public lead-generation/contact-inquiry submission endpoint (see PUBLIC FORMS
+  below — real bug found live, project a355bbb5fa35: a contact form's POST endpoint was marked
+  auth=true, so a prospective visitor with no account got a 401 trying to submit it, defeating
+  the entire point of a public lead-gen form).
 - Custom JWT auth middleware handles auth — backend checks req.userId (which is users.id).
-- We use a local users table for auth. Any user_id column in database tables should reference users.id (e.g. "users.id") and have a foreign key references constraint.
+- We use a local users table for auth. Any user_id column in database tables should reference users.id (e.g. "users.id") and have a foreign key references constraint — EXCEPT a table backing a public form (see PUBLIC FORMS below), where user_id must be nullable (no ".notNull()" constraint) since most submitters won't have an account.
+
+PUBLIC FORMS — contact forms, inquiry forms, lead-capture forms, waitlist signups, or any
+form the spec describes as being for visitors/prospects/the public (not "a logged-in user's
+own X"):
+- Its POST/submit endpoint gets auth=false — the person submitting it, by definition, may not
+  have an account yet.
+- Its backing table's user_id column is nullable (references users.id, but no ".notNull()"),
+  and the table gets its own "name" and "email" text columns so an anonymous submitter's
+  identity is actually captured and visible to whoever reviews submissions later — a nullable
+  user_id with no name/email captured means every anonymous submission is unidentifiable.
+- The endpoint that LISTS/reviews these submissions (e.g. an admin dashboard) stays auth=true
+  as normal — only the public submission endpoint itself is auth=false.
 - drizzleType values: uuid(), text(), varchar(n), integer(), boolean(),
   timestamp({ withTimezone: true }), date(), jsonb()
 - For all FK columns: add "references" field: "parent_table.id" (e.g. "users.id")

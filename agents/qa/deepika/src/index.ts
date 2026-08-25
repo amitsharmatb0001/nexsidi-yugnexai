@@ -104,7 +104,15 @@ export async function runExploring(
 ): Promise<QAResult> {
   const result = await deps.runAgent({
     agentName: "deepika",
-    systemPrompt: QA_SYSTEM_PROMPT,
+    // 2026-08-23: QA_SYSTEM_PROMPT (below) is written for run()'s raw
+    // one-shot JSON-output codepath — it instructs "Output ONLY valid
+    // JSON," which is wrong for this tool-calling loop (qa-loop.ts's real
+    // tool is submit_findings). Its genuinely useful content (expanded hunt
+    // list, false-positive guards) has been folded into
+    // packages/agent-runtime/skills/deepika.md, which assembleSystemPrompt
+    // (inside runQAAgent) already injects — passing "" here avoids handing
+    // the loop two contradictory sets of output instructions.
+    systemPrompt: "",
     reviewFocus: "performance issues (Big-O complexity blowups, memory leaks, N+1 query patterns, blocking synchronous calls on the hot path)",
     dirs,
     systemContext,

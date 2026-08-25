@@ -433,8 +433,27 @@ function splitLiveFindings(findings: unknown): { shubham: string[]; aanya: strin
   const groups = { shubham: [] as string[], aanya: [] as string[], pranav: [] as string[] };
   if (!Array.isArray(findings)) return groups;
   for (const finding of findings as Array<{ file?: string; issue?: string; detail?: string }>) {
-    if (!finding.file) continue;
     const text = finding.issue ?? finding.detail ?? "";
+    if (!finding.file) {
+      // 2026-08-23: real bug found live (project a355bbb5fa35, nexyug web) —
+      // Tier-3 (reality-checker) findings are built as `{ file: "", issue }`
+      // (stage5-adversarial-qa.ts's tier3.findings.map), since Tier-3
+      // reviews the whole live app, not one file. `!finding.file` is true
+      // for "" too, so this branch used to `continue` unconditionally —
+      // every Tier-3 finding was silently dropped before ever reaching
+      // agentForFile, no matter how real or actionable. Confirmed live: a
+      // genuine, confirmed finding ("missing global Header and Footer
+      // across all routes") vanished this way, then the fix loop logged
+      // "No specific findings to route" and exited without fixing anything,
+      // even though a real finding existed. Route to Aanya specifically
+      // (not agentForFile("")'s generic shubham default, used elsewhere for
+      // a genuinely unfileable/non-actionable case — see
+      // stage5-qa-fix-loop.ts's own comment): Tier-3 reviews the RENDERED
+      // app, so its findings are almost always frontend/layout/UX, never
+      // backend or schema.
+      if (text) groups.aanya.push(`(site-wide): ${text}`);
+      continue;
+    }
     const formatted = `${finding.file}: ${text}`;
     const agent = agentForFile(finding.file) as "shubham" | "aanya" | "pranav";
     if (agent === "shubham" || agent === "aanya" || agent === "pranav") groups[agent].push(formatted);

@@ -6,6 +6,19 @@ import { buildAgentPrompt, buildAgentTask, buildCustomEnvLocal, buildScaffoldTsc
 import type { VendorExecFn } from "./index.ts";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { FALLBACK_BRIEF } from "../../../vanya/src/index.ts";
+import { assembleSystemPrompt } from "../../../../packages/agent-runtime/src/prompt-assembly.ts";
+
+// 2026-08-23: STACK/component/workflow content moved out of
+// AANYA_SHARED_PROMPT_BASE into packages/agent-runtime/skills/aanya/*.md —
+// loaded by assembleSystemPrompt (the real, wired doctrine mechanism — see
+// that module's own header comment), not returned by buildAgentPrompt()
+// directly anymore. Every test below that checks for that content now goes
+// through this helper instead of calling buildAgentPrompt() alone, so it
+// asserts against what the LLM actually receives (the fully assembled
+// prompt), not an intermediate function's now-partial output.
+function effectivePrompt(mode: "preview" | "integrate"): string {
+  return assembleSystemPrompt({ agentName: "aanya", basePrompt: buildAgentPrompt(mode) });
+}
 
 const FIX_TEST_PLAN: BuildPlan = {
   projectId: "fixtest",
@@ -52,7 +65,7 @@ test("writeStaticScaffold writes the auth middleware to middleware.ts, not proxy
 });
 
 test("system prompt correctly requires middleware.ts and forbids proxy.ts, not the reverse", () => {
-  const prompt = buildAgentPrompt("integrate");
+  const prompt = effectivePrompt("integrate");
   expect(prompt).not.toMatch(/NEVER create a middleware\.ts file/i);
   expect(prompt).toMatch(/middleware\.ts/);
 });
@@ -98,7 +111,7 @@ test("countPlannedPages returns 1 for a genuine single-page app", () => {
 // updated alongside the scaffold rewrite above, not left describing the old
 // vendored-package model.
 test("system prompt's STATIC FILES list describes the real @yugnex/core scaffold, not the old vendored-package one", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain("@yugnex/nexui-react + @yugnex/nexui as file: deps");
   expect(prompt).not.toContain("NexuiProvider wrapper");
   expect(prompt).toContain("@yugnex/core as a real npm dependency");
@@ -118,13 +131,13 @@ test("system prompt's STATIC FILES list describes the real @yugnex/core scaffold
 // shipped with green tests. Assert the wrong claim — in either direction —
 // can't recur.
 test("system prompt does not misattribute NoFoucScript to @yugnex/core/client", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toMatch(/NoFoucScript[\s\S]{0,60}@yugnex\/core\/client/);
   expect(prompt).not.toContain("StyleRegistry + ThemeProvider + NoFoucScript from");
 });
 
 test("preview mode prompt instructs mock data, no real API calls", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).toContain("mock");
   expect(prompt).not.toContain("Bearer token from useAuth().getToken()");
 });
@@ -142,13 +155,13 @@ test("preview mode prompt instructs mock data, no real API calls", () => {
 // looks the same" despite the per-project design-brief work already
 // being real and working for color/typography.
 test("system prompt derives page structure from layoutConcept instead of offering a fixed skeleton example to copy", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).toContain("Layout concept");
   expect(prompt).not.toContain('gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))"');
 });
 
 test("integrate mode prompt instructs real API wiring", () => {
-  const prompt = buildAgentPrompt("integrate");
+  const prompt = effectivePrompt("integrate");
   expect(prompt).toContain("read the 'token' cookie");
   expect(prompt).toContain('"Authorization: Bearer <token>"');
   expect(prompt).not.toContain("useAuth().getToken()");
@@ -657,7 +670,7 @@ test("buildAgentTask still works for a plan with no features (backward compatibl
 // conflict with rule 10's ban on internal TOOLING names (NexSidi/NexUI/
 // @yugnex) — "YugNex" here is the company name, a legitimate attribution.
 test("buildAgentPrompt instructs adding the real YugNex logo + watermark text to the footer, with the TM symbol and a trademark note", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).toContain("YUGNEX WATERMARK");
   expect(prompt).toContain("Developed & Managed by YugNex™");
   expect(prompt).toContain("YugNex™ is a trademark of YugNex Technology (OPC) Private Limited.");
@@ -675,7 +688,7 @@ test("buildAgentPrompt instructs adding the real YugNex logo + watermark text to
 // prompt itself caused). The example must be syntactically valid JSX so
 // there's nothing to copy-paste wrong.
 test("the watermark example uses a valid JSX style object, not an invalid HTML-style string attribute", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toMatch(/style="height:24px/);
   expect(prompt).toContain('style={{ height: "24px", width: "auto", opacity: 0.75 }}');
 });
@@ -691,20 +704,20 @@ test("the watermark example uses a valid JSX style object, not an invalid HTML-s
 // above (search "system prompt correctly requires middleware.ts") — same
 // idea, applied to every component whose old and new prop shapes differ.
 test("prompt has zero references to the old @yugnex/nexui-react package as an importable dependency", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain('from "@yugnex/nexui-react"');
   expect(prompt).toContain("@/components/nexui/button");
 });
 
 test("Button: prompt uses the real variant/tone split (solid/outline/ghost/soft + tone), not the old variant=\"primary\"", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain('variant="primary"');
   expect(prompt).toContain('variant="solid" tone="primary"');
   expect(prompt).toContain("isLoading");
 });
 
 test("Badge: prompt uses tone for semantic color (success/warning are tones, not variants)", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain('variant="success"');
   expect(prompt).not.toContain('variant="warning"');
   expect(prompt).toContain('tone="success"');
@@ -712,21 +725,21 @@ test("Badge: prompt uses tone for semantic color (success/warning are tones, not
 });
 
 test("Checkbox: prompt uses onCheckedChange (not onChange) and does not claim a built-in label prop", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain("<Checkbox checked={done} label=");
   expect(prompt).not.toContain("onChange={setDone}");
   expect(prompt).toContain("onCheckedChange={(c) => setDone(c === true)}");
 });
 
 test("Switch: prompt uses onCheckedChange (not onChange) and does not claim label/size/color props", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain("onChange={setEnabled}");
   expect(prompt).not.toContain('<Switch checked={enabled} onChange={setEnabled} label=');
   expect(prompt).toContain("onCheckedChange={setEnabled}");
 });
 
 test("Modal: prompt uses the real compound-component API (open/onOpenChange, ModalContent/ModalHeader/ModalFooter), not the old onClose/title/footer props", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain("onClose={() => setOpen(false)}");
   expect(prompt).not.toMatch(/<Modal[^>]+title="/);
   expect(prompt).toContain("onOpenChange={setOpen}");
@@ -736,7 +749,7 @@ test("Modal: prompt uses the real compound-component API (open/onOpenChange, Mod
 });
 
 test("Select: prompt uses the real data-driven options array API, not the old SelectItem/SelectGroup JSX children", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain("<SelectItem");
   expect(prompt).not.toContain("<SelectGroup");
   expect(prompt).toContain("options={[");
@@ -744,28 +757,28 @@ test("Select: prompt uses the real data-driven options array API, not the old Se
 });
 
 test("Tabs: prompt uses the real TabsPanel component, not the old TabsContent name", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toMatch(/<TabsContent[ >]/);
   expect(prompt).not.toContain('TabsContent value="all"');
   expect(prompt).toContain("TabsPanel");
 });
 
 test("Tooltip: prompt uses the real placement prop (not side) and the real default delay", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain('side="top"');
   expect(prompt).not.toContain("default 400");
   expect(prompt).toContain('placement="top"');
 });
 
 test("Progress: prompt uses the real tone prop (not variant/color) — linear bar only, no circular variant", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain('variant="linear"');
   expect(prompt).not.toContain('color="accent"');
   expect(prompt).toContain('tone="primary"');
 });
 
 test("Skeleton: prompt uses the real shape prop (not variant)", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain('variant="text"');
   expect(prompt).not.toContain('variant="rect"');
   expect(prompt).toContain('shape="text"');
@@ -773,12 +786,12 @@ test("Skeleton: prompt uses the real shape prop (not variant)", () => {
 });
 
 test("Avatar: prompt uses a numeric size prop, not a sm/md/lg size string", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).toContain("size={40}");
 });
 
 test("Panel & Spinner: prompt teaches css()/keyframes() replacements, not the removed <Panel>/<Spinner> components", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toMatch(/<Panel[ >]/);
   expect(prompt).not.toMatch(/<Spinner[ >]/);
   expect(prompt).toContain("NO Panel and NO Spinner component");
@@ -788,7 +801,7 @@ test("Panel & Spinner: prompt teaches css()/keyframes() replacements, not the re
 });
 
 test("NexUI CSS variables: prompt uses the real --nx-color-* naming convention, not the old --nx-bg-base/--nx-accent/--nx-green names", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain("--nx-bg-base");
   expect(prompt).not.toContain("--nx-bg-elevated");
   expect(prompt).not.toContain("var(--nx-accent)");
@@ -800,13 +813,13 @@ test("NexUI CSS variables: prompt uses the real --nx-color-* naming convention, 
 });
 
 test("Layout patterns: prompt no longer tells Aanya to use Panel for layout", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain("Use Panel and gap for layout");
   expect(prompt).toContain("Use css()");
 });
 
 test("STACK section and loading-state rule no longer mention the removed Spinner component", () => {
-  const prompt = buildAgentPrompt("preview");
+  const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain("use Spinner while fetching");
   expect(prompt).toContain("isLoading prop for in-button loading");
 });

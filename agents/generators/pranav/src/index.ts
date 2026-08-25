@@ -237,6 +237,13 @@ function renderIndex(idx: any, tableName: string): string {
 export function generateDrizzleSchema(tables: DrizzleTable[]): string {
   const normalizedTables = tables.map((t) => ({
     ...t,
+    // 2026-08-22: same root cause as the columns/fields fallback above —
+    // Arjun's dbSchema JSON is unconstrained LLM output and this run used
+    // `tableName` instead of the documented `name` key, so every table.name
+    // read below (snakeToCamel(table.name), etc.) was undefined and crashed
+    // on `undefined.replace(...)` inside snakeToCamel. Confirmed live
+    // against this project's actual db-schema.json on disk.
+    name: t.name ?? (t as unknown as { tableName?: string }).tableName ?? "",
     columns: (t.columns ?? (t as unknown as { fields?: unknown[] }).fields ?? []).map(normalizeColumn),
   }));
 
@@ -274,10 +281,29 @@ export function generateDrizzleSchema(tables: DrizzleTable[]): string {
   return [importLine, ...tableBlocks, ...relationBlocks].join("\n\n");
 }
 
+// 2026-08-23: real bug found live (project a355bbb5fa35) — Arjun's dbSchema
+// JSON is unconstrained LLM output (same root cause class as the tableName/
+// name fallback above) and this run wrote a FK reference as SQL syntax,
+// "users(id)", instead of the documented dot notation "users.id". Splitting
+// "users(id)" on "." finds no dot at all, so refTable came out as the whole
+// literal string "users(id)" — producing `.references(() => users(id).id)`,
+// invalid TypeScript (calling a pgTable object, not a function) that crashed
+// on import exactly like the earlier bug. Normalizes both shapes so either
+// one Arjun happens to emit resolves to the real { table, column } pair.
+function normalizeReference(ref: string): { table: string; column: string } {
+  const paren = ref.match(/^(\w+)\((\w+)\)$/);
+  if (paren) return { table: paren[1]!, column: paren[2]! };
+  const [table, column] = ref.split(".");
+  return { table: table ?? ref, column: column ?? "id" };
+}
+
 function renderColumn(col: DrizzleColumn): string {
   const constraints = col.constraints.join("");
   const ref = col.references
-    ? `.references(() => ${snakeToCamel(col.references.split(".")[0] ?? "")}.${col.references.split(".")[1] ?? "id"})`
+    ? (() => {
+        const { table, column } = normalizeReference(col.references!);
+        return `.references(() => ${snakeToCamel(table)}.${column})`;
+      })()
     : "";
   // normalizeColumn always leaves drizzleType ending in "()" (either freshly
   // appended for a bare type name, or already present from the documented
@@ -293,18 +319,17 @@ function buildRelationsBlock(table: DrizzleTable, allTables: DrizzleTable[]): st
 
   const relName = snakeToCamel(table.name);
   const relLines = fkCols.map((col) => {
-    const [refTable] = (col.references ?? "").split(".");
-    const refName = snakeToCamel(refTable ?? "");
+    const { table: refTable } = normalizeReference(col.references!);
+    const refName = snakeToCamel(refTable);
     const fieldName = col.name.replace(/_id$/, "");
     return `  ${fieldName}: one(${refName}, { fields: [${relName}.${col.name}], references: [${refName}.id] })`;
   });
 
-  const hasChildren = allTables.some((t) =>
-    t.columns.some((c) => c.references?.startsWith(`${table.name}.`))
-  );
+  const isChildOf = (c: DrizzleColumn) => c.references && normalizeReference(c.references).table === table.name;
+  const hasChildren = allTables.some((t) => t.columns.some(isChildOf));
   if (hasChildren) {
     const childRels = allTables
-      .filter((t) => t.columns.some((c) => c.references?.startsWith(`${table.name}.`)))
+      .filter((t) => t.columns.some(isChildOf))
       .map((t) => `  ${t.name}: many(${snakeToCamel(t.name)})`);
     relLines.push(...childRels);
   }

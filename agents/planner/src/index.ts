@@ -164,6 +164,21 @@ const ASK_USER_TOOL = {
               label:       { type: "string", description: "Short display label (2–4 words)" },
               description: { type: "string", description: "Optional one-line clarification" },
               recommended: { type: "boolean", description: "true on the most common sensible option" },
+              followUp: {
+                type: "object",
+                description:
+                  "Set this when picking this option is USELESS without one more piece of data — " +
+                  "e.g. 'match existing site' needs the URL, 'have a logo' needs a link or description. " +
+                  "The widget collects this value inline before the option counts as answered. " +
+                  "Do NOT set this for options that are already complete on their own.",
+                required: ["type", "label", "required"],
+                properties: {
+                  type:        { type: "string", enum: ["url", "text"] },
+                  label:       { type: "string", description: "What to ask for, e.g. 'Paste the URL of the site to match'" },
+                  placeholder: { type: "string" },
+                  required:    { type: "boolean", description: "true if the option is meaningless without this value (almost always true when you set followUp at all)" },
+                },
+              },
             },
           },
         },
@@ -297,6 +312,14 @@ function proposedPlanToBuildPlan(proposed: ProposedPlan): BuildPlan {
 }
 
 // Convert OpenAI-format planner messages → Gemini multi-turn format
+// 2026-08-24: real bug found live — Gemini 3.x attaches a `thoughtSignature`
+// to a functionCall part and REQUIRES it be echoed back verbatim on any
+// later turn that replays this call in history (a hard 400 otherwise, not a
+// soft degradation — see gemini.ts's GeminiPart type). The OpenAI-shaped
+// tool_calls entry this function reads from now carries that signature
+// (see ChatMessage.tool_calls[].thoughtSignature's header comment for the
+// full root-cause writeup) — reattach it here so the reconstructed
+// functionCall part matches what Gemini actually requires on replay.
 type NimMsg = { role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
 function nimToGemini(nimMsgs: NimMsg[]): GeminiMessage[] {
   const result: GeminiMessage[] = [];
@@ -309,12 +332,16 @@ function nimToGemini(nimMsgs: NimMsg[]): GeminiMessage[] {
       if (msg.tool_calls?.length) {
         const parts: GeminiPart[] = [];
         if (msg.content) parts.push({ text: msg.content });
-        for (const tc of msg.tool_calls as Array<{ function: { name: string; arguments: string } }>) {
+        for (const tc of msg.tool_calls as Array<{ function: { name: string; arguments: string }; thoughtSignature?: string }>) {
+          let args: Record<string, unknown>;
           try {
-            parts.push({ functionCall: { name: tc.function.name, args: JSON.parse(tc.function.arguments) as Record<string, unknown> } });
+            args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
           } catch {
-            parts.push({ functionCall: { name: tc.function.name, args: {} } });
+            args = {};
           }
+          const part: GeminiPart = { functionCall: { name: tc.function.name, args } };
+          if (tc.thoughtSignature) part.thoughtSignature = tc.thoughtSignature;
+          parts.push(part);
         }
         result.push({ role: "model", content: parts });
       } else {
@@ -419,6 +446,15 @@ export async function* streamReply(
     const toolCallName = geminiResult.toolCalls[0]?.name ?? "";
     const toolCallArgs = geminiResult.toolCalls[0] ? JSON.stringify(geminiResult.toolCalls[0].input) : "";
     const toolCallId   = geminiResult.toolCalls[0]?.id ?? `call_${round}`;
+    // 2026-08-24: see ChatMessage.tool_calls[].thoughtSignature's header
+    // comment — the first functionCall part in rawParts is toolCalls[0]'s
+    // real source (partsToToolCalls in gemini.ts builds toolCalls in the
+    // same order it scans rawParts for "functionCall" parts), and is the
+    // ONLY place this signature is available; geminiResult.toolCalls itself
+    // (the { id, name, input } shape) never carries it.
+    const toolCallThoughtSignature = geminiResult.rawParts.find(
+      (p): p is { functionCall: { name: string; args: Record<string, unknown> }; thoughtSignature?: string } => "functionCall" in p,
+    )?.thoughtSignature;
 
     // No tool call → pure text response, emit and done
     if (!geminiResult.toolCalls.length) {
@@ -434,11 +470,14 @@ export async function* streamReply(
         // Emit with callId + raw args so chat.ts can persist proper tool_call context in the session.
         // Without this, the next turn rebuilds messages without tool_call structure and the model
         // reverts to text Q&A instead of calling ask_user/propose_plan again.
-        yield { type: "elicitation_question", elicitationQuestion: question, elicitationCallId: callId, elicitationArgs: toolCallArgs };
+        yield {
+          type: "elicitation_question", elicitationQuestion: question, elicitationCallId: callId, elicitationArgs: toolCallArgs,
+          elicitationThoughtSignature: toolCallThoughtSignature,
+        };
         // Also preserve in the local messages for if the loop continues within this same streamReply call
         messages.push({
           role: "assistant", content: textContent || null,
-          tool_calls: [{ id: callId, type: "function", function: { name: "ask_user", arguments: toolCallArgs } }],
+          tool_calls: [{ id: callId, type: "function", function: { name: "ask_user", arguments: toolCallArgs }, thoughtSignature: toolCallThoughtSignature }],
         });
         messages.push({
           role: "tool" as const,
@@ -463,7 +502,7 @@ export async function* streamReply(
         const callId = toolCallId || `call_propose_${round}`;
         messages.push({
           role: "assistant", content: textContent || null,
-          tool_calls: [{ id: callId, type: "function", function: { name: "propose_plan", arguments: toolCallArgs } }],
+          tool_calls: [{ id: callId, type: "function", function: { name: "propose_plan", arguments: toolCallArgs }, thoughtSignature: toolCallThoughtSignature }],
         });
         messages.push({
           role: "tool" as const, content: "Plan shown to user. Wait for their response: 'build it' to start, or they will describe changes.",
@@ -523,7 +562,7 @@ export async function* streamReply(
     messages.push({
       role: "assistant",
       content: textContent || null,
-      tool_calls: [{ id: callId, type: "function", function: { name: toolCallName, arguments: toolCallArgs } }],
+      tool_calls: [{ id: callId, type: "function", function: { name: toolCallName, arguments: toolCallArgs }, thoughtSignature: toolCallThoughtSignature }],
     });
     messages.push({
       role: "tool" as const,

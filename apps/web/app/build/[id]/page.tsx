@@ -21,6 +21,16 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   ts: number;
+  // 2026-08-24: real gap found live — attaching a file (via IdeWorkspace's
+  // composer, the actual live path — attachedItems/handleFileSelect, NOT
+  // the separate /api/chat/attachment route, which turned out to be unused
+  // by this flow) baked the file's full raw text directly into `content`,
+  // so the chat rendered a wall of raw markdown instead of a clean
+  // reference (compare: Claude.ai shows a small attachment card, never the
+  // raw file body inline). `content` (sent to the model, unchanged) still
+  // carries the full text — this is DISPLAY-only, so the bubble can show a
+  // chip per file instead.
+  attachments?: Array<{ name: string }>;
 }
 
 interface StageEvent {
@@ -80,6 +90,15 @@ interface ElicitationQuestion {
     label: string;
     description?: string;
     recommended?: boolean;
+    // Workstream 2: options that are useless without one more piece of data
+    // (e.g. "match existing site" needs the URL) declare this — the widget
+    // collects it inline and folds it into the answer before submitting.
+    followUp?: {
+      type: "url" | "text";
+      label: string;
+      placeholder?: string;
+      required: boolean;
+    };
   }>;
 }
 
@@ -632,6 +651,15 @@ function ProposedPlanPanel({ plan }: { plan: ProposedPlan }) {
 // for what is functionally the same kind of moment: the pipeline waiting on
 // a choice only the user can make.
 
+// Workstream 2: folds an option's follow-up value into the answer text sent
+// back to the planner, so the URL/description travels through the SAME
+// conversation-history channel the model already reads — no new plumbing.
+function composeAnswer(opt: ElicitationQuestion["options"][number], followUpValue: string | undefined): string {
+  const val = followUpValue?.trim();
+  if (opt.followUp && val) return `${opt.value} — ${opt.followUp.label}: ${val}`;
+  return opt.value;
+}
+
 function ElicitationWidget({
   question,
   onAnswer,
@@ -640,22 +668,43 @@ function ElicitationWidget({
   onAnswer: (answer: string) => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Single-select only: which option (if any) is showing its inline
+  // follow-up input, awaiting a value before it can be submitted.
+  const [pendingOption, setPendingOption] = useState<string | null>(null);
+  // Keyed by option.value — holds the in-progress follow-up text for
+  // whichever option(s) currently need one (single: just the pending one;
+  // multi: any selected option that declares followUp).
+  const [followUpValues, setFollowUpValues] = useState<Record<string, string>>({});
 
-  const handleOption = (value: string) => {
+  const handleOption = (opt: ElicitationQuestion["options"][number]) => {
     if (question.type === "single") {
-      onAnswer(value);
+      if (opt.followUp) {
+        setPendingOption(opt.value); // expand inline input, don't answer yet
+      } else {
+        setPendingOption(null);
+        onAnswer(composeAnswer(opt, undefined));
+      }
     } else {
       setSelected(prev => {
         const next = new Set(prev);
-        if (next.has(value)) next.delete(value); else next.add(value);
+        if (next.has(opt.value)) next.delete(opt.value); else next.add(opt.value);
         return next;
       });
     }
   };
 
+  const submitPending = (opt: ElicitationQuestion["options"][number]) => {
+    const val = followUpValues[opt.value]?.trim();
+    if (opt.followUp?.required && !val) return; // guard — required means required
+    onAnswer(composeAnswer(opt, val));
+  };
+
   const handleMultiSubmit = () => {
-    const vals = Array.from(selected);
-    if (vals.length > 0) onAnswer(vals.join(", "));
+    const chosen = question.options.filter(o => selected.has(o.value));
+    if (chosen.length === 0) return;
+    const missingRequired = chosen.some(o => o.followUp?.required && !followUpValues[o.value]?.trim());
+    if (missingRequired) return; // guard — Continue stays disabled for this case too
+    onAnswer(chosen.map(o => composeAnswer(o, followUpValues[o.value])).join(", "));
   };
 
   return (
@@ -668,35 +717,72 @@ function ElicitationWidget({
 
       <div className={ideStyles.elicitOptions}>
         {question.options.map(opt => {
-          const isSel = selected.has(opt.value);
+          const isSel = question.type === "multi" ? selected.has(opt.value) : pendingOption === opt.value;
+          const showFollowUp = opt.followUp && (question.type === "single" ? pendingOption === opt.value : selected.has(opt.value));
           return (
-            <button
-              key={opt.value}
-              type="button"
-              onClick={() => handleOption(opt.value)}
-              className={`${ideStyles.elicitOption} ${isSel ? ideStyles.elicitOptionSelected : opt.recommended ? ideStyles.elicitOptionRecommended : ""}`}
-            >
-              {question.type === "multi" && (
-                <span className={`${ideStyles.elicitCheckbox} ${isSel ? ideStyles.elicitCheckboxChecked : ""}`}>
-                  {isSel ? "✓" : null}
-                </span>
-              )}
-              <div className={ideStyles.elicitOptionBody}>
-                <div className={ideStyles.elicitOptionTop}>
-                  <span className={ideStyles.elicitOptionLabel}>{opt.label}</span>
-                  {opt.recommended && <span className={ideStyles.elicitOptionRecTag}>Recommended</span>}
+            <div key={opt.value}>
+              <button
+                type="button"
+                onClick={() => handleOption(opt)}
+                className={`${ideStyles.elicitOption} ${isSel ? ideStyles.elicitOptionSelected : opt.recommended ? ideStyles.elicitOptionRecommended : ""}`}
+              >
+                {question.type === "multi" && (
+                  <span className={`${ideStyles.elicitCheckbox} ${isSel ? ideStyles.elicitCheckboxChecked : ""}`}>
+                    {isSel ? "✓" : null}
+                  </span>
+                )}
+                <div className={ideStyles.elicitOptionBody}>
+                  <div className={ideStyles.elicitOptionTop}>
+                    <span className={ideStyles.elicitOptionLabel}>{opt.label}</span>
+                    {opt.recommended && <span className={ideStyles.elicitOptionRecTag}>Recommended</span>}
+                  </div>
+                  {opt.description && <div className={ideStyles.elicitOptionDesc}>{opt.description}</div>}
                 </div>
-                {opt.description && <div className={ideStyles.elicitOptionDesc}>{opt.description}</div>}
-              </div>
-              {question.type === "single" && <span className={ideStyles.elicitArrow}>→</span>}
-            </button>
+                {question.type === "single" && <span className={ideStyles.elicitArrow}>→</span>}
+              </button>
+
+              {showFollowUp && opt.followUp && (
+                <div className={ideStyles.elicitFollowUp}>
+                  <div className={ideStyles.elicitFollowUpLabel}>{opt.followUp.label}</div>
+                  <div className={ideStyles.elicitFollowUpRow}>
+                    <input
+                      type={opt.followUp.type === "url" ? "url" : "text"}
+                      className={ideStyles.elicitFollowUpInput}
+                      placeholder={opt.followUp.placeholder ?? (opt.followUp.type === "url" ? "https://…" : undefined)}
+                      value={followUpValues[opt.value] ?? ""}
+                      onChange={e => setFollowUpValues(prev => ({ ...prev, [opt.value]: e.target.value }))}
+                      onKeyDown={e => {
+                        if (e.key === "Enter" && question.type === "single") submitPending(opt);
+                      }}
+                      autoFocus
+                    />
+                    {question.type === "single" && (
+                      <Button
+                        size="sm"
+                        onClick={() => submitPending(opt)}
+                        disabled={Boolean(opt.followUp.required) && !followUpValues[opt.value]?.trim()}
+                      >
+                        Continue
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
 
       {question.type === "multi" && (
         <div className={ideStyles.elicitSubmitRow}>
-          <Button size="sm" onClick={handleMultiSubmit} disabled={selected.size === 0}>
+          <Button
+            size="sm"
+            onClick={handleMultiSubmit}
+            disabled={
+              selected.size === 0 ||
+              question.options.some(o => selected.has(o.value) && o.followUp?.required && !followUpValues[o.value]?.trim())
+            }
+          >
             Continue ({selected.size} selected)
           </Button>
         </div>
@@ -764,7 +850,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   // even when captured in a stale closure (React strict-mode double-mount).
   const chatLoadingRef = useRef(false);
   // Stable ref so the ?q= auto-send always calls the latest sendChatMessage.
-  const sendChatMessageRef = useRef<(msg: string) => Promise<void>>(async () => {});
+  const sendChatMessageRef = useRef<(msg: string, attachments?: Array<{ name: string }>) => Promise<void>>(async () => {});
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages, streamingMsg]);
   useEffect(() => { termEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [terminalEntries]);
@@ -815,13 +901,16 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   }, []);
 
   // ── Chat: send a message ──────────────────────────────────────────────────
-  const sendChatMessage = useCallback(async (msg: string) => {
+  const sendChatMessage = useCallback(async (msg: string, attachments?: Array<{ name: string }>) => {
     // Use ref for the guard so stale closures (strict-mode first mount) see
     // the real current value, not the one captured when the callback was made.
     if (!msg.trim() || chatLoadingRef.current) return;
     chatLoadingRef.current = true;
     setChatLoading(true);
-    setChatMessages(prev => [...prev, { role: "user", content: msg.trim(), ts: Date.now() }]);
+    // attachments is display-only — msg (sent below, unchanged) still
+    // carries the full extracted file content the model needs; see
+    // ChatMessage's own header comment for the full root-cause writeup.
+    setChatMessages(prev => [...prev, { role: "user", content: msg.trim(), ts: Date.now(), attachments }]);
     setChatInput("");
     setStreamingMsg("");
 
@@ -943,7 +1032,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       });
       if (res.ok) {
         const { summary } = await res.json() as { summary: string };
-        sendChatMessage(`[Attachment: ${file.name}]\n${summary}`);
+        sendChatMessage(`[Attachment: ${file.name}]\n${summary}`, [{ name: file.name }]);
       }
     } catch (err) {
       console.error("[attach] upload error", err);
@@ -1140,6 +1229,36 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
     setSubmitting(false);
   }
 
+  // Workstream 3: post-delivery edit path. The original build's workflow
+  // (and its SSE status stream, once it's reached "done") has already run
+  // its course — see apps/api's applyChangeRequestWorkflow header comment
+  // for why this starts a fresh workflow execution rather than signaling a
+  // completed one. That new run reuses the SAME workflowId, so the pipeline
+  // status query keeps working, but the BROWSER's existing EventSource is
+  // stuck in its own post-"complete" ping-only loop (see pipeline.ts's SSE
+  // route) and would never notice a new run start — closing it and calling
+  // startBuildWatching() again opens a fresh connection that polls from
+  // scratch, the same recovery path phase transitions already use.
+  async function requestChanges(text: string) {
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API}/api/pipeline/${id}/request-changes`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ changes: text }),
+      });
+      if (res.ok) {
+        setStatus("building");
+        setStageMessage("Applying your change request...");
+        setTerminalEntries(prev => [...prev, { kind: "log", text: `\n🔧 Change requested: ${text}\n` }]);
+        esRef.current?.close();
+        esRef.current = null;
+        startBuildWatching();
+      }
+    } catch {}
+    setSubmitting(false);
+  }
+
   const isDone = status === "done" || (status === "failed" && !!result?.appUrl);
 
   // ── Render: Resolving session ─────────────────────────────────────────────
@@ -1193,6 +1312,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       onChangeRequest={setChangeRequest}
       onApproveSpec={approveSpec}
       onApproveDeploy={approveDeploy}
+      onRequestChanges={requestChanges}
       planning={
         phase === "planning"
           ? {
@@ -1201,7 +1321,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
               loading: chatLoading,
               input: chatInput,
               onInputChange: setChatInput,
-              onSend: (value) => { if (value.trim()) sendChatMessage(value); },
+              onSend: (value, attachments) => { if (value.trim()) sendChatMessage(value, attachments); },
               composerDisabled: Boolean(elicitationQuestion),
               elicitation: elicitationQuestion ? (
                 <ElicitationWidget

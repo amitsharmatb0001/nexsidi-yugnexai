@@ -8,7 +8,7 @@
 
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { startProjectBuild, getPipelineStatus, isWorkflowRunning, getWorkflowStatus, sendWorkflowSignal } from "../utils/temporal.ts";
+import { startProjectBuild, getPipelineStatus, isWorkflowRunning, getWorkflowStatus, sendWorkflowSignal, startChangeRequest } from "../utils/temporal.ts";
 import { db, projects } from "@nexsidi/db";
 import { eq } from "drizzle-orm";
 import Redis from "ioredis";
@@ -181,7 +181,25 @@ pipelineRouter.get("/:projectId", async (c) => {
 // ── POST /api/pipeline/:projectId/approve-spec ────────────────────────────────
 pipelineRouter.post("/:projectId/approve-spec", async (c) => {
   const projectId = c.req.param("projectId");
+  // 2026-08-23: real bug found live (project a355bbb5fa35) — this route
+  // never read the request body, so the "Approve with changes" text the
+  // frontend sends as { changes } was silently discarded and every approval
+  // behaved identically to a plain accept, regardless of what was typed.
+  // A non-empty `changes` is signaled as approved=false (a rejection) with
+  // the text attached — see approveSpecSignal's own header comment for why
+  // this reuses the existing reject-and-redo loop instead of a new path.
+  let changes: string | undefined;
   try {
+    const body = await c.req.json();
+    if (typeof body?.changes === "string" && body.changes.trim()) changes = body.changes.trim();
+  } catch {
+    // No body / not JSON — a plain approval, same as before.
+  }
+  try {
+    if (changes) {
+      await sendWorkflowSignal(projectId, "approveSpecSignal", false, changes);
+      return c.json({ success: true, message: "Requested changes. Re-running the spec with your feedback." });
+    }
     await sendWorkflowSignal(projectId, "approveSpecSignal", true);
     return c.json({ success: true, message: "Spec approved. Code generation started." });
   } catch (err) {
@@ -197,5 +215,44 @@ pipelineRouter.post("/:projectId/approve-deploy", async (c) => {
     return c.json({ success: true, message: "Deployment approved. Delivery starting." });
   } catch (err) {
     return c.json({ error: "Failed to signal workflow" }, 500);
+  }
+});
+
+// ── POST /api/pipeline/:projectId/request-changes — Workstream 3 ──────────────
+// Root cause this closes: once a project is delivered there was no way back
+// in at all — no composer, no route, nothing. The ORIGINAL workflow run has
+// already completed by "done", so unlike approve-spec/approve-deploy above
+// (which signal a still-RUNNING workflow) this starts a fresh
+// applyChangeRequestWorkflow execution — see startChangeRequest's own header
+// comment for why it's safe to reuse the same workflowId.
+pipelineRouter.post("/:projectId/request-changes", async (c) => {
+  const projectId = c.req.param("projectId");
+  let changes = "";
+  try {
+    const body = await c.req.json();
+    if (typeof body?.changes === "string") changes = body.changes.trim();
+  } catch {
+    // fall through to the empty-check below
+  }
+  if (!changes) return c.json({ error: "changes required" }, 400);
+
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project) return c.json({ error: "not found" }, 404);
+  // Only a genuinely delivered project has generated code on disk for
+  // applyChangeRequestActivity's runFix calls to target — appUrl (not
+  // status, which nothing in the pipeline ever wrote before this
+  // workstream — see markProjectDone's own header comment) is the one
+  // signal that's actually reliable here.
+  if (!project.appUrl) return c.json({ error: "project is not delivered yet" }, 409);
+
+  const running = await isWorkflowRunning(projectId);
+  if (running) return c.json({ error: "a build or change request is already in progress" }, 409);
+
+  try {
+    await db.update(projects).set({ status: "building", updatedAt: new Date() }).where(eq(projects.id, projectId));
+    const workflowId = await startChangeRequest(projectId, changes);
+    return c.json({ success: true, workflowId, message: "Applying your change request..." });
+  } catch (err) {
+    return c.json({ error: "Failed to start change request" }, 500);
   }
 });

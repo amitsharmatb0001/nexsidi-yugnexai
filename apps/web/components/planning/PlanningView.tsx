@@ -13,11 +13,22 @@ import {
   type ReviewState,
 } from "@/components/nexui/review-gate";
 import YugnexLogo from "../ide/YugnexLogo";
+import { IconAttach } from "../ide/IdeIcons";
 import { planning as s } from "./planning.styles";
 
 export interface PlanningChatMessage {
   role: "user" | "assistant";
   content: string;
+  // 2026-08-24: real gap found live — attaching a file used to dump the
+  // file's full extracted text into the message content, so the chat
+  // rendered a wall of raw markdown instead of a clean reference (compare:
+  // Claude.ai shows a small attachment card, never the raw file body inline).
+  // The full content still reaches the model (see page.tsx's sendChatMessage
+  // — this is a DISPLAY-only field, the actual API payload is unchanged);
+  // this is only set when present so the bubble can show a chip per file
+  // instead. Plural — the real composer (IdeWorkspace.tsx) supports
+  // attaching more than one file per message.
+  attachments?: Array<{ name: string }>;
 }
 
 export interface PlanningViewProps {
@@ -110,7 +121,18 @@ export default function PlanningView({
             ) : (
               messages.map((m, i) => (
                 <ChatMessage key={i} role={m.role}>
-                  {m.content}
+                  {m.attachments?.length ? (
+                    <span style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {m.attachments.map((a, j) => (
+                        <span key={j} className={s.attachmentChip}>
+                          <IconAttach size={11} />
+                          <span className={s.attachmentChipName}>{a.name}</span>
+                        </span>
+                      ))}
+                    </span>
+                  ) : (
+                    m.content
+                  )}
                 </ChatMessage>
               ))
             )}

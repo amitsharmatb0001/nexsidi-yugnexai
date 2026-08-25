@@ -313,6 +313,21 @@ function fieldsToPayload(body: string, marker: string): Record<string, unknown> 
     if (lowerName.includes("email")) payload[fieldName] = `verify+${marker}@example.com`;
     else if (type.includes("number")) payload[fieldName] = 1;
     else if (type.includes("boolean")) payload[fieldName] = true;
+    // 2026-08-23: real bug found live (project a355bbb5fa35, nexyug web) —
+    // a string-literal-union field (e.g. status: 'pending' | 'in_progress' |
+    // 'closed') fell through to the generic marker-string branch below,
+    // which sends a value like "riya-verify-abc123-updated" — never a member
+    // of the union. A correctly-validating backend (zod z.enum(...), same as
+    // this project's own updateInquirySchema) rejects it with a real 400,
+    // which verifyAllResourceCrud then reported as an app bug. It wasn't:
+    // the generated backend was validating correctly: the synthetic test
+    // itself sent invalid data. Type-checked (not name-checked) like
+    // number/boolean above, and placed before them structurally only because
+    // it must win over the generic fallback — same "declared type is the
+    // reliable signal" precedent as the number/boolean checks above it.
+    else if (/^'[^']*'(\s*\|\s*'[^']*')*$/.test(type)) {
+      payload[fieldName] = type.match(/^'([^']*)'/)![1];
+    }
     // 2026-08-09: real bug found live (project meridianbk4, follow-on to the
     // inline-literal fix above) — an "appointment_date: string" field got
     // the raw marker string as its value, which fails any real backend's
@@ -1251,7 +1266,7 @@ export async function run(
     model: "moonshotai/kimi-k2.6",
     fallbackModels: ["mistralai/mistral-nemotron"],
     apiKey: process.env.NIM_API_KEY ?? "",
-    systemPrompt: RIYA_AGENT_SYSTEM_PROMPT,
+    systemPrompt: "",
     initialMessage: buildAgentTask(projectId, buildDir, frontendPort, backendPort, dbPort, jwtSecret),
     sandboxDir: buildDir,
     projectId,
@@ -1336,67 +1351,11 @@ export async function run(
 
   return { success: deploySucceeded, appUrl, backendUrl, githubRepo, errors };
 }
-
-const RIYA_AGENT_SYSTEM_PROMPT = `\
-You are Riya, a DevOps engineer for NexSidi.
-You have tools to write files, run docker commands, and make HTTP requests.
-DO NOT output text — USE TOOLS to deploy the project.
-
-Your workflow:
-1. Use list_files to understand the project structure (frontend/, backend/, AND db/).
-2. Use write_file to create docker-compose.yml in the project root.
-3. DATABASE MIGRATIONS (CRITICAL — the #1 cause of a "deployed but broken" app):
-   the SQL that CREATES THE TABLES lives in db/migrations/*.sql. NOTHING runs it
-   automatically. If you skip this, the containers start fine and /health returns
-   200, but the FIRST real write returns 500 "relation \\"tasks\\" does not exist"
-   — a broken delivery. In docker-compose.yml you MUST make the tables get
-   created, by mounting the migration SQL into the postgres init hook:
-     postgres:
-       volumes:
-         - ./db/migrations:/docker-entrypoint-initdb.d:ro
-   Postgres auto-runs every .sql in /docker-entrypoint-initdb.d on a FRESH data
-   volume. If the volume already exists from a prior attempt, initdb WON'T re-run
-   — so if your table-existence check below fails, docker_compose "down" (to drop
-   the volume) then "up" again, OR apply the SQL manually with run_command.
-4. Use docker_compose "up" to build and start all containers.
-5. Wait, then http_request health-check the backend GET /health and the frontend.
-6. VERIFY THE DATABASE IS REAL — do NOT trust that "containers up" means it works:
-   confirm the expected tables actually exist (e.g. run_command a psql query
-   against the postgres container listing tables, or hit an endpoint that reads
-   the DB and confirm it does NOT 500). An app whose tables don't exist is a
-   FAILED deploy even if /health is 200.
-7. If any check fails: docker_compose "logs", read the specific error, fix the
-   compose/Dockerfile/migration mount, down+up, retry.
-8. Call task_complete with verification_passed: true ONLY when health checks pass
-   AND you have confirmed the database tables exist. State in your summary that
-   you verified the tables.
-
-DOCKER COMPOSE RULES:
-- Use PostgreSQL 16 image: postgres:16-alpine
-- Backend Dockerfile is at backend/Dockerfile (already exists)
-- Frontend Dockerfile is at frontend/Dockerfile (already exists)
-- Network: all services on a shared network "app-net"
-- Volumes: named volume for postgres data persistence
-- Environment variables:
-  - Database: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
-  - Backend: DATABASE_URL, CORS_ORIGIN, JWT_SECRET, PORT
-  - Frontend: NEXT_PUBLIC_API_URL
-
-COMMON ISSUES AND FIXES:
-- "Connection refused" on backend health check: check DATABASE_URL format
-  postgresql://user:pass@postgres:5432/dbname — use service name "postgres", not "localhost"
-- "Cannot GET /health": backend didn't define /health route — check backend logs
-- Frontend returns 502: Next.js still building — wait longer, up to 120s
-- Port already in use: change the host port mapping in docker-compose.yml
-- Migrations not running / "relation does not exist" 500s: the db/migrations
-  SQL was not applied. Mount ./db/migrations into the postgres container's
-  /docker-entrypoint-initdb.d (see workflow step 3); if the volume already
-  initialized without it, down (drops the volume) then up so initdb re-runs.
-
-VERIFICATION GATE: (1) backend AND frontend /health return 200, AND (2) the
-database tables actually exist (verified, not assumed). Both are required before
-task_complete — a running app with an empty database is a FAILED delivery.
-`;
+// 2026-08-23: RIYA_AGENT_SYSTEM_PROMPT moved to
+// packages/agent-runtime/skills/riya/ (00-strategy-and-doctrine.md,
+// 10-tactical-workflow.md) — loaded by assembleSystemPrompt (see
+// gemini-loop.ts's call site and prompt-assembly.ts's own header comment).
+// No interpolation was used anywhere in the old constant.
 
 // 2026-07-26 (agent-autonomy-assessment follow-on): the sole source of
 // truth for this deploy's JWT secret. Every other write (frontend

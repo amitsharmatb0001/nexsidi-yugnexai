@@ -5,12 +5,30 @@
 // copies under packages/agent-runtime/skills/ (single source synced from
 // the skills repo zip by Task 8's sync-skills.ts) — an agent with no
 // doctrine file just gets core-reasoning + base, never a throw.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const SKILLS_DIR = join(import.meta.dir, "..", "skills");
 
+// 2026-08-23: an agent's doctrine can now be either the original single
+// `{name}.md` file, or a `{name}/` directory of multiple topic-scoped .md
+// files concatenated in filename order (e.g. skills/aanya/01-workflow.md,
+// 02-stack.md, ...) — the actual fix for "everything crammed into one
+// prompt" (Aanya's giant inline AANYA_SHARED_PROMPT_BASE moved here). The
+// directory form takes precedence when both would exist for the same name,
+// though in practice each agent has exactly one. Falls back to "" the same
+// way the old single-file version did when neither exists — an agent with
+// no doctrine still never throws.
 function loadDoctrine(name: string): string {
+  const dirPath = join(SKILLS_DIR, name);
+  try {
+    if (statSync(dirPath).isDirectory()) {
+      const files = readdirSync(dirPath).filter((f) => f.endsWith(".md")).sort();
+      return files.map((f) => readFileSync(join(dirPath, f), "utf-8").trim()).join("\n\n").trim();
+    }
+  } catch {
+    // Not a directory (or doesn't exist) — fall through to the flat-file form.
+  }
   try {
     return readFileSync(join(SKILLS_DIR, `${name}.md`), "utf-8").trim();
   } catch {

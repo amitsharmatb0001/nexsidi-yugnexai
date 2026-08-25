@@ -74,7 +74,11 @@ chatRouter.post("/", async (c) => {
             role: "assistant",
             content: assistantContent.trim() || null,  // text preamble (if any) + null if none
             ts: Date.now(),
-            tool_calls: [{ id: callId, type: "function", function: { name: "ask_user", arguments: args } }],
+            // 2026-08-24: see ChatMessage.tool_calls[].thoughtSignature's
+            // header comment — must be persisted here, not just callId/args,
+            // or the NEXT request's history replay 400s on this exact call
+            // whenever Gemini happened to sign it.
+            tool_calls: [{ id: callId, type: "function", function: { name: "ask_user", arguments: args }, thoughtSignature: chunk.elicitationThoughtSignature }],
           });
           state.messages.push({
             role: "tool", content: "Question shown to user as an interactive widget. Waiting for their answer.",

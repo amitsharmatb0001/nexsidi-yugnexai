@@ -499,6 +499,28 @@ export const ws = {
     backgroundColor: ground.raised,
     borderLeft: `2px solid ${signal.humanEdge}`,
   }),
+  // Workstream 5 follow-up (2026-08-24): replaces the raw file-content dump
+  // that used to render inline in a user message when a file was attached
+  // (see IdeWorkspace.tsx's onSubmit/Send handlers) with a compact reference
+  // — the full text still reaches the model, this is display-only.
+  planAttachments: css({ display: "flex", flexWrap: "wrap", gap: theme.space[1.5] }),
+  planAttachmentChip: css({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: theme.space[1.5],
+    padding: `${theme.space[1]} ${theme.space[2.5]}`,
+    borderRadius: theme.radius.full,
+    backgroundColor: ground.raised,
+    border: `1px solid ${ground.seamStrong}`,
+    fontSize: "12px",
+    color: theme.color.foreground,
+    maxWidth: "100%",
+  }),
+  planAttachmentChipName: css({
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  }),
 
   streamEmpty: css({
     margin: "auto",
@@ -637,6 +659,32 @@ export const ws = {
   }),
   elicitArrow: css({ fontSize: "11px", color: theme.color.mutedForeground, flexShrink: 0, marginTop: "1px" }),
   elicitSubmitRow: css({ marginTop: theme.space[2], display: "flex", justifyContent: "flex-end" }),
+  // Workstream 2: inline follow-up input shown under an option that's
+  // useless without more data (e.g. "match existing site" needs the URL).
+  elicitFollowUp: css({
+    marginTop: theme.space[1.5],
+    marginLeft: theme.space[2],
+    paddingLeft: theme.space[2.5],
+    borderLeft: `2px solid ${signal.humanEdge}`,
+  }),
+  elicitFollowUpLabel: css({
+    fontSize: "11px",
+    color: theme.color.mutedForeground,
+    marginBottom: theme.space[1],
+  }),
+  elicitFollowUpRow: css({ display: "flex", gap: theme.space[1.5], alignItems: "center" }),
+  elicitFollowUpInput: css({
+    flex: 1,
+    minWidth: 0,
+    padding: `${theme.space[1.5]} ${theme.space[2]}`,
+    borderRadius: theme.radius.sm,
+    border: `1px solid ${ground.seamStrong}`,
+    backgroundColor: ground.void,
+    color: theme.color.foreground,
+    fontSize: "12.5px",
+    outline: "none",
+    "&:focus": { borderColor: signal.human },
+  }),
 
   statusLine: css({
     display: "flex",

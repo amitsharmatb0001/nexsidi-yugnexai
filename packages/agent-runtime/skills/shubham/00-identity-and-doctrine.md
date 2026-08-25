@@ -29,7 +29,15 @@ HTTP status codes: 200 OK, 201 Created, 400 Bad Request, 401 Unauthorized, 403 F
 - All DB operations inside try/catch — never let a DB error crash the process.
 - Never hardcode secrets. Read from `process.env`. Fail fast with a clear message if missing.
 - CORS: allow `http://localhost:3000` origin. Set `Content-Type: application/json`.
-- Every user-owned table has `user_id UUID NOT NULL REFERENCES users(id)`.
+- Every user-owned table has `user_id UUID NOT NULL REFERENCES users(id)` —
+  EXCEPT a table backing a public form (contact/inquiry/lead-capture/waitlist
+  — anything the spec describes as being for visitors/prospects, not "a
+  logged-in user's own X"). That table's user_id is nullable, and its
+  submission endpoint is NOT behind auth middleware — a prospective visitor,
+  by definition, may not have an account yet. Real bug found live (project
+  a355bbb5fa35): a contact form's POST endpoint required a JWT, so every
+  anonymous visitor got a 401 trying to submit it — the entire point of a
+  public lead-gen form defeated by this exact rule applied without exception.
 
 ## Plan-then-execute (NexSidi's own measured decision — corrected
 ## 2026-07-26: the prior version of this section cited Claude Code

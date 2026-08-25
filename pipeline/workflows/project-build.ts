@@ -108,7 +108,20 @@ const deployRetestAct = proxyActivities<typeof activities>({
   retry: { maximumAttempts: 1 },
 });
 
-export const approveSpecSignal = defineSignal<[boolean]>("approveSpecSignal");
+// 2026-08-23: real bug found live (project a355bbb5fa35, nexyug web) — the
+// UI's "Approve with changes" box sends { changes: string } in its POST
+// body, but this signal only ever carried a boolean, so the typed text was
+// discarded before it reached the workflow at all: apps/api/src/routes/
+// pipeline.ts's approve-spec route never read the body, just signaled
+// `true`. The second, optional arg lets the API pass that text straight
+// through as pre-supplied feedback for the EXISTING reject-and-redo loop
+// below (see its 2026-08-05 header comment) — reusing the same tested path
+// "changes-requested" already uses at the earlier plan-proposal gate,
+// rather than inventing a second mechanism or racing two separate signals
+// (approveSpecSignal + answerClarificationSignal) against askAndWait's own
+// `clarificationAnswer = null` reset, which would silently drop the answer
+// if it arrived before askAndWait started waiting for it.
+export const approveSpecSignal = defineSignal<[boolean, string?]>("approveSpecSignal");
 export const approveDeploySignal = defineSignal<[boolean]>("approveDeploySignal");
 // 2026-08-05: generic pause-and-ask primitive (see askAndWait below) — one
 // signal answers whatever question is currently pending, whichever agent/
@@ -210,8 +223,13 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   // state decision lets the workflow tell the two apart and act on a
   // rejection (see the spec/design loop below).
   let specDecision: "approved" | "rejected" | null = null;
-  setHandler(approveSpecSignal, (approved) => {
+  // Set only on a rejection carrying pre-supplied feedback (see
+  // approveSpecSignal's own header comment) — the rejection branch below
+  // consumes and clears it instead of calling askAndWait for a second time.
+  let preSuppliedSpecChanges: string | null = null;
+  setHandler(approveSpecSignal, (approved, changes) => {
     specDecision = approved ? "approved" : "rejected";
+    if (!approved && changes) preSuppliedSpecChanges = changes;
   });
 
   let deployApproved = false;
@@ -437,9 +455,14 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       await act.escalateTilotma(projectId, "spec_rejected_too_many_times", state);
       return;
     }
-    state.stage = "awaiting_clarification";
-    const feedback = await askAndWait(["The spec/design was rejected — what would you like changed?"]);
-    clarificationHistory.push(`Q: What would you like changed about the spec/design?\nA: ${feedback}`);
+    if (preSuppliedSpecChanges !== null) {
+      clarificationHistory.push(`Q: What would you like changed about the spec/design?\nA: ${preSuppliedSpecChanges}`);
+      preSuppliedSpecChanges = null;
+    } else {
+      state.stage = "awaiting_clarification";
+      const feedback = await askAndWait(["The spec/design was rejected — what would you like changed?"]);
+      clarificationHistory.push(`Q: What would you like changed about the spec/design?\nA: ${feedback}`);
+    }
   }
 
   // ── Stage 3: Parallel code generation, retried in-place on an explicit
@@ -705,4 +728,44 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   throw new Error(
     "[workflow] unreachable: patched('unify-real-gan-and-deploy-v1') must be true for every workflow started after 2026-07-24 — reaching this line means an in-flight workflow from before that patch is replaying and hit code that no longer exists. Do not resume it; start a fresh run instead.",
   );
+}
+
+// ── Post-delivery change request (Workstream 3) ────────────────────────────
+// Root cause, verbatim from the plan: "Once a project reaches status: done,
+// there is no chat composer, no 'request changes' route, nothing — if you
+// don't like the result, there is currently no way back in." The ORIGINAL
+// projectBuildWorkflow execution has already COMPLETED by the time a project
+// is done — Temporal signals cannot reach a terminated execution (the same
+// fact resumeFromDeploy above is built around) — so this is a SEPARATE
+// workflow entry point, started fresh per change request, not a signal into
+// the old run. It reuses the original run's own workflowId
+// (`project-build-${projectId}`, see apps/api/src/utils/temporal.ts) so the
+// EXISTING SSE status-poll route keeps working unmodified for a change
+// request too — Temporal allows starting a new execution under an ID whose
+// previous run already completed (workflowIdReusePolicy: ALLOW_DUPLICATE,
+// set at the start call site).
+//
+// Deliberately narrower than the full build pipeline: no Saanvi/Arjun re-run
+// (the spec doesn't change), no Vanya re-run (the design doesn't change), no
+// full Stage 1-5 QA loop — just apply the fix (targeted regeneration, see
+// applyChangeRequestActivity's own header comment) and re-verify with the
+// SAME live deploy + browser retest Stage 6 already uses, before re-marking
+// done. If re-verification fails, this fails the same way Stage 6 already
+// does elsewhere (escalate to needs_review) rather than silently leaving the
+// project in a broken, still-labeled-done state.
+export async function applyChangeRequestWorkflow(projectId: string, changeText: string): Promise<void> {
+  const changeResult = await genAct.applyChangeRequestActivity(projectId, changeText);
+  if (changeResult.filesChanged.length === 0 && changeResult.errors.length > 0) {
+    await act.escalateTilotma(projectId, "change_request_failed", { errors: changeResult.errors });
+    return;
+  }
+
+  await orchestratorAct.recordDeployHandoffActivity(projectId);
+  const deployResult = await deployRetestAct.runDeployWithLiveRetest(projectId);
+  if (!deployResult.success) {
+    await act.escalateTilotma(projectId, deployResult.stuck ? "deploy_stuck" : "deploy_failed", deployResult);
+    return;
+  }
+
+  await act.markProjectDone(projectId, deployResult.appUrl);
 }

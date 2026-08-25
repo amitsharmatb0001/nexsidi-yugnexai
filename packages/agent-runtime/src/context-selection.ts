@@ -1,4 +1,4 @@
-import type { GeminiMessage } from "@nexsidi/llm-client";
+import type { GeminiMessage, GeminiPart } from "@nexsidi/llm-client";
 import { safeTrailingSlice, estimateGeminiTokenCount } from "./compaction.ts";
 
 // ── Real relevant-context selection (cost-control plan, Task 2) ────────────
@@ -294,6 +294,79 @@ function isSyntheticContextMessage(message: GeminiMessage): boolean {
  * compaction mechanism via compactViaRelevantContext (cost-control Task 4)
  * — see this module's header comment.
  */
+// ── Trailing-window size cap (real bug found live — project a355bbb5fa35,
+// "nexyug web") ──────────────────────────────────────────────────────────
+//
+// selectRelevantContext bounds the trailing window to the last 6 raw turns,
+// but nothing bounded the SIZE of any single turn — one run_command/
+// http_request/docker_compose result inside those 6 turns can itself be
+// hundreds of thousands of tokens (a full docker compose log, a large HTTP
+// response body). Confirmed live: compactViaRelevantContext "rebuilt" a
+// 658,201-token history down to 645,624 — barely moved, still far past
+// every pool model's limit. All 3 models (gemini-3.7-flash, 3.5-flash,
+// 3.6-flash) tripped their circuit breakers on the resulting oversized
+// request, repeatedly, exhausting Stage 6 deploy's entire retry budget
+// without Riya ever getting a working LLM call.
+//
+// Caps every string value found anywhere inside a trailing turn's content
+// (recursing into functionCall.args / functionResponse.response, since tool
+// payloads are arbitrary per-tool JSON, not a fixed shape) — generic across
+// every tool's own result shape rather than special-casing each one.
+// Truncates from the middle: keeps the head (usually the meaningful summary)
+// and the tail (usually the final status/error line, often the most useful
+// part of a long log) rather than just cutting the end off.
+//
+// Deliberately does NOT touch `thought` parts (thoughtSignature must be
+// echoed back verbatim — see GeminiPart's own header comment in gemini.ts)
+// or `inlineData` (base64 image bytes; truncating would corrupt the image,
+// and estimateGeminiTokenCount doesn't even count it toward the size this
+// cap exists to bound).
+const MAX_TRAILING_STRING = 4_000;
+
+function capString(s: string): string {
+  if (s.length <= MAX_TRAILING_STRING) return s;
+  const headLen = Math.floor(MAX_TRAILING_STRING * 0.7);
+  const tailLen = MAX_TRAILING_STRING - headLen;
+  return `${s.slice(0, headLen)}\n…[${s.length - MAX_TRAILING_STRING} chars truncated]…\n${s.slice(-tailLen)}`;
+}
+
+function capJsonStrings(value: unknown, depth = 0): unknown {
+  if (depth > 6) return value; // pathological nesting guard
+  if (typeof value === "string") return capString(value);
+  if (Array.isArray(value)) return value.map((v) => capJsonStrings(v, depth + 1));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = capJsonStrings(v, depth + 1);
+    return out;
+  }
+  return value;
+}
+
+function capPart(part: GeminiPart): GeminiPart {
+  if ("functionCall" in part) {
+    return { ...part, functionCall: { ...part.functionCall, args: capJsonStrings(part.functionCall.args) as Record<string, unknown> } };
+  }
+  if ("functionResponse" in part) {
+    return { ...part, functionResponse: { ...part.functionResponse, response: capJsonStrings(part.functionResponse.response) as Record<string, unknown> } };
+  }
+  if ("text" in part && !("thought" in part)) {
+    return { ...part, text: capString(part.text) };
+  }
+  return part; // thought / inlineData — untouched
+}
+
+function capTrailingWindow(messages: GeminiMessage[]): GeminiMessage[] {
+  return messages.map((m) => {
+    // trailing never actually contains a "system" message (safeTrailingSlice
+    // only ever sees nonSys), but GeminiMessage's type doesn't encode that —
+    // narrowing role first (not just typeof m.content) keeps the spread
+    // below type-safe against the discriminated union.
+    if (m.role === "system") return m;
+    if (typeof m.content === "string") return { ...m, content: capString(m.content) };
+    return { ...m, content: m.content.map(capPart) };
+  });
+}
+
 export function selectRelevantContext(
   fullHistory: GeminiMessage[],
   currentTask: string,
@@ -311,7 +384,7 @@ export function selectRelevantContext(
   // include a stale synthetic block, which then rides along inside `trailing`
   // below and duplicates the fresh one this call is about to build.
   const nonSys = fullHistory.filter((m) => m.role !== "system" && !isSyntheticContextMessage(m));
-  const trailing = safeTrailingSlice(nonSys, trailingTurnCount);
+  const trailing = capTrailingWindow(safeTrailingSlice(nonSys, trailingTurnCount));
 
   const taskLines = [
     `CURRENT TASK: ${currentTask}`,

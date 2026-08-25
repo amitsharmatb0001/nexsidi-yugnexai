@@ -40,6 +40,7 @@ import {
   IconPlan,
   IconCost,
   IconMinimize,
+  IconAttach,
 } from "./IdeIcons";
 import { ws as s } from "./IdeWorkspace.styles";
 import { Syntax } from "@/components/nexui/syntax";
@@ -90,6 +91,11 @@ export interface IdeWorkspaceProps {
   onChangeRequest: (v: string) => void;
   onApproveSpec: () => void;
   onApproveDeploy: () => void;
+  // Workstream 3: the post-delivery edit path — root cause was that a
+  // `done` project had no chat composer, no "request changes" route,
+  // nothing. Shown in place of the static "Your app is ready." status line
+  // once isDone is true and there's no other gate pending.
+  onRequestChanges: (text: string) => void;
 
   /**
    * Present only while the project has no pipeline yet — the conversation
@@ -105,7 +111,9 @@ export interface IdeWorkspaceProps {
     loading: boolean;
     input: string;
     onInputChange: (v: string) => void;
-    onSend: (v: string) => void;
+    // attachments: display-only metadata (name per staged file) — v itself
+    // still carries the full text sent to the model. See PlanningChatMessage.
+    onSend: (v: string, attachments?: Array<{ name: string }>) => void;
     elicitation?: ReactNode;
     composerDisabled?: boolean;
     plan?: ReactNode;
@@ -192,11 +200,45 @@ const PANEL_LABEL: Record<PanelKey, string> = {
   cost: "Cost & tokens",
 };
 
+// Workstream 3: same gateCard family as the spec/deploy approval cards above
+// — a done project is another moment only the user can act on, just phrased
+// as an invitation rather than a pending decision. Local input state (not
+// lifted to the parent like changeRequest) because nothing outside this
+// component needs the in-progress text before it's actually submitted.
+function DoneComposer({ onSubmit, submitting }: { onSubmit: (text: string) => void; submitting: boolean }) {
+  const [text, setText] = useState("");
+  const submit = () => {
+    const trimmed = text.trim();
+    if (!trimmed || submitting) return;
+    onSubmit(trimmed);
+    setText("");
+  };
+  return (
+    <div className={s.gateCard}>
+      <div className={s.gateTitle}>Want something changed?</div>
+      <div className={s.gateHint}>Describe what you&apos;d like different — it gets applied and re-verified before this goes back to ready.</div>
+      <input
+        className={s.gateInput}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+        placeholder="e.g. Make the hero button larger, fix the contact form email"
+        disabled={submitting}
+      />
+      <div className={s.gateActions}>
+        <Button size="sm" onClick={submit} disabled={submitting || !text.trim()}>
+          {submitting ? "Applying…" : "Request changes"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function IdeWorkspace(props: IdeWorkspaceProps) {
   const {
     projectId, projectName, appUrl, isDone, stageMessage,
     tree, awaitingSpecApproval, buildPlan, awaitingDeployApproval, submitting,
-    changeRequest, onChangeRequest, onApproveSpec, onApproveDeploy, planning,
+    changeRequest, onChangeRequest, onApproveSpec, onApproveDeploy, onRequestChanges, planning,
   } = props;
 
   // No pipeline exists yet during planning, so there is nothing for the
@@ -802,7 +844,20 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                   </div>
                 ) : (
                   planning.messages.map((m, i) => (
-                    <PlanRow key={i} role={m.role}>{m.content}</PlanRow>
+                    <PlanRow key={i} role={m.role}>
+                      {m.attachments?.length ? (
+                        <span className={s.planAttachments}>
+                          {m.attachments.map((a, j) => (
+                            <span key={j} className={s.planAttachmentChip}>
+                              <IconAttach size={11} />
+                              <span className={s.planAttachmentChipName}>{a.name}</span>
+                            </span>
+                          ))}
+                        </span>
+                      ) : (
+                        m.content
+                      )}
+                    </PlanRow>
                   ))
                 )}
                 {(planning.streamingMessage || planning.loading) && (
@@ -854,13 +909,13 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                       }).join("\n\n");
                       msg = `${msg}\n\n${attachContext}`.trim();
                     }
-                    if (msg) planning.onSend(msg);
+                    if (msg) planning.onSend(msg, attachedItems.length > 0 ? attachedItems.map(a => ({ name: a.name })) : undefined);
                     setAttachedItems([]);
                   }}
                   isLoading={planning.loading}
                   disabled={planning.composerDisabled}
                   minRows={2}
-                  placeholder={planning.composerDisabled ? "Pick an option above to continue…" : "Describe your app or paste screenshot (Ctrl+V)…"}
+                  placeholder={planning.composerDisabled ? "Pick an option above to continue…" : "Describe your app…"}
                   attachments={attachedItems}
                   onAttachItem={(item) => setAttachedItems((prev) => [...prev, item])}
                   onRemoveAttachment={(name) => setAttachedItems((prev) => prev.filter((a) => a.name !== name))}
@@ -871,9 +926,9 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                         onClick={() => fileInputRef.current?.click()}
                         disabled={planning.loading || planning.composerDisabled}
                         title="Attach file (text, code, image)"
-                        style={{ background: "none", border: "none", color: "var(--text-secondary)", fontSize: "16px", cursor: "pointer" }}
+                        style={{ background: "none", border: "none", color: "var(--text-secondary)", fontSize: "18px", lineHeight: 1, cursor: "pointer" }}
                       >
-                        📎
+                        +
                       </button>
                       <button
                         type="button"
@@ -903,7 +958,7 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                           }).join("\n\n");
                           msg = `${msg}\n\n${attachContext}`.trim();
                         }
-                        if (msg) planning.onSend(msg);
+                        if (msg) planning.onSend(msg, attachedItems.length > 0 ? attachedItems.map(a => ({ name: a.name })) : undefined);
                         setAttachedItems([]);
                       }}
                       disabled={planning.loading || planning.composerDisabled || (!planning.input.trim() && attachedItems.length === 0)}
@@ -954,10 +1009,12 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                       <Button size="sm" onClick={gate.onGo} disabled={submitting}>{gate.cta}</Button>
                     </div>
                   </div>
+                ) : isDone ? (
+                  <DoneComposer onSubmit={onRequestChanges} submitting={submitting} />
                 ) : (
                   <div className={s.statusLine}>
                     <span className={`${s.liveDot} ${isLive ? s.liveDotOn : ""}`} />
-                    {isDone ? "Your app is ready." : stageMessage}
+                    {stageMessage}
                   </div>
                 )}
               </div>

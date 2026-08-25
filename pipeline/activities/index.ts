@@ -781,6 +781,57 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
   }
 }
 
+// ── Post-delivery change requests (Workstream 3) ───────────────────────────
+// Root cause: once a project reached "done" there was no way back in — no
+// composer, no request-changes route. This is the targeted-regeneration half
+// of that fix: apply a user's free-text change request to the ALREADY
+// GENERATED codebase (never re-run Saanvi/Arjun/full generation — the plan
+// explicitly calls for targeted regeneration, not a full rebuild), reusing
+// runFix — the exact same fix-dispatch mechanism Stage 5's QA loop already
+// uses, just fed a user request instead of a QA finding.
+export interface ChangeRequestResult {
+  filesChanged: string[];
+  errors: string[];
+}
+
+export async function applyChangeRequestActivity(projectId: string, changeText: string): Promise<ChangeRequestResult> {
+  const plan = getPlan(projectId);
+  // buildFixTask's surrounding scaffold (both agents) frames its findings
+  // list as "an adversarial QA review found the following issues" — wrong
+  // framing for a deliberate feature/change request, so the finding text
+  // itself corrects the record up front. Dispatched to BOTH Aanya and
+  // Shubham unconditionally (no triage step exists to know which domain a
+  // free-text request actually touches) — real cost for a request that only
+  // needed one of them, accepted for this MVP rather than adding a
+  // classifier call; Pranav (schema) is deliberately excluded, since a
+  // blind schema migration from unclassified free text is a materially
+  // higher-risk mistake than an unnecessary no-op generator call.
+  const finding = `[user-requested change] The user asked for the following change to the already-delivered app — implement it; this is not a bug report: ${changeText}`;
+  const [shubhamResult, aanyaResult] = await Promise.all([
+    runShubhamFix(plan, [finding]),
+    runAanyaFix(plan, [finding]),
+  ]);
+  return {
+    filesChanged: [...shubhamResult.filesWritten, ...aanyaResult.filesWritten],
+    errors: [...shubhamResult.errors, ...aanyaResult.errors],
+  };
+}
+
+// Nothing in the existing pipeline ever wrote projects.status="done" or
+// projects.appUrl to the DB (confirmed live, repo-wide search this session —
+// the one prior "done" HITS the frontend's own SSE-driven client state, per
+// apps/web/app/build/[id]/page.tsx's `type: "complete"` handler, never a DB
+// column) — a real, separate, pre-existing gap. This activity is the first
+// place that actually persists it, needed for THIS flow's completion to be
+// durably queryable rather than living only in the (now-terminated) original
+// workflow's in-memory state.
+export async function markProjectDone(projectId: string, appUrl: string): Promise<void> {
+  await db
+    .update(projects)
+    .set({ status: "done", appUrl, updatedAt: new Date() })
+    .where(eq(projects.id, projectId));
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 export function getPlan(projectId: string): BuildPlan {
   return planCache.get(projectId) ?? readCacheFile<BuildPlan>(projectId, "build-plan.json");

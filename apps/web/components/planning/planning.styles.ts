@@ -232,5 +232,24 @@ export const planning = {
     color: theme.color.mutedForeground,
   }),
 
+  /* Attachment chip — replaces the old raw-file-content dump in a user
+   * message bubble with a compact reference (name only). */
+  attachmentChip: css({
+    display: "inline-flex",
+    alignItems: "center",
+    gap: theme.space[1.5],
+    padding: `${theme.space[1]} ${theme.space[2.5]}`,
+    borderRadius: theme.radius.full,
+    backgroundColor: "color-mix(in srgb, currentColor 12%, transparent)",
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.medium,
+    maxWidth: "100%",
+  }),
+  attachmentChipName: css({
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  }),
+
   readout,
 };

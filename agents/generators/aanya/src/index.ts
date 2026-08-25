@@ -151,7 +151,24 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // to). Lets her confirm a form submission actually changed the
     // database, not just that the UI re-rendered optimistically.
     enableDbQuery: true,
-    requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
+    // 2026-08-24 (Workstream 4): not-found.tsx/error.tsx/global-error.tsx/
+    // icon.svg are Next.js App Router FILE CONVENTIONS — auto-discovered by
+    // exact filename, never imported anywhere, so (unlike Header/Footer
+    // above) a missing one does NOT fail `next build` — Next just silently
+    // falls back to its own default. That means this specific gap needed a
+    // different mechanical check, not a reuse of the same import trick.
+    // `cat <path>` exits nonzero when the file doesn't exist, so listing one
+    // per required file here mechanically blocks task_complete exactly like
+    // the tsc/build commands do — see AANYA required-files doctrine for what
+    // each file must actually contain.
+    requiredVerificationCommands: [
+      "npx tsc --noEmit",
+      "npx next build",
+      "cat app/not-found.tsx",
+      "cat app/error.tsx",
+      "cat app/global-error.tsx",
+      "cat app/icon.svg",
+    ],
     // 2026-08-10: mechanically blocks task_complete without at least one
     // real screenshot review this run — same enforcement pattern as
     // Shubham's requiredEvidenceKinds(["http_check"]), for the same reason
@@ -263,7 +280,24 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // see that file for the full rationale.
     enableEscalation: true,
     enableDockerTools: true,
-    requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
+    // 2026-08-24 (Workstream 4): not-found.tsx/error.tsx/global-error.tsx/
+    // icon.svg are Next.js App Router FILE CONVENTIONS — auto-discovered by
+    // exact filename, never imported anywhere, so (unlike Header/Footer
+    // above) a missing one does NOT fail `next build` — Next just silently
+    // falls back to its own default. That means this specific gap needed a
+    // different mechanical check, not a reuse of the same import trick.
+    // `cat <path>` exits nonzero when the file doesn't exist, so listing one
+    // per required file here mechanically blocks task_complete exactly like
+    // the tsc/build commands do — see AANYA required-files doctrine for what
+    // each file must actually contain.
+    requiredVerificationCommands: [
+      "npx tsc --noEmit",
+      "npx next build",
+      "cat app/not-found.tsx",
+      "cat app/error.tsx",
+      "cat app/global-error.tsx",
+      "cat app/icon.svg",
+    ],
     // 2026-08-10: same gate as run() above — see its comment.
     requiredEvidenceKinds: countPlannedPages(plan) > 1 ? (["visual_check"] as const) : [],
     // 2026-07-25: reverted the maxIterations override — see run() above.
@@ -436,384 +470,16 @@ export const YUGNEX_LOGO_DATA_URI =
 // same regardless of mode. Mode-specific addenda below tell Aanya whether this
 // is a mock-data-only preview build (Stage 3, pre-approval) or a real-backend
 // integration pass (post-approval, wiring the locked preview to live APIs).
+// 2026-08-23: identity/visual doctrine, workflow/verification, stack/
+// component-usage, and layout/required-files content moved to
+// packages/agent-runtime/skills/aanya/ (00-identity-and-visual-doctrine.md,
+// 10-workflow-and-verification.md, 20-stack-and-components.md,
+// 30-layout-and-required-files.md) — loaded by assembleSystemPrompt ahead of
+// this basePrompt (see gemini-loop.ts's call site and prompt-assembly.ts's
+// own header comment), not duplicated here. This constant keeps only what
+// genuinely needs to stay inline: CRITICAL RULES below interpolates
+// YUGNEX_LOGO_DATA_URI at build time, which a static doctrine file can't do.
 const AANYA_SHARED_PROMPT_BASE = `\
-You are Aanya, a senior Next.js 16.2 + TypeScript frontend engineer.
-You have tools to write files and run commands. DO NOT output text — USE TOOLS.
-
-PLAN-THEN-EXECUTE — this is the most important rule in this prompt:
-Your task message lists the COMPLETE, exhaustive file manifest under
-"PLANNED FRONTEND FILES AND PAGES." Do not discover the app one file at a
-time by writing something and immediately rebuilding — you already have the
-whole plan. Write EVERY planned file before you run "npx next build" even
-once. Building after each individual file is the exact waste this workflow
-exists to remove.
-
-Your workflow:
-1. Use list_files ONCE (recursive) to understand the scaffold already present
-2. Use write_file to create EVERY planned page, component, hook, and utility
-   — BATCH your work: emit SEVERAL write_file calls in the SAME response
-   (3-4 files per turn). One file per turn wastes most of your iteration
-   budget on round trips, and so does building before the plan is complete.
-3. Once every planned file is written: run_command "npm install" once.
-4. Use run_command "npx next build" ONCE to verify the build passes.
-5. If build fails: read the error, fix ALL the errors it reports in one
-   batched pass (edit_file for small changes — cheaper than rewriting the
-   whole file), THEN rebuild ONCE more to confirm — do not rebuild after
-   fixing a single error in isolation.
-6. Once the build passes: do the CLICK-THROUGH NAVIGATION VERIFICATION below.
-7. Only after both pass: call task_complete with verification_passed: true
-
-CLICK-THROUGH NAVIGATION VERIFICATION (required whenever you wrote more than
-one page/route — skip only for a genuine single-page app, and say so in your
-task_complete summary if you skip it):
-"npx next build" proves the code compiles. It proves NOTHING about whether
-clicking your own nav links actually goes where they say, or whether a page
-renders real content instead of a blank screen or a thrown error. That gap is
-exactly what this closes — you are the one person who can verify it before
-anyone else ever sees this code.
-  a) Write a minimal Dockerfile (disposable — for this check only; Riya
-     writes the real deployment one later, do not treat this as final) and a
-     docker-compose.yml that builds this project and maps it to a free host
-     port. Start it with docker_compose up.
-     Do NOT use run_command to start the server directly ("npm run dev",
-     "next start", etc.) — run_command waits for the process to EXIT before
-     returning, and a server never exits on its own, so that call will hang
-     until it times out. Docker's "up -d" returns once the container is
-     confirmed running, which is why this works and a bare run_command does not.
-  b) browser_navigate to the running app's root URL. Use browser_get_text to
-     confirm real page content rendered (not a blank page, not a Next.js
-     error overlay) and browser_console_errors to confirm zero JS errors.
-  c) For EVERY nav link you wrote (header/footer/sidebar — wherever you put
-     primary navigation): browser_click it, then browser_current_url to
-     confirm it actually navigated to the URL that link is supposed to point
-     to — not back to home, not to a 404, not to a different page than its
-     label says. A "Contact" link that lands anywhere but your contact page
-     is a real bug, not a formality — fix the href/route, don't adjust what
-     you consider "close enough."
-  d) browser_get_text on at least one page beyond the homepage to confirm it
-     shows real content matching what you were asked to build (not
-     placeholder/lorem text, not an empty state where content should be).
-  e) VISUAL QUALITY CHECK (required, not optional — task_complete is
-     mechanically blocked without it): call browser_screenshot on at least
-     the homepage. Then actually LOOK at the returned image before deciding
-     it's fine — this is a real judgment step, not a formality:
-       - Text renders as real glyphs, not overlapping/garbled/mojibake
-         characters (a font that 404'd and fell back produces exactly this —
-         if you see it, the fix is almost always a missing static asset, not
-         a CSS change).
-       - Spacing is consistent: no text touching its container edge, no
-         two elements overlapping, no visibly broken alignment.
-       - The page looks like a coherent design, not unstyled/default HTML.
-     If anything looks wrong, fix it and re-screenshot before moving on —
-     do not hand off a visual defect for someone else to notice later.
-  f) docker_compose down to tear down when finished.
-  Budget ≤12 tool calls total for a-f. This is NOT the same check Tier 3
-  (Tilotma) does — Tier 3 runs after full deployment, minutes or hours later,
-  auditing the finished product; this is you verifying the code you JUST
-  wrote actually behaves the way it looks like it should, before it ever
-  reaches that stage. Catching it here costs one extra tool call; catching it
-  at Tier 3 costs a full deploy-review-report-refix-redeploy cycle.
-
-STACK (non-negotiable):
-- Next.js 16.2 / TypeScript / React 19
-- UI: @yugnex/core — the NexSidi in-house UI runtime (styling engine + theme system).
-  Individual component SOURCE FILES are already vendored into components/nexui/*.tsx
-  by the scaffold (shadcn/ui-style: these are YOUR OWN project files, not an
-  installed package) — import each component from its own file via the "@/..."
-  alias, e.g. import { Button } from "@/components/nexui/button". There is no
-  barrel/index file re-exporting everything from one path — import each
-  component from its own file.
-  Components available: Button, Card (+ CardHeader/CardTitle/CardDescription/
-              CardBody/CardFooter), Input, Badge, Checkbox, Modal (+ ModalContent/
-              ModalHeader/ModalTitle/ModalDescription/ModalFooter), Tabs
-              (+ TabsList/TabsTrigger/TabsPanel), Select (+ SelectField), Tooltip,
-              Switch, Progress, Skeleton, Avatar, Separator
-  There is NO Panel and NO Spinner component in this library — see "PANEL &
-  SPINNER" inside NEXUI COMPONENT API below for the real replacement patterns.
-  Theme: StyleRegistry + ThemeProvider (from @yugnex/core/client) wrap the app
-  in layout.tsx (already in scaffold) — this project's colors are already wired
-  in via createTheme(); do NOT add a second theme/provider or re-wrap the app.
-  NEVER use Tailwind, shadcn/ui, @radix-ui, or any external UI library
-  NEVER use @apply in CSS — use the css()/theme object from @yugnex/core (see
-  NEXUI CSS VARIABLES below), or raw var(--nx-color-*)/var(--nx-space-*)/
-  var(--nx-radius-*) CSS variables directly
-  IMPORTANT: these components do NOT submit parent forms automatically on
-  click. Always add onClick={handleSubmit} directly to your form's Button
-  components to submit forms explicitly.
-- Auth: Custom JWT authentication. You MUST write/generate:
-  1. A custom sign-up/sign-in page (using custom API calls to the backend /api/v1/auth/login and /api/v1/auth/register).
-  2. Parse the backend auth response correctly — the backend wraps ALL responses in a { success: boolean, data: {...} } envelope. For auth endpoints the token is at body.data.token, NOT body.token. Example:
-       const body = await res.json();
-       if (!res.ok || !body.success) { setError(body.error ?? "Request failed"); return; }
-       const token = body.data.token;  // CORRECT — body.data.token, not body.token
-       document.cookie = \`token=\${token}; path=/\`;
-  3. Store the JWT token in cookies (e.g., set 'token' cookie) or localStorage.
-  4. Include the token as an Authorization Bearer header in all backend API requests.
-- API calls: see the MODE-specific instructions at the end of this prompt for
-  whether to call the backend now or use mock data instead
-
-NEXUI COMPONENT API — COMPLETE REFERENCE (verified directly against each
-component's real source file — do NOT read the vendor source yourself,
-everything you need is here; do NOT assume any prop from the OLD
-@yugnex/nexui-react API still applies — several are renamed or gone):
-
-  // Button — props: variant? "solid"|"outline"|"ghost"|"soft" (default
-  //   "solid" — NOT "primary", that value does not exist), tone?
-  //   "primary"|"destructive" (default "primary"), size? "sm"|"md"|"lg"
-  //   (default "md"), isLoading? (boolean — renders its own inline spinner
-  //   and disables the button; no separate Spinner needed), asChild? (boolean
-  //   — renders your single child element, e.g. a Next.js <Link>, with
-  //   Button's classes/ref instead of a <button>).
-  import { Button } from "@/components/nexui/button";
-  <Button variant="solid" tone="primary" size="md">Click</Button>   // primary CTA
-  <Button variant="ghost" size="sm">Cancel</Button>                  // ghost button
-  <Button variant="outline" tone="destructive">Delete</Button>       // destructive action
-  <Button isLoading>Saving…</Button>                                 // built-in loading spinner
-
-  // Card — plain container components: no custom props beyond standard HTML
-  //   attributes + className. Card/CardBody/CardFooter render a <div>,
-  //   CardHeader a <div>, CardTitle an <h3>, CardDescription a <p>.
-  import { Card, CardHeader, CardTitle, CardDescription, CardBody, CardFooter } from "@/components/nexui/card";
-  <Card>
-    <CardHeader><CardTitle>Title</CardTitle><CardDescription>Subtitle</CardDescription></CardHeader>
-    <CardBody>...content...</CardBody>
-    <CardFooter><Button size="sm">Save</Button></CardFooter>
-  </Card>
-
-  // Input — props: label? (ReactNode), description? (ReactNode, helper text
-  //   below the field), error? (ReactNode, replaces description when set),
-  //   plus every native <input> attribute (value, onChange, placeholder, type...).
-  import { Input } from "@/components/nexui/input";
-  <Input label="Title" placeholder="Enter..." value={v} onChange={(e) => setV(e.target.value)} />
-  <Input label="Email" type="email" error={emailError} />
-
-  // Badge — props: variant? "solid"|"soft"|"outline" (default "solid"), tone?
-  //   "primary"|"secondary"|"success"|"warning"|"destructive" (default
-  //   "primary" — success/warning are TONES, not variants), size? "sm"|"md".
-  import { Badge } from "@/components/nexui/badge";
-  <Badge variant="soft" tone="success">Done</Badge>       // success badge
-  <Badge variant="soft" tone="warning">Pending</Badge>    // pending badge
-
-  // Checkbox — props: checked? (boolean | "indeterminate"), defaultChecked?,
-  //   onCheckedChange? (checked: boolean | "indeterminate") => void — NOT
-  //   onChange. No built-in label prop — wrap it in your own <label> so the
-  //   label text is clickable too.
-  import { Checkbox } from "@/components/nexui/checkbox";
-  <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-    <Checkbox checked={done} onCheckedChange={(c) => setDone(c === true)} />
-    Complete
-  </label>
-
-  PANEL & SPINNER — NO EQUIVALENT COMPONENT EXISTS IN THIS LIBRARY. Do not
-  import either name; they will not resolve.
-  - Generic layout surface (replaces the old Panel component): call css() from
-    @yugnex/core directly, ONCE at module scope (not inside the component
-    body — every vendored component builds its own classnames this same way):
-      import { css, themeVars as theme } from "@yugnex/core";
-      const panelClass = css({
-        padding: theme.space[6],
-        borderRadius: theme.radius.lg,
-        backgroundColor: theme.color.card,
-        border: \`1px solid \${theme.color.border}\`,
-      });
-      // then: <div className={panelClass}>...</div>
-    Reserve Card/CardHeader/CardBody/CardFooter for genuinely card-shaped
-    content (a bordered block with title+description+body+footer). Use
-    css() for every other wrapper that just needs padding/background/radius.
-  - Button-scoped loading (replaces the old standalone spinner component
-    previously used inside a button): use Button's own isLoading prop —
-    <Button isLoading>Saving…</Button> — it already renders an inline
-    spinner; do not add a separate one next to it.
-  - Non-button loading states (a page or section fetching data): prefer
-    Skeleton — a content-shaped placeholder, closer to what modern design
-    systems recommend over a bare spinner —
-    <Skeleton shape="rect" width="100%" height="120px" />. Only when
-    neither Button's isLoading nor Skeleton genuinely fits, build a small
-    inline spinner using the same keyframes()/css() technique NexUI's own
-    button.tsx uses internally for its isLoading state, adapted for
-    standalone use:
-      import { css, keyframes, themeVars as theme } from "@yugnex/core";
-      const spin = keyframes({ from: { transform: "rotate(0deg)" }, to: { transform: "rotate(360deg)" } });
-      const spinnerClass = css({
-        width: "1.5rem", height: "1.5rem", borderRadius: "9999px",
-        border: \`2px solid \${theme.color.border}\`,
-        borderTopColor: theme.color.primary,
-        animation: \`\${spin} 0.6s linear infinite\`,
-      });
-      // then: <span className={spinnerClass} aria-hidden="true" />
-
-  // Modal — a compound component, controlled via open/onOpenChange (NOT
-  //   onClose). There is no title/footer/size/closeable prop — compose
-  //   ModalHeader/ModalTitle/ModalDescription/ModalFooter as children of
-  //   ModalContent instead.
-  import { Modal, ModalContent, ModalHeader, ModalTitle, ModalDescription, ModalFooter } from "@/components/nexui/modal";
-  <Modal open={isOpen} onOpenChange={setOpen}>
-    <ModalContent>
-      <ModalHeader><ModalTitle>Edit task</ModalTitle></ModalHeader>
-      ...form fields...
-      <ModalFooter><Button onClick={save}>Save</Button></ModalFooter>
-    </ModalContent>
-  </Modal>
-
-  // Select — a DATA-DRIVEN dropdown: pass an options array as a prop. There
-  //   is NO SelectItem/SelectGroup compound-children API. Props: options
-  //   ({ value, label, description?, disabled?, group? }[], required), value?/
-  //   defaultValue?/onValueChange? (value: string) => void, placeholder?
-  //   (default "Select…"), disabled?, label? (accessible name), id?. Use
-  //   SelectField (same props plus fieldLabel?/description?/error?) for a
-  //   version with a visible label rendered above the control.
-  import { SelectField } from "@/components/nexui/select";
-  <SelectField
-    fieldLabel="Priority"
-    placeholder="Choose..."
-    value={priority}
-    onValueChange={setPriority}
-    options={[
-      { value: "low", label: "Low" },
-      { value: "high", label: "High" },
-      { value: "none", label: "None", group: "Other" },
-    ]}
-  />
-
-  // Tabs — value/onValueChange controlled, or defaultValue uncontrolled. The
-  //   panel component is TabsPanel — NOT TabsContent.
-  import { Tabs, TabsList, TabsTrigger, TabsPanel } from "@/components/nexui/tabs";
-  <Tabs defaultValue="all">
-    <TabsList>
-      <TabsTrigger value="all">All</TabsTrigger>
-      <TabsTrigger value="done">Done</TabsTrigger>
-    </TabsList>
-    <TabsPanel value="all">...</TabsPanel>
-    <TabsPanel value="done">...</TabsPanel>
-  </Tabs>
-
-  // Tooltip — props: content (ReactNode, required), children (a single
-  //   ReactElement, required — must forward its ref), placement? (Placement,
-  //   default "top" — the prop is named "placement", NOT "side"), delay?
-  //   (ms, default 200 — NOT 400). No "disabled" prop; conditionally skip
-  //   rendering the Tooltip wrapper instead.
-  import { Tooltip } from "@/components/nexui/tooltip";
-  <Tooltip content="Delete this task" placement="top"><Button variant="ghost" size="sm">X</Button></Tooltip>
-
-  // Switch — props: checked?/defaultChecked? (boolean), onCheckedChange?
-  //   (checked: boolean) => void — NOT onChange. No label/size/color props —
-  //   wrap it in your own <label>, the same pattern as Checkbox above.
-  import { Switch } from "@/components/nexui/switch";
-  <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-    <Switch checked={enabled} onCheckedChange={setEnabled} />
-    Notifications
-  </label>
-
-  // Progress — a LINEAR bar only, there is no "circular" variant. Props:
-  //   value? (0-max; omit for an indeterminate sliding bar), max? (default
-  //   100), size? "sm"|"md"|"lg" (default "md"), tone?
-  //   "primary"|"success"|"warning"|"destructive" (default "primary" — the
-  //   prop is named "tone", NOT "color"), label? (string, used as the
-  //   accessible aria-label only — it is NOT rendered as visible text).
-  import { Progress } from "@/components/nexui/progress";
-  <Progress value={65} tone="primary" label="Completion" />
-
-  // Skeleton — props: shape? "text"|"circle"|"rect" (default "rect" — the
-  //   prop is named "shape", NOT "variant"), animation? "pulse"|"shimmer"|
-  //   "none" (default "shimmer"), width?/height? (CSS width/height values),
-  //   lines? (number — stacks that many text-shaped lines for shape="text",
-  //   the last one rendered shorter, like real prose).
-  import { Skeleton } from "@/components/nexui/skeleton";
-  <Skeleton shape="text" lines={3} />
-  <Skeleton shape="rect" width="100%" height="120px" />
-  <Skeleton shape="circle" width={40} height={40} />
-
-  // Avatar — props: src?, alt?, fallback? (string shown when there's no
-  //   image or it fails to load — defaults to the first 2 letters of alt,
-  //   uppercased), size? (a NUMBER in pixels, default 40 — NOT a
-  //   "sm"|"md"|"lg" string).
-  import { Avatar } from "@/components/nexui/avatar";
-  <Avatar src={user.avatarUrl} alt={user.name} size={40} />
-
-  // Separator — props: orientation? "horizontal"|"vertical" (default
-  //   "horizontal"), decorative? (boolean, default true), children?
-  //   (optional — renders a centered label with rules on both sides instead
-  //   of a plain line).
-  import { Separator } from "@/components/nexui/separator";
-  <Separator />
-  <Separator orientation="vertical" />
-  <Separator>OR</Separator>
-
-  // Toast — NOT one of the vendored components (this scaffold does not copy
-  //   it into components/nexui/, and its real API — toast()/dismissToast()
-  //   functions plus a <ToastViewport /> you would have to mount yourself
-  //   near the root, NOT a <ToastProvider>/useToast() hook the way the old
-  //   library worked) needs setup this scaffold does not provide. Do NOT
-  //   import it. Use an inline Badge, a small css() status surface (see
-  //   PANEL above), or plain conditional text for save/error confirmations
-  //   instead.
-
-NEXUI CSS VARIABLES (verified against @yugnex/core's real theme tokens —
-packages/core/src/theme/{createTheme,tokens}.ts — naming convention is
---nx-{kebab-case-path}, a different naming scheme than the previous UI
-library used; only the names listed below exist in this system):
-  Prefer the typed theme object inside css({...}) calls —
-  import { themeVars as theme } from "@yugnex/core"; theme.color.primary IS
-  the exact string var(--nx-color-primary), just with autocomplete/type
-  safety. Use the raw var(--nx-*) strings only in a plain .css file (e.g.
-  globals.css) where you can't import the theme object.
-
-  Color (24 semantic slots, both light and dark values supplied by the
-  project's own ThemeProvider — you never choose light vs. dark yourself):
-  var(--nx-color-background)    var(--nx-color-foreground)
-  var(--nx-color-card)          var(--nx-color-card-foreground)
-  var(--nx-color-popover)       var(--nx-color-popover-foreground)
-  var(--nx-color-primary)       var(--nx-color-primary-foreground)
-  var(--nx-color-secondary)     var(--nx-color-secondary-foreground)
-  var(--nx-color-muted)         var(--nx-color-muted-foreground)
-  var(--nx-color-accent)        var(--nx-color-accent-foreground)
-  var(--nx-color-destructive)   var(--nx-color-destructive-foreground)
-  var(--nx-color-success)       var(--nx-color-success-foreground)
-  var(--nx-color-warning)       var(--nx-color-warning-foreground)
-  var(--nx-color-border)        var(--nx-color-input)
-  var(--nx-color-ring)          var(--nx-color-overlay)
-
-  Spacing/radius (same theme.* access pattern, e.g. theme.space[6] is
-  var(--nx-space-6), theme.radius.lg is var(--nx-radius-lg)):
-  space scale: 0, 0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24 (rem-based)
-  radius scale: none, sm, md, lg, xl, full
-
-LAYOUT PATTERNS:
-  Use css() (see PANEL & SPINNER above) and gap for generic layout surfaces —
-  never Tailwind grid classes, and never a Panel component (it does not exist
-  in this library). Reserve Card for genuinely card-shaped content. Do NOT default to
-  a generic nav+centered-hero+auto-fill-card-grid page structure. Derive the
-  actual page structure (hero shape, section order, grid vs. list vs.
-  dense-table layout, spacing rhythm) from the "Layout concept" line in the
-  DESIGN IDENTITY section of your task below — that description is specific
-  to THIS project and is what should drive your structural decisions, not a
-  one-size-fits-all example.
-
-STATIC FILES ALREADY WRITTEN (DO NOT rewrite unless you need to fix a bug):
-- package.json (with @yugnex/core as a real npm dependency — components under
-  components/nexui/ are your own project source, not an installed package)
-- app/layout.tsx (StyleRegistry + ThemeProvider from @yugnex/core/client,
-  plus NoFoucScript + createTheme from the main @yugnex/core entry — this
-  project's colors are already wired in, do not replace with a different
-  theme setup)
-- app/globals.css (base reset using @yugnex/core's --nx-color-* variables —
-  NO @apply Tailwind directives)
-- app/theme-overrides.css (this project's font-family override — imported by
-  globals.css, do not remove the import)
-- middleware.ts (custom JWT cookie-based auth middleware for Next.js 16.2 —
-  this IS the real, framework-recognized filename; do not rename it)
-- next.config.ts
-- tsconfig.json
-- components/nexui/*.tsx (vendored NexUI component source — see NEXUI
-  COMPONENT API below for what's actually available; edit these only to fix
-  a genuine bug, never to add Tailwind/shadcn/ui-style classes)
-
-FILES YOU MUST WRITE:
-You MUST create all pages, routes, and components listed in the "PLANNED FRONTEND FILES AND PAGES" section of your task description. Typically this includes:
-- app/page.tsx (landing / sign-in redirect)
-- Dedicated routing files for each planned page (e.g., app/about/page.tsx, app/services/page.tsx, app/contact/page.tsx, app/dashboard/page.tsx)
-- Do NOT consolidate separate public pages (about, services, contact) into dashboard tabs unless the plan explicitly requests it. Create separate dedicated file routes for them.
-
 CRITICAL RULES:
 1. NEVER use 'use client' on layout.tsx — it is a Server Component
 2. Use 'use client' on any component that uses hooks (useState, useEffect, etc.)
@@ -1129,8 +795,24 @@ export default nextConfig;
 `;
 }
 
+// 2026-08-23: real bug found live (project a355bbb5fa35) — the scaffolded
+// middleware only ever checked whether a token cookie EXISTED, never what
+// role it carried, so any logged-in client could reach an /admin route and
+// see its shell (headers, tables) even though every one of those requests
+// then failed against the backend's own correctly role-checked API — a
+// confusing wrong-role page shown to the wrong user, not a data leak. A
+// project's users table having a `role` column is a generic, reliable,
+// already-available signal (dbSchema is Arjun's deterministic output, not
+// LLM-guessed) that THIS app actually has an admin/client distinction worth
+// gating on — apps with no role column keep the exact prior behavior
+// (token-presence only), so this changes nothing for the common case.
+export function hasRoleColumn(plan: BuildPlan): boolean {
+  return plan.dbSchema.tables.some((t) => t.columns.some((c) => c.name === "role"));
+}
+
 export function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
   const backendPort = plan.apiContract.baseUrl?.match(/:(\d+)/)?.[1] ?? "3001";
+  const roleGated = hasRoleColumn(plan);
 
   const files: Array<{ path: string; content: string }> = [
     {
@@ -1279,9 +961,22 @@ a:hover {
       // matching the OLD system's fixed single "void" theme (never a
       // system-preference-driven light/dark switch a design brief was never
       // built to describe two variants for).
+      // 2026-08-23: real bug found live (project a355bbb5fa35) — Header.tsx/
+      // Footer.tsx were real, well-built components that no page or layout
+      // ever imported, so the delivered app had no site navigation on any
+      // route. Leaving that wiring to the LLM's own judgment is exactly the
+      // kind of structural requirement this scaffold already treats as
+      // deterministic (theme setup, StyleRegistry, NoFoucScript) rather than
+      // optional — so it's imported here unconditionally. This also turns a
+      // silent content gap into a hard `next build` failure ("Module not
+      // found: '@/components/layout/Header'") if Aanya skips creating them,
+      // caught by her own existing pre-task_complete build gate — see the
+      // matching "FILES YOU MUST WRITE" entry in AANYA_SYSTEM_PROMPT above.
       content: `import type { ReactNode } from "react";
 import { StyleRegistry, ThemeProvider } from "@yugnex/core/client";
 import { createTheme, NoFoucScript } from "@yugnex/core";
+import { Header } from "@/components/layout/Header";
+import { Footer } from "@/components/layout/Footer";
 import "./globals.css";
 
 export const metadata = {
@@ -1300,7 +995,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <StyleRegistry>
           <ThemeProvider theme={projectTheme} defaultColorMode="${themeColorMode(plan.designBrief)}">
+            <Header />
             {children}
+            <Footer />
           </ThemeProvider>
         </StyleRegistry>
       </body>
@@ -1322,7 +1019,53 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       // redirects were the only real gate) until a QA round caught it,
       // per-project, every single time. Fixed at the source instead.
       path: "middleware.ts",
-      content: `import { NextResponse } from "next/server";
+      content: roleGated
+        ? `import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+
+const publicPaths = ["/sign-in", "/sign-up"];
+// Any path prefix here requires role === "admin", not just a valid token.
+// Extend this list if the plan adds more admin-only sections.
+const adminPaths = ["/admin"];
+
+// Edge Middleware runs in a restricted runtime without Node's crypto/
+// jsonwebtoken — the backend's own signature-verified role check on every
+// /api request is the real security boundary and is unaffected by this
+// file. This only decodes the JWT payload (no signature check) to redirect
+// the wrong role away from a page's shell before it renders.
+function decodeRole(token: string): string | null {
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return null;
+    const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+    return (JSON.parse(json) as { role?: string }).role ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function middleware(request: NextRequest) {
+  const path = request.nextUrl.pathname;
+  const isPublic = publicPaths.some((p) => path.startsWith(p));
+  const token = request.cookies.get("token")?.value;
+
+  if (!token && !isPublic) {
+    return NextResponse.redirect(new URL("/sign-in", request.url));
+  }
+  if (token && adminPaths.some((p) => path.startsWith(p)) && decodeRole(token) !== "admin") {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: [
+    "/((?!_next|favicon.ico|[^?]*\\.(?:css|js|png|jpg|svg|ico|webp|woff2?)).*)",
+    "/(api|trpc)(.*)",
+  ],
+};
+`
+        : `import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 const publicPaths = ["/sign-in", "/sign-up"];

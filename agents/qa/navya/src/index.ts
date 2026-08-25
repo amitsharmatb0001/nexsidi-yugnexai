@@ -73,7 +73,15 @@ export async function runExploring(
 ): Promise<QAResult> {
   const result = await deps.runAgent({
     agentName: "navya",
-    systemPrompt: QA_SYSTEM_PROMPT,
+    // 2026-08-23: QA_SYSTEM_PROMPT (below) is written for run()'s raw
+    // one-shot JSON-output codepath and is factually wrong for this
+    // tool-calling loop — it instructs "Output ONLY valid JSON," but
+    // qa-loop.ts's real tool is submit_findings (see qa-loop.ts's own
+    // tool definitions), not JSON-in-text. assembleSystemPrompt (inside
+    // runQAAgent) already injects packages/agent-runtime/skills/navya.md,
+    // which correctly describes submit_findings — passing "" here avoids
+    // handing the loop two contradictory sets of output instructions.
+    systemPrompt: "",
     reviewFocus: "logic errors (null references, invalid state transitions, algorithm flaws, race conditions, and API/type contract mismatches)",
     dirs,
     systemContext,

@@ -1,6 +1,14 @@
 import { test, expect } from "bun:test";
-import { buildFixTask, renderTaskManifest, SHUBHAM_AGENT_SYSTEM_PROMPT, countTestableResources } from "./index.ts";
+import { buildFixTask, renderTaskManifest, countTestableResources } from "./index.ts";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
+import { assembleSystemPrompt } from "../../../../packages/agent-runtime/src/prompt-assembly.ts";
+
+// 2026-08-23: SHUBHAM_AGENT_SYSTEM_PROMPT moved to
+// packages/agent-runtime/skills/shubham/*.md — loaded by assembleSystemPrompt
+// (the real, wired doctrine mechanism), not exported from index.ts anymore.
+// Tests that used to check the constant directly now check the effective
+// prompt instead — what the LLM actually receives.
+const SHUBHAM_AGENT_SYSTEM_PROMPT = assembleSystemPrompt({ agentName: "shubham", basePrompt: "" });
 
 // A6 (full-system audit, Phase C): Stage 5 QA findings previously went
 // nowhere — the pipeline stopped at Stage 5 with real findings and no

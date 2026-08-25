@@ -1,6 +1,7 @@
 "use client";
 
 import { plan as s, methodColor } from "./PlanPreview.styles";
+import DesignMockupPreview from "./DesignMockupPreview";
 
 interface Task {
   description: string;
@@ -117,6 +118,7 @@ export default function PlanPreview({ plan }: { plan: BuildPlan }) {
             </div>
           )}
           {design.layoutConcept && <p className={s.prose} style={{ marginTop: "16px" }}>{design.layoutConcept}</p>}
+          <DesignMockupPreview design={design} />
         </Section>
       ) : null}
 

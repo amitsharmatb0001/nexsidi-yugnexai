@@ -1,7 +1,15 @@
 import { test, expect } from "bun:test";
-import { run, validateDesignBrief, formatDesignBriefForPrompt, buildVanyaTask, FALLBACK_BRIEF, VANYA_SYSTEM_PROMPT, type DesignBrief, type VanyaDeps } from "./index.ts";
+import { run, validateDesignBrief, formatDesignBriefForPrompt, buildVanyaTask, FALLBACK_BRIEF, type DesignBrief, type VanyaDeps } from "./index.ts";
 import type { ProjectSpec } from "../../saanvi/src/index.ts";
 import type { AgentRunResult } from "@nexsidi/agent-runtime";
+import { assembleSystemPrompt } from "../../../packages/agent-runtime/src/prompt-assembly.ts";
+
+// 2026-08-23: VANYA_SYSTEM_PROMPT moved to packages/agent-runtime/skills/
+// vanya/*.md (it had drifted into a near-duplicate of the doctrine file
+// already loaded by assembleSystemPrompt — see index.ts's header comment).
+// Tests that used to check the constant directly now check the effective
+// prompt instead — what the LLM actually receives.
+const VANYA_SYSTEM_PROMPT = assembleSystemPrompt({ agentName: "vanya", basePrompt: "" });
 
 // Vanya did not exist before this file (P3.W3.1, full agentic upgrade,
 // 2026-07-24) — confirmed via repo-wide grep during this session's

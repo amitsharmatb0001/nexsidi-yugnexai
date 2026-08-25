@@ -117,6 +117,27 @@ use the `ask_user` tool to ask structured questions — one at a time, with clic
   Immediately call `ask_user` again (if more questions remain) OR call `propose_plan` (if done).
   Do NOT repeat the "Here's what I understood" summary. Do NOT write anything as text. Just call the tool.
 
+### followUp — use when an option is useless without one more piece of data
+Real bug found live: the design-direction question offered "match existing
+site" as a tile with no way to actually provide the URL. The user picked it,
+was never asked for a link, and the build proceeded on a provisional
+fallback design instead of the site they meant to match. `ask_user`'s option
+schema has a `followUp` field for exactly this — set it whenever picking an
+option is meaningless without more data:
+- **"match existing site"** → `followUp: { type: "url", label: "Paste the URL of the site to match", required: true }`
+- **"yes, have logo+colors"** → `followUp: { type: "text", label: "Paste a link to your logo/brand guide, or describe your exact colors", required: true }`
+Do NOT set `followUp` on options that are already complete on their own
+(e.g. "create professional design", "no login needed").
+
+**The widget enforces `required: true` — it will not submit that option until
+a value is entered.** The answer that comes back to you includes both the
+option and the follow-up value together (e.g. `Match existing site — URL: https://acme.com`).
+Treat the question as UNANSWERED — and ask a plain follow-up `ask_user`
+question for the missing value — if you ever see an answer that names an
+option you gave a `followUp` to but contains no follow-up value. Never
+silently proceed on a fallback/provisional design when the user asked to
+match a real site and no URL is present anywhere in the conversation.
+
 ### After gathering info
 Call `propose_plan` with the full structured plan. The user will see a plan panel with Accept / Revise / Reject.
 The response format section below applies only when you choose to write a text summary instead of asking a question.
@@ -207,7 +228,15 @@ At this point in the example, do NOT write more text. Instead CALL the `ask_user
 - text: "Who is sign-in for?"
 - options: Clients / Staff / Admin / No login needed
 
-After receiving the answer, call `ask_user` again for the next question.
+After receiving the answer, call `ask_user` again for the next question — for
+example, the design-direction question uses `followUp` on two of its options:
+- id: "q_brand_assets"
+- text: "Do you have brand assets?"
+- options:
+  - "Yes, have logo+colors" — `followUp: { type: "text", label: "Paste a link to your logo/brand guide, or describe your exact colors", required: true }`
+  - "Create professional design" (recommended) — no followUp, this option is already complete
+  - "Match existing site" — `followUp: { type: "url", label: "Paste the URL of the site to match", required: true }`
+
 When all questions are answered, call `propose_plan`.
 
 ---

@@ -2,7 +2,7 @@
 // Connects to the Temporal server configured in TEMPORAL_ADDRESS.
 
 import { Client, Connection } from "@temporalio/client";
-import { projectBuildWorkflow } from "../../../../pipeline/workflows/project-build.ts";
+import { projectBuildWorkflow, applyChangeRequestWorkflow } from "../../../../pipeline/workflows/project-build.ts";
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
 const TASK_QUEUE       = process.env.TEMPORAL_TASK_QUEUE ?? "nexsidi-pipeline";
@@ -25,6 +25,27 @@ export async function startProjectBuild(projectId: string, userRequest: string):
     taskQueue: TASK_QUEUE,
     workflowId,
     args: [projectId, userRequest],
+  });
+
+  return handle.workflowId;
+}
+
+// Workstream 3: start a fresh workflow execution to apply a post-delivery
+// change request. Reuses the ORIGINAL build's workflowId — the original
+// execution has already completed by the time a project is "done", and
+// Temporal's default workflowIdReusePolicy (ALLOW_DUPLICATE) permits
+// starting a new run under the same ID once the previous one is closed. This
+// keeps every existing status-poll/query call site (getPipelineStatus,
+// getWorkflowStatus, the SSE route) working unmodified for a change-request
+// run — they all already key off `project-build-${projectId}`.
+export async function startChangeRequest(projectId: string, changeText: string): Promise<string> {
+  const client = await getClient();
+  const workflowId = `project-build-${projectId}`;
+
+  const handle = await client.workflow.start(applyChangeRequestWorkflow, {
+    taskQueue: TASK_QUEUE,
+    workflowId,
+    args: [projectId, changeText],
   });
 
   return handle.workflowId;
@@ -63,17 +84,21 @@ export async function getWorkflowStatus(projectId: string): Promise<string | nul
   }
 }
 
-// Send signal to active workflow
+// Send signal to active workflow. `extra` forwards an optional second
+// payload — used by approveSpecSignal to carry "Approve with changes" text
+// (see project-build.ts's approveSpecSignal header comment); every other
+// signal ignores a trailing undefined arg.
 export async function sendWorkflowSignal(
   projectId: string,
   signalName: string,
   approved: boolean,
+  extra?: string,
 ): Promise<void> {
   const client = await getClient();
   const workflowId = `project-build-${projectId}`;
   try {
     const handle = client.workflow.getHandle(workflowId);
-    await handle.signal(signalName, approved);
+    await handle.signal(signalName, approved, extra);
   } catch (err) {
     console.error(`Failed to send signal ${signalName} to ${projectId}:`, err);
     throw err;
