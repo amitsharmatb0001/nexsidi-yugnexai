@@ -175,6 +175,10 @@ pipelineRouter.get("/:projectId", async (c) => {
     status:     project.status,
     appUrl:     project.appUrl    ?? null,
     githubRepo: project.githubRepo ?? null,
+    // 2026-08-26: real gap found live — a project at "needs_review"/"failed"
+    // had no queryable reason anywhere; see projects.failureReason's own
+    // schema comment for the full writeup.
+    failureReason: project.failureReason ?? null,
   });
 });
 

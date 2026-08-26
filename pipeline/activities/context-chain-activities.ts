@@ -121,7 +121,7 @@ export async function rollbackAndEscalate(projectId: string, reason: string): Pr
     const { eq } = await import("drizzle-orm");
     await db
       .update(projects)
-      .set({ status: "needs_review", updatedAt: new Date() })
+      .set({ status: "needs_review", failureReason: reason, updatedAt: new Date() })
       .where(eq(projects.id, projectId));
   } catch (e) {
     console.error(`[context-chain] failed to write needs_review status during rollback: ${String(e)}`);

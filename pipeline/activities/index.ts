@@ -600,12 +600,18 @@ export async function logStuckState(
   }).onConflictDoNothing();
 }
 
-export type ProjectStatusWriter = (projectId: string, status: "failed" | "needs_review") => Promise<void>;
+// 2026-08-26: real gap found live — reason was always console.error'd only,
+// never persisted; a project sitting at "needs_review" was indistinguishable
+// from a healthy in-progress build to anything reading the DB row, and the
+// actual reason (spec_rejected_too_many_times, stuck_state, budget_exceeded,
+// ...) required grepping worker logs to recover. failureReason makes it a
+// real, queryable field the frontend can show directly.
+export type ProjectStatusWriter = (projectId: string, status: "failed" | "needs_review", failureReason: string) => Promise<void>;
 
-const writeProjectStatus: ProjectStatusWriter = async (projectId, status) => {
+const writeProjectStatus: ProjectStatusWriter = async (projectId, status, failureReason) => {
   await db
     .update(projects)
-    .set({ status, updatedAt: new Date() })
+    .set({ status, failureReason, updatedAt: new Date() })
     .where(eq(projects.id, projectId));
 };
 
@@ -629,7 +635,7 @@ export async function escalateTilotma(
   writeStatus: ProjectStatusWriter = writeProjectStatus,
 ): Promise<void> {
   console.error(`[activity:escalate] project=${projectId} reason=${reason}`, state);
-  await writeStatus(projectId, "needs_review");
+  await writeStatus(projectId, "needs_review", reason);
 }
 
 export async function markProjectFailed(
@@ -638,7 +644,7 @@ export async function markProjectFailed(
   writeStatus: ProjectStatusWriter = writeProjectStatus,
 ): Promise<void> {
   console.error(`[activity:project-failed] project=${projectId} reason=${reason}`);
-  await writeStatus(projectId, "failed");
+  await writeStatus(projectId, "failed", reason);
 }
 
 // ── Stage 5 (P1): the real GAN — evidence-gated QA + peer debate +

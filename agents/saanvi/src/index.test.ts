@@ -50,6 +50,56 @@ test("a well-formed first response does not trigger a second call at all", async
   expect(callCount).toBe(1);
 });
 
+// ── spec.auth is inferred, not hardcoded (2026-08-25) ───────────────────────
+// Real bug found live: spec.auth used to be unconditionally
+// { provider: "custom", features: ["sign-in", "sign-up"] } regardless of
+// what the model actually decided — confirmed live, a project told twice
+// (in plain English, via the reject-and-redo feedback loop) "remove auth
+// entirely, no accounts" kept getting a users table, JWT middleware, and
+// sign-in/sign-up pages every single time, because nothing about the spec
+// could ever represent "this app has none of that." Fixed by inferring the
+// need for auth from the model's own per-endpoint auth: true|false verdicts
+// — the one real signal it already produces — instead of a fixed literal.
+test("spec.auth is null when no endpoint is marked auth: true — a public site has no accounts", async () => {
+  const noAuthSpecJson = JSON.stringify({
+    name: "Public Marketing Site",
+    description: "A lead-gen marketing site with no accounts",
+    features: [],
+    apiEndpoints: [
+      { method: "POST", path: "/api/v1/contact", description: "Save a lead", auth: false, requestBody: {}, responseBody: {} },
+    ],
+    dbTables: [],
+    successCriteria: [],
+  });
+  const stubChat = async () => ({ content: noAuthSpecJson, modelUsed: "mistralai/mistral-nemotron" as const });
+
+  const result = await run("proj123", "build a marketing site, no accounts", { chat: stubChat });
+
+  expect(result.status).toBe("locked");
+  if (result.status === "locked") expect(result.spec.auth).toBeNull();
+});
+
+test("spec.auth is the custom-JWT config when at least one endpoint is marked auth: true", async () => {
+  const authSpecJson = JSON.stringify({
+    name: "Dashboard App",
+    description: "An app with a protected dashboard",
+    features: [],
+    apiEndpoints: [
+      { method: "GET", path: "/api/v1/dashboard", description: "Protected dashboard data", auth: true, requestBody: null, responseBody: {} },
+    ],
+    dbTables: [],
+    successCriteria: [],
+  });
+  const stubChat = async () => ({ content: authSpecJson, modelUsed: "mistralai/mistral-nemotron" as const });
+
+  const result = await run("proj123", "build an app with a login-gated dashboard", { chat: stubChat });
+
+  expect(result.status).toBe("locked");
+  if (result.status === "locked") {
+    expect(result.spec.auth).toEqual({ provider: "custom", features: ["sign-in", "sign-up"] });
+  }
+});
+
 // ── Clarification path (2026-08-05) ─────────────────────────────────────────
 const CLARIFICATION_JSON = JSON.stringify({
   needsClarification: true,
@@ -147,4 +197,25 @@ test("SCOPE CONTROL's admin-dashboard ban has an explicit carve-out for an expli
 
 test("SAANVI_SYSTEM_PROMPT instructs treating uploaded attachment content as real grounding, same as build-plan content", () => {
   expect(SAANVI_SYSTEM_PROMPT).toMatch(/USER UPLOADED ATTACHMENTS/);
+});
+
+// 2026-08-25: the exact contradiction that caused live, reproducible scope
+// creep — DATABASE RULES unconditionally said "include a users table" +
+// "Auth: Custom JWT authentication," which won every time over AUTH RULE's
+// (correct, but never-satisfiable) condition on an authType field Saanvi is
+// never actually given. Guards against either half of that contradiction
+// coming back.
+test("SAANVI_SYSTEM_PROMPT's DATABASE RULES section no longer unconditionally mandates a users table or JWT auth", () => {
+  const dbRulesIdx = SAANVI_SYSTEM_PROMPT.indexOf("DATABASE RULES");
+  const authRuleIdx = SAANVI_SYSTEM_PROMPT.indexOf("AUTH RULE:");
+  const dbRulesSection = SAANVI_SYSTEM_PROMPT.slice(dbRulesIdx, authRuleIdx);
+  expect(dbRulesSection).not.toMatch(/Include a "users" table/i);
+  expect(dbRulesSection).not.toMatch(/Auth: Custom JWT authentication/i);
+});
+
+test("SAANVI_SYSTEM_PROMPT's AUTH RULE no longer conditions on authType, a field Saanvi is never actually given", () => {
+  const authRuleIdx = SAANVI_SYSTEM_PROMPT.indexOf("AUTH RULE:");
+  const authRuleSection = SAANVI_SYSTEM_PROMPT.slice(authRuleIdx, authRuleIdx + 1500);
+  expect(authRuleSection).not.toMatch(/authType is "jwt"/i);
+  expect(authRuleSection).toMatch(/default to no auth/i);
 });

@@ -81,6 +81,13 @@ export interface IdeWorkspaceProps {
   projectName: string;
   appUrl?: string | null;
   isDone: boolean;
+  // 2026-08-26: real gap found live — a project the backend marked
+  // needs_review/failed (spec_rejected_too_many_times, stuck_state, ...)
+  // had no defined UI at all; it fell through to the generic "Building..."
+  // view and looked indistinguishable from a healthy in-progress build.
+  // null when the build is fine; set with the real reason (now a queryable
+  // DB field, not just a server console.error) when it's genuinely dead.
+  needsAttention?: { reason: string | null } | null;
   stageMessage: string;
   tree: ApiNode[];
   awaitingSpecApproval: boolean;
@@ -205,6 +212,29 @@ const PANEL_LABEL: Record<PanelKey, string> = {
 // as an invitation rather than a pending decision. Local input state (not
 // lifted to the parent like changeRequest) because nothing outside this
 // component needs the in-progress text before it's actually submitted.
+// 2026-08-26: translates the raw reason codes markProjectFailed/
+// escalateTilotma actually write (pipeline/workflows/project-build.ts —
+// budget_exceeded, clarification_exhausted, spec_rejected_too_many_times,
+// generation_failed, stuck_state, compile_repair_limit, deploy_stuck,
+// deploy_failed, change_request_failed) into something a user can act on,
+// instead of a bare snake_case code. Falls back to the raw code (still
+// better than nothing) for any reason not in this list.
+const FAILURE_REASON_TEXT: Record<string, string> = {
+  budget_exceeded: "It ran over its token/cost budget for this project.",
+  clarification_exhausted: "It asked several clarifying questions but the request still wasn't specific enough to build from.",
+  spec_rejected_too_many_times: "The specification was revised too many times without reaching something approvable.",
+  generation_failed: "Code generation failed and couldn't recover after several attempts.",
+  stuck_state: "Quality checks kept finding the same issues without improving across several rounds.",
+  compile_repair_limit: "It couldn't get the generated code to compile after several repair attempts.",
+  deploy_stuck: "Deployment kept failing with the same error and couldn't self-recover.",
+  deploy_failed: "Deployment failed.",
+  change_request_failed: "The requested change couldn't be applied.",
+};
+
+function readableFailureReason(reason: string): string {
+  return FAILURE_REASON_TEXT[reason] ?? `It stopped with an internal reason (${reason}).`;
+}
+
 function DoneComposer({ onSubmit, submitting }: { onSubmit: (text: string) => void; submitting: boolean }) {
   const [text, setText] = useState("");
   const submit = () => {
@@ -236,7 +266,7 @@ function DoneComposer({ onSubmit, submitting }: { onSubmit: (text: string) => vo
 
 export default function IdeWorkspace(props: IdeWorkspaceProps) {
   const {
-    projectId, projectName, appUrl, isDone, stageMessage,
+    projectId, projectName, appUrl, isDone, needsAttention, stageMessage,
     tree, awaitingSpecApproval, buildPlan, awaitingDeployApproval, submitting,
     changeRequest, onChangeRequest, onApproveSpec, onApproveDeploy, onRequestChanges, planning,
   } = props;
@@ -1011,6 +1041,19 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                   </div>
                 ) : isDone ? (
                   <DoneComposer onSubmit={onRequestChanges} submitting={submitting} />
+                ) : needsAttention ? (
+                  <div className={s.gateCard}>
+                    <div className={s.gateTitle}>This build needs your attention</div>
+                    <div className={s.gateHint}>
+                      {needsAttention.reason
+                        ? readableFailureReason(needsAttention.reason)
+                        : "It hit a limit it couldn't resolve on its own and stopped automatically — nothing is running for this project anymore."}
+                      {" "}It can't continue from here — start a new project to keep going.
+                    </div>
+                    <div className={s.gateActions}>
+                      <Link href="/dashboard"><Button size="sm">Go to dashboard</Button></Link>
+                    </div>
+                  </div>
                 ) : (
                   <div className={s.statusLine}>
                     <span className={`${s.liveDot} ${isLive ? s.liveDotOn : ""}`} />

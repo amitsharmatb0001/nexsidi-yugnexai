@@ -57,6 +57,14 @@ export const projects = pgTable("projects", {
   // human-authored context those are built from.
   context:    text("context"),
   status:     text("status").notNull().default("pending"),
+  // 2026-08-26: real gap found live — escalateTilotma/markProjectFailed only
+  // ever console.error'd the reason a build stopped (spec_rejected_too_many_times,
+  // stuck_state, budget_exceeded, ...); the DB row just said status:
+  // "needs_review"/"failed" with nothing queryable explaining why. The
+  // frontend had no defined handling for "needs_review" at all either — a
+  // project in that state just looked stuck, with no way for the user to
+  // tell "still working" from "permanently dead, start over."
+  failureReason: text("failure_reason"),
   appUrl:     text("app_url"),                         // set by Riya after docker-compose up
   githubRepo: text("github_repo"),                     // Fix #9: Riya sets this after archival
   iteration:  integer("iteration").notNull().default(0),

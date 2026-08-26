@@ -42,7 +42,19 @@ export interface ProjectSpec {
   description: string;
   appType: "web";
   features: Feature[];
-  auth: { provider: "custom"; features: Array<"sign-in" | "sign-up"> };
+  // 2026-08-25: real bug found live — this was unconditionally
+  // { provider: "custom", features: ["sign-in", "sign-up"] }, never read
+  // from the model's own output at all, so EVERY project ever spec'd
+  // through this real Saanvi path got a forced auth system regardless of
+  // what was asked for. Confirmed live: a project explicitly told (twice,
+  // in plain English) "no accounts, remove auth entirely" kept coming back
+  // with sign-in/sign-up/JWT/a users table every time, because nothing
+  // about the feedback could reach a field that was never actually
+  // computed from anything. `null` here is a real, representable "this app
+  // has no accounts" state — inferred from whether the model itself marked
+  // any apiEndpoint auth: true (see run() below), the same signal Arjun's
+  // own prompt already treats as authoritative per-endpoint.
+  auth: { provider: "custom"; features: Array<"sign-in" | "sign-up"> } | null;
   apiEndpoints: ApiEndpoint[];
   dbTables: DbTable[];
   successCriteria: string[];
@@ -115,14 +127,20 @@ export async function run(
     // user, so fall through and spec normally rather than pausing on nothing.
   }
 
+  const apiEndpoints: ApiEndpoint[] = Array.isArray(raw.apiEndpoints) ? raw.apiEndpoints : [];
   const spec: Omit<ProjectSpec, "specHash"> = {
     projectId,
     name: String(raw.name ?? "Untitled"),
     description: String(raw.description ?? ""),
     appType: "web",
     features: Array.isArray(raw.features) ? raw.features : [],
-    auth: { provider: "custom", features: ["sign-in", "sign-up"] },
-    apiEndpoints: Array.isArray(raw.apiEndpoints) ? raw.apiEndpoints : [],
+    // See ProjectSpec.auth's own header comment for the full root-cause
+    // writeup — this used to be unconditional. The model already marks
+    // each endpoint auth: true|false (its own real judgment, not a guess
+    // made here); an app with zero auth-gated endpoints has no protected
+    // resources, so it has nothing for sign-in/sign-up to gate.
+    auth: apiEndpoints.some((e) => e.auth === true) ? { provider: "custom", features: ["sign-in", "sign-up"] } : null,
+    apiEndpoints,
     dbTables: Array.isArray(raw.dbTables) ? raw.dbTables : [],
     successCriteria: Array.isArray(raw.successCriteria) ? raw.successCriteria : [],
     lockedAt: new Date().toISOString(),
@@ -269,9 +287,14 @@ DATABASE RULES (hard requirements):
   updated_at (timestamptz, nullable: false, default: now()).
 - Every user-owned table MUST have user_id (uuid, nullable: false, references users.id).
   Exception: the users table itself.
-- Include a "users" table: id (uuid PK), password_hash (text, NOT NULL), email (text, unique, NOT NULL), name (text, NOT NULL).
-- Auth: Custom JWT authentication — design local user registration, login, and JWT middleware.
 - successCriteria must be measurable user-facing statements.
+- 2026-08-25: the "always include a users table + JWT auth" instruction that
+  used to live here was a real, live-confirmed bug — it directly contradicted
+  AUTH RULE below (which correctly conditions auth on the request) and won
+  anyway, because this section was framed as an unconditional "hard
+  requirement" while AUTH RULE read as a soft preference. See AUTH RULE below
+  for the actual (single, non-contradictory) rule on when a users table and
+  auth endpoints belong in the spec at all.
 
 APP TIER (CRITICAL — read this before writing any spec):
 The target quality bar is Tier 3-4:
@@ -293,9 +316,24 @@ project tracker, analytics, multi-user roles, booking calendar, client portal, r
 The build plan tells you exactly what to build — treat it as a contract, not a starting point for expansion.
 
 AUTH RULE:
-Only include auth (users table, login/signup endpoints) when authType is "jwt" in the build plan.
-If authType is "none", do NOT add a users table, do NOT add auth endpoints, do NOT add a login page feature.
-A company website with authType "none" has no authentication — not even "for future use".
+2026-08-25: real bug found live — this used to say "when authType is 'jwt' in
+the build plan," but authType is never actually part of your input (it is a
+SEPARATE downstream field Arjun receives directly when a planner-locked page
+list exists — you are never given it, so a rule conditioned on it was
+unconditionally unsatisfiable, and the DATABASE RULES section above won by
+default every time). The real, only signal you have is the user's own
+request text — treat it exactly like SCOPE CONTROL above treats every other
+feature: auth is not a default, it is something to add ONLY when asked for.
+Only include auth (a "users" table, any apiEndpoint with auth: true,
+login/signup features) when the request explicitly asks for user accounts,
+sign-in/login, member-only areas, or a dashboard restricted to the account
+owner. A marketing site, a lead-gen/contact-form site, a public informational
+site, or any request that never mentions accounts/login has NO auth — not
+even "for future use," not even if the request also asks for an admin-style
+management area (that still needs explicit request per SCOPE CONTROL, and
+even then does not imply public-facing accounts unless stated). When in
+doubt, default to no auth: every apiEndpoint gets auth: false, no "users"
+table, no login/signup pages, no JWT anywhere in the spec.
 
 CONTENT EXTRACTION:
 - Company/product name: use their exact name from the build plan — never "the client" or "a company".

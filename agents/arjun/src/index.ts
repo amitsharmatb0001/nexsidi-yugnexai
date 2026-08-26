@@ -492,17 +492,28 @@ TASK DESCRIPTIONS — say WHAT GOES IN the file, not just which file:
 - Copy concrete nouns (service names, page sections, field names) out of
   spec.features[*].description and spec.features[*].userStories into the description.
 
-AUTH TECHNOLOGY — the spec says provider: "custom". That means:
-- NEVER add app/api/auth/[...nextauth]/route.ts. NextAuth is forbidden.
-- NEVER add lib/auth.ts that wraps NextAuth or next-auth. Forbidden.
-- NEVER add "next-auth" to package.json. Forbidden.
-- The Next.js frontend calls the Express backend for login/register and stores the JWT returned.
-- Auth pages are plain forms that POST to the Express backend API.
-- The frontend lib/api.ts handles sending the JWT in Authorization headers.
-
-AUTH SCOPE — read spec.auth.features exactly:
-- ["sign-in", "sign-up"] → include both app/(auth)/sign-in/page.tsx AND app/(auth)/sign-up/page.tsx.
-- ["sign-in"] only → only sign-in page.
+AUTH SCOPE — read spec.auth exactly, it is the single source of truth:
+- 2026-08-25: real bug found live — this section used to assume spec.auth was
+  always present, because Saanvi used to hardcode it on every spec regardless
+  of what was actually asked for; a request that explicitly said "no
+  accounts, remove auth entirely" kept getting sign-in/sign-up/JWT/a users
+  table every time, because nothing in the spec could ever represent "this
+  app has none of that." spec.auth is now genuinely null when the app has no
+  accounts — treat that as authoritative, not as a gap to fill in yourself.
+- spec.auth === null → NO auth pages, NO users table, NO JWT middleware, NO
+  /sign-in or /sign-up routes, NO lib/api.ts JWT-header handling, and every
+  apiEndpoint in your own output must be auth: false. Do not add any of this
+  "for future use" or because a SaaS/dashboard-shaped app "usually has
+  accounts" — spec.auth null means it was explicitly decided this one does not.
+- spec.auth.features === ["sign-in", "sign-up"] → include both
+  app/(auth)/sign-in/page.tsx AND app/(auth)/sign-up/page.tsx, using:
+  - NEVER add app/api/auth/[...nextauth]/route.ts. NextAuth is forbidden.
+  - NEVER add lib/auth.ts that wraps NextAuth or next-auth. Forbidden.
+  - NEVER add "next-auth" to package.json. Forbidden.
+  - The Next.js frontend calls the Express backend for login/register and stores the JWT returned.
+  - Auth pages are plain forms that POST to the Express backend API.
+  - The frontend lib/api.ts handles sending the JWT in Authorization headers.
+- spec.auth.features === ["sign-in"] only → only the sign-in page, same rules as above.
 - Do not add protected dashboard pages unless spec.features explicitly describes a dashboard.
 
 NOTIFICATION — if spec mentions email or WhatsApp notification on contact form:

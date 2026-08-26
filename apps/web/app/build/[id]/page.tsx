@@ -14,7 +14,12 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type BuildStatus = "waiting" | "building" | "done" | "failed";
+// 2026-08-26: "needs_review" added — real gap found live. The backend
+// (escalateTilotma) has written this status for stuck-state/spec-rejected
+// escalations since 2026-07-25, but this type never declared it, so a
+// project in that state fell through every render branch below with no
+// defined UI — looked indistinguishable from a healthy in-progress build.
+type BuildStatus = "waiting" | "building" | "done" | "failed" | "needs_review";
 type SessionPhase = "planning" | "building" | "done";
 
 interface ChatMessage {
@@ -46,6 +51,10 @@ interface ProjectResult {
   repoUrl?:    string;
   name?:       string;
   description?:string;
+  // See BuildStatus's own header comment — the reason a needs_review/failed
+  // project stopped, now a real queryable field instead of only ever
+  // console.error'd server-side.
+  failureReason?: string | null;
 }
 
 interface FileNode {
@@ -1260,6 +1269,11 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   }
 
   const isDone = status === "done" || (status === "failed" && !!result?.appUrl);
+  // See BuildStatus's own header comment — genuinely dead, not "still
+  // working": needs_review always means this, and failed means this unless
+  // it's the partial-success case above (a failure that still shipped an
+  // appUrl, which isDone already treats as done).
+  const needsAttention = status === "needs_review" || (status === "failed" && !result?.appUrl);
 
   // ── Render: Resolving session ─────────────────────────────────────────────
   // See the sessionResolved comment at its declaration — this is the actual
@@ -1302,6 +1316,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       }
       appUrl={result?.appUrl ?? null}
       isDone={isDone}
+      needsAttention={needsAttention ? { reason: result?.failureReason ?? null } : null}
       stageMessage={stageMessage}
       tree={tree}
       awaitingSpecApproval={Boolean(buildPlanModal)}
