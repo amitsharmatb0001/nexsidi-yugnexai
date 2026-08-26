@@ -66,6 +66,21 @@ pipelineRouter.get("/:projectId/status", async (c) => {
 
   return streamSSE(c, async (stream) => {
     let lastStage = "";
+    // 2026-08-26: real bug found live (project 852be5aeaef4). getWorkflowStatus
+    // returns null for BOTH "this workflow genuinely doesn't exist" and "we
+    // couldn't reach Temporal just now" (it catches and returns null — see
+    // utils/temporal.ts). A single transient miss — an API restart while a
+    // browser tab is open, a Temporal client reconnect, a slow describe() —
+    // used to immediately return done:true, which sends {type:"complete"}
+    // and drops into the ping-forever loop below that NEVER polls stage
+    // again. Confirmed live: the workflow sat at await_spec_approval with a
+    // fully-written plan while the browser showed a frozen "Planning out the
+    // build..." indefinitely, pings making the dead connection look healthy,
+    // with no error anywhere. Requiring several CONSECUTIVE misses keeps the
+    // real "no workflow" case working (it just takes ~15s to conclude) while
+    // making a transient blip recoverable instead of permanently fatal.
+    const MAX_CONSECUTIVE_LOOKUP_MISSES = 5;
+    let consecutiveLookupMisses = 0;
 
     const poll = async (): Promise<{ done: boolean; failed: boolean }> => {
       const state = await getPipelineStatus(projectId) as {
@@ -75,10 +90,17 @@ pipelineRouter.get("/:projectId/status", async (c) => {
 
       const workflowStatus = await getWorkflowStatus(projectId);
 
-      // If no workflow runs at all, check database for historical state
+      // No workflow reachable — could be genuinely absent, or a transient
+      // lookup failure. Only conclude it's genuinely gone after several
+      // consecutive misses (see MAX_CONSECUTIVE_LOOKUP_MISSES above).
       if (!workflowStatus) {
-        return { done: true, failed: false };
+        consecutiveLookupMisses++;
+        if (consecutiveLookupMisses >= MAX_CONSECUTIVE_LOOKUP_MISSES) {
+          return { done: true, failed: false };
+        }
+        return { done: false, failed: false };
       }
+      consecutiveLookupMisses = 0;
 
       // If workflow has terminated with failure
       if (workflowStatus !== "RUNNING" && workflowStatus !== "COMPLETED") {

@@ -139,7 +139,7 @@ export async function run(
     // each endpoint auth: true|false (its own real judgment, not a guess
     // made here); an app with zero auth-gated endpoints has no protected
     // resources, so it has nothing for sign-in/sign-up to gate.
-    auth: apiEndpoints.some((e) => e.auth === true) ? { provider: "custom", features: ["sign-in", "sign-up"] } : null,
+    auth: deriveAuthConfig(apiEndpoints),
     apiEndpoints,
     dbTables: Array.isArray(raw.dbTables) ? raw.dbTables : [],
     successCriteria: Array.isArray(raw.successCriteria) ? raw.successCriteria : [],
@@ -148,6 +148,30 @@ export async function run(
 
   // Patent Claim 1: hash the spec at lock-time — immutable from here
   return { status: "locked", spec: { ...spec, specHash: hashContext(spec) } };
+}
+
+// 2026-08-26: second half of the auth fix. The first half made auth
+// CONDITIONAL (null when nothing is gated) but still hardcoded the shape to
+// ["sign-in", "sign-up"] whenever any auth existed — so a request that
+// explicitly said "no public sign-up, one private admin login" still got a
+// public self-registration page and endpoint generated, because Arjun's
+// prompt reads spec.auth.features literally ("["sign-in","sign-up"] →
+// include both pages"). Confirmed live on project 852be5aeaef4.
+//
+// Same philosophy as the auth/no-auth inference above: read the model's own
+// endpoint list rather than assuming. A spec that never describes a
+// registration endpoint is describing sign-in-only auth (an admin/staff
+// login), not open public accounts.
+//
+// Exported for direct unit testing — this is pure and the shape it returns
+// is what every downstream generator branches on.
+export function deriveAuthConfig(apiEndpoints: ApiEndpoint[]): ProjectSpec["auth"] {
+  if (!apiEndpoints.some((e) => e.auth === true)) return null;
+  const hasPublicRegistration = apiEndpoints.some((e) => /sign-?up|register/i.test(e.path ?? ""));
+  return {
+    provider: "custom",
+    features: hasPublicRegistration ? ["sign-in", "sign-up"] : ["sign-in"],
+  };
 }
 
 // ── JSON extraction — handles markdown fences and trailing prose ──────────────
@@ -334,6 +358,26 @@ management area (that still needs explicit request per SCOPE CONTROL, and
 even then does not imply public-facing accounts unless stated). When in
 doubt, default to no auth: every apiEndpoint gets auth: false, no "users"
 table, no login/signup pages, no JWT anywhere in the spec.
+
+ADMIN-ONLY LOGIN IS NOT PUBLIC REGISTRATION — these are two different things
+and conflating them is a real security bug, not a scope nit.
+2026-08-26: real bug found live (project 852be5aeaef4) — a request that said,
+in plain English, "no public sign-up or accounts for visitors; add one
+private admin login" produced POST /api/v1/auth/sign-up marked auth: false
+("Register a new client or admin account") plus a public Sign Up page. That
+endpoint lets ANY anonymous visitor create an account that reaches the admin
+portal — it defeats the entire point of the private area the user asked for.
+- If the ONLY protected thing is an internal/admin/staff/owner area (a leads
+  inbox, a CMS/content editor, a management dashboard), the app needs
+  SIGN-IN ONLY. Do NOT emit any sign-up/register/create-account endpoint,
+  page, feature, or user story. The account is provisioned out-of-band (a
+  seeded admin row), not self-registered through the public internet.
+- Emit a registration endpoint ONLY when the request describes members of
+  the PUBLIC creating their own accounts (a community, a customer portal
+  where customers self-serve, a multi-tenant SaaS signup). If the request
+  never describes that, there is no registration.
+- "The company/admin can log in and manage X" is ALWAYS sign-in-only. It is
+  never a reason to add public registration.
 
 CONTENT EXTRACTION:
 - Company/product name: use their exact name from the build plan — never "the client" or "a company".

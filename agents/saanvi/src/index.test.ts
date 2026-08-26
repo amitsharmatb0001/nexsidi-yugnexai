@@ -79,12 +79,22 @@ test("spec.auth is null when no endpoint is marked auth: true — a public site 
   if (result.status === "locked") expect(result.spec.auth).toBeNull();
 });
 
-test("spec.auth is the custom-JWT config when at least one endpoint is marked auth: true", async () => {
+// 2026-08-26 (second half of the same fix): the shape was ALSO hardcoded to
+// ["sign-in", "sign-up"] whenever any auth existed, so a request explicitly
+// asking for "one private admin login, no public sign-up" still generated a
+// public self-registration page and endpoint (Arjun's prompt reads
+// spec.auth.features literally). Confirmed live on project 852be5aeaef4,
+// where a spec whose ONLY protected routes were admin ones still produced
+// POST /api/v1/auth/sign-up marked Public — meaning any visitor could
+// self-register into the admin portal. The features array is now derived
+// from whether the model described a registration endpoint at all.
+test("spec.auth is sign-in ONLY when no registration endpoint exists — an admin login is not public accounts", async () => {
   const authSpecJson = JSON.stringify({
     name: "Dashboard App",
-    description: "An app with a protected dashboard",
+    description: "An app with a protected admin dashboard",
     features: [],
     apiEndpoints: [
+      { method: "POST", path: "/api/v1/auth/sign-in", description: "Authenticate admin", auth: false, requestBody: {}, responseBody: {} },
       { method: "GET", path: "/api/v1/dashboard", description: "Protected dashboard data", auth: true, requestBody: null, responseBody: {} },
     ],
     dbTables: [],
@@ -92,7 +102,29 @@ test("spec.auth is the custom-JWT config when at least one endpoint is marked au
   });
   const stubChat = async () => ({ content: authSpecJson, modelUsed: "mistralai/mistral-nemotron" as const });
 
-  const result = await run("proj123", "build an app with a login-gated dashboard", { chat: stubChat });
+  const result = await run("proj123", "build an app with a private admin dashboard", { chat: stubChat });
+
+  expect(result.status).toBe("locked");
+  if (result.status === "locked") {
+    expect(result.spec.auth).toEqual({ provider: "custom", features: ["sign-in"] });
+  }
+});
+
+test("spec.auth includes sign-up only when the spec actually describes a registration endpoint", async () => {
+  const publicAccountsJson = JSON.stringify({
+    name: "Community App",
+    description: "An app where visitors create their own accounts",
+    features: [],
+    apiEndpoints: [
+      { method: "POST", path: "/api/v1/auth/sign-up", description: "Register a new user", auth: false, requestBody: {}, responseBody: {} },
+      { method: "GET", path: "/api/v1/profile", description: "Own profile", auth: true, requestBody: null, responseBody: {} },
+    ],
+    dbTables: [],
+    successCriteria: [],
+  });
+  const stubChat = async () => ({ content: publicAccountsJson, modelUsed: "mistralai/mistral-nemotron" as const });
+
+  const result = await run("proj123", "build an app where users sign up for accounts", { chat: stubChat });
 
   expect(result.status).toBe("locked");
   if (result.status === "locked") {
