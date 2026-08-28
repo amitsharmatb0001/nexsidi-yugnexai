@@ -237,8 +237,48 @@ export function rotatedPoolForAgent(tier: GeminiTier, agentName: string): string
 // a HALF_OPEN probe — on every single call, while a working fallback model
 // was one line away the whole time. Skipping here means the loop moves to
 // the next pool model immediately instead of paying that wait.
+// 2026-08-28: real waste measured live (project 852be5aeaef4).
+// gemini-3.1-pro-preview sits at pool[0] for the plan/design/qa tiers. Across
+// that run it SUCCEEDED 70 times and FAILED as pool[0] 105 times — a 40%
+// success rate — so ~60% of calls to those tiers burned a full network
+// round-trip on a model that was rate-limited before falling back to one that
+// worked. The circuit breaker did not help: it opened only twice all run,
+// because a 429 is correctly classified as transient and deliberately does
+// NOT trip it (a rate limit is not a broken endpoint, and tripping the
+// breaker would take the model out for a full 60s OPEN_TIMEOUT_MS).
+//
+// The gap is that "transient" was treated as "retry immediately on the very
+// next call", so the same rate-limited model was re-attempted 105 times. A
+// short cooldown is the missing middle ground: after a 429, skip that model
+// for a few seconds so the pool moves straight to a working one, while still
+// bringing it back quickly (unlike the breaker's 60s) because rate limits
+// refill continuously. This costs no waiting anywhere — it only reorders
+// which model is tried FIRST.
+const RATE_LIMIT_COOLDOWN_MS = 20_000;
+const rateLimitedUntil = new Map<string, number>();
+
+/** Called on a 429 so the pool stops leading with a model that is currently throttled. */
+export function noteGeminiRateLimited(model: string, now = Date.now()): void {
+  rateLimitedUntil.set(model, now + RATE_LIMIT_COOLDOWN_MS);
+}
+
+/** Exported for tests — clears cooldown state between cases. */
+export function clearGeminiRateLimitCooldowns(): void {
+  rateLimitedUntil.clear();
+}
+
+export function isGeminiRateLimitCoolingDown(model: string, now = Date.now()): boolean {
+  const until = rateLimitedUntil.get(model);
+  if (until === undefined) return false;
+  if (now >= until) {
+    rateLimitedUntil.delete(model); // expired — let it back in
+    return false;
+  }
+  return true;
+}
+
 export function shouldSkipGeminiModel(model: string): boolean {
-  return getState(circuitKeyFor(model)) === "OPEN";
+  return getState(circuitKeyFor(model)) === "OPEN" || isGeminiRateLimitCoolingDown(model);
 }
 
 export async function routeWithFallback(
@@ -313,11 +353,21 @@ export async function routeToolsWithFallback(
   const thinkingLevel = thinkingLevelForTier(tier);
   const errors: string[] = [];
 
-  for (const model of pool) {
-    if (shouldSkipGeminiModel(model)) {
-      errors.push(`${model}: circuit breaker OPEN — skipped`);
-      continue;
-    }
+  // 2026-08-28: two-pass so a rate-limit cooldown can NEVER make the pool
+  // empty. Pass 1 tries only models that are not cooling down (the whole
+  // point — stop leading with a model that just 429'd). Pass 2 retries the
+  // skipped ones anyway, because a cooldown is an optimization, not a
+  // capacity limit: if every model is cooling down we must still attempt the
+  // call rather than fail with "all exhausted" while quota may well be
+  // available again. See noteGeminiRateLimited for the measured waste.
+  const ready = pool.filter((m) => !shouldSkipGeminiModel(m));
+  const deferred = pool.filter((m) => !ready.includes(m));
+  const attemptOrder = [...ready, ...deferred];
+  if (ready.length === 0 && pool.length > 0) {
+    console.log(`[routeToolsWithFallback:${tier}] every pool model is cooling down or circuit-open — attempting anyway rather than failing without trying`);
+  }
+
+  for (const model of attemptOrder) {
     try {
       const result = await geminiChatWithTools(messages, tools, {
         model,
@@ -332,7 +382,13 @@ export async function routeToolsWithFallback(
       }
       return { ...result, modelUsed: model };
     } catch (err) {
-      errors.push(`${model}: ${String(err)}`);
+      const msg = String(err);
+      // Record the throttle so the NEXT call in this run leads with a model
+      // that is actually available, instead of repeating this round-trip.
+      if (msg.includes("429") || /rate.?limit|RESOURCE_EXHAUSTED/i.test(msg)) {
+        noteGeminiRateLimited(model);
+      }
+      errors.push(`${model}: ${msg}`);
       // Zero-wait: immediately try next model, no sleep/backoff
     }
   }

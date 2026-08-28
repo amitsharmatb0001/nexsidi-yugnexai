@@ -6,9 +6,63 @@ import {
   selectRelevantContext,
   touchedFilesFromLedger,
   compactViaRelevantContext,
+  dropStaleInlineData,
   type FactLedgerEntry,
   type TurnToolActivity,
 } from "./context-selection.ts";
+import { estimateGeminiTokenCount } from "./compaction.ts";
+
+// ── Screenshot replay (2026-08-27) ──────────────────────────────────────────
+// Real bug found live: project 852be5aeaef4 burned $322 / 68.5M input tokens.
+// Screenshots enter history as inlineData base64 blobs; capPart deliberately
+// left them intact and estimateGeminiTokenCount counted them as ZERO — so
+// they were simultaneously invisible to the compaction threshold and exempt
+// from trimming. Compaction fired 104 times and still could not pull history
+// under its own threshold (~272K estimated vs ~598K actually billed).
+
+function imageTurn(bytes: number, label: string): GeminiMessage {
+  return { role: "user", content: [{ text: label }, { inlineData: { mimeType: "image/png", data: "A".repeat(bytes) } }] };
+}
+
+test("estimateGeminiTokenCount counts inlineData — a screenshot-heavy history is not invisible to the threshold", () => {
+  const withImage = [imageTurn(400_000, "shot")];
+  const withoutImage: GeminiMessage[] = [{ role: "user", content: [{ text: "shot" }] }];
+  // Before the fix this was ~1 (the label only) regardless of payload size.
+  expect(estimateGeminiTokenCount(withImage)).toBeGreaterThan(50_000);
+  expect(estimateGeminiTokenCount(withImage)).toBeGreaterThan(estimateGeminiTokenCount(withoutImage) * 100);
+});
+
+test("dropStaleInlineData keeps only the newest screenshot and placeholders the rest", () => {
+  const msgs = [imageTurn(1000, "first"), { role: "user", content: [{ text: "middle" }] } as GeminiMessage, imageTurn(1000, "latest")];
+  const out = dropStaleInlineData(msgs);
+
+  const firstParts = out[0]!.content as Array<Record<string, unknown>>;
+  expect(firstParts.some((p) => "inlineData" in p)).toBe(false);
+  expect(JSON.stringify(firstParts)).toContain("earlier screenshot omitted");
+
+  // The most recent image survives intact — the agent may still need to look at it.
+  const lastParts = out[2]!.content as Array<Record<string, unknown>>;
+  expect(lastParts.some((p) => "inlineData" in p)).toBe(true);
+});
+
+test("dropStaleInlineData is a no-op when there are no images", () => {
+  const msgs: GeminiMessage[] = [{ role: "user", content: [{ text: "a" }] }, { role: "model", content: "b" }];
+  expect(dropStaleInlineData(msgs)).toEqual(msgs);
+});
+
+test("selectRelevantContext strips stale screenshots so repeated compaction actually shrinks history", () => {
+  const history: GeminiMessage[] = [
+    { role: "system", content: "sys" },
+    imageTurn(300_000, "shot 1"),
+    imageTurn(300_000, "shot 2"),
+    imageTurn(300_000, "shot 3"),
+  ];
+  const before = estimateGeminiTokenCount(history);
+  const after = estimateGeminiTokenCount(selectRelevantContext(history, "task", [], [], []));
+  // Two of three payloads are dropped, so this must fall dramatically —
+  // pre-fix it stayed flat, which is exactly why compaction never converged.
+  expect(after).toBeLessThan(before / 2);
+});
 
 // ── Task 2 (cost-control plan): structured fact ledger, not lossy prose ─────
 //

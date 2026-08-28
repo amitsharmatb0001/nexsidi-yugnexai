@@ -78,6 +78,64 @@ export function sanitizeGeneratedPackageJsons(buildDir: string): void {
 // AFTER the deploy agent, independent of whether it wired migrations. Returns
 // true only if the deployed database actually has tables. Fail-safe: any
 // docker/psql problem returns false and is logged, never throws.
+// 2026-08-27: real bug found live (project 852be5aeaef4). The live
+// verification steps below (verifyLiveAuthenticatedRoundTrip,
+// verifyAllResourceCrud) register throwaway accounts —
+// `verify+<role>+<ts>@example.com` — against the REAL deployed database, and
+// nothing ever removed them. Two distinct problems, both confirmed in the
+// delivered app:
+//   1. The delivered database shipped containing a test account. In that run
+//      it was the ONLY row in `users`.
+//   2. Worse, verifyAllResourceCrud registers with role "admin" via the
+//      generated app's own one-time admin-bootstrap path ("role:'admin' is
+//      allowed when no admin exists yet"). Verification therefore CONSUMES
+//      the single bootstrap slot, so the real owner can never claim admin —
+//      the deploy check silently locks the customer out of their own app.
+// Deleting by the exact `verify+%@example.com` shape only ever removes rows
+// this file created; a real user could not hold that address. Best-effort by
+// design: a cleanup failure must never fail an otherwise-good deploy, so
+// every branch warns and continues rather than throwing.
+export function purgeVerificationArtifacts(buildDir: string): void {
+  try {
+    const composePath = join(buildDir, "docker-compose.yml");
+    if (!existsSync(composePath)) return;
+    const sh = (cmd: string) => execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+
+    let cid = "";
+    try { cid = sh(`docker compose -f "${composePath}" ps -q postgres`); } catch { /* nothing to clean */ }
+    if (!cid) return;
+
+    const user = (() => { try { return sh(`docker exec ${cid} printenv POSTGRES_USER`); } catch { return ""; } })() || "postgres";
+    const dbName = (() => { try { return sh(`docker exec ${cid} printenv POSTGRES_DB`); } catch { return ""; } })() || user;
+
+    // Only touch tables that actually have an email column — the users table
+    // in practice, but discovered rather than assumed so a differently-named
+    // identity table is still cleaned.
+    const tables = sh(
+      `docker exec ${cid} psql -U ${user} -d ${dbName} -tAc ` +
+      `"SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='email'"`,
+    ).split("\n").map((t) => t.trim()).filter(Boolean);
+
+    let removed = 0;
+    for (const table of tables) {
+      try {
+        const out = sh(
+          `docker exec ${cid} psql -U ${user} -d ${dbName} -tAc ` +
+          `"WITH d AS (DELETE FROM \\"${table}\\" WHERE email LIKE 'verify+%@example.com' RETURNING 1) SELECT count(*) FROM d"`,
+        );
+        removed += parseInt(out, 10) || 0;
+      } catch (e) {
+        console.warn(`[riya] could not purge verification rows from "${table}" (non-fatal): ${String(e).split("\n")[0]}`);
+      }
+    }
+    if (removed > 0) {
+      console.log(`[riya] purged ${removed} deploy-verification test account(s) from the delivered database — the admin bootstrap slot is free for the real owner`);
+    }
+  } catch (e) {
+    console.warn(`[riya] verification-artifact cleanup skipped (non-fatal): ${String(e).split("\n")[0]}`);
+  }
+}
+
 export function applyMigrationsToDeployedDb(buildDir: string): boolean {
   try {
     const composePath = join(buildDir, "docker-compose.yml");
@@ -294,6 +352,42 @@ function verifyDbWriteReadRoundTrip(
 // instead of guessing a shape. Simple regex parse, not a full TS parser:
 // Arjun's own interfaces are always flat `field: type;` lists (verified
 // against real generated shared-types.ts across projects tonight).
+// 2026-08-27: see the 400-recovery call site in verifyAllResourceCrud for the
+// live failure this exists for. A generator can validate a field more tightly
+// than the shared api-contract describes it (confirmed live: contract said
+// `type: string`, backend enforced z.enum(["support","sales"])). When that
+// happens the synthetic CRUD payload is rejected and the app looks broken
+// when it is in fact validating correctly.
+//
+// Zod's message names the accepted values verbatim — "Invalid enum value.
+// Expected 'support' | 'sales', received 'riya-verify-x'" — so the fix is to
+// take the backend at its word and resend with a value it declared valid.
+// Returns null when the error is NOT of this shape, so a genuine 400 (missing
+// required field, real bad request) still surfaces as a real finding.
+// Exported for direct unit testing.
+export function repairPayloadFromValidationError(
+  payload: Record<string, unknown>,
+  errorText: string,
+): Record<string, unknown> | null {
+  // Collect every quoted value the validator listed as acceptable.
+  const expected = errorText.match(/Expected\s+((?:'[^']*'\s*\|\s*)*'[^']*')/i);
+  if (!expected?.[1]) return null;
+  const allowed = [...expected[1].matchAll(/'([^']*)'/g)].map((m) => m[1]!);
+  if (allowed.length === 0) return null;
+
+  // Which field was rejected? Zod names it via `received '<the bad value>'`,
+  // which we can match back to the exact key we sent.
+  const received = errorText.match(/received\s+'([^']*)'/i)?.[1];
+  const target = received !== undefined
+    ? Object.keys(payload).find((k) => payload[k] === received)
+    // No `received` echo — fall back to the single field whose sent value is
+    // not already one of the allowed ones.
+    : Object.keys(payload).find((k) => typeof payload[k] === "string" && !allowed.includes(payload[k] as string));
+  if (!target) return null;
+
+  return { ...payload, [target]: allowed[0] };
+}
+
 function fieldsToPayload(body: string, marker: string): Record<string, unknown> | null {
   const fieldRegex = /(\w+)\??\s*:\s*([^;]+);/g;
   const payload: Record<string, unknown> = {};
@@ -1033,7 +1127,9 @@ export async function verifyAllResourceCrud(
       const dynamicPayload = createEp.requestType && createEp.requestType !== "null"
         ? buildPayloadForRequestType(sharedTypesSource, createEp.requestType, marker)
         : null;
-      const createPayload = (dynamicPayload ?? { title: marker }) as Record<string, unknown>;
+      // `let` (not const) so the 400-recovery below can swap in a repaired
+      // payload and have the later update/read steps use the same shape.
+      let createPayload = (dynamicPayload ?? { title: marker }) as Record<string, unknown>;
       const fkLookupToken = adminToken ?? token;
       for (const [fieldName, value] of Object.entries(createPayload)) {
         if (!fieldName.endsWith("_id") || typeof value !== "string") continue;
@@ -1059,6 +1155,36 @@ export async function verifyAllResourceCrud(
         }
       }
       if (createRes.status === 403) continue; // still forbidden even as admin (or no admin available) — genuinely role-gated, not broken
+
+      // 2026-08-27: real bug found live (project 852be5aeaef4) — this is the
+      // failure that actually ended that run. The api-contract typed the
+      // contact form's `type` field as plain `string`, so fieldsToPayload's
+      // enum branch (which only fires on a declared 'a' | 'b' union) sent the
+      // generic marker. Shubham's backend, however, validated it as
+      // z.enum(["support","sales"]) — a constraint it inferred itself and
+      // that appears NOWHERE in the spec, the DB schema, or the contract.
+      // The backend was right to reject the marker; the synthetic test was
+      // wrong. That false finding failed the deploy, triggered a retry, and
+      // the retry exhausted the project's cost budget.
+      // A real validator names the values it will accept ("Expected 'support'
+      // | 'sales', received ..."), so recover deterministically from the
+      // error itself rather than depending on every generator keeping the
+      // contract perfectly in sync. Retried ONCE — a second failure is a real
+      // finding, not a payload-shape problem.
+      if (createRes.status === 400) {
+        const errText = await createRes.clone().text();
+        const repaired = repairPayloadFromValidationError(createPayload, errText);
+        if (repaired) {
+          console.log(`[riya] create ${createEp.path} 400'd on a value the contract did not describe as constrained — retrying once with the value the backend named`);
+          createRes = await fetch(`${backendUrl}${createEp.path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeToken}` },
+            body: JSON.stringify(repaired),
+          });
+          createPayload = repaired;
+        }
+      }
+
       if (!createRes.ok) {
         findings.push(`${resource}: POST ${createEp.path} returned ${createRes.status}: ${(await createRes.text()).slice(0, 150)}`);
         continue;
@@ -1323,6 +1449,13 @@ export async function run(
     console.log(`[riya] full CRUD verification OK — every resource's create/read/update/delete confirmed against the real database`);
   }
 
+  // Runs unconditionally once verification is done (pass OR fail) — a FAILED
+  // run still registered accounts before it failed, so skipping cleanup on
+  // failure would leave exactly the artifacts this exists to remove. See
+  // purgeVerificationArtifacts's own header comment for why this matters
+  // beyond tidiness: it also frees the one-time admin-bootstrap slot.
+  purgeVerificationArtifacts(buildDir);
+
   // Archive to GitHub (fire-and-forget, errors non-fatal)
   const githubRepo = await archiveToGitHub(projectId, buildDir).catch(() => null);
 
@@ -1335,19 +1468,37 @@ export async function run(
   // whole point.
   const deploySucceeded = result.success && migrationOk && roundTrip.ok && crudCheck.ok;
 
-  await db
-    .update(projects)
-    .set({
-      appUrl,
-      status: deploySucceeded ? "done" : "error",
-      updatedAt: new Date(),
-    })
-    .where(eq(projects.id, projectId));
-
   const errors = [...result.errors];
   if (!migrationOk) errors.push("Deployed database has no tables (migrations did not apply) — app cannot persist data");
   if (!roundTrip.ok) errors.push(`Live authenticated round-trip failed: ${roundTrip.reason}`);
   if (!crudCheck.ok) errors.push(...crudCheck.findings.map((f) => `CRUD verification: ${f}`));
+
+  // 2026-08-27: real bug found live (project 852be5aeaef4). This used to
+  // write status: "error" on any unsuccessful deploy — but "error" is a
+  // status string NOTHING else in the system recognizes. Every other writer
+  // uses "failed"/"needs_review" (see pipeline/activities/index.ts's
+  // ProjectStatusWriter), and the read path in apps/api/src/routes/
+  // projects.ts branches on building/done/failed/planning only, so "error"
+  // fell through to the generic else → "Queued...". Confirmed live: a
+  // deployment whose containers were genuinely up (frontend AND backend both
+  // 200, all 3 tables present, CRUD verified) showed the user a blank/queued
+  // screen with no explanation, because a TRANSIENT LLM network failure
+  // during the post-deploy verification step flipped result.success to
+  // false. "needs_review" is the honest status — it is recognized
+  // everywhere, and it is what the frontend's needs-attention card keys off.
+  const failureReason = deploySucceeded
+    ? null
+    : `deploy_verification_incomplete: ${errors.slice(0, 3).join("; ") || "post-deploy verification did not complete"}`;
+
+  await db
+    .update(projects)
+    .set({
+      appUrl,
+      status: deploySucceeded ? "done" : "needs_review",
+      failureReason,
+      updatedAt: new Date(),
+    })
+    .where(eq(projects.id, projectId));
 
   return { success: deploySucceeded, appUrl, backendUrl, githubRepo, errors };
 }

@@ -352,7 +352,45 @@ function capPart(part: GeminiPart): GeminiPart {
   if ("text" in part && !("thought" in part)) {
     return { ...part, text: capString(part.text) };
   }
-  return part; // thought / inlineData — untouched
+  return part; // thought / inlineData — untouched (see dropStaleInlineData)
+}
+
+// 2026-08-27: real bug found live (project 852be5aeaef4, $322 spend, 68.5M
+// input tokens). Screenshots enter history as inlineData base64 blobs
+// (gemini-loop.ts's browser_screenshot handler) and capPart above
+// deliberately leaves them intact — so EVERY screenshot ever taken was
+// replayed in full on EVERY subsequent call for the rest of the run.
+// Measured consequence: compaction fired 104 times and still could not pull
+// history under its own threshold (avg 272K estimated / ~598K actually
+// billed per call), because the one thing dominating the payload was the one
+// thing compaction refused to touch.
+//
+// Only the MOST RECENT image is worth replaying — an agent that has moved on
+// several turns is reasoning from what it already concluded about the older
+// screenshots (which is preserved in the fact ledger and in its own prior
+// text), not re-examining their pixels. Older ones become a short text
+// placeholder so the turn still reads coherently and no functionCall/
+// functionResponse pairing is disturbed.
+export function dropStaleInlineData(messages: GeminiMessage[]): GeminiMessage[] {
+  let lastImageIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const c = messages[i]!.content;
+    if (Array.isArray(c) && c.some((p) => "inlineData" in p)) { lastImageIdx = i; break; }
+  }
+  if (lastImageIdx === -1) return messages;
+
+  return messages.map((m, i) => {
+    if (i === lastImageIdx || !Array.isArray(m.content)) return m;
+    if (!m.content.some((p) => "inlineData" in p)) return m;
+    return {
+      ...m,
+      content: m.content.map((p) =>
+        "inlineData" in p
+          ? { text: `[earlier screenshot omitted — ${p.inlineData.mimeType}, already reviewed in a previous turn]` }
+          : p,
+      ),
+    } as GeminiMessage;
+  });
 }
 
 function capTrailingWindow(messages: GeminiMessage[]): GeminiMessage[] {
@@ -384,7 +422,11 @@ export function selectRelevantContext(
   // include a stale synthetic block, which then rides along inside `trailing`
   // below and duplicates the fresh one this call is about to build.
   const nonSys = fullHistory.filter((m) => m.role !== "system" && !isSyntheticContextMessage(m));
-  const trailing = capTrailingWindow(safeTrailingSlice(nonSys, trailingTurnCount));
+  // dropStaleInlineData runs INSIDE the trailing window (after slicing, before
+  // capping) — see its own header comment. Anything outside the window is
+  // discarded wholesale by the slice anyway, so this only has to handle the
+  // handful of turns that survive, and it always preserves the newest image.
+  const trailing = capTrailingWindow(dropStaleInlineData(safeTrailingSlice(nonSys, trailingTurnCount)));
 
   const taskLines = [
     `CURRENT TASK: ${currentTask}`,

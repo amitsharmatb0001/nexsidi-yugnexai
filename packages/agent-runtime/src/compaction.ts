@@ -116,6 +116,21 @@ export function estimateGeminiTokenCount(messages: GeminiMessage[]): number {
       if ("text" in part && !("thought" in part)) totalChars += part.text.length;
       else if ("functionCall" in part) totalChars += JSON.stringify(part.functionCall).length;
       else if ("functionResponse" in part) totalChars += JSON.stringify(part.functionResponse).length;
+      // 2026-08-27: real bug found live (project 852be5aeaef4, $322 spend).
+      // inlineData (base64 screenshots, pushed by gemini-loop.ts's
+      // browser_screenshot handler) was counted as ZERO here, so a history
+      // carrying several screenshots reported ~272K tokens while the request
+      // Gemini actually billed was ~598K — a 2.2x blind spot. Because this
+      // estimate is what decides WHETHER to compact, the images were both
+      // invisible to the threshold AND (see context-selection.ts's capPart)
+      // exempt from being trimmed, so they rode along in every subsequent
+      // call forever and history could never get back under the threshold.
+      // Counting them at the same chars/4 rate as everything else is a rough
+      // proxy (Gemini tokenizes images by tile, not by base64 length), but a
+      // deliberately conservative one: over-reporting an image's cost makes
+      // compaction fire sooner, which is the correct failure direction for a
+      // payload that should not be replayed indefinitely anyway.
+      else if ("inlineData" in part) totalChars += part.inlineData.data.length;
     }
   }
   return Math.round(totalChars / 4);
@@ -151,6 +166,17 @@ function partsForSummaryPrompt(parts: GeminiPart[]): unknown[] {
     if ("text" in p && !("thought" in p)) return { text: p.text };
     if ("functionCall" in p) return { functionCall: p.functionCall };
     if ("functionResponse" in p) return { functionResponse: p.functionResponse };
+    // 2026-08-27 (systematic audit of the GeminiPart-variant bug class, the
+    // same class as estimateGeminiTokenCount/capPart above): an inlineData
+    // part (a screenshot) matched none of the branches above and fell into
+    // the `{ thought: true }` default — telling the summarizer LLM that a
+    // screenshot was an empty thought marker. Any conclusion that depended
+    // on having LOOKED at the app ("the hero renders white-on-white") was
+    // therefore erased from the summary it produced, silently and with no
+    // way to notice. Never send the base64 payload here (that is what the
+    // caller is compacting AWAY), but do say an image existed so the
+    // summarizer can carry that fact forward honestly.
+    if ("inlineData" in p) return { image: `[screenshot: ${p.inlineData.mimeType}]` };
     return { thought: true };
   });
 }

@@ -19,7 +19,13 @@ import {
   type GeminiTier,
 } from "@nexsidi/llm-client";
 import { runAgent, buildToolList, evaluateCommandStrike, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
+import { createHash } from "node:crypto";
 import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts";
+
+// Below this size a re-read is not worth replacing with a pointer — the
+// pointer text itself would be comparable in length, and small config files
+// are cheap to repeat. See seenFileReads in runGeminiAgent.
+const REREAD_POINTER_MIN_CHARS = 400;
 import { appendFactLedgerEntry, compactViaRelevantContext, type FactLedgerEntry, type TurnToolActivity } from "./context-selection.ts";
 // 2026-08-13 (cost-control Task 1): same CRITICAL gap as loop.ts (see that
 // file's recordSpend import comment for the full root cause) — this is the
@@ -482,6 +488,20 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   const filesWritten: string[] = [];
   const escalations: Escalation[] = [];
   const errors: string[] = [];
+  // 2026-08-27: real waste measured live (project 852be5aeaef4). The QA loop
+  // has had a FileReadCache since the cost-control work; the GENERATOR loop
+  // had nothing equivalent. Riya read docker-compose.yml 18 times and each
+  // Dockerfile 14 times in a single project. Unlike QA's cache — whose job is
+  // avoiding disk I/O — the expensive part here is that every re-read appends
+  // the file's ENTIRE content to the conversation, which is then re-sent on
+  // every subsequent call for the rest of the run. 18 reads of one file means
+  // paying for that file ~18 times over, forever.
+  // Keyed by path -> the content hash the agent has already been shown. On a
+  // re-read of UNCHANGED content we return a short pointer instead of the
+  // body; if the file changed (the agent edited it, or a build rewrote it)
+  // the new content is returned in full, because then it is genuinely new
+  // information. Scoped to one run, so a fresh agent always gets real reads.
+  const seenFileReads = new Map<string, { hash: string; iteration: number }>();
   let iterations = 0;
   const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
   let abortedOnUnrecoverableError = false;
@@ -827,6 +847,28 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
         case "read_file": {
           result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number }, ledger);
+          // See seenFileReads' declaration for the measured waste this closes.
+          // Only dedups a whole-file read (no offset/limit window) that came
+          // back successfully — a paginated read is a different view of the
+          // file and a failed read has nothing worth remembering.
+          const readArgs = args as { path: string; offset?: number; limit?: number };
+          if (readArgs.offset === undefined && readArgs.limit === undefined && result?.status === "success") {
+            const body = typeof result.output === "string" ? result.output : "";
+            if (body.length > REREAD_POINTER_MIN_CHARS) {
+              const hash = createHash("sha256").update(body).digest("hex");
+              const prior = seenFileReads.get(readArgs.path);
+              if (prior && prior.hash === hash) {
+                result = {
+                  ...result,
+                  output:
+                    `[unchanged since you read it on iteration ${prior.iteration} — full contents are already above in this conversation, ` +
+                    `${body.length} chars omitted here rather than repeated. Re-read with an offset/limit if you need a specific region again.]`,
+                };
+              } else {
+                seenFileReads.set(readArgs.path, { hash, iteration: iterations });
+              }
+            }
+          }
           break;
         }
         case "list_files": {

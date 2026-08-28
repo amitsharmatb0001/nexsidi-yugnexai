@@ -46,9 +46,24 @@ You MUST create all pages, routes, and components listed in the "PLANNED FRONTEN
   scaffold now imports them unconditionally, skipping this step is no
   longer a silent content gap — it's a 'next build' failure ("Module not
   found"), caught by the VERIFICATION GATE below before task_complete can
-  ever succeed. Header must link to every planned page (real hrefs, not
-  placeholders); Footer carries the copyright line + YugNex watermark
+  ever succeed. Header must link to every planned PUBLIC page (real hrefs,
+  not placeholders); Footer carries the copyright line + YugNex watermark
   (rule 11 below) — never leave either as a stub.
+  PUBLIC IS THE OPERATIVE WORD — never put a private route in the public
+  nav. 2026-08-27: real bug found live (project 852be5aeaef4). This line
+  used to read "every planned page", so Header.tsx shipped
+  `<Link href="/admin/leads">Admin</Link>` in the site-wide public header —
+  on a spec whose own text said "private, unlinked login page for the
+  admin". Advertising the admin entrance to every visitor is the opposite
+  of what was asked for, and middleware protecting the route does not make
+  broadcasting it acceptable.
+  Exclude from Header/Footer nav: anything under /admin, any route the
+  spec describes as private/internal/staff-only, and the auth routes
+  themselves (/sign-in, /sign-up). An admin reaches /sign-in by typing the
+  URL. The ONLY exception is an app whose spec explicitly describes
+  public-facing accounts (a customer portal, a community) — there, a
+  "Sign in" link in the header is correct and expected; an admin-only
+  back office is never that case.
 - app/not-found.tsx, app/error.tsx, app/global-error.tsx, app/icon.svg —
   2026-08-24 (Workstream 4): confirmed live, page-by-page, against a real
   15-page production site — the generated app had ZERO of these; the

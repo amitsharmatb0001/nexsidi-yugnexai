@@ -1,4 +1,4 @@
-import { test, expect, mock } from "bun:test";
+import { test, expect, mock, afterAll } from "bun:test";
 import { runAgent } from "./loop.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 import { writeFileSync, existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -8,19 +8,50 @@ import { join } from "node:path";
 // Construct the module successfully, then fail at the operation boundary that
 // runAgent is expected to recover from. Throwing in the factory poisons Bun's
 // shared module loader before runtime fallback can execute.
+//
+// 2026-08-28: this mock was the root cause of the 7 "pre-existing, unrelated"
+// suite failures that had been written off for a long time. Bun's mock.module
+// is PROCESS-GLOBAL and is never automatically restored, so every test file
+// that ran after this one — apps/api's auth.test.ts and chat.test.ts, which
+// use the real database — received this throwing stub instead. Their failures
+// reported "Postgres database connection timed out!", which reads exactly
+// like a real infrastructure problem but is this hardcoded string. Every one
+// of those tests passes in isolation; only the shared process made them fail.
+// Capturing the real module first and reinstating it in afterAll keeps this
+// file's coverage intact while ending the leak.
+const realDbModule = await import("@nexsidi/db");
+
+// Re-registering the real module in afterAll is NOT enough: by then other
+// files' modules (apps/api/src/auth/service.ts) already hold a direct
+// reference to whatever object was exported here, and swapping the registry
+// entry does not update a captured reference. A Proxy keeps ONE stable object
+// identity while letting its behavior change — it throws for this file's
+// tests, then delegates to the real db for everyone else.
+let failDbReads = true;
+
 mock.module("@nexsidi/db", () => ({
-  db: {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => {
-            throw new Error("Postgres database connection timed out!");
-          },
-        }),
-      }),
-    }),
-  },
+  ...realDbModule,
+  db: new Proxy(realDbModule.db as object, {
+    get(target, prop, receiver) {
+      if (prop === "select" && failDbReads) {
+        return () => ({
+          from: () => ({
+            where: () => ({
+              limit: () => {
+                throw new Error("Postgres database connection timed out!");
+              },
+            }),
+          }),
+        });
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  }),
 }));
+
+afterAll(() => {
+  failDbReads = false;
+});
 
 let turn = 0;
 

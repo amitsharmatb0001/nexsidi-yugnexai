@@ -659,7 +659,18 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   let consecutiveTransportFailures = 0;
   let abortedOnTransportFailures = false;
 
-  console.log(`[${config.agentName}:agent] Starting — model: ${config.model}, maxIter: ${effectiveMaxIterations}` +
+  // 2026-08-27: logged config.model, which is the model as CONFIGURED — not
+  // necessarily the one this run will use, because sanitizeModelChain above
+  // may have dropped it. Live logs therefore read "Starting — model:
+  // qwen2.5-coder..." two lines after "Dropping disallowed model
+  // qwen2.5-coder...", which reads like the loop ignoring its own router.
+  // (It doesn't — it runs modelChain[0].) Logging the model actually in use,
+  // and naming the configured one only when they differ, so the log answers
+  // "what is this run really doing" instead of raising a false alarm.
+  const activeModel = modelChain[0];
+  console.log(`[${config.agentName}:agent] Starting — model: ${activeModel}` +
+    (activeModel !== config.model ? ` (configured "${config.model}" was filtered out by model-routing)` : "") +
+    `, maxIter: ${effectiveMaxIterations}` +
     (modelChain.length > 1 ? `, fallbacks: ${modelChain.slice(1).join(", ")}` : ""));
 
   const budget = new BudgetTracker();

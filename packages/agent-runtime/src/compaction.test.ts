@@ -199,3 +199,38 @@ test("findSymbolInFile finds class definition", () => {
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// 2026-08-27 (systematic audit of the GeminiPart-variant bug class — the same
+// class as estimateGeminiTokenCount/capPart, both of which shipped this exact
+// mistake). partsForSummaryPrompt branched on text/functionCall/
+// functionResponse and defaulted everything else to `{ thought: true }`, so a
+// screenshot reached the summarizer LLM labelled as an empty thought marker.
+// Any conclusion that depended on having LOOKED at the app was therefore
+// erased from the summary, silently.
+test("compactGeminiHistory tells the summarizer a screenshot existed, never disguises it as a thought", async () => {
+  let promptSeen = "";
+  const mockChat = async (msgs: Array<{ role: string; content: string }>) => {
+    promptSeen = msgs[0]!.content;
+    return { content: "summary" };
+  };
+  const big = "x".repeat(200_000);
+  // The image must land in the SUMMARIZED middle, not the raw trailing window
+  // (safeTrailingSlice keeps the last 6 non-system turns verbatim, and a
+  // middle of length 0 makes compaction a no-op).
+  const filler: GeminiMessage[] = Array.from({ length: 8 }, (_, i) => ({ role: "user" as const, content: `turn ${i}` }));
+  const messages: GeminiMessage[] = [
+    { role: "system", content: "sys" },
+    { role: "user", content: [{ text: big }] },
+    { role: "user", content: [{ text: "here is the page" }, { inlineData: { mimeType: "image/png", data: "AAAA" } }] },
+    ...filler,
+  ];
+
+  await compactGeminiHistory(messages, mockChat, 1_000);
+
+  // The summarizer must be able to see that an image was part of the run.
+  expect(promptSeen).toContain("screenshot");
+  expect(promptSeen).toContain("image/png");
+  // And must never receive the raw base64 payload — that is the thing being
+  // compacted away in the first place.
+  expect(promptSeen).not.toContain("AAAA");
+});

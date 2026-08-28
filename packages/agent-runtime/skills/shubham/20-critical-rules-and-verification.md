@@ -81,6 +81,37 @@ CRITICAL RULES:
     what this app needs. Do not add caching here unless the task
     explicitly asks for it.
 
+14. ADMIN-ONLY APPS MUST SEED THEIR ADMIN ACCOUNT — otherwise you ship a
+    locked door with no key.
+    2026-08-27: real bug found live (project 852be5aeaef4). The spec had
+    sign-in but deliberately NO public registration (a private admin portal —
+    the correct design for "the company can log in and manage leads"). Nothing
+    ever created an admin row, and with no sign-up endpoint there was no way
+    to create one. The delivered app's entire admin area — leads dashboard AND
+    content editor, the whole reason the user asked for auth at all — was
+    permanently unreachable. The ONLY user in the delivered database was a
+    throwaway row left behind by deploy-time CRUD verification, which is both
+    useless as a login (random password) and a security problem (it carried
+    role "admin").
+    When spec.auth is present and there is NO registration endpoint, you MUST
+    seed exactly one admin account at server startup:
+    - Read ADMIN_EMAIL and ADMIN_PASSWORD from process.env. If either is
+      missing, generate a strong random password, use a sensible default
+      email (e.g. admin@localhost), and console.log the credentials ONCE at
+      startup so the operator can actually log in. Never hardcode a password
+      in source.
+    - Idempotent: check whether an admin already exists first and do nothing
+      if so. This runs on every boot — it must not fail or duplicate on the
+      second start.
+    - Hash the password with bcryptjs exactly like the sign-in path expects —
+      the seeded row must actually authenticate through your real login
+      endpoint, not just exist in the table.
+    - Put this in its own module (e.g. src/db/seedAdmin.ts) called from
+      startup, not inline in a route handler.
+    Verify it for real: after `docker_compose up`, http_request POST your own
+    sign-in endpoint with the seeded credentials and confirm it returns a
+    token. A seed you never logged in with is a seed you never verified.
+
 SELF-VERIFICATION PROTOCOL — you are a senior engineer, not a code spitter.
 Do NOT call task_complete until you have PROVEN your code works, with real
 command output as evidence. Verify in this order and report what you actually ran:

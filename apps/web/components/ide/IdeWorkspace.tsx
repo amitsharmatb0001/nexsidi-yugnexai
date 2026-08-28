@@ -229,10 +229,20 @@ const FAILURE_REASON_TEXT: Record<string, string> = {
   deploy_stuck: "Deployment kept failing with the same error and couldn't self-recover.",
   deploy_failed: "Deployment failed.",
   change_request_failed: "The requested change couldn't be applied.",
+  // 2026-08-27: written by Riya when the containers came up but post-deploy
+  // verification didn't finish (commonly a transient LLM/network failure, not
+  // a broken app) — the app itself may well be running and usable.
+  deploy_verification_incomplete: "The app deployed and started, but the final automated checks didn't finish — so it hasn't been confirmed working end to end. It may still be usable.",
 };
 
+// Reasons may carry a "code: detail" shape (see Riya's failureReason) —
+// match on the code and append the detail rather than dumping the raw string.
 function readableFailureReason(reason: string): string {
-  return FAILURE_REASON_TEXT[reason] ?? `It stopped with an internal reason (${reason}).`;
+  const [code, ...rest] = reason.split(":");
+  const detail = rest.join(":").trim();
+  const base = FAILURE_REASON_TEXT[code!.trim()];
+  if (!base) return `It stopped with an internal reason (${reason}).`;
+  return detail ? `${base} (${detail})` : base;
 }
 
 function DoneComposer({ onSubmit, submitting }: { onSubmit: (text: string) => void; submitting: boolean }) {

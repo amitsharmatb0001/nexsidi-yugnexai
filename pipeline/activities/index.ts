@@ -234,19 +234,71 @@ interface PlannerSimplePlan {
   authType: "none" | "jwt";
 }
 
+// 2026-08-27: real bug found live (project 852be5aeaef4). build-plan.json is
+// BOTH the planner's output AND Arjun's output — Arjun overwrites it at the
+// end of runArjun (see writeCacheFile there, and line ~190's own "before it
+// gets overwritten" comment). The detection below distinguishes them by
+// "pages[] present, shubhamTasks absent", so it works exactly ONCE: on the
+// FIRST Arjun run. Every re-run after that — and the spec-rejection loop
+// re-runs Saanvi+Arjun on every rejection — reads Arjun's own output, sees
+// shubhamTasks, returns null, and silently drops annotation mode. With
+// lockedPages undefined, the reconciliation in agents/arjun/src/index.ts
+// (the deterministic guarantee that every page the user was PROMISED gets
+// built) never runs, and Arjun is free to re-invent the page list.
+//
+// Confirmed live: the user approved a plan containing /faq, rejected the
+// spec twice on unrelated grounds (auth scope), and the delivered app had no
+// /faq page at all — with nothing anywhere reporting it as dropped. This is
+// the concrete mechanism behind the "why does it silently drop the plan"
+// complaint.
+//
+// PLANNER_PLAN_FILE is a separate, write-once copy that Arjun never touches,
+// so the planner's locked page list survives an arbitrary number of
+// rejection re-runs. build-plan.json is still read as a fallback for
+// projects created before this file existed.
+const PLANNER_PLAN_FILE = "planner-plan.json";
+
+function parsePlannerSimplePlan(raw: string): PlannerSimplePlan | null {
+  const data = JSON.parse(raw) as Record<string, unknown>;
+  // Planner's plan has pages[] + authType but NOT shubhamTasks (Arjun adds those)
+  if (Array.isArray(data.pages) && !data.shubhamTasks) {
+    return {
+      pages: data.pages as PlannerSimplePlan["pages"],
+      authType: (data.authType === "jwt" ? "jwt" : "none") as "none" | "jwt",
+    };
+  }
+  return null;
+}
+
 function readPlannerSimplePlan(projectId: string): PlannerSimplePlan | null {
-  const p = join(process.env.BUILD_DIR ?? "/tmp/nexsidi-builds", projectId, "build-plan.json");
-  if (!existsSync(p)) return null;
+  const dir = join(process.env.BUILD_DIR ?? "/tmp/nexsidi-builds", projectId);
+
+  // Preferred: the durable copy, immune to Arjun's overwrite.
+  const durable = join(dir, PLANNER_PLAN_FILE);
+  if (existsSync(durable)) {
+    try {
+      const plan = parsePlannerSimplePlan(readFileSync(durable, "utf-8"));
+      if (plan) return plan;
+    } catch { /* fall through to the legacy path below */ }
+  }
+
+  // Legacy/first-run: build-plan.json still holds the planner's version.
+  // Promote it to the durable copy so the NEXT run (after Arjun overwrites
+  // build-plan.json) can still find it.
+  const legacy = join(dir, "build-plan.json");
+  if (!existsSync(legacy)) return null;
   try {
-    const data = JSON.parse(readFileSync(p, "utf-8")) as Record<string, unknown>;
-    // Planner's plan has pages[] + authType but NOT shubhamTasks (Arjun adds those)
-    if (Array.isArray(data.pages) && !data.shubhamTasks) {
-      return {
-        pages: data.pages as PlannerSimplePlan["pages"],
-        authType: (data.authType === "jwt" ? "jwt" : "none") as "none" | "jwt",
-      };
+    const rawText = readFileSync(legacy, "utf-8");
+    const plan = parsePlannerSimplePlan(rawText);
+    if (plan) {
+      try {
+        writeCacheFile(projectId, PLANNER_PLAN_FILE, rawText);
+        console.log(`[activity:arjun] preserved planner page list (${plan.pages.length} pages) to ${PLANNER_PLAN_FILE} — survives spec-rejection re-runs`);
+      } catch (e) {
+        console.error(`[activity:arjun] could not persist ${PLANNER_PLAN_FILE}: ${String(e)}`);
+      }
     }
-    return null;
+    return plan;
   } catch { return null; }
 }
 

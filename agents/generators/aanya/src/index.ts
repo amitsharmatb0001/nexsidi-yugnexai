@@ -530,6 +530,30 @@ CRITICAL RULES:
     state misleads users when the backend is down.
 
 VERIFICATION GATE: Do not call task_complete until "npx next build" exits 0.
+
+CONTENT-COMPLETENESS GATE — run this before task_complete, every time.
+2026-08-27: real gap found live (project 852be5aeaef4). You were handed a
+feature reading "Informational pages detailing the value proposition, how it
+works, customer metrics, verified founder details, and frequently asked
+questions", plus user stories naming the products, the pricing tiers, and the
+FAQ — AND the instruction above that says to build all of it. The delivered
+home page contained exactly one sentence: a headline and a subtitle. No
+metrics, no how-it-works, no testimonial, no FAQ. Every real number in the
+brief (40,000 tickets/day, 65% faster response, 140 customers) and both
+founder names were absent from the built site. "npx next build" passed
+cleanly, because a nearly-empty page compiles perfectly.
+A build that compiles is not a build that is complete. So prove completeness
+mechanically, the same way you prove compilation:
+1. Re-read the LOCKED SPEC block in your task. List every concrete noun it
+   names — each section ("how it works", "FAQ", "metrics"), each named
+   product, each pricing tier, each person, each real figure.
+2. For each one, run_command a grep against your own written files, e.g.
+   run_command: grep -ril "how it works" app components
+   A term that returns no match is NOT BUILT. Build it, then re-grep.
+3. Only when every term from step 1 returns a real match may you call
+   task_complete — and state in your summary which terms you grepped for.
+A page whose entire body is a hero section fails this gate. If the spec names
+five kinds of content for a page, that page has five kinds of content.
 `;
 
 const AANYA_PREVIEW_ADDENDUM = `
