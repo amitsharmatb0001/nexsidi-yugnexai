@@ -274,25 +274,32 @@ function goalTokens(state: PlannerState): number {
 // ─── BuildPlan sanitization ──────────────────────────────────────────────────
 // Fixes model hallucinations that persist across all prompt iterations.
 // Applied before yielding build_triggered so the pipeline always receives clean data.
-function sanitizePlan(plan: BuildPlan): BuildPlan {
+export function sanitizePlan(plan: BuildPlan): BuildPlan {
   // /sign-out, /logout, /signout are never pages — sign-out is always a nav button
   const signOutPat = /^\/(sign.?out|log.?out|logout|signout)/i;
   const pages = plan.pages.filter(p => !signOutPat.test(p.path));
 
-  // jwt auth + /sign-in but no /sign-up → add /sign-up immediately after /sign-in
-  if (plan.authType === "jwt") {
-    const hasSignIn = pages.some(p => /^\/(sign.?in|login)$/i.test(p.path));
-    const hasSignUp = pages.some(p => /^\/(sign.?up|register|signup)$/i.test(p.path));
-    if (hasSignIn && !hasSignUp) {
-      const idx = pages.findIndex(p => /^\/(sign.?in|login)$/i.test(p.path));
-      pages.splice(idx + 1, 0, {
-        name: "Sign Up",
-        path: "/sign-up",
-        description: "New client registration",
-      });
-    }
-  }
-
+  // 2026-08-28: REMOVED — this block auto-added a public /sign-up page to any
+  // plan with authType "jwt" and a /sign-in. Real bug found live (project
+  // 3887a86155bc): the user's request said "one private login (no public
+  // sign-up)", the plan SHOWN for approval correctly listed only /sign-in and
+  // /admin, and then this ran AFTER approval and injected /sign-up into the
+  // committed page list. The user approved one plan and a different one was
+  // written to disk.
+  //
+  // Everything downstream then worked correctly and made it worse: Arjun's
+  // reconciliation saw /sign-up among the "locked" (approved) pages and
+  // guaranteed it got built; Saanvi produced a matching public registration
+  // endpoint. Two rounds of prompt corrections telling Saanvi "no sign-up"
+  // could not win against a page list that claimed the user had asked for it —
+  // correctly, since the locked plan is meant to be authoritative.
+  //
+  // "Has a login" does not imply "anyone may register": an admin portal, a
+  // staff tool, and a client area all have /sign-in and only the last wants
+  // public sign-up. That is a product decision the user makes, not something
+  // to infer from the auth type. If a project genuinely needs registration,
+  // the planner lists /sign-up explicitly and the user sees it in the plan
+  // they approve — which is the only way it should ever get built.
   return { ...plan, pages };
 }
 
