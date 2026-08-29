@@ -127,7 +127,7 @@ export async function run(
     // user, so fall through and spec normally rather than pausing on nothing.
   }
 
-  const apiEndpoints: ApiEndpoint[] = Array.isArray(raw.apiEndpoints) ? raw.apiEndpoints : [];
+  const apiEndpoints: ApiEndpoint[] = sanitizeApiEndpoints(Array.isArray(raw.apiEndpoints) ? raw.apiEndpoints : []);
   const spec: Omit<ProjectSpec, "specHash"> = {
     projectId,
     name: String(raw.name ?? "Untitled"),
@@ -196,6 +196,43 @@ export function sanitizeDbTables(dbTables: DbTable[]): DbTable[] {
     });
     return fields.length === table.fields.length ? table : { ...table, fields };
   });
+}
+
+// 2026-08-29: real bug found live, THREE variations on the same project
+// (852be5aeaef4 → public sign-up page+endpoint; 6c7d4358cf73 round 1 →
+// auth:required "internal sign-up"; round 2 → auth:PUBLIC "create initial
+// admin, no public UI" — worse than round 1, since an unauthenticated
+// endpoint is reachable by anyone who requests the exact path, UI or not).
+// The AUTH RULE and ADMIN-ONLY LOGIN prompt sections tell the model not to
+// invent registration for admin-only apps; that instruction is probabilistic
+// and clearly does not hold. Worse, deriveAuthConfig below treats the MERE
+// EXISTENCE of a sign-up-shaped path as proof of "genuine public
+// registration" — so once Saanvi writes one for ANY reason, even a
+// self-described internal bootstrap utility, it gets amplified into
+// auth.features containing "sign-up", which Arjun's prompt then reads as
+// license to build public self-registration pages. Fixing at the actual
+// source: an admin-only app never needs an HTTP endpoint to create its first
+// account at all — CRITICAL RULE #14 in Shubham's doctrine already requires
+// seeding the admin from ADMIN_EMAIL/ADMIN_PASSWORD env vars at startup, not
+// via a network-reachable route. So for an app whose only protected
+// resources live under /admin, any registration-shaped endpoint is dropped
+// before deriveAuthConfig ever sees it — the false signal never reaches the
+// function that was amplifying it.
+// Narrowly scoped (same reasoning as sanitizeDbTables above): an app with
+// genuine customer-facing protected resources (e.g. GET /api/v1/profile) is
+// NOT touched — that app may legitimately want self-service registration.
+const REGISTRATION_PATH = /sign-?up|register/i;
+
+function isAdminOnlyApp(apiEndpoints: ApiEndpoint[]): boolean {
+  const protectedPaths = apiEndpoints.filter((e) => e.auth === true).map((e) => e.path ?? "");
+  if (protectedPaths.length === 0) return false; // nothing protected — not an "admin-only" app, just a public one
+  return protectedPaths.every((p) => /\/admin(\/|$)/i.test(p));
+}
+
+export function sanitizeApiEndpoints(apiEndpoints: ApiEndpoint[]): ApiEndpoint[] {
+  if (!isAdminOnlyApp(apiEndpoints)) return apiEndpoints;
+  const filtered = apiEndpoints.filter((e) => !REGISTRATION_PATH.test(e.path ?? ""));
+  return filtered.length === apiEndpoints.length ? apiEndpoints : filtered;
 }
 
 export function deriveAuthConfig(apiEndpoints: ApiEndpoint[]): ProjectSpec["auth"] {

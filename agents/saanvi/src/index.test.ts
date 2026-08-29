@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { run, SAANVI_SYSTEM_PROMPT, sanitizeDbTables } from "./index.ts";
+import { run, SAANVI_SYSTEM_PROMPT, sanitizeDbTables, sanitizeApiEndpoints } from "./index.ts";
 
 // Full-system audit A7: one empty/unparseable NIM response used to crash
 // the ENTIRE pipeline outright — stress-test run 9 died 12 seconds in when
@@ -303,4 +303,66 @@ test("leaves a table with no owner-shaped field untouched — same table object,
   const table = { name: "site_content", fields: [{ name: "id", type: "uuid" as const, nullable: false, primaryKey: true }] };
   const out = sanitizeDbTables([table]);
   expect(out[0]).toBe(table); // same object identity — no unnecessary copy when nothing was stripped
+});
+
+// 2026-08-29: real bug found live, THREE variations on the same project.
+// Round 1: full public sign-up page + endpoint. Round 2 (after a fix):
+// auth:required "internal sign-up", no UI. Round 3 (after another fix):
+// auth:PUBLIC "create initial admin, no public UI" — worse than round 2,
+// since an unauthenticated endpoint is reachable by anyone who requests the
+// exact path, regardless of whether a UI links to it. An admin-only app
+// never needs an HTTP endpoint to create its first account — CRITICAL RULE
+// #14 in Shubham's doctrine already requires seeding the admin from env vars
+// at startup — so for an app whose only protected resources live under
+// /admin, sanitizeApiEndpoints removes any registration-shaped endpoint
+// before deriveAuthConfig can be fooled by its mere presence into inferring
+// "genuine public registration".
+test("strips a sign-up endpoint from an admin-only app, regardless of its own auth flag", () => {
+  const endpoints = [
+    { method: "POST", path: "/api/v1/auth/sign-in", description: "admin login", auth: false, requestBody: {}, responseBody: {} },
+    { method: "POST", path: "/api/v1/auth/sign-up", description: "create initial admin, no public UI", auth: false, requestBody: {}, responseBody: {} },
+    { method: "GET", path: "/api/v1/admin/inquiries", description: "list inquiries", auth: true, requestBody: null, responseBody: {} },
+    { method: "PUT", path: "/api/v1/admin/content/:id", description: "edit content", auth: true, requestBody: {}, responseBody: {} },
+  ] as const;
+  const out = sanitizeApiEndpoints([...endpoints]);
+  expect(out.map((e) => e.path)).toEqual(["/api/v1/auth/sign-in", "/api/v1/admin/inquiries", "/api/v1/admin/content/:id"]);
+});
+
+test("does not touch a sign-up endpoint on an app with genuine customer-facing protected resources", () => {
+  const endpoints = [
+    { method: "POST", path: "/api/v1/auth/sign-up", description: "register", auth: false, requestBody: {}, responseBody: {} },
+    { method: "GET", path: "/api/v1/profile", description: "own profile", auth: true, requestBody: null, responseBody: {} },
+  ] as const;
+  expect(sanitizeApiEndpoints([...endpoints])).toEqual(endpoints as any);
+});
+
+test("a fully public app (nothing auth:true at all) is left alone — sanitizeApiEndpoints only acts on admin-only apps", () => {
+  const endpoints = [
+    { method: "POST", path: "/api/v1/contact", description: "contact form", auth: false, requestBody: {}, responseBody: {} },
+  ] as const;
+  expect(sanitizeApiEndpoints([...endpoints])).toEqual(endpoints as any);
+});
+
+test("end-to-end: run() no longer infers sign-up for an admin-only spec that raw-includes a bootstrap sign-up endpoint", async () => {
+  const specWithBootstrapSignup = JSON.stringify({
+    name: "Clario AI",
+    description: "Marketing site with admin portal",
+    features: [],
+    apiEndpoints: [
+      { method: "POST", path: "/api/v1/auth/sign-in", description: "admin login", auth: false, requestBody: {}, responseBody: {} },
+      { method: "POST", path: "/api/v1/auth/sign-up", description: "create initial admin, no public UI", auth: false, requestBody: {}, responseBody: {} },
+      { method: "GET", path: "/api/v1/admin/inquiries", description: "list inquiries", auth: true, requestBody: null, responseBody: {} },
+    ],
+    dbTables: [],
+    successCriteria: [],
+  });
+  const stubChat = async () => ({ content: specWithBootstrapSignup, modelUsed: "mistralai/mistral-nemotron" as const });
+
+  const result = await run("proj123", "admin-only marketing site", { chat: stubChat });
+
+  expect(result.status).toBe("locked");
+  if (result.status === "locked") {
+    expect(result.spec.auth).toEqual({ provider: "custom", features: ["sign-in"] });
+    expect(result.spec.apiEndpoints.some((e) => /sign-?up/i.test(e.path ?? ""))).toBe(false);
+  }
 });
