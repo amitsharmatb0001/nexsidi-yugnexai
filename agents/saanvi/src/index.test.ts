@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { run, SAANVI_SYSTEM_PROMPT } from "./index.ts";
+import { run, SAANVI_SYSTEM_PROMPT, sanitizeDbTables } from "./index.ts";
 
 // Full-system audit A7: one empty/unparseable NIM response used to crash
 // the ENTIRE pipeline outright — stress-test run 9 died 12 seconds in when
@@ -250,4 +250,57 @@ test("SAANVI_SYSTEM_PROMPT's AUTH RULE no longer conditions on authType, a field
   const authRuleSection = SAANVI_SYSTEM_PROMPT.slice(authRuleIdx, authRuleIdx + 1500);
   expect(authRuleSection).not.toMatch(/authType is "jwt"/i);
   expect(authRuleSection).toMatch(/default to no auth/i);
+});
+
+// 2026-08-29: real bug found live, TWICE on the same project across a full
+// restart (852be5aeaef4, then 6c7d4358cf73 from a clean prompt). The AUTH
+// RULE prompt fix stopped the model from forcing sign-up/JWT onto apps that
+// don't need them, but it kept attaching a `user_id NOT NULL` foreign key to
+// site_content regardless — a prompt instruction is probabilistic, and this
+// specific model behavior did not reliably follow it. site_content is the
+// WEBSITE'S OWN data (global copy an admin edits), never a per-visitor
+// resource, so a NOT NULL FK to users is either unsatisfiable (no user owns a
+// content row) or wrongly implies content belongs to whichever admin last
+// touched it.
+test("strips a spurious user_id FK from a global site_content table", () => {
+  const out = sanitizeDbTables([
+    {
+      name: "site_content",
+      fields: [
+        { name: "id", type: "uuid", nullable: false, primaryKey: true },
+        { name: "user_id", type: "uuid", nullable: false, references: { table: "users", field: "id" } },
+        { name: "section_key", type: "text", nullable: false },
+        { name: "content_data", type: "text", nullable: false },
+      ],
+    },
+  ]);
+  expect(out[0]!.fields.map((f) => f.name)).toEqual(["id", "section_key", "content_data"]);
+});
+
+test("does not touch a genuinely per-user table — orders keep their owner FK", () => {
+  const orders = [
+    {
+      name: "orders",
+      fields: [
+        { name: "id", type: "uuid" as const, nullable: false, primaryKey: true },
+        { name: "user_id", type: "uuid" as const, nullable: false, references: { table: "users", field: "id" } },
+      ],
+    },
+  ];
+  expect(sanitizeDbTables(orders)).toEqual(orders);
+});
+
+test("matches common aliases for the global config table, not just the exact name", () => {
+  for (const name of ["site_settings", "page_content", "content_blocks", "settings"]) {
+    const out = sanitizeDbTables([
+      { name, fields: [{ name: "user_id", type: "uuid", nullable: false, references: { table: "users", field: "id" } }] },
+    ]);
+    expect(out[0]!.fields).toEqual([]);
+  }
+});
+
+test("leaves a table with no owner-shaped field untouched — same table object, not just equal", () => {
+  const table = { name: "site_content", fields: [{ name: "id", type: "uuid" as const, nullable: false, primaryKey: true }] };
+  const out = sanitizeDbTables([table]);
+  expect(out[0]).toBe(table); // same object identity — no unnecessary copy when nothing was stripped
 });

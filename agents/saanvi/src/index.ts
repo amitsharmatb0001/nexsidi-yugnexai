@@ -141,7 +141,7 @@ export async function run(
     // resources, so it has nothing for sign-in/sign-up to gate.
     auth: deriveAuthConfig(apiEndpoints),
     apiEndpoints,
-    dbTables: Array.isArray(raw.dbTables) ? raw.dbTables : [],
+    dbTables: sanitizeDbTables(Array.isArray(raw.dbTables) ? raw.dbTables : []),
     successCriteria: Array.isArray(raw.successCriteria) ? raw.successCriteria : [],
     lockedAt: new Date().toISOString(),
   };
@@ -165,6 +165,39 @@ export async function run(
 //
 // Exported for direct unit testing — this is pure and the shape it returns
 // is what every downstream generator branches on.
+// 2026-08-29: real bug found live, TWICE on the same project (852be5aeaef4,
+// then again after a full restart from a clean prompt as 6c7d4358cf73). The
+// AUTH RULE prompt section below tells the model not to force a users table
+// or JWT onto apps that don't need them, and that fix held for auth itself —
+// but it's a PROMPT instruction, not a deterministic guarantee, and the model
+// kept independently attaching a `user_id NOT NULL` foreign key to
+// site_content anyway. site_content is the WEBSITE'S OWN data (global copy an
+// admin edits), never a per-visitor resource — there is no "whose site
+// content is this" the way there's a "whose order is this". A NOT NULL FK to
+// users on a table that has no per-user meaning is either impossible to
+// satisfy (no signed-up user owns a content row) or wrongly implies content
+// is scoped to whichever admin last touched it.
+// Prompt-only fixes are probabilistic (confirmed: the SAME instruction held
+// for auth and did not hold for this), so unlike the auth fix this is
+// enforced mechanically — narrowly scoped to the exact confirmed defect
+// (global content/config tables), not a broad heuristic that could strip a
+// legitimately per-user table (orders, cart_items) in some other project.
+const GLOBAL_CONFIG_TABLE_NAMES = /^(site[_-]?content|site[_-]?settings|page[_-]?content|content[_-]?blocks|settings)$/i;
+const OWNER_FIELD_NAMES = /^(user[_-]?id|owner[_-]?id|created[_-]?by|author[_-]?id)$/i;
+
+export function sanitizeDbTables(dbTables: DbTable[]): DbTable[] {
+  return dbTables.map((table) => {
+    if (!GLOBAL_CONFIG_TABLE_NAMES.test(table.name)) return table;
+    const fields = table.fields.filter((f) => {
+      const looksLikeUserOwnerFk =
+        OWNER_FIELD_NAMES.test(f.name) &&
+        (f.references === undefined || /^users?$/i.test(f.references.table));
+      return !looksLikeUserOwnerFk;
+    });
+    return fields.length === table.fields.length ? table : { ...table, fields };
+  });
+}
+
 export function deriveAuthConfig(apiEndpoints: ApiEndpoint[]): ProjectSpec["auth"] {
   if (!apiEndpoints.some((e) => e.auth === true)) return null;
   const hasPublicRegistration = apiEndpoints.some((e) => /sign-?up|register/i.test(e.path ?? ""));
