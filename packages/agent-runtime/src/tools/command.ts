@@ -108,7 +108,7 @@ export function execRunCommand(
     try {
       child = spawn(resolveCommandExecutable(cmd), cmdArgs, {
         cwd,
-        env: buildSandboxEnv({ FORCE_COLOR: "0", NPM_CONFIG_FUND: "false", NPM_CONFIG_AUDIT: "false" }),
+        env: buildSandboxEnv({ FORCE_COLOR: "0", NPM_CONFIG_FUND: "false", NPM_CONFIG_AUDIT: "false" }, cwd),
       });
     } catch (err) {
       resolve({

@@ -434,7 +434,31 @@ export function selectRelevantContext(
     openFindings.length > 0 ? `OPEN FINDINGS:\n${openFindings.map((f) => `- ${f}`).join("\n")}` : null,
   ].filter((l): l is string => l !== null);
 
-  const taskMsg: GeminiMessage = markSynthetic({ role: "user", content: taskLines.join("\n\n") });
+  // 2026-08-29: real, severe bug found live (project 6c7d4358cf73) — this
+  // synthetic message reached 7.3M characters (~1.85M tokens), well past
+  // Gemini's own 1,048,576-token hard limit, so EVERY model in the pool
+  // rejected the request with the identical 400 and Riya's deploy stage
+  // escalated as "stuck." Every OTHER piece of content this module builds —
+  // the trailing window (capTrailingWindow/capString), function call/response
+  // args (capPart/capJsonStrings) — has an explicit size cap; this is the one
+  // place that assembles a message and sends it straight out uncapped, on
+  // the assumption that currentTask/touchedFiles/openFindings always stay
+  // small. That assumption held for every caller inspected at the time of
+  // this fix, but the exact upstream mechanism that grew this one past 7M
+  // characters was not conclusively pinned down — which is precisely the
+  // case a hard backstop exists for: this function has no way to verify its
+  // own assumption about its callers, today or after a future change to one
+  // of them, so it must not trust an unbounded input to build a message with
+  // no cap of its own. Capped generously relative to capString's 4,000 (this
+  // message carries the run's framing, not one tool result, so legitimate
+  // content — a real touched-files list, real QA findings — needs more room)
+  // but nowhere near the multi-megabyte range that caused the live failure.
+  const MAX_TASK_MESSAGE_CHARS = 20_000;
+  const taskContent = taskLines.join("\n\n");
+  const cappedTaskContent = taskContent.length > MAX_TASK_MESSAGE_CHARS
+    ? `${taskContent.slice(0, MAX_TASK_MESSAGE_CHARS)}\n…[${taskContent.length - MAX_TASK_MESSAGE_CHARS} chars truncated — this message grew unexpectedly large; see context-selection.ts's MAX_TASK_MESSAGE_CHARS]…`
+    : taskContent;
+  const taskMsg: GeminiMessage = markSynthetic({ role: "user", content: cappedTaskContent });
 
   const messages: GeminiMessage[] = [...sys, taskMsg];
 
@@ -442,10 +466,11 @@ export function selectRelevantContext(
   // the prompt, and it keeps the "no facts recorded yet" case indistinguishable
   // from extra boilerplate rather than a real section.
   if (factLedger.length > 0) {
-    const ledgerMsg: GeminiMessage = markSynthetic({
-      role: "user",
-      content: `FACT LEDGER (full — every entry below is a fact recorded earlier in this session and is never dropped):\n${formatFactLedgerForPrompt(factLedger)}`,
-    });
+    const ledgerContent = `FACT LEDGER (full — every entry below is a fact recorded earlier in this session and is never dropped):\n${formatFactLedgerForPrompt(factLedger)}`;
+    const cappedLedgerContent = ledgerContent.length > MAX_TASK_MESSAGE_CHARS
+      ? `${ledgerContent.slice(0, MAX_TASK_MESSAGE_CHARS)}\n…[${ledgerContent.length - MAX_TASK_MESSAGE_CHARS} chars truncated]…`
+      : ledgerContent;
+    const ledgerMsg: GeminiMessage = markSynthetic({ role: "user", content: cappedLedgerContent });
     messages.push(ledgerMsg);
   }
 

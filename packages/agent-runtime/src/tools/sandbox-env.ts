@@ -56,13 +56,48 @@ function isBlocked(key: string): boolean {
   return blockedSet.includes(compareKey);
 }
 
+import { join } from "node:path";
+
+// 2026-08-29: real, severe bug found live (project 6c7d4358cf73) — Shubham
+// hit "three-strikes exhausted" trying to run `tsc --noEmit` after the
+// project's OWN code compiled with zero errors (confirmed directly:
+// `./node_modules/.bin/tsc --noEmit` in the same directory exits 0
+// instantly). Root cause, confirmed by replicating command.ts's exact spawn
+// call: `spawn("tsc.cmd", [...], { cwd, env })` throws
+// ENOENT — "Executable not found in $PATH: tsc.cmd" — because a bare
+// `spawn()` NEVER adds `<cwd>/node_modules/.bin` to the search path. npm and
+// npx both do this prepending internally, which is why `npm run build` has
+// always worked while bare `tsc`/`next`/any locally-installed dev-dependency
+// binary has NEVER been findable via this tool — for every agent
+// (Shubham/Aanya/Pranav/Riya/QA) on every project, not something specific to
+// this run. The model, seeing only silent failure with no compiler output
+// to react to, spent 30+ iterations guessing at command-syntax variations
+// (`npx.cmd tsc`, `tsc`, `npx tsc --noEmit`, adding timeout_ms) before the
+// strike-counter correctly gave up — burning real tokens on a problem no
+// prompt fix could ever solve, because the actual binary was never
+// reachable regardless of which syntax asked for it.
+// Fix: mirror what npm/npx do — prepend the target directory's own
+// node_modules/.bin to PATH before spawning. `;`-joined on Windows (PATH's
+// own separator there), `:`-joined elsewhere. cwd is optional so
+// docker.ts's call (docker-compose is a global system binary, not a project
+// dependency) is completely unaffected.
+export function prependLocalBinToPath(env: Record<string, string>, cwd: string): Record<string, string> {
+  const pathKey = process.platform === "win32"
+    ? Object.keys(env).find((k) => k.toUpperCase() === "PATH") ?? "PATH"
+    : "PATH";
+  const sep = process.platform === "win32" ? ";" : ":";
+  const localBin = join(cwd, "node_modules", ".bin");
+  return { ...env, [pathKey]: `${localBin}${sep}${env[pathKey] ?? ""}` };
+}
+
 // Pure and exported for direct unit testing without spawning a real process.
-export function buildSandboxEnv(extra: Record<string, string> = {}): Record<string, string> {
+export function buildSandboxEnv(extra: Record<string, string> = {}, cwd?: string): Record<string, string> {
   const scrubbed: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
     if (isBlocked(key)) continue;
     scrubbed[key] = value;
   }
-  return { ...scrubbed, ...extra };
+  const merged = { ...scrubbed, ...extra };
+  return cwd ? prependLocalBinToPath(merged, cwd) : merged;
 }

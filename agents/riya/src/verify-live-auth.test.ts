@@ -982,3 +982,114 @@ test("verifyAllResourceCrud finds the id in a create response nested under a res
   expect(result.findings).toEqual([]);
   expect(result.ok).toBe(true);
 });
+
+// 2026-08-30: real bug found live (project 6c7d4358cf73). verifyAllResourceCrud
+// used to call registerAndLoginTestUser EAGERLY, before the resource loop
+// even started — so it aborted the ENTIRE check with "custom register
+// failed: returned 404: Cannot POST /api/v1/auth/register" on any admin-only
+// app with no registration endpoint, which is CORRECT, intentional design
+// (CRITICAL RULE #14: admin apps seed their account, they never
+// self-register) — not a bug in the generated app. The live project's only
+// resource (an "admin" bucket: GET /admin/inquiries, PUT /admin/content/:id)
+// had no CREATE endpoint at all, so it was ALWAYS going to be skipped by
+// the existing `if (!createEp) continue` check regardless — the eager
+// registration attempt was pure wasted work whose only effect was tanking
+// an otherwise-passing deploy. Stage 6's own stuck-detection correctly
+// stopped retrying once this same false failure repeated identically.
+test("an admin-only app with no registration endpoint and no createable resource is NOT a failure", async () => {
+  writeContract([
+    { method: "POST", path: "/api/v1/auth/sign-in", auth: false },
+    { method: "GET", path: "/api/v1/admin/inquiries", auth: true },
+    { method: "PUT", path: "/api/v1/admin/content/:id", auth: true },
+  ]);
+  // No server needed — registerAndLoginTestUser must never even be called,
+  // since nothing in this contract has a CREATE endpoint to test.
+  const result = await verifyAllResourceCrud(dir, "http://127.0.0.1:1", () => null);
+  expect(result.ok).toBe(true);
+  expect(result.findings).toEqual([]);
+});
+
+test("a genuinely public POST resource is still tested normally when the app has no registration endpoint", async () => {
+  writeContract([
+    { method: "POST", path: "/api/v1/auth/sign-in", auth: false },
+    { method: "POST", path: "/api/v1/contact", auth: false, requestType: "null" },
+  ]);
+  const srv = createServer((req, res) => {
+    if (req.url === "/api/v1/contact" && req.method === "POST") {
+      res.writeHead(201, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: { id: "lead-1" } }));
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  const url = await new Promise<string>((resolve) => {
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      resolve(`http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`);
+    });
+  });
+  try {
+    const result = await verifyAllResourceCrud(dir, url, (table, id) => (table === "contact" && id === "lead-1" ? { id } : null));
+    // Never even attempted to register — a public endpoint needs no identity.
+    expect(result.findings.some((f) => f.includes("could not reach") || f.includes("custom register"))).toBe(false);
+  } finally {
+    srv.close();
+  }
+});
+
+test("an auth-required resource is SKIPPED (not a hard failure) when the app has no registration endpoint", async () => {
+  writeContract([
+    { method: "POST", path: "/api/v1/auth/sign-in", auth: false },
+    { method: "POST", path: "/api/v1/orders", auth: true, requestType: "null" },
+  ]);
+  // The registration attempt genuinely 404s (no such endpoint on this app) —
+  // simulated by pointing at a server that only implements sign-in.
+  const srv = createServer((req, res) => { res.writeHead(404); res.end("Cannot POST " + req.url); });
+  const url = await new Promise<string>((resolve) => {
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      resolve(`http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`);
+    });
+  });
+  try {
+    const result = await verifyAllResourceCrud(dir, url, () => null);
+    // The overall result is still ok — this is a SKIP, not a failure.
+    expect(result.ok).toBe(true);
+    expect(result.findings.length).toBe(1);
+    expect(result.findings[0]).toContain("SKIPPED —");
+    expect(result.findings[0]).toContain("orders");
+  } finally {
+    srv.close();
+  }
+});
+
+test("a genuine failure on a resource that DOES have a working registration path still fails the check", async () => {
+  writeContract([
+    { method: "POST", path: "/api/v1/auth/register", auth: false },
+    { method: "POST", path: "/api/v1/auth/login", auth: false },
+    { method: "POST", path: "/api/v1/orders", auth: true, requestType: "null" },
+  ]);
+  const srv = createServer((req, res) => {
+    if (req.url === "/api/v1/auth/register" && req.method === "POST") { res.writeHead(201); res.end("{}"); return; }
+    if (req.url === "/api/v1/auth/login" && req.method === "POST") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ token: "fake" }));
+      return;
+    }
+    if (req.url === "/api/v1/orders" && req.method === "POST") { res.writeHead(500); res.end("boom"); return; } // genuinely broken
+    res.writeHead(404); res.end();
+  });
+  const url = await new Promise<string>((resolve) => {
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      resolve(`http://127.0.0.1:${typeof addr === "object" && addr ? addr.port : 0}`);
+    });
+  });
+  try {
+    const result = await verifyAllResourceCrud(dir, url, () => null);
+    expect(result.ok).toBe(false); // a real failure — SKIPPED-filtering must not mask this
+    expect(result.findings.some((f) => f.includes("500"))).toBe(true);
+  } finally {
+    srv.close();
+  }
+});

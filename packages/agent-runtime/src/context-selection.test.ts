@@ -587,3 +587,42 @@ test("compactViaRelevantContext: above threshold, rebuilds via selectRelevantCon
   expect(serialized).toContain("TOUCHED FILES");
   expect(serialized).toContain("FACT LEDGER");
 });
+
+// 2026-08-29: real, severe bug found live (project 6c7d4358cf73) — this
+// synthetic message reached 7.3M characters (~1.85M tokens), well past
+// Gemini's 1,048,576-token hard limit, so EVERY model in the pool rejected
+// the deploy stage's request with an identical 400, and it escalated as
+// "stuck." Every other piece of content this module builds has an explicit
+// size cap (capTrailingWindow/capString for the trailing window, capPart/
+// capJsonStrings for function call/response args) — this was the one place
+// that assembled a message and sent it out uncapped, trusting that
+// currentTask/touchedFiles/openFindings always stay small. The exact
+// upstream mechanism that grew one past 7M characters live was never
+// conclusively pinned down — which is exactly the case a hard backstop
+// exists for.
+test("an oversized currentTask does not produce an oversized synthetic message", () => {
+  const runawayTask = "x".repeat(500_000); // far larger than anything buildAgentTask legitimately produces
+  const context = selectRelevantContext([], runawayTask, [], [], []);
+  const taskMsg = context.find((m) => m.role === "user");
+  expect(taskMsg).toBeDefined();
+  const size = typeof taskMsg!.content === "string" ? taskMsg!.content.length : JSON.stringify(taskMsg!.content).length;
+  expect(size).toBeLessThan(25_000); // capped, not the full 500K
+});
+
+test("an oversized fact ledger does not produce an oversized ledger message", () => {
+  const runawayLedger = Array.from({ length: 50 }, (_, i) => ({
+    fact: "y".repeat(20_000),
+    ts: i,
+  })) as any;
+  const context = selectRelevantContext([], "small task", [], [], runawayLedger);
+  const total = context.reduce((sum, m) => sum + (typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length), 0);
+  expect(total).toBeLessThan(60_000); // both synthetic messages capped, not ~1M raw
+});
+
+test("normal-sized task/touched-files content is completely unaffected by the cap", () => {
+  const context = selectRelevantContext([], "Deploy the project", ["docker-compose.yml", "backend/src/index.ts"], [], []);
+  const taskMsg = context.find((m) => m.role === "user");
+  expect(taskMsg!.content).toContain("CURRENT TASK: Deploy the project");
+  expect(taskMsg!.content).toContain("docker-compose.yml");
+  expect(taskMsg!.content).not.toContain("truncated"); // real content this small must never be touched
+});

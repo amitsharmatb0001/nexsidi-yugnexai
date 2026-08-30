@@ -282,3 +282,62 @@ pipelineRouter.post("/:projectId/request-changes", async (c) => {
     return c.json({ error: "Failed to start change request" }, 500);
   }
 });
+
+// ── POST /api/pipeline/:projectId/retry ────────────────────────────────────
+// 2026-08-29: real gap found live (project 6c7d4358cf73) — a genuine
+// transient failure (a machine-wide network outage took down every model in
+// the Gemini pool simultaneously mid-generation) correctly escalated via
+// escalateAndAwaitRetryDecision, which pauses the WORKFLOW on
+// condition(() => retryDecision !== null, "24 hours") waiting for
+// retryStageSignal. But nothing in apps/api or apps/web ever SENT that
+// signal — the only prior instance of unblocking one of these was a
+// hand-written one-off Temporal client script (pipeline/retry-rivhdw1.ts)
+// committed for a single specific project. Every needs_review escalation
+// with a retry-eligible reason was, in practice, a dead end for anyone
+// without direct Temporal/shell access.
+// Retry-eligible reasons are exactly the ones project-build.ts routes
+// through escalateAndAwaitRetryDecision rather than an unconditional
+// markProjectFailed+return: budget_exceeded, generation_failed, stuck_state,
+// compile_repair_limit, deploy_stuck, deploy_failed. clarification_exhausted
+// and spec_rejected_too_many_times are NOT here deliberately — the workflow
+// already `return`ed for those; there is nothing left to signal, and this
+// route 404s the underlying workflow lookup if attempted (see the running
+// check below), rather than silently sending a signal into the void.
+const RETRYABLE_FAILURE_REASONS = new Set([
+  "budget_exceeded",
+  "generation_failed",
+  "stuck_state",
+  "compile_repair_limit",
+  "deploy_stuck",
+  "deploy_failed",
+]);
+
+pipelineRouter.post("/:projectId/retry", async (c) => {
+  const projectId = c.req.param("projectId");
+
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project) return c.json({ error: "not found" }, 404);
+  if (project.status !== "needs_review") {
+    return c.json({ error: "project is not awaiting a retry decision" }, 409);
+  }
+  if (!project.failureReason || !RETRYABLE_FAILURE_REASONS.has(project.failureReason)) {
+    return c.json({ error: `failure reason "${project.failureReason ?? "unknown"}" is not retryable — this project needs a new build, not a retry` }, 409);
+  }
+
+  const running = await isWorkflowRunning(projectId);
+  if (!running) {
+    return c.json({ error: "the build workflow is no longer running — it may have already timed out waiting for a decision" }, 409);
+  }
+
+  try {
+    await sendWorkflowSignal(projectId, "retryStageSignal", true);
+    // The workflow's own state.stage will move off "await_spec_approval"-
+    // style holding points once it resumes; setting "building" here closes
+    // the same gap request-changes closes above — the DB should not still
+    // say needs_review the instant a retry has been accepted.
+    await db.update(projects).set({ status: "building", failureReason: null, updatedAt: new Date() }).where(eq(projects.id, projectId));
+    return c.json({ success: true, message: "Retrying..." });
+  } catch (err) {
+    return c.json({ error: "Failed to send retry signal" }, 500);
+  }
+});

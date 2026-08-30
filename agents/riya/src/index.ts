@@ -604,7 +604,7 @@ export async function resolveForeignKeyId(
   fieldName: string,
   endpoints: Array<{ method: string; path: string; auth?: boolean }>,
   backendUrl: string,
-  token: string,
+  token: string | null,
 ): Promise<string | null> {
   if (!fieldName.endsWith("_id")) return null;
   const resource = fieldName.slice(0, -3);
@@ -614,7 +614,11 @@ export async function resolveForeignKeyId(
   if (!listEp) return null;
   try {
     const headers: Record<string, string> = {};
-    if (listEp.auth) headers.Authorization = `Bearer ${token}`;
+    // No identity available at all (admin-only app, no registration path) —
+    // still try unauthenticated; a genuinely protected list endpoint will
+    // 401/403 naturally and this resolves to null exactly as before, rather
+    // than sending a literal "Bearer null" header.
+    if (listEp.auth && token) headers.Authorization = `Bearer ${token}`;
     const res = await fetch(`${backendUrl}${listEp.path}`, { headers });
     if (!res.ok) return null;
     const body = (await res.json()) as unknown;
@@ -1053,9 +1057,34 @@ export async function verifyAllResourceCrud(
   }
   if (resources.size === 0) return { ok: true, findings: [] };
 
-  const auth = await registerAndLoginTestUser(backendUrl);
-  if ("error" in auth) return { ok: false, findings: [auth.error] };
-  const { token } = auth;
+  // 2026-08-30: real bug found live (project 6c7d4358cf73) — this used to be
+  // an EAGER call, before the resource loop even starts, so it aborted the
+  // WHOLE function ("custom register failed: returned 404: Cannot POST
+  // /api/v1/auth/register") on any admin-only app with no registration
+  // endpoint — which is a correct, intentional design (CRITICAL RULE #14:
+  // admin apps seed their account, they don't self-register), not a bug in
+  // the generated app. Confirmed live: the ONLY resource this project had
+  // (an "admin" bucket — GET /admin/inquiries, PUT /admin/content/:id) has
+  // no CREATE endpoint at all, so it was ALWAYS going to be skipped by the
+  // `if (!createEp) continue` check below regardless — this call was fully
+  // wasted work whose only effect was tanking the entire check on a request
+  // nothing downstream needed. Deploy correctly (per Stage 6's own stuck-
+  // detection) stopped retrying once this same false failure repeated
+  // identically on attempt 2, since retrying was never going to change a
+  // registration endpoint into existing.
+  // Mirrors getAdminToken's existing lazy pattern below — same fix shape,
+  // now applied to the identity every resource implicitly shared before.
+  let baseToken: string | null = null;
+  let baseAttempted = false;
+  let baseAuthError: string | null = null;
+  async function getBaseToken(): Promise<string | null> {
+    if (baseAttempted) return baseToken;
+    baseAttempted = true;
+    const result = await registerAndLoginTestUser(backendUrl);
+    if ("error" in result) { baseAuthError = result.error; return null; }
+    baseToken = result.token;
+    return baseToken;
+  }
   const sharedTypesPath = join(buildDir, "shared-types.ts");
   const sharedTypesSource = existsSync(sharedTypesPath) ? readFileSync(sharedTypesPath, "utf-8") : "";
 
@@ -1122,6 +1151,19 @@ export async function verifyAllResourceCrud(
     const createEp = eps.find((e) => e.method === "POST" && !hasPathParam(e.path));
     if (!createEp) continue; // read-only resource — nothing to verify at this layer, matches verifyLiveAuthenticatedRoundTrip's precedent
 
+    // Only resources whose OWN create endpoint is actually auth-gated need a
+    // token at all — a publicly-creatable resource (e.g. a contact form) has
+    // no business requiring one, and must not be skipped just because this
+    // app happens to have no registration path elsewhere.
+    let activeToken: string | null = null;
+    if (createEp.auth === true) {
+      activeToken = await getBaseToken();
+      if (!activeToken) {
+        findings.push(`SKIPPED — ${resource}: POST ${createEp.path} requires auth but this app has no way to obtain a test identity (${baseAuthError ?? "registration unavailable"}). Not a failure: an admin-only app that seeds its account instead of self-registering is expected to have no usable registration endpoint.`);
+        continue;
+      }
+    }
+
     try {
       const marker = `nexsidi-crud-verify-${Date.now()}`;
       const dynamicPayload = createEp.requestType && createEp.requestType !== "null"
@@ -1130,17 +1172,18 @@ export async function verifyAllResourceCrud(
       // `let` (not const) so the 400-recovery below can swap in a repaired
       // payload and have the later update/read steps use the same shape.
       let createPayload = (dynamicPayload ?? { title: marker }) as Record<string, unknown>;
-      const fkLookupToken = adminToken ?? token;
+      const fkLookupToken = adminToken ?? activeToken;
       for (const [fieldName, value] of Object.entries(createPayload)) {
         if (!fieldName.endsWith("_id") || typeof value !== "string") continue;
         const resolved = await resolveForeignKeyId(fieldName, endpoints, backendUrl, fkLookupToken);
         if (resolved) createPayload[fieldName] = resolved;
       }
 
-      let activeToken = token;
       let createRes = await fetch(`${backendUrl}${createEp.path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeToken}` },
+        headers: activeToken
+          ? { "Content-Type": "application/json", Authorization: `Bearer ${activeToken}` }
+          : { "Content-Type": "application/json" },
         body: JSON.stringify(createPayload),
       });
       if (createRes.status === 403) {
@@ -1279,7 +1322,16 @@ export async function verifyAllResourceCrud(
     }
   }
 
-  return { ok: findings.length === 0, findings };
+  // 2026-08-30: an intentional skip (this app has no registration endpoint
+  // by design — see the SKIPPED finding above) must not count as a failure
+  // the same way a real broken endpoint does, or Stage 6's stuck-detection
+  // treats "consciously chose not to test this" identically to "this is
+  // broken" and stops retrying a deploy that was never actually failing.
+  // The finding stays visible in the list either way — only `ok` treats them
+  // differently — so a human reviewing findings can still see what was and
+  // wasn't exercised.
+  const realFailures = findings.filter((f) => !f.startsWith("SKIPPED —"));
+  return { ok: realFailures.length === 0, findings };
 }
 
 // 2026-07-28 (live, complex1): real gap found live — a POST-FIX redeploy

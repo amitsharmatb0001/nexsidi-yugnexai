@@ -1268,6 +1268,30 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
     setSubmitting(false);
   }
 
+  // 2026-08-29: real gap found live (project 6c7d4358cf73) — a machine-wide
+  // network outage took every model in the Gemini pool down simultaneously
+  // mid-generation. The workflow correctly paused waiting for
+  // retryStageSignal (see project-build.ts's escalateAndAwaitRetryDecision),
+  // but nothing in this app ever SENT that signal — this card's own hint
+  // text told the user "start a new project" for a failure that was, once
+  // the network came back, resumed with a single signal and continued
+  // generating successfully. Mirrors requestChanges above exactly.
+  async function retry() {
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API}/api/pipeline/${id}/retry`, { method: "POST", credentials: "include" });
+      if (res.ok) {
+        setStatus("building");
+        setStageMessage("Retrying...");
+        setTerminalEntries(prev => [...prev, { kind: "log", text: `\n🔁 Retrying after: ${result?.failureReason ?? "the last failure"}\n` }]);
+        esRef.current?.close();
+        esRef.current = null;
+        startBuildWatching();
+      }
+    } catch {}
+    setSubmitting(false);
+  }
+
   const isDone = status === "done" || (status === "failed" && !!result?.appUrl);
   // See BuildStatus's own header comment — genuinely dead, not "still
   // working": needs_review always means this, and failed means this unless
@@ -1317,6 +1341,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       appUrl={result?.appUrl ?? null}
       isDone={isDone}
       needsAttention={needsAttention ? { reason: result?.failureReason ?? null } : null}
+      onRetry={retry}
       stageMessage={stageMessage}
       tree={tree}
       awaitingSpecApproval={Boolean(buildPlanModal)}

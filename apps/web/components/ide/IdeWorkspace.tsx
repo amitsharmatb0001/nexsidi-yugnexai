@@ -88,6 +88,7 @@ export interface IdeWorkspaceProps {
   // null when the build is fine; set with the real reason (now a queryable
   // DB field, not just a server console.error) when it's genuinely dead.
   needsAttention?: { reason: string | null } | null;
+  onRetry?: () => void;
   stageMessage: string;
   tree: ApiNode[];
   awaitingSpecApproval: boolean;
@@ -237,12 +238,25 @@ const FAILURE_REASON_TEXT: Record<string, string> = {
 
 // Reasons may carry a "code: detail" shape (see Riya's failureReason) —
 // match on the code and append the detail rather than dumping the raw string.
-function readableFailureReason(reason: string): string {
+export function readableFailureReason(reason: string): string {
   const [code, ...rest] = reason.split(":");
   const detail = rest.join(":").trim();
   const base = FAILURE_REASON_TEXT[code!.trim()];
   if (!base) return `It stopped with an internal reason (${reason}).`;
   return detail ? `${base} (${detail})` : base;
+}
+
+// 2026-08-29: must match pipeline.ts's RETRYABLE_FAILURE_REASONS exactly —
+// these are the reasons project-build.ts routes through
+// escalateAndAwaitRetryDecision (a paused, resumable workflow) rather than
+// an unconditional markProjectFailed+return (a genuinely ended one).
+// clarification_exhausted and spec_rejected_too_many_times are deliberately
+// absent: the workflow already returned for those, so retrying is not an
+// option — a new project actually is the only path forward there.
+export function isRetryableFailure(reason: string | null): boolean {
+  if (!reason) return false;
+  const code = reason.split(":")[0]!.trim();
+  return ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed"].includes(code);
 }
 
 function DoneComposer({ onSubmit, submitting }: { onSubmit: (text: string) => void; submitting: boolean }) {
@@ -278,7 +292,7 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
   const {
     projectId, projectName, appUrl, isDone, needsAttention, stageMessage,
     tree, awaitingSpecApproval, buildPlan, awaitingDeployApproval, submitting,
-    changeRequest, onChangeRequest, onApproveSpec, onApproveDeploy, onRequestChanges, planning,
+    changeRequest, onChangeRequest, onApproveSpec, onApproveDeploy, onRequestChanges, onRetry, planning,
   } = props;
 
   // No pipeline exists yet during planning, so there is nothing for the
@@ -1058,10 +1072,16 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                       {needsAttention.reason
                         ? readableFailureReason(needsAttention.reason)
                         : "It hit a limit it couldn't resolve on its own and stopped automatically — nothing is running for this project anymore."}
-                      {" "}It can't continue from here — start a new project to keep going.
+                      {" "}
+                      {isRetryableFailure(needsAttention.reason)
+                        ? "This is often transient (a network blip, a temporary quota limit) — retrying resumes exactly where it stopped, no work is lost."
+                        : "It can't continue from here — start a new project to keep going."}
                     </div>
                     <div className={s.gateActions}>
-                      <Link href="/dashboard"><Button size="sm">Go to dashboard</Button></Link>
+                      {isRetryableFailure(needsAttention.reason) && onRetry && (
+                        <Button size="sm" onClick={onRetry} disabled={submitting}>{submitting ? "Retrying…" : "Retry"}</Button>
+                      )}
+                      <Link href="/dashboard"><Button size="sm" variant={isRetryableFailure(needsAttention.reason) ? "ghost" : "solid"}>Go to dashboard</Button></Link>
                     </div>
                   </div>
                 ) : (
