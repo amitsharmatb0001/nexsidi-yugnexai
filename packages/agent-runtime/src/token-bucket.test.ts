@@ -44,3 +44,46 @@ test("SharedTokenBucket.acquire does not hang when BUILD_DIR's directory does no
     } catch {}
   }
 }, 10_000);
+
+// 2026-08-30: real, live, repeated (3x in one night) silent hang inside
+// runAgent — "Starting — model: X" logged, then complete silence for 8-14+
+// minutes: no error, no usage line, no escalation, nothing. Ruled out by
+// direct live inspection that night: llm-client's own waitForToken (already
+// capped earlier that same night), the fetch AbortController (240s, and
+// covers body-reading too via a `finally`), a currently-stuck lock directory
+// (checked live — not present), and real 40-RPM throttling (checked live —
+// request count was 1, nowhere near the cap). FileLock.acquire() was the one
+// remaining candidate with NO cap and NO log line of its own bracketing it —
+// exactly matching the observed symptom shape. Root cause not conclusively
+// proven (no debugger was attached to the actual hung process), but this
+// closes the one candidate that had zero protection, using the identical
+// "cap it, throw with real diagnostics" shape as this file's own prior fix
+// above (P5.W5.5) and the earlier fix that same night to the OTHER,
+// differently-located token bucket's identical unbounded wait.
+import { FileLock } from "./token-bucket.ts";
+
+test("FileLock.acquire throws instead of retrying forever when the lock can never be cleared", async () => {
+  const dir = join(tmpdir(), `nexsidi-filelock-stuck-test-${process.pid}`);
+  const { mkdirSync: realMkdirSync } = await import("node:fs");
+  realMkdirSync(dir, { recursive: true });
+  const lockPath = join(dir, "shared-token-bucket.lock");
+  realMkdirSync(lockPath); // pre-create the lock — simulates one orphaned by a killed process
+
+  try {
+    const lock = new FileLock(dir, 300); // 300ms cap — fast to test, same mechanism as the real 60s default
+    await expect(lock.acquire()).rejects.toThrow(/timed out after 300ms/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("FileLock.acquire still succeeds immediately when the lock is genuinely free", async () => {
+  const dir = join(tmpdir(), `nexsidi-filelock-free-test-${process.pid}`);
+  try {
+    const lock = new FileLock(dir, 300);
+    await lock.acquire(); // must resolve, not throw or hang
+    lock.release();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -13,6 +13,7 @@ import { db, projects } from "@nexsidi/db";
 import { eq } from "drizzle-orm";
 import Redis from "ioredis";
 import { randomUUID } from "crypto";
+import { join } from "node:path";
 // Shared with routes/projects.ts — see utils/stage-labels.ts for why this
 // must be the single copy.
 import { translateStage } from "../utils/stage-labels.ts";
@@ -310,6 +311,13 @@ const RETRYABLE_FAILURE_REASONS = new Set([
   "compile_repair_limit",
   "deploy_stuck",
   "deploy_failed",
+  // 2026-08-30: added alongside project-build.ts's new catch-all for an
+  // uncaught Stage 6 activity failure (e.g. "Activity task timed out" from
+  // an orphaned/hung call) — see that file's own header comment for the
+  // live incident (project 05b590e98102) this closes. Routes through
+  // escalateAndAwaitRetryDecision exactly like the reasons above it, so it
+  // needs the identical retry path, not a dead end.
+  "deploy_activity_error",
 ]);
 
 pipelineRouter.post("/:projectId/retry", async (c) => {
@@ -340,4 +348,34 @@ pipelineRouter.post("/:projectId/retry", async (c) => {
   } catch (err) {
     return c.json({ error: "Failed to send retry signal" }, 500);
   }
+});
+
+// ── POST /api/pipeline/:projectId/ensure-running ──────────────────────────────
+// 2026-08-31: real gap found live — a delivered project's docker containers
+// stay up right after the build, but nothing keeps them running indefinitely
+// (a redeploy's own `docker compose down`, a host reboot without Docker
+// Desktop's session-restore, etc.), and the web UI's "Open app" link/preview
+// iframe just pointed straight at the stored appUrl with no check. Called
+// when the user opens an already-delivered project; starts the containers
+// on demand if they're not already up rather than silently rendering a dead
+// link. Reuses ensureProjectRunning's own docker-verified check (not just
+// "the compose file exists") so this is a no-op, not a needless restart,
+// on the common case of a project that's still running.
+pipelineRouter.post("/:projectId/ensure-running", async (c) => {
+  const projectId = c.req.param("projectId");
+
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project) return c.json({ error: "not found" }, 404);
+  if (!project.appUrl) {
+    return c.json({ error: "this project has never been deployed — nothing to start" }, 409);
+  }
+
+  const { ensureProjectRunning } = await import("../../../../agents/riya/src/index.ts");
+  const buildDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  const result = await ensureProjectRunning(buildDir);
+
+  if (!result.running) {
+    return c.json({ error: result.error ?? "could not start the project's containers" }, 502);
+  }
+  return c.json({ success: true, started: result.started, ports: result.ports });
 });

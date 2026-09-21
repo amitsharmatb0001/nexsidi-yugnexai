@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { run, ARJUN_SYSTEM_PROMPT, findMissingLockedPages, synthesizeTaskForPage, buildSystemContext, sanitizePublicEndpointContracts, sanitizeSharedTypesForPublicEndpoints, type LockedPage, type BuildPlan, type RestEndpoint } from "./index.ts";
+import { run, ARJUN_SYSTEM_PROMPT, findMissingLockedPages, synthesizeTaskForPage, buildSystemContext, sanitizePublicEndpointContracts, sanitizeSharedTypesForPublicEndpoints, isDesignRelatedFeedback, type LockedPage, type BuildPlan, type RestEndpoint } from "./index.ts";
 import type { ProjectSpec } from "../../saanvi/src/index.ts";
 import { FALLBACK_BRIEF, type DesignBrief } from "../../vanya/src/index.ts";
 
@@ -337,4 +337,71 @@ test("Arjun's planner prompt states the frontend UI stack so it cannot plan Tail
   const prompt = ARJUN_SYSTEM_PROMPT.toLowerCase();
   expect(prompt).toContain("nexui");
   expect(prompt).toContain("never use tailwind");
+});
+
+// ── Vanya reuse on non-design rejections (2026-08-30) ────────────────────────
+// Real inefficiency found live: EVERY spec rejection re-ran Vanya's full
+// design-brief generation from zero — including her own doctrine's 1-3 live
+// web_search calls — even when the rejection was purely about auth/
+// endpoints and never mentioned design. Vanya's research is the dominant
+// cost of the whole review stage (confirmed live: Saanvi+Arjun's own calls
+// finish in seconds; Vanya's iterative search-then-reason loop is what
+// stretches it to 5-10 minutes) — paying that again for "remove the sign-up
+// endpoint" doesn't make sense, and the user caught this by direct,
+// repeated observation across several rejection rounds in one live session.
+
+test("isDesignRelatedFeedback recognizes real design requests", () => {
+  for (const fb of [
+    "make the accent color darker",
+    "use a different font for headings",
+    "switch to dark mode",
+    "the layout feels cramped, add more whitespace",
+    "I don't like the vibe, make it feel more premium",
+  ]) {
+    expect(isDesignRelatedFeedback(fb)).toBe(true);
+  }
+});
+
+test("isDesignRelatedFeedback does not fire on auth/endpoint/schema feedback — the actual live case", () => {
+  for (const fb of [
+    "No /auth/sign-up endpoint, in any form. Keep everything else exactly as planned.",
+    "site_content has a required user_id foreign key again — remove it.",
+    "Remove client registration entirely — no /sign-up page.",
+  ]) {
+    expect(isDesignRelatedFeedback(fb)).toBe(false);
+  }
+});
+
+test("run() reuses the prior design brief when a prior brief exists and feedback isn't design-related", async () => {
+  let vanyaCalls = 0;
+  const trackedRunVanya = async (): Promise<DesignBrief> => { vanyaCalls++; return FALLBACK_BRIEF; };
+  const priorBrief: DesignBrief = { ...FALLBACK_BRIEF, mood: "a distinctive prior mood, not the fallback" };
+  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "mistralai/mistral-nemotron" as const });
+
+  const plan = await run(MINIMAL_SPEC, { chat: stubChat, runVanya: trackedRunVanya }, undefined, undefined, priorBrief, "remove the sign-up endpoint");
+
+  expect(vanyaCalls).toBe(0); // never called — reused instead
+  expect(plan.designBrief).toBe(priorBrief); // the SAME object, not a re-derived equivalent
+});
+
+test("run() still calls Vanya fresh when feedback IS design-related, even with a prior brief available", async () => {
+  let vanyaCalls = 0;
+  const trackedRunVanya = async (): Promise<DesignBrief> => { vanyaCalls++; return FALLBACK_BRIEF; };
+  const priorBrief: DesignBrief = { ...FALLBACK_BRIEF, mood: "the old mood the user wants changed" };
+  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "mistralai/mistral-nemotron" as const });
+
+  await run(MINIMAL_SPEC, { chat: stubChat, runVanya: trackedRunVanya }, undefined, undefined, priorBrief, "make the accent color warmer");
+
+  expect(vanyaCalls).toBe(1); // design feedback — must regenerate
+});
+
+test("run() calls Vanya fresh on the first-ever attempt — no prior brief to reuse", async () => {
+  let vanyaCalls = 0;
+  const trackedRunVanya = async (): Promise<DesignBrief> => { vanyaCalls++; return FALLBACK_BRIEF; };
+  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "mistralai/mistral-nemotron" as const });
+
+  // No priorDesignBrief, no rejectionFeedback — the very first pass through the loop.
+  await run(MINIMAL_SPEC, { chat: stubChat, runVanya: trackedRunVanya });
+
+  expect(vanyaCalls).toBe(1);
 });

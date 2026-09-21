@@ -12,10 +12,15 @@ interface BucketState {
   windowStart: number;   // epoch ms when the current 60-second window began
 }
 
-class FileLock {
+// Exported so token-bucket.test.ts can construct one directly with a short
+// maxWaitMs override — the real 60s default would make a test proving the
+// timeout actually fires prohibitively slow to run.
+export class FileLock {
   private lockPath: string;
-  constructor(baseDir: string) {
+  private maxWaitMs: number;
+  constructor(baseDir: string, maxWaitMs = 60_000) {
     this.lockPath = join(baseDir, "shared-token-bucket.lock");
+    this.maxWaitMs = maxWaitMs;
   }
 
   public async acquire(): Promise<void> {
@@ -30,14 +35,36 @@ class FileLock {
     // which the retry loop already handles correctly.
     mkdirSync(dirname(this.lockPath), { recursive: true });
     let attempts = 0;
+    // 2026-08-30: real, live, repeated (3x in one night) silent hang inside
+    // runAgent — "Starting — model: X" logged, then nothing for 8-14+
+    // minutes: no error, no usage line, no escalation, no log line at all.
+    // Root cause not confirmed (this codebase's other rate-limit/timeout
+    // paths were checked live and ruled out — see loop.ts's comment at its
+    // bucket.acquire() call site), but this exact loop is the ONE remaining
+    // candidate that had NO cap and NO log output of its own: the >30-
+    // attempts branch already tries to break a stale lock via rmdirSync,
+    // but on failure that error is silently swallowed (`catch {}`) and the
+    // SAME uncapped loop just continues — if rmdirSync never succeeds (a
+    // permissions issue, a race with another process, anything), this can
+    // spin at 100ms intervals literally forever with zero visible evidence
+    // it's even running. Same defense-in-depth reasoning as tonight's
+    // earlier fix to the OTHER (differently-named, differently-located)
+    // token bucket's own unbounded wait: cap it, throw with a message that
+    // actually says what's stuck, so a hang here is diagnosable and
+    // recoverable (via the existing deploy_activity_error retry path)
+    // instead of silent and permanent.
+    const deadline = Date.now() + this.maxWaitMs;
     while (true) {
       try {
         mkdirSync(this.lockPath);
         break;
-      } catch {
+      } catch (err) {
         attempts++;
         if (attempts > 30) {
           try { rmdirSync(this.lockPath); } catch {}
+        }
+        if (Date.now() >= deadline) {
+          throw new Error(`[token-bucket] FileLock.acquire timed out after ${this.maxWaitMs}ms waiting for ${this.lockPath} (${attempts} attempts) — last error: ${String(err)}`);
         }
         await new Promise((r) => setTimeout(r, 100));
       }

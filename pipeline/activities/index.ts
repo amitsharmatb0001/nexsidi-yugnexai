@@ -177,7 +177,16 @@ export async function runSaanvi(
 }
 
 // ── Stage 2: Spec → BuildPlan (API contract + DB schema + task decomp) ─────────
-export async function runArjun(projectId: string): Promise<void> {
+// 2026-08-30: rejectionFeedback threads through from the workflow's own
+// clarificationHistory (the exact text the user typed rejecting the prior
+// round) so runArjunAgent can decide whether Vanya's design brief needs to
+// be regenerated at all — see isDesignRelatedFeedback's header comment in
+// agents/arjun/src/index.ts for the live inefficiency this closes. Adding a
+// parameter to an existing activity call is safe for Temporal replay (it
+// doesn't change which activities run or in what order — only what
+// argument an already-recorded call receives), so this needs no patched()
+// guard, unlike a workflow-level control-flow change would.
+export async function runArjun(projectId: string, rejectionFeedback?: string): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
@@ -198,7 +207,17 @@ export async function runArjun(projectId: string): Promise<void> {
       ...p,
       nextjsFile: pathToNextjsFile(p.path),
     }));
-    const plan = await runArjunAgent(spec, { chat: agentChat }, lockedPages, plannerPlan?.authType);
+    // Read the PRIOR round's build-plan.json (if this is a rejection re-run)
+    // before it gets overwritten below — its designBrief is what a
+    // non-design rejection should carry forward instead of paying for a
+    // fresh Vanya run.
+    let priorDesignBrief: BuildPlan["designBrief"] | undefined;
+    try {
+      priorDesignBrief = readCacheFile<BuildPlan>(projectId, "build-plan.json").designBrief;
+    } catch {
+      // No prior build-plan.json — first attempt at this project, nothing to reuse.
+    }
+    const plan = await runArjunAgent(spec, { chat: agentChat }, lockedPages, plannerPlan?.authType, priorDesignBrief, rejectionFeedback);
 
     planCache.set(projectId, plan);
     writeCacheFile(projectId, "build-plan.json", JSON.stringify(plan, null, 2));

@@ -46,7 +46,7 @@
 // comment for why the font gap doesn't reopen that risk either.
 import type { DesignBrief } from "../../../vanya/src/index.ts";
 
-function relativeLuminance(hex: string): number {
+export function relativeLuminance(hex: string): number {
   const clean = hex.replace("#", "");
   const full = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean;
   const r = parseInt(full.slice(0, 2), 16) / 255;
@@ -59,7 +59,7 @@ function relativeLuminance(hex: string): number {
 // arbitrary brand color (used for `primaryForeground`) — simple and
 // deterministic rather than reusing the brief's own bg/text colors, which
 // aren't guaranteed to contrast well against an unrelated accent hue.
-function contrastColor(hex: string): string {
+export function contrastColor(hex: string): string {
   return relativeLuminance(hex) > 0.5 ? "#0a0a0a" : "#ffffff";
 }
 

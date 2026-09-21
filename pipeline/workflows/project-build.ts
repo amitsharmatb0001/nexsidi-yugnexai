@@ -273,7 +273,9 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     state.pendingQuestions = questions;
     await condition(() => clarificationAnswer !== null);
     state.pendingQuestions = null;
-    return clarificationAnswer as string;
+    const answer = clarificationAnswer;
+    if (answer === null) throw new Error("[workflow] unreachable: condition() only resolves once clarificationAnswer is non-null");
+    return answer;
   }
 
   // Gate 2 (deploy approval) + Stage 6 (deploy + live-browser retest),
@@ -329,16 +331,48 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       try {
         deployResult = await deployRetestAct.runDeployWithLiveRetest(projectId);
       } catch (err) {
-        if (!isBudgetExceededFailure(err)) throw err;
+        if (isBudgetExceededFailure(err)) {
+          state.stage = "error";
+          console.log(`[workflow] Stage 6 deploy halted — budget exceeded`);
+          const retry = await escalateAndAwaitRetryDecision("budget_exceeded");
+          if (!retry) {
+            await act.markProjectFailed(projectId, "budget_exceeded");
+            return;
+          }
+          state.stage = "deliver";
+          console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (budget_exceeded)`);
+          continue;
+        }
+        // 2026-08-30: real, live 4th occurrence of the exact uncaught-throw
+        // class this file's own header comments above already document
+        // three times over (fulfillio1 x2, the ContextChainViolation case).
+        // Confirmed live (project 05b590e98102): a NIM call hung inside
+        // runRiya for 14+ minutes — well past both application-level
+        // timeouts guarding that call (waitForToken's 120s cap, the fetch's
+        // own 240s abort) — because a worker restart orphaned it and
+        // Temporal's own activity machinery eventually surfaced "Activity
+        // task timed out" here. `throw err` propagated that UNCAUGHT out of
+        // the whole workflow, discarding a project that had ALREADY passed
+        // QA and compile-check, with no escalation, no needs_review status,
+        // nothing — a human watching the UI would see the project simply
+        // vanish. Same fix shape as budget_exceeded immediately above: this
+        // is retryable infrastructure noise (a worker restart, a transient
+        // timeout, a heartbeat gap), not a reason to discard the whole
+        // build. No patched() guard, matching budget_exceeded's own
+        // precedent right above — an uncaught-throw path has no "resume
+        // differently on replay" risk, since every workflow execution that
+        // already hit the old `throw err` here has already terminated; there
+        // is no in-flight history to replay past this point under the old
+        // behavior.
         state.stage = "error";
-        console.log(`[workflow] Stage 6 deploy halted — budget exceeded`);
-        const retry = await escalateAndAwaitRetryDecision("budget_exceeded");
+        console.log(`[workflow] Stage 6 deploy activity failed: ${String(err)}`);
+        const retry = await escalateAndAwaitRetryDecision("deploy_activity_error");
         if (!retry) {
-          await act.markProjectFailed(projectId, "budget_exceeded");
+          await act.markProjectFailed(projectId, "deploy_activity_error");
           return;
         }
         state.stage = "deliver";
-        console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (budget_exceeded)`);
+        console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (deploy_activity_error)`);
         continue;
       }
       if (deployResult.success) break;
@@ -411,6 +445,14 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   // context string it's given.
   let clarificationRounds = 0;
   const clarificationHistory: string[] = [];
+  // 2026-08-30: specifically the "spec/design was rejected" answer, kept
+  // separate from clarificationHistory (which also holds unrelated
+  // ambiguity-round Q&A pairs Saanvi's own clarification loop produces) —
+  // this is what runArjun uses to decide whether Vanya's design brief needs
+  // regenerating, or whether a rejection that was never about design can
+  // carry the prior round's brief forward. undefined on the very first pass
+  // (nothing to compare against yet).
+  let latestRejectionFeedback: string | undefined;
   for (;;) {
     state.stage = "spec";
     for (;;) {
@@ -437,7 +479,7 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
 
     // ── Stage 2: Task decomposition (includes Vanya's design brief) ───────
     state.stage = "decompose";
-    await act.runArjun(projectId);
+    await act.runArjun(projectId, latestRejectionFeedback);
     state.designBrief = await act.getDesignBrief(projectId);
 
     // GATE 1: Spec/Plan/Design Approval — always required. A stale
@@ -457,11 +499,13 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     }
     if (preSuppliedSpecChanges !== null) {
       clarificationHistory.push(`Q: What would you like changed about the spec/design?\nA: ${preSuppliedSpecChanges}`);
+      latestRejectionFeedback = preSuppliedSpecChanges;
       preSuppliedSpecChanges = null;
     } else {
       state.stage = "awaiting_clarification";
       const feedback = await askAndWait(["The spec/design was rejected — what would you like changed?"]);
       clarificationHistory.push(`Q: What would you like changed about the spec/design?\nA: ${feedback}`);
+      latestRejectionFeedback = feedback;
     }
   }
 

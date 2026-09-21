@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { findFreePort, isPortUsedByDocker, getRunningDeploymentPorts } from "./index.ts";
+import { findFreePort, isPortUsedByDocker, getRunningDeploymentPorts, ensureProjectRunning } from "./index.ts";
 
 describe("isPortUsedByDocker", () => {
   test("reports a port in docker's PORTS column as used", () => {
@@ -114,5 +114,69 @@ volumes:
       isPortUsedByDocker: () => true,
     });
     expect(result).toBeNull();
+  });
+});
+
+// 2026-08-31: real gap found live — apps/web's "Open app" link and preview
+// iframe point straight at the stored appUrl with no check the project's
+// containers are actually up. This closes it by reusing the already-tested
+// getRunningDeploymentPorts (docker-verified, not just "the compose file
+// exists") and only running a real `docker compose up -d` when needed.
+describe("ensureProjectRunning", () => {
+  const PORTS = { frontendPort: 3200, backendPort: 3300, dbPort: 5435 };
+
+  test("does nothing and reports running=true when the project is already up", async () => {
+    let execCalls = 0;
+    const result = await ensureProjectRunning("/fake/build/dir", {
+      getRunningDeploymentPorts: () => PORTS,
+      execFn: () => { execCalls++; return ""; },
+    });
+    expect(result).toEqual({ running: true, started: false, ports: PORTS });
+    expect(execCalls).toBe(0); // never pays for `docker compose up` when already running
+  });
+
+  test("starts the project and reports success when it was down but comes up cleanly", async () => {
+    let checkCount = 0;
+    const execCommands: string[] = [];
+    const result = await ensureProjectRunning("/fake/build/dir", {
+      // First call (before start): not running. Second call (after `up`): running.
+      getRunningDeploymentPorts: () => { checkCount++; return checkCount === 1 ? null : PORTS; },
+      execFn: (cmd) => { execCommands.push(cmd); return ""; },
+      existsFn: () => true,
+    });
+    expect(result).toEqual({ running: true, started: true, ports: PORTS });
+    expect(execCommands).toHaveLength(1);
+    expect(execCommands[0]).toContain("docker compose");
+    expect(execCommands[0]).toContain("up -d");
+  });
+
+  test("reports the real error when `docker compose up` itself throws (docker not running, etc.)", async () => {
+    const result = await ensureProjectRunning("/fake/build/dir", {
+      getRunningDeploymentPorts: () => null,
+      execFn: () => { throw new Error("Cannot connect to the Docker daemon"); },
+      existsFn: () => true,
+    });
+    expect(result.running).toBe(false);
+    expect(result.started).toBe(false);
+    expect(result.error).toContain("Cannot connect to the Docker daemon");
+  });
+
+  test("reports a clear error (not a crash) when `up` exits clean but containers still aren't reachable — a real false-success shape, not hypothetical", async () => {
+    const result = await ensureProjectRunning("/fake/build/dir", {
+      getRunningDeploymentPorts: () => null, // never comes up, before OR after `up`
+      execFn: () => "",
+      existsFn: () => true,
+    });
+    expect(result.running).toBe(false);
+    expect(result.started).toBe(true); // `up` itself did not throw
+    expect(result.error).toContain("still not reachable");
+  });
+
+  test("fails cleanly (not a crash) when there's no docker-compose.yml at all for this project", async () => {
+    const result = await ensureProjectRunning("/fake/build/dir", {
+      getRunningDeploymentPorts: () => null,
+      existsFn: () => false,
+    });
+    expect(result).toEqual({ running: false, started: false, ports: null, error: "no docker-compose.yml found for this project" });
   });
 });

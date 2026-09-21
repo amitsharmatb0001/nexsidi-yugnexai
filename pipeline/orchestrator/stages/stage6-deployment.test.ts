@@ -6,6 +6,7 @@ import {
   deployWithQuotaRetry,
   normalizeForStuckComparison,
   runStage6,
+  shouldSkipExpensiveReview,
   type Stage6Deps,
 } from "./stage6-deployment.ts";
 import type { Stage4Result } from "./stage4-multi-agent-dev.ts";
@@ -508,4 +509,28 @@ test("buildDeliverySummary treats an un-run specCompliance (undefined) as not bl
   };
   const summary = buildDeliverySummary(deployResult, { pass: true, findings: [] });
   expect(summary.status).toBe("delivered");
+});
+
+// ── shouldSkipExpensiveReview (2026-08-31) ──────────────────────────────────
+// Real live evidence this reordering closes (project 05b590e98102): spec-
+// compliance and stack-conformance are pure file/string comparisons — no
+// browser, no LLM call — but used to run AFTER two full Tilotma browser
+// passes (up to ~67 iterations each) and a live-eval pass had already
+// completed. Moving them first means a failure here skips those expensive
+// stages entirely instead of discovering the same failure after paying for
+// them.
+test("shouldSkipExpensiveReview is false when both compliance checks pass — the expensive stages run", () => {
+  expect(shouldSkipExpensiveReview(true, true)).toBe(false);
+});
+
+test("shouldSkipExpensiveReview is true when spec-compliance alone fails", () => {
+  expect(shouldSkipExpensiveReview(false, true)).toBe(true);
+});
+
+test("shouldSkipExpensiveReview is true when stack-conformance alone fails", () => {
+  expect(shouldSkipExpensiveReview(true, false)).toBe(true);
+});
+
+test("shouldSkipExpensiveReview is true when both fail", () => {
+  expect(shouldSkipExpensiveReview(false, false)).toBe(true);
 });

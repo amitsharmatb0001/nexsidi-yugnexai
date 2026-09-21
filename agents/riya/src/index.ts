@@ -523,10 +523,30 @@ function findFirstArray(value: unknown, depth = 2): unknown[] | undefined {
 // created.class.id. Searches up to 2 levels deep for the first object
 // carrying a string `id` field, so it doesn't need to guess the exact
 // resource-singular key name.
-function findFirstObjectWithId(value: unknown, depth = 2): Record<string, unknown> | undefined {
+// 2026-08-30: real live gap found tonight (project 05b590e98102) — this
+// only matched the literal key "id", but a real, well-designed backend can
+// legitimately name its identifier after the resource instead of a generic
+// "id" (a "contact" create endpoint returning {success:true,
+// inquiryId:"21ee39f1-..."} rather than {id:"..."}) — that's normal REST
+// practice, not a bug. A genuinely successful create (real row, real UUID)
+// was misreported as "response has no id" and burned both of Stage 6's
+// retry attempts on the same false positive before escalating a working
+// deploy as deploy_stuck. Now also matches the common resource-specific id
+// conventions (fooId, foo_id, uuid) — normalizing the match onto `.id` so
+// every existing caller (`created.id`, `created?.id`) keeps working
+// unchanged. Deliberately narrow (requires a capital-I "Id" or "_id"
+// suffix, or the exact names "id"/"uuid") so it doesn't false-match a field
+// that merely ends in the letters "i","d" lowercase (e.g. "valid", "paid").
+const ID_KEY_PATTERN = /^(?:id|uuid)$|[a-z0-9](?:_id|Id)$/;
+export function findFirstObjectWithId(value: unknown, depth = 2): Record<string, unknown> | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const obj = value as Record<string, unknown>;
   if (typeof obj.id === "string") return obj;
+  for (const [key, v] of Object.entries(obj)) {
+    if (key !== "id" && typeof v === "string" && v.length > 0 && ID_KEY_PATTERN.test(key)) {
+      return { ...obj, id: v };
+    }
+  }
   if (depth <= 0) return undefined;
   for (const v of Object.values(obj)) {
     const found = findFirstObjectWithId(v, depth - 1);
@@ -1688,8 +1708,9 @@ export function getRunningDeploymentPorts(
     // this service's own nested keys (e.g. "    image:", 4 spaces) and
     // truncate the block before its ports ever appear.
     const blockMatch = compose.match(new RegExp(`\\n  ${service}:\\n([\\s\\S]*?)(?=\\n {2}\\S|$)`));
-    if (!blockMatch) return null;
-    const m = blockMatch[1].match(/-\s*"(\d+):\d+"/);
+    const captured = blockMatch?.[1];
+    if (!captured) return null;
+    const m = captured.match(/-\s*"(\d+):\d+"/);
     return m ? Number(m[1]) : null;
   };
 
@@ -1701,6 +1722,67 @@ export function getRunningDeploymentPorts(
   if (!dockerCheck(frontendPort) || !dockerCheck(backendPort)) return null;
 
   return { frontendPort, backendPort, dbPort };
+}
+
+// 2026-08-31: real gap found live — the web UI's "Open app" link and live
+// preview iframe (apps/web/components/ide/IdeWorkspace.tsx) point straight
+// at the stored appUrl with zero check that the project's containers are
+// actually up. They reliably ARE right after a build, but nothing keeps
+// them running indefinitely — a `docker compose down` (Riya's own redeploy
+// cycle runs this on every retry) removes the containers outright, at which
+// point no restart policy helps; only re-running `up` recreates them. This
+// closes that gap for the "user comes back later and clicks to view an
+// already-delivered project" path: reuse the existing, already-tested
+// getRunningDeploymentPorts check (docker-verified, not just "the compose
+// file exists") and only pay for a real `docker compose up -d` when it's
+// actually needed.
+export interface EnsureProjectRunningResult {
+  running: boolean;
+  started: boolean;
+  ports: { frontendPort: number; backendPort: number; dbPort: number } | null;
+  error?: string;
+}
+
+export async function ensureProjectRunning(
+  buildDir: string,
+  deps: {
+    getRunningDeploymentPorts?: typeof getRunningDeploymentPorts;
+    execFn?: (cmd: string) => string;
+    existsFn?: (path: string) => boolean;
+  } = {},
+): Promise<EnsureProjectRunningResult> {
+  const checkPorts = deps.getRunningDeploymentPorts ?? getRunningDeploymentPorts;
+  const execFn = deps.execFn ?? ((cmd: string) => execSync(cmd, { encoding: "utf-8", timeout: 60_000 }));
+  const existsFn = deps.existsFn ?? existsSync;
+
+  const alreadyRunning = checkPorts(buildDir);
+  if (alreadyRunning) {
+    return { running: true, started: false, ports: alreadyRunning };
+  }
+
+  const composePath = join(buildDir, "docker-compose.yml");
+  if (!existsFn(composePath)) {
+    return { running: false, started: false, ports: null, error: "no docker-compose.yml found for this project" };
+  }
+
+  try {
+    execFn(`docker compose -f "${composePath}" up -d`);
+  } catch (err) {
+    return { running: false, started: false, ports: null, error: `docker compose up failed: ${String(err)}` };
+  }
+
+  // getRunningDeploymentPorts is docker-verified (checks real published
+  // ports, not just that `up` exited 0) — re-checking after `up` catches the
+  // exact false-success shape this function's own header comment elsewhere
+  // in this file (see "docker_compose up" false-success bug) already
+  // documented once for the agent tool version of this same operation.
+  const portsAfterStart = checkPorts(buildDir);
+  return {
+    running: portsAfterStart !== null,
+    started: true,
+    ports: portsAfterStart,
+    ...(portsAfterStart ? {} : { error: "ran docker compose up but containers are still not reachable on their expected ports" }),
+  };
 }
 
 async function archiveToGitHub(projectId: string, buildDir: string): Promise<string | null> {

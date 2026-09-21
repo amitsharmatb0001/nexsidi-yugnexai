@@ -138,9 +138,31 @@ const BANNED_FRONTEND_DEP_PATTERNS: RegExp[] = [
   /shadcn/i,
   /^postcss$/i, // Tailwind's build step — no legitimate reason to need it with NexUI's plain CSS custom properties
   /^autoprefixer$/i, // same reasoning as postcss
+  // 2026-08-31: real live gap found (project 05b590e98102, Clario AI) —
+  // REQUIRED_FRONTEND_DEPS below was fixed to require "@yugnex/core" (the
+  // real dependency since the aanya-nexui-migration, 2026-08-16), but the
+  // OLD package name was never added here as banned — so a package.json
+  // with BOTH present (the exact live shape found: @yugnex/core AND
+  // @yugnex/nexui-react, the latter completely unused, zero imports
+  // anywhere in source) passed this check clean. Required-present and
+  // old-name-absent are two different assertions; fixing only the first
+  // left this gap open.
+  /^@yugnex\/nexui-react$/i,
 ];
 
-const REQUIRED_FRONTEND_DEPS = ["next", "@yugnex/nexui-react"];
+// 2026-08-31: real live bug found (project 05b590e98102, Clario AI) — this
+// check has required "@yugnex/nexui-react" since 2026-08-05, but the
+// aanya-nexui-migration (2026-08-16, see agents/generators/aanya/src/
+// index.ts's vendorNexui header comment) replaced the whole-package-vendored
+// @yugnex/nexui-react model with a shadcn/ui-style one: @yugnex/core is the
+// real npm dependency now, and individual component .tsx files are copied
+// in per-project by @yugnex/cli, not installed as a package. Every project
+// generated since that migration has @yugnex/core in package.json and NO
+// @yugnex/nexui-react entry at all — this check has been unconditionally
+// failing stack-conformance on every single build for two weeks, burning a
+// full Stage 6 fix-loop round each time on a dependency that was correctly
+// never installed.
+const REQUIRED_FRONTEND_DEPS = ["next", "@yugnex/core"];
 
 export interface PackageJsonLike {
   dependencies?: Record<string, string>;
@@ -154,7 +176,7 @@ export function checkStackConformance(packageJson: PackageJsonLike): SpecComplia
   for (const dep of Object.keys(allDeps)) {
     if (BANNED_FRONTEND_DEP_PATTERNS.some((p) => p.test(dep))) {
       violations.push(
-        `Generated frontend depends on "${dep}" — the mandated stack is Next.js + @yugnex/nexui-react only (no Tailwind, shadcn/ui, or @radix-ui).`,
+        `Generated frontend depends on "${dep}" — the mandated stack is Next.js + @yugnex/core only (no Tailwind, shadcn/ui, or @radix-ui).`,
       );
     }
   }

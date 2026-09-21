@@ -1,7 +1,11 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { plan as s, methodColor } from "./PlanPreview.styles";
 import DesignMockupPreview from "./DesignMockupPreview";
+import { Button } from "@/components/nexui/button";
+import { IconCopy, IconDownload } from "./IdeIcons";
+import { planToMarkdown, planMarkdownFilename } from "./planToMarkdown";
 
 interface Task {
   description: string;
@@ -84,11 +88,89 @@ export default function PlanPreview({ plan }: { plan: BuildPlan }) {
 
   let n = 0;
 
+  const [copied, setCopied] = useState(false);
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
+  const downloadWrapRef = useRef<HTMLDivElement>(null);
+
+  // Close the download menu on an outside click — the standard expectation
+  // for any dropdown, and without it the menu is stuck open until another
+  // click happens to land back on its own toggle button.
+  useEffect(() => {
+    if (!downloadMenuOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (downloadWrapRef.current && !downloadWrapRef.current.contains(e.target as Node)) setDownloadMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [downloadMenuOpen]);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(planToMarkdown(plan));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API can be unavailable (no permission, non-secure
+      // context) — the button simply doesn't confirm; nothing to recover.
+    }
+  }
+
+  function handleDownloadMarkdown() {
+    setDownloadMenuOpen(false);
+    const blob = new Blob([planToMarkdown(plan)], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = planMarkdownFilename(plan);
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // No PDF library dependency — the browser's own print-to-PDF is a real,
+  // zero-dependency "Save as PDF" path. `.plan-print-root` is targeted by a
+  // print-only stylesheet (PlanPreview.styles.ts) so the printed/saved
+  // output is just the document, not the surrounding IDE chrome.
+  function handleDownloadPdf() {
+    setDownloadMenuOpen(false);
+    window.print();
+  }
+
   return (
-    <div className={s.root}>
+    <div className={`${s.root} plan-print-root`}>
+      {/* Scoped, plain <style> (not the theme engine's css()) so the
+          @media print block is guaranteed to apply as a real global rule
+          regardless of how the CSS-in-JS layer scopes class names. Hides
+          the rest of the IDE chrome so "Save as PDF" produces just the
+          document, not a screenshot of the whole app shell. */}
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          .plan-print-root, .plan-print-root * { visibility: visible; }
+          .plan-print-root { position: absolute; inset: 0; height: auto; overflow: visible; padding: 24px; }
+          .plan-print-root .no-print { display: none; }
+        }
+      `}</style>
       <div className={s.header}>
-        <div className={s.appName}>{plan.appName}</div>
-        <div className={s.appDesc}>{plan.appDescription}</div>
+        <div className={s.headerText}>
+          <div className={s.appName}>{plan.appName}</div>
+          <div className={s.appDesc}>{plan.appDescription}</div>
+        </div>
+        <div className={`${s.toolbar} no-print`}>
+          <Button size="sm" variant="outline" className={s.iconOnlyButton} onClick={handleCopy} title={copied ? "Copied" : "Copy as Markdown"} aria-label={copied ? "Copied" : "Copy as Markdown"}>
+            <IconCopy size={14} />
+          </Button>
+          <div className={s.downloadMenuWrap} ref={downloadWrapRef}>
+            <Button size="sm" variant="outline" className={s.iconOnlyButton} onClick={() => setDownloadMenuOpen((v) => !v)} title="Download" aria-label="Download">
+              <IconDownload size={14} />
+            </Button>
+            {downloadMenuOpen && (
+              <div className={s.downloadMenu}>
+                <button type="button" className={s.downloadMenuItem} onClick={handleDownloadMarkdown}>Markdown (.md)</button>
+                <button type="button" className={s.downloadMenuItem} onClick={handleDownloadPdf}>PDF (print dialog)</button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {design && (design.mood || design.palette?.length || design.layoutConcept) ? (

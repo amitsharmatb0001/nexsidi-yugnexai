@@ -81,6 +81,13 @@ export interface IdeWorkspaceProps {
   projectName: string;
   appUrl?: string | null;
   isDone: boolean;
+  // 2026-08-31: real gap found live — the preview iframe/"Open app" link
+  // used to point straight at appUrl with no check the project's
+  // containers were actually up. The parent page fires an ensure-running
+  // call once the build is done; these two track that call so the preview
+  // shows "starting" instead of silently rendering a dead iframe.
+  appStarting?: boolean;
+  appStartError?: string | null;
   // 2026-08-26: real gap found live — a project the backend marked
   // needs_review/failed (spec_rejected_too_many_times, stuck_state, ...)
   // had no defined UI at all; it fell through to the generic "Building..."
@@ -234,6 +241,11 @@ const FAILURE_REASON_TEXT: Record<string, string> = {
   // verification didn't finish (commonly a transient LLM/network failure, not
   // a broken app) — the app itself may well be running and usable.
   deploy_verification_incomplete: "The app deployed and started, but the final automated checks didn't finish — so it hasn't been confirmed working end to end. It may still be usable.",
+  // 2026-08-30: see project-build.ts's own header comment on this catch
+  // block for the live incident — an orphaned/hung deploy-stage call
+  // (Temporal's "Activity task timed out") used to propagate uncaught and
+  // silently discard a project that had already passed QA and compile-check.
+  deploy_activity_error: "Something in the deploy step failed unexpectedly (often a transient network or infrastructure issue, not a problem with the generated app itself).",
 };
 
 // Reasons may carry a "code: detail" shape (see Riya's failureReason) —
@@ -256,7 +268,7 @@ export function readableFailureReason(reason: string): string {
 export function isRetryableFailure(reason: string | null): boolean {
   if (!reason) return false;
   const code = reason.split(":")[0]!.trim();
-  return ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed"].includes(code);
+  return ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error"].includes(code);
 }
 
 function DoneComposer({ onSubmit, submitting }: { onSubmit: (text: string) => void; submitting: boolean }) {
@@ -290,7 +302,7 @@ function DoneComposer({ onSubmit, submitting }: { onSubmit: (text: string) => vo
 
 export default function IdeWorkspace(props: IdeWorkspaceProps) {
   const {
-    projectId, projectName, appUrl, isDone, needsAttention, stageMessage,
+    projectId, projectName, appUrl, isDone, appStarting, appStartError, needsAttention, stageMessage,
     tree, awaitingSpecApproval, buildPlan, awaitingDeployApproval, submitting,
     changeRequest, onChangeRequest, onApproveSpec, onApproveDeploy, onRequestChanges, onRetry, planning,
   } = props;
@@ -632,15 +644,19 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
     <div className={s.empty}>The specification appears here once the plan is written.</div>
   );
 
-  const previewContent = appUrl ? (
+  const previewContent = !appUrl ? (
+    <div className={s.tileEmpty}>Not deployed yet — the preview appears once the app is live.</div>
+  ) : appStartError ? (
+    <div className={s.tileEmpty}>Couldn't start this project's app: {appStartError}</div>
+  ) : appStarting ? (
+    <div className={s.tileEmpty}>Starting your app…</div>
+  ) : (
     <PreviewFrame
       src={appUrl}
       height="100%"
       viewports={[{ id: "fill", label: "Fill", width: null }]}
       className={s.previewFrame}
     />
-  ) : (
-    <div className={s.tileEmpty}>Not deployed yet — the preview appears once the app is live.</div>
   );
 
   const tasksContent = terminalRuns.length === 0 ? (
@@ -1056,6 +1072,7 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                         className={s.gateInput}
                         value={changeRequest}
                         onChange={(e) => onChangeRequest(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter" && !submitting) gate.onGo(); }}
                         placeholder="Any changes first…"
                       />
                     )}

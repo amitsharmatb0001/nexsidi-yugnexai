@@ -159,6 +159,16 @@ async function readProjectSpec(projectId: string): Promise<ProjectSpec> {
   return JSON.parse(readFileSync(specPath, "utf-8")) as ProjectSpec;
 }
 
+// 2026-08-31: extracted so the reordering's actual decision — skip the two
+// expensive, browser-driven stages (Stage 5/Tier 3 + live-eval) when either
+// mechanical compliance check already failed — is unit-testable without
+// mocking runRealLiveRetest's real docker/LLM orchestration (which is
+// deliberately NOT exported/tested for that reason; see this file's own
+// header comment on stage6-deployment.test.ts's testing philosophy).
+export function shouldSkipExpensiveReview(specComplianceOk: boolean, stackConformanceOk: boolean): boolean {
+  return !specComplianceOk || !stackConformanceOk;
+}
+
 async function runRealLiveRetest(
   projectId: string,
   appUrl: string,
@@ -187,30 +197,18 @@ async function runRealLiveRetest(
   // backend origin; point Tier 3 at Riya's actual backend URL too.
   process.env.TIER3_REVIEW_BACKEND_URL = backendUrl;
   try {
-    // includeTier3=true: this runs AFTER a real deploy, pointed at the
-    // actual live URL — the one place Tier 3 can legitimately run. See
-    // runStage5's own comment for why the pre-deployment gate defaults to
-    // false instead.
-    const result: Stage5Result = await runStage5(projectId, stage4Result, true, plan);
-    if (!result.pass) {
-      // Don't spend a live browser evaluation judging the design of an app
-      // that's about to loop back for objective bug fixes anyway — System B
-      // only runs once System A (findings) + Tier 3 (does it work) agree
-      // the app is objectively sound. `liveEval` stays absent here, which
-      // buildDeliverySummary treats as "didn't run", not "failed".
-      return { pass: result.pass, findings: result.findings };
-    }
-
-    // 2026-07-24 (P2): System B — the app is objectively correct; now judge
-    // whether it's actually good, not generic AI-slop that happens to work.
-    const liveEval = await runLiveEval(projectId, appUrl, stage4Result.frontendOutputDir);
-
-    // 2026-08-05: independent of liveEval's outcome (see spec-compliance.ts's
-    // header comment) — a literal spec fact (color, required form field) can
-    // be wrong even when System B rates the design as competent on its own
-    // terms. Fails open on infra/read errors (missing spec.json, a browser
-    // worker crash) rather than blocking delivery on this check's own
-    // plumbing breaking — only a REAL comparison result blocks delivery.
+    // 2026-08-31: reordered to run BEFORE Stage 5 / Tier 3 / live-eval — real
+    // live evidence (project 05b590e98102) that these two mechanical checks
+    // used to run LAST, after both full Tilotma browser passes (up to
+    // ~67 iterations each) and the subjective live-eval pass had already
+    // completed. A stack-conformance violation is a package.json string
+    // comparison — no browser, no LLM call needed to detect it — so paying
+    // for the two most expensive stages in this function first, only to
+    // discover the build was going to fail a file-read check anyway, wastes
+    // the majority of a Stage 6 attempt's wall-clock time. Fails open on
+    // infra/read errors (missing spec.json, a browser worker crash) exactly
+    // as before — only a REAL comparison result blocks delivery or skips
+    // the expensive stages below.
     let specCompliance: SpecComplianceResult | undefined;
     try {
       const spec = await readProjectSpec(projectId);
@@ -222,13 +220,7 @@ async function runRealLiveRetest(
       console.error(`[stage6] Spec-compliance check could not run — skipping (fail-open): ${String(err)}`);
     }
 
-    // 2026-08-05: same reasoning as spec-compliance above, but for the FIXED
-    // global stack rule (Next.js + @yugnex/nexui-react, no Tailwind/shadcn/
-    // @radix-ui) rather than a per-project spec fact — see spec-compliance.ts's
-    // "Stack conformance" section header comment. Source-file check (reads
-    // package.json), not live — no browser worker needed, so failures here
-    // are almost always a real violation, not infra flakiness; still fails
-    // open on a read error for the same reason as above.
+    // Cheapest of all — pure file read, no live URL needed at all.
     let stackConformance: SpecComplianceResult | undefined;
     try {
       stackConformance = await runStackConformanceCheck(stage4Result.frontendOutputDir);
@@ -257,13 +249,40 @@ async function runRealLiveRetest(
       ...(specCompliance ? toFindings(specCompliance, "frontend/app/theme-overrides.css") : []),
       ...(stackConformance ? toFindings(stackConformance, "frontend/package.json") : []),
     ];
-    const findings = complianceFindings.length > 0 ? [...result.findings, ...complianceFindings] : result.findings;
-
     const specComplianceOk = specCompliance ? specCompliance.pass : true;
     const stackConformanceOk = stackConformance ? stackConformance.pass : true;
+
+    if (shouldSkipExpensiveReview(specComplianceOk, stackConformanceOk)) {
+      // Same "don't spend the expensive stages on a build that's about to
+      // loop back anyway" reasoning the old !result.pass early-return below
+      // already applied to Stage 5 — now applied one layer earlier, before
+      // Stage 5 and liveEval even start, since a compliance failure needs
+      // the exact same targeted-fix-and-redeploy cycle regardless of what
+      // Stage 5/liveEval would have found.
+      return { pass: false, findings: complianceFindings, specCompliance };
+    }
+
+    // includeTier3=true: this runs AFTER a real deploy, pointed at the
+    // actual live URL — the one place Tier 3 can legitimately run. See
+    // runStage5's own comment for why the pre-deployment gate defaults to
+    // false instead.
+    const result: Stage5Result = await runStage5(projectId, stage4Result, true, plan);
+    if (!result.pass) {
+      // Don't spend a live browser evaluation judging the design of an app
+      // that's about to loop back for objective bug fixes anyway — System B
+      // only runs once System A (findings) + Tier 3 (does it work) agree
+      // the app is objectively sound. `liveEval` stays absent here, which
+      // buildDeliverySummary treats as "didn't run", not "failed".
+      return { pass: result.pass, findings: result.findings, specCompliance };
+    }
+
+    // 2026-07-24 (P2): System B — the app is objectively correct; now judge
+    // whether it's actually good, not generic AI-slop that happens to work.
+    const liveEval = await runLiveEval(projectId, appUrl, stage4Result.frontendOutputDir);
+
     return {
-      pass: result.pass && liveEval.pass && specComplianceOk && stackConformanceOk,
-      findings,
+      pass: result.pass && liveEval.pass,
+      findings: result.findings,
       liveEval,
       specCompliance,
     };

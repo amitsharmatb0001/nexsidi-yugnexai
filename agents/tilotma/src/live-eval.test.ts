@@ -137,10 +137,12 @@ test("runLiveEval scales maxIterations by real page count and runs readOnly", as
   await runLiveEval("diagproj", "http://localhost:3200", "/tmp/nonexistent-frontend-dir", deps);
   expect(capturedConfig.readOnly).toBe(true);
   // countAppPages returns 0 for a missing dir (see tier3-review.test.ts) —
-  // computeTier3MaxIterations(0) still floors at the shared default, so this
-  // asserts the wiring is live, not a specific number tied to a fixture.
+  // computeTier3MaxIterations(0) still floors (2026-08-31: lowered from the
+  // shared 40 to a Tier3-specific 25 — see that function's own header
+  // comment), so this asserts the wiring is live, not a specific number
+  // tied to a fixture.
   expect(typeof capturedConfig.maxIterations).toBe("number");
-  expect(capturedConfig.maxIterations).toBeGreaterThanOrEqual(40);
+  expect(capturedConfig.maxIterations).toBeGreaterThanOrEqual(25);
 });
 
 // D25-style default-FAIL: an unparseable evaluation must never silently

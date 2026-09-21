@@ -93,6 +93,9 @@ export default function DashboardPage() {
           <span className={s.eyebrow}>Overview</span>
           <h1 className={s.mastheadTitle}>Command center</h1>
           <p className={s.mastheadSub}>What&apos;s happening across your projects right now.</p>
+          <Link href="/dashboard/clone" className={s.panelLink}>
+            Clone a project with changes →
+          </Link>
         </header>
 
         <section className={s.stats} aria-label="Fleet totals">

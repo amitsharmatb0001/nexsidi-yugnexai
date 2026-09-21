@@ -110,11 +110,32 @@ export function pathToNextjsFile(urlPath: string): string {
 // planner chat), Arjun runs in ANNOTATION MODE: the page list is final and
 // he annotates it with auth/middleware info, then derives API contract, DB
 // schema, and tasks from those fixed pages. He does NOT invent a page list.
+// 2026-08-30: real inefficiency found live — every spec REJECTION re-ran
+// Vanya's full design-brief generation from zero, including her 1-3 live
+// web_search calls (her own doctrine's explicit budget), even when the
+// user's rejection comment was entirely about auth/endpoints/schema and
+// never mentioned design at all. Vanya's own research is the dominant cost
+// of the whole "second plan" review (confirmed live: Saanvi+Arjun's own
+// calls finish in seconds; Vanya's iterative search-then-reason loop is
+// what stretches it to 5-10 minutes) — paying that cost again on a rejection
+// that only asked to remove a sign-up endpoint doesn't make sense, and the
+// user caught this by direct observation, not a hypothetical.
+// Narrow, evidence-based match (same posture as this file's other regexes,
+// e.g. isAdminOnlyApp) — errs toward RE-RUNNING Vanya when uncertain, since
+// a redundant design pass costs time but a STALE one ships wrong colors.
+const DESIGN_RELATED_FEEDBACK = /color|palette|font|typograph|layout|design|look|feel|style|theme|dark mode|light mode|neon|logo|image|visual|spacing|whitespace|mood|vibe|brand/i;
+
+export function isDesignRelatedFeedback(feedback: string): boolean {
+  return DESIGN_RELATED_FEEDBACK.test(feedback);
+}
+
 export async function run(
   spec: ProjectSpec,
   deps: ArjunDeps = { chat: agentChat },
   lockedPages?: LockedPage[],
   authType?: string,
+  priorDesignBrief?: DesignBrief,
+  rejectionFeedback?: string,
 ): Promise<BuildPlan> {
   const apiKey = process.env.NIM_API_KEY ?? "";
 
@@ -147,7 +168,14 @@ export async function run(
   // API-contract/task-decomposition JSON call — a slow/failed Vanya call
   // must not fail the whole plan (design has its own two-retry-then-
   // fallback contract inside run() already; this just invokes it).
-  const designBrief = await (deps.runVanya ?? runVanya)(spec);
+  // 2026-08-30: skip re-running Vanya entirely when a prior brief exists and
+  // this round's rejection feedback isn't about design — see
+  // isDesignRelatedFeedback's header comment for the live gap this closes.
+  const canReuseDesignBrief = priorDesignBrief && rejectionFeedback !== undefined && !isDesignRelatedFeedback(rejectionFeedback);
+  if (canReuseDesignBrief) {
+    console.log(`[arjun] reusing design brief from the prior round — rejection feedback "${rejectionFeedback}" isn't design-related`);
+  }
+  const designBrief = canReuseDesignBrief ? priorDesignBrief : await (deps.runVanya ?? runVanya)(spec);
 
   // Contract security gate (RC-1): sanitize endpoints FIRST, then use that
   // same sanitized list to also clean any named shared-type interface a

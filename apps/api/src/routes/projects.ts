@@ -8,7 +8,7 @@
 // DELETE /api/projects/:id   — remove the project record (ownership verified)
 
 import { Hono } from "hono";
-import { db, projects, tokenSpend } from "@nexsidi/db";
+import { db, projects, tokenSpend, users } from "@nexsidi/db";
 import { and, desc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { getPipelineStatus } from "../utils/temporal.ts";
@@ -192,6 +192,337 @@ projectsRouter.get("/:id", async (c) => {
   return c.json(await enrich(row));
 });
 
+// ── GET /api/projects/:id/similar ─────────────────────────────────────────────
+// 2026-09-01: real user request — "as we build more projects, the system
+// should understand what type a project is (page count, auth, admin panel,
+// contact form, etc.) so a new one that's 70-80% the same as an existing
+// one can be cloned from it instead of generated from scratch every time."
+// Ranks this user's other delivered projects by shape similarity against
+// the given one, using each project's own locked spec.json (the real
+// source of truth — see project-shape.ts's own header comment) plus the
+// real page count on disk. Scoped to the requesting user's own projects
+// only — this never compares across different users' portfolios.
+projectsRouter.get("/:id/similar", async (c) => {
+  const userId    = c.get("userId") as string;
+  const projectId = c.req.param("id");
+
+  const { readFileSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { countAppPages } = await import("../../../../agents/tilotma/src/tier3-review.ts");
+  const { deriveProjectShape, rankBySimilarity } = await import("../../../../pipeline/orchestrator/project-shape.ts");
+  const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
+
+  const readShape = (pid: string) => {
+    const specPath = join(BUILD_DIR, pid, "spec.json");
+    if (!existsSync(specPath)) return null;
+    try {
+      const spec = JSON.parse(readFileSync(specPath, "utf-8"));
+      const pageCount = countAppPages(join(BUILD_DIR, pid, "frontend"));
+      return deriveProjectShape(spec, pageCount);
+    } catch {
+      return null; // malformed/partial spec.json — skip rather than crash the whole comparison
+    }
+  };
+
+  const [target] = await db.select().from(projects).where(and(eq(projects.id, projectId), eq(projects.userId, userId))).limit(1);
+  if (!target) return c.json({ error: "not_found" }, 404);
+
+  const targetShape = readShape(projectId);
+  if (!targetShape) return c.json({ error: "no_spec_available", message: "This project has no readable spec.json to compare from." }, 409);
+
+  const others = await db
+    .select({ id: projects.id, name: projects.name })
+    .from(projects)
+    .where(and(eq(projects.userId, userId), eq(projects.status, "done")));
+
+  const candidates = others
+    .filter((p) => p.id !== projectId)
+    .map((p) => ({ projectId: p.id, name: p.name, shape: readShape(p.id) }))
+    .filter((p): p is { projectId: string; name: string; shape: NonNullable<ReturnType<typeof readShape>> } => p.shape !== null);
+
+  const ranked = rankBySimilarity(targetShape, candidates);
+  const nameById = new Map(candidates.map((cnd) => [cnd.projectId, cnd.name]));
+
+  return c.json({
+    projectId,
+    shape: targetShape,
+    matches: ranked.map((r) => ({
+      projectId: r.projectId,
+      name: nameById.get(r.projectId) ?? r.projectId,
+      score: Math.round(r.comparison.score * 100) / 100,
+      shared: r.comparison.shared,
+      different: r.comparison.different,
+    })),
+  });
+});
+
+// ── POST /api/projects/:id/clone ──────────────────────────────────────────────
+// 2026-09-01: real user request — "build 4-5 projects that are 70-80% the
+// same, just names/pieces changed, so we can control cost and show
+// something live without breaking." Deliberately NOT the full spec ->
+// generate -> adversarial QA -> two Tilotma review passes pipeline every
+// other project goes through (that's where the real time/cost goes) —
+// copies the source's already-generated, already-QA-passed code and does a
+// deterministic name/branding swap (see clone-project.ts's own header
+// comment for why this is scoped to name-level changes, not deeper content
+// variation). V1 is synchronous: the HTTP response doesn't return until the
+// clone is copied, rebranded, built, and deployed — a real docker build
+// takes tens of seconds, same as every rebuild done by hand tonight;
+// background-job infra for this is a reasonable follow-up, not required
+// for a working v1.
+// 2026-09-01 (v2, same-day follow-up): optional `changes` field closes the
+// exact gap clone-project.ts's header comment already flagged — "deeper
+// content variation... needs an LLM-assisted pass and is a natural v2, not
+// built here." Runs AFTER the deterministic rename (so the agent starts from
+// an already-correctly-renamed app, never touching ports/Dockerfile/compose —
+// clone-changes.ts scopes it to frontend/ only) and BEFORE the docker build,
+// so one rebuild picks up both the rename and the requested changes together.
+// 2026-09-06: real user request — "don't mention which project to clone,
+// let the system decide." sourceId "auto" (in place of a real project id)
+// triggers clone-source-picker.ts: given the new `description` field and
+// the user's own real "done" projects, a one-shot call picks the closest
+// structural match — then everything below runs completely unchanged
+// against whichever real id it resolved to.
+projectsRouter.post("/:id/clone", async (c) => {
+  const userId = c.get("userId") as string;
+  let sourceId = c.req.param("id");
+
+  const body = (await c.req.json().catch(() => null)) as { name?: unknown; changes?: unknown; description?: unknown } | null;
+  const newName = typeof body?.name === "string" ? body.name.trim() : "";
+  if (!newName) return c.json({ error: "name_required" }, 400);
+  if (newName.length > 200) return c.json({ error: "name_too_long" }, 400);
+  const changes = typeof body?.changes === "string" ? body.changes.trim() : "";
+  if (changes.length > 4000) return c.json({ error: "changes_too_long" }, 400);
+
+  let sourcePickReasoning: string | null = null;
+  if (sourceId === "auto") {
+    const description = typeof body?.description === "string" ? body.description.trim() : "";
+    if (!description) {
+      return c.json({ error: "description_required", message: "sourceId 'auto' needs a 'description' field so the system can pick the closest existing project to clone from." }, 400);
+    }
+    const { pickCloneSource } = await import("../../../../pipeline/orchestrator/clone-source-picker.ts");
+    const { readFileSync: readFileSyncForPick, existsSync: existsSyncForPick } = await import("node:fs");
+    const { join: joinForPick } = await import("node:path");
+    const BUILD_DIR_FOR_PICK = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
+
+    const doneProjects = await db.select({ id: projects.id, name: projects.name }).from(projects).where(and(eq(projects.userId, userId), eq(projects.status, "done")));
+    if (doneProjects.length === 0) return c.json({ error: "no_candidates", message: "You have no delivered projects yet to clone from." }, 409);
+
+    const candidates = doneProjects.map((p) => {
+      const specPath = joinForPick(BUILD_DIR_FOR_PICK, p.id, "spec.json");
+      let description = p.name;
+      if (existsSyncForPick(specPath)) {
+        try {
+          const spec = JSON.parse(readFileSyncForPick(specPath, "utf-8"));
+          if (typeof spec.description === "string" && spec.description) description = spec.description;
+        } catch {
+          // fall through to the name-only fallback below
+        }
+      }
+      return { id: p.id, name: p.name, description };
+    });
+
+    try {
+      const picked = await pickCloneSource(description, candidates, process.env.NIM_API_KEY ?? "");
+      sourceId = picked.sourceId;
+      sourcePickReasoning = picked.reasoning;
+    } catch (err) {
+      return c.json({ error: "source_pick_failed", message: String(err) }, 502);
+    }
+  }
+
+  const [source] = await db.select().from(projects).where(and(eq(projects.id, sourceId), eq(projects.userId, userId))).limit(1);
+  if (!source) return c.json({ error: "not_found" }, 404);
+  if (source.status !== "done") {
+    return c.json({ error: "source_not_delivered", message: "Only a delivered (done) project can be cloned from." }, 409);
+  }
+
+  const { readFileSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { cloneProject, parseComposePorts } = await import("../../../../pipeline/orchestrator/clone-project.ts");
+  const { applyCloneChanges } = await import("../../../../pipeline/orchestrator/clone-changes.ts");
+  const { planCloneChanges } = await import("../../../../pipeline/orchestrator/clone-plan.ts");
+  const { applyCloneBackendChanges } = await import("../../../../pipeline/orchestrator/clone-backend-changes.ts");
+  const { checkCrossLayerContract } = await import("../../../../pipeline/orchestrator/clone-contract-check.ts");
+  const { deployWithRetry } = await import("../../../../pipeline/orchestrator/clone-deploy.ts");
+  const { getRunningDeploymentPorts } = await import("../../../../agents/riya/src/index.ts");
+  const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
+
+  const sourceSpecPath = join(BUILD_DIR, sourceId, "spec.json");
+  if (!existsSync(sourceSpecPath)) return c.json({ error: "source_spec_missing" }, 409);
+  const sourceSpec = JSON.parse(readFileSync(sourceSpecPath, "utf-8"));
+  const oldName = sourceSpec.name as string;
+
+  const sourceComposePath = join(BUILD_DIR, sourceId, "docker-compose.yml");
+  if (!existsSync(sourceComposePath)) return c.json({ error: "source_compose_missing" }, 409);
+  const sourcePorts = parseComposePorts(readFileSync(sourceComposePath, "utf-8"));
+  if (!sourcePorts) return c.json({ error: "source_ports_unreadable" }, 409);
+
+  // Same collision-retry as POST / above — id is both the primary key and
+  // the on-disk build directory name.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const newId = newProjectId();
+    const existingRow = await db.select({ id: projects.id }).from(projects).where(eq(projects.id, newId)).limit(1);
+    if (existingRow.length > 0) continue;
+
+    let cloneResult: Awaited<ReturnType<typeof cloneProject>>;
+    try {
+      cloneResult = await cloneProject({ sourceProjectId: sourceId, newProjectId: newId, oldName, newName, sourcePorts, buildDir: BUILD_DIR });
+    } catch (err) {
+      return c.json({ error: "clone_failed", message: String(err) }, 500);
+    }
+
+    await db.insert(projects).values({
+      id: newId,
+      userId,
+      name: newName,
+      status: "building",
+      context: changes ? `Cloned from ${source.name} (${sourceId}); requested changes: ${changes}` : `Cloned from ${source.name} (${sourceId})`,
+    });
+
+    // Optional content-edit pass — runs AFTER the deterministic rename
+    // (destDir already carries the new name everywhere) and BEFORE the
+    // docker build, so one rebuild picks up everything together. Never
+    // blocks the clone: if this can't fully apply the request, whatever it
+    // DID write is still on disk, and the build step right below is the
+    // same real verification gate either way — it fails honestly
+    // (deploy_failed) if a partial edit broke the build, or succeeds with
+    // the clone as-is if it didn't.
+    //
+    // 2026-09-02: real live test found the actual failure this planning
+    // step exists for — a request needing a genuinely new backend feature
+    // (a wishlist), handed to the frontend-only agent with zero upfront
+    // knowledge of what already existed, burned its entire iteration budget
+    // re-discovering the project's own structure by reading files one at a
+    // time, then ran out of budget mid-edit having never touched anything
+    // it could actually finish. planCloneChanges reads the project's REAL
+    // api-contract.json/db-schema.json first and decides, before any
+    // building starts, whether backend work is genuinely needed and what
+    // each layer should build — closing that gap at the root instead of
+    // hoping the frontend agent works it out from scratch.
+    let changesApplied: boolean | null = null;
+    let changesSummary: string | null = null;
+    let changesErrors: string[] = [];
+    let planReasoning: string | null = null;
+    let backendApplied: boolean | null = null;
+    let backendSummary: string | null = null;
+    let backendErrors: string[] = [];
+    let migrationApplied: string | null = null;
+    if (changes) {
+      const apiKey = process.env.NIM_API_KEY ?? "";
+      let plan: Awaited<ReturnType<typeof planCloneChanges>>;
+      try {
+        plan = await planCloneChanges({ buildDir: cloneResult.buildDir, changes, apiKey });
+      } catch (err) {
+        // Fails open: if planning itself breaks (bad LLM response, network
+        // error), fall back to the pre-planning behavior — one frontend-only
+        // pass on the user's raw request — rather than failing the whole
+        // clone over a planning-step hiccup.
+        plan = { needsBackendChanges: false, reasoning: `planning failed, defaulted to frontend-only: ${String(err)}`, backendInstructions: null, frontendInstructions: changes };
+      }
+      planReasoning = plan.reasoning;
+
+      let backendContext: string | undefined;
+      if (plan.needsBackendChanges && plan.backendInstructions) {
+        const backendResult = await applyCloneBackendChanges({
+          buildDir: cloneResult.buildDir,
+          instructions: plan.backendInstructions,
+          apiKey,
+        });
+        backendApplied = backendResult.applied;
+        backendSummary = backendResult.summary;
+        backendErrors = backendResult.errors;
+        migrationApplied = backendResult.migrationApplied;
+        if (backendResult.applied) backendContext = backendResult.summary;
+      }
+
+      // Always the user's own original words, never a paraphrase of them —
+      // only the SUPPLEMENTARY backend-context note comes from the plan.
+      const changeResult = await applyCloneChanges({
+        buildDir: cloneResult.buildDir,
+        changes,
+        newName,
+        apiKey,
+        backendContext,
+      });
+      changesApplied = changeResult.applied;
+      changesSummary = changeResult.summary;
+      changesErrors = changeResult.errors;
+
+      // 2026-09-02: real live bug found and reproduced exactly — a backend
+      // pass and a frontend pass each independently pass their OWN build/
+      // typecheck while silently disagreeing about the actual HTTP contract
+      // between them (a real run built POST /wishlist/:dropId on the
+      // backend, then called POST /api/v1/wishlist with the id in the body
+      // instead — both sides compiled clean, the feature 404s at runtime).
+      // Only runs when a backend pass actually happened — a pure content
+      // edit has nothing new to cross-check. Deterministic source
+      // inspection, zero LLM cost, scoped to only the files this run just
+      // wrote so a pre-existing (already-working-in-production) call
+      // elsewhere in the app is never mistaken for a new regression.
+      if (backendContext) {
+        const contractResult = checkCrossLayerContract({ buildDir: cloneResult.buildDir, frontendFilesWritten: changeResult.filesWritten });
+        if (contractResult.checked && contractResult.mismatches.length > 0) {
+          await db.update(projects).set({ status: "error", failureReason: "clone_contract_mismatch", updatedAt: new Date() }).where(eq(projects.id, newId));
+          return c.json({
+            error: "contract_mismatch",
+            message: "The frontend calls an endpoint the backend never registered — the two layers disagree on the real request shape.",
+            mismatches: contractResult.mismatches,
+            projectId: newId, clonedFrom: sourceId, ...(sourcePickReasoning ? { sourcePickReasoning } : {}), theme: cloneResult.theme, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors,
+          }, 502);
+        }
+      }
+    }
+
+    try {
+      // 2026-09-06: real bug reproduced twice — see clone-deploy.ts's own
+      // header comment. A bounded retry, not a longer timeout, is the fix:
+      // both real failures were a transient Windows spawn glitch, and a
+      // manual re-run of the identical command succeeded in under 90s both
+      // times, well inside the existing budget.
+      await deployWithRetry(join(cloneResult.buildDir, "docker-compose.yml"));
+    } catch (err) {
+      await db.update(projects).set({ status: "error", failureReason: "clone_deploy_failed", updatedAt: new Date() }).where(eq(projects.id, newId));
+      return c.json({ error: "deploy_failed", message: String(err), projectId: newId, clonedFrom: sourceId, ...(sourcePickReasoning ? { sourcePickReasoning } : {}), theme: cloneResult.theme, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors }, 502);
+    }
+
+    // 2026-09-02: `docker compose up -d` can return success once containers
+    // are STARTED, even when one is still crash-looping toward "healthy" —
+    // exactly what a malformed MIGRATION_REQUEST.sql would cause (postgres
+    // never becomes healthy, backend's `depends_on: condition:
+    // service_healthy` blocks it from ever actually starting). A bounded
+    // retry gives real init/healthcheck time to finish before concluding
+    // the deploy is genuinely broken, without waiting the full 300s budget
+    // an unrelated hang would need.
+    let livePorts: ReturnType<typeof getRunningDeploymentPorts> = null;
+    for (let check = 0; check < 5 && !livePorts; check++) {
+      if (check > 0) await new Promise((r) => setTimeout(r, 2000));
+      livePorts = getRunningDeploymentPorts(cloneResult.buildDir);
+    }
+    if (!livePorts) {
+      await db.update(projects).set({ status: "error", failureReason: "clone_deploy_unhealthy", updatedAt: new Date() }).where(eq(projects.id, newId));
+      return c.json({ error: "deploy_unhealthy", message: "docker compose reported success but the containers never became reachable on their expected ports — likely a bad migration or a crash-looping service", projectId: newId, clonedFrom: sourceId, ...(sourcePickReasoning ? { sourcePickReasoning } : {}), theme: cloneResult.theme, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors }, 502);
+    }
+
+    const appUrl = `http://localhost:${cloneResult.ports.frontendPort}`;
+    await db.update(projects).set({ status: "done", appUrl, updatedAt: new Date() }).where(eq(projects.id, newId));
+
+    return c.json({
+      id: newId,
+      name: newName,
+      appUrl,
+      clonedFrom: sourceId,
+      clonedFromName: source.name,
+      ...(sourcePickReasoning ? { sourcePickReasoning } : {}),
+      ports: cloneResult.ports,
+      theme: cloneResult.theme,
+      ...(changes ? { planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors } : {}),
+    }, 201);
+  }
+
+  return c.json({ error: "could_not_allocate_id" }, 500);
+});
+
 // ── PATCH /api/projects/:id ───────────────────────────────────────────────────
 // Rename and/or update the project's own context — the dashboard's inline
 // "rename project" action, and the IDE's Context panel, share this route.
@@ -253,4 +584,34 @@ projectsRouter.delete("/:id", async (c) => {
   if (!row) return c.json({ error: "not_found" }, 404);
 
   return c.body(null, 204);
+});
+
+// ── POST /api/projects/:id/transfer ───────────────────────────────────────────
+// 2026-09-06: real user request — accounts had drifted (test accounts, an
+// orphaned placeholder owner, a throwaway project ended up owned by a
+// disposable session) and there was no way to consolidate everything onto
+// one real account short of a direct DB edit. Only the CURRENT owner can
+// transfer a project they own, to a target identified by real email (never
+// a raw user id — nobody should need to know or type a UUID for this).
+// Immediate, one-step transfer: this is a single-operator consolidation
+// tool, not a multi-tenant handoff needing the recipient's acceptance.
+projectsRouter.post("/:id/transfer", async (c) => {
+  const userId = c.get("userId") as string;
+  const projectId = c.req.param("id");
+
+  const body = (await c.req.json().catch(() => null)) as { targetEmail?: unknown } | null;
+  const targetEmail = typeof body?.targetEmail === "string" ? body.targetEmail.trim().toLowerCase() : "";
+  if (!targetEmail) return c.json({ error: "target_email_required" }, 400);
+
+  const [project] = await db.select({ id: projects.id, name: projects.name }).from(projects).where(and(eq(projects.id, projectId), eq(projects.userId, userId))).limit(1);
+  if (!project) return c.json({ error: "not_found", message: "No project with that id owned by you." }, 404);
+
+  const [targetUser] = await db.select({ id: users.id, email: users.email }).from(users).where(eq(users.email, targetEmail)).limit(1);
+  if (!targetUser) return c.json({ error: "target_user_not_found", message: `No account exists with email "${targetEmail}" — it must already exist, this does not create one.` }, 404);
+
+  if (targetUser.id === userId) return c.json({ error: "already_owner", message: "That account already owns this project." }, 409);
+
+  await db.update(projects).set({ userId: targetUser.id, updatedAt: new Date() }).where(eq(projects.id, projectId));
+
+  return c.json({ id: projectId, name: project.name, transferredTo: targetUser.email });
 });

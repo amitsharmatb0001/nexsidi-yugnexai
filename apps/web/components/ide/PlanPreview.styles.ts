@@ -26,9 +26,32 @@ export function methodColor(method: string): string {
 export const plan = {
   root: css({ height: "100%", overflowY: "auto", padding: "32px 40px 80px" }),
 
-  header: css({ paddingBottom: theme.space[6], borderBottom: `1px solid ${theme.color.border}`, marginBottom: theme.space[6] }),
+  header: css({ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: theme.space[4], paddingBottom: theme.space[6], borderBottom: `1px solid ${theme.color.border}`, marginBottom: theme.space[6] }),
+  headerText: css({ minWidth: 0 }),
   appName: css({ fontSize: theme.fontSize["2xl"], fontWeight: theme.fontWeight.semibold, color: theme.color.foreground, letterSpacing: "-0.015em" }),
   appDesc: css({ marginTop: theme.space[2.5], fontSize: theme.fontSize.sm, color: theme.color.mutedForeground, lineHeight: 1.7, maxWidth: "720px" }),
+  // Copy/Download — real feature request, verbatim: "add a copy buutn in
+  // the plan window & a downod buuton for md file". flexShrink:0 so a long
+  // appName never squeezes these into wrapping.
+  toolbar: css({ display: "flex", gap: theme.space[2], flexShrink: 0 }),
+  // Icon-only override — Button's own `sm` size pads for a text+icon combo;
+  // these two buttons carry no visible label (title/aria-label instead), so
+  // a tighter, equal-sided square reads correctly rather than a wide pill
+  // with one glyph floating in the middle.
+  iconOnlyButton: css({ paddingLeft: theme.space[2], paddingRight: theme.space[2], width: "2rem" }),
+  downloadMenuWrap: css({ position: "relative" }),
+  downloadMenu: css({
+    position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 20,
+    display: "flex", flexDirection: "column", minWidth: "160px",
+    background: theme.color.popover, border: `1px solid ${theme.color.border}`,
+    borderRadius: theme.radius.md, boxShadow: theme.shadow.md, padding: theme.space[1],
+  }),
+  downloadMenuItem: css({
+    display: "block", width: "100%", textAlign: "left", padding: `${theme.space[2]} ${theme.space[3]}`,
+    fontSize: theme.fontSize.sm, color: theme.color.foreground, background: "transparent",
+    border: "none", borderRadius: theme.radius.sm, cursor: "pointer",
+    "&:hover": { background: theme.color.muted },
+  }),
 
   section: css({ marginTop: theme.space[8] }),
   sectionHead: css({ display: "flex", alignItems: "baseline", gap: theme.space[2], marginBottom: "14px" }),

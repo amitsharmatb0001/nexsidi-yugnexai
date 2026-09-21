@@ -179,16 +179,23 @@ test("checkSpecCompliance combines color and form-field violations", () => {
 });
 
 // ── checkStackConformance (2026-08-05) ────────────────────────────────────────
-test("checkStackConformance passes for a clean Next.js + nexui-react package.json", () => {
+// 2026-08-31: real live bug found (project 05b590e98102) — these fixtures
+// used "@yugnex/nexui-react" (the package name before the aanya-nexui-
+// migration, 2026-08-16, moved the real npm dependency to "@yugnex/core").
+// Every real generated project has had @yugnex/core, never nexui-react,
+// for two weeks — these tests passed the whole time while the actual check
+// unconditionally failed stack-conformance on every real build. Updated to
+// match what a real package.json actually contains now.
+test("checkStackConformance passes for a clean Next.js + @yugnex/core package.json", () => {
   const result = checkStackConformance({
-    dependencies: { next: "16.2.0", "@yugnex/nexui-react": "1.0.0", react: "19.0.0" },
+    dependencies: { next: "16.2.0", "@yugnex/core": "0.1.0", react: "19.0.0" },
   });
   expect(result).toEqual({ pass: true, violations: [] });
 });
 
 test("checkStackConformance flags Tailwind if it somehow got installed", () => {
   const result = checkStackConformance({
-    dependencies: { next: "16.2.0", "@yugnex/nexui-react": "1.0.0", tailwindcss: "3.4.0" },
+    dependencies: { next: "16.2.0", "@yugnex/core": "0.1.0", tailwindcss: "3.4.0" },
   });
   expect(result.pass).toBe(false);
   expect(result.violations[0]).toContain("tailwindcss");
@@ -196,15 +203,29 @@ test("checkStackConformance flags Tailwind if it somehow got installed", () => {
 
 test("checkStackConformance flags shadcn/ui and @radix-ui packages", () => {
   const result = checkStackConformance({
-    dependencies: { next: "16.2.0", "@yugnex/nexui-react": "1.0.0" },
+    dependencies: { next: "16.2.0", "@yugnex/core": "0.1.0" },
     devDependencies: { "@radix-ui/react-dialog": "1.0.0", "shadcn-ui": "0.1.0" },
   });
   expect(result.pass).toBe(false);
   expect(result.violations).toHaveLength(2);
 });
 
+// 2026-08-31: real live gap this closes — a package.json with BOTH the
+// required "@yugnex/core" AND the old, migrated-away-from
+// "@yugnex/nexui-react" (confirmed live: zero actual imports of it
+// anywhere in source, a pure leftover) passed this check clean before this
+// pattern existed, since the "required" list only ever asserted the new
+// name's presence, never the old name's absence.
+test("checkStackConformance flags the old @yugnex/nexui-react even when @yugnex/core is also present", () => {
+  const result = checkStackConformance({
+    dependencies: { next: "16.2.0", "@yugnex/core": "0.1.0", "@yugnex/nexui-react": "2.0.1" },
+  });
+  expect(result.pass).toBe(false);
+  expect(result.violations.some((v) => v.includes("@yugnex/nexui-react"))).toBe(true);
+});
+
 test("checkStackConformance flags a missing required dependency (e.g. next itself)", () => {
-  const result = checkStackConformance({ dependencies: { react: "19.0.0", "@yugnex/nexui-react": "1.0.0" } });
+  const result = checkStackConformance({ dependencies: { react: "19.0.0", "@yugnex/core": "0.1.0" } });
   expect(result.pass).toBe(false);
   expect(result.violations.some((v) => v.includes("next"))).toBe(true);
 });
@@ -212,7 +233,7 @@ test("checkStackConformance flags a missing required dependency (e.g. next itsel
 test("checkStackConformance flags NexUI missing even when Next.js is present (the exact scenario asked about live: plan said Tailwind/wrong stack)", () => {
   const result = checkStackConformance({ dependencies: { next: "16.2.0", react: "19.0.0" } });
   expect(result.pass).toBe(false);
-  expect(result.violations.some((v) => v.includes("@yugnex/nexui-react"))).toBe(true);
+  expect(result.violations.some((v) => v.includes("@yugnex/core"))).toBe(true);
 });
 
 // ── toFindings ─────────────────────────────────────────────────────────────

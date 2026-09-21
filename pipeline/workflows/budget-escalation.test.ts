@@ -147,23 +147,59 @@ test("Stage 6 deploy's runDeployWithLiveRetest call is wrapped in a try/catch fo
   // own dedicated deployRetestAct proxy (maximumAttempts: 1) — see that
   // proxy's own header comment for the real live nondeterminism bug this
   // fixes. The budget-exceeded try/catch wiring itself is unaffected.
+  // 2026-08-30: condition shape flipped from `if (!isBudgetExceededFailure(err))
+  // throw err;` to `if (isBudgetExceededFailure(err)) { ... }` — see the
+  // "an uncaught non-budget..." test below for why: the old shape rethrew
+  // every non-budget error uncaught, which is the exact bug that fix closes.
   const callIdx = source.indexOf("deployResult = await deployRetestAct.runDeployWithLiveRetest(projectId);");
   expect(callIdx).toBeGreaterThan(-1);
   const surrounding = source.slice(Math.max(0, callIdx - 400), callIdx + 700);
   expect(surrounding).toContain("try {");
-  expect(surrounding).toContain("if (!isBudgetExceededFailure(err)) throw err;");
+  expect(surrounding).toContain("if (isBudgetExceededFailure(err)) {");
   expect(surrounding).toContain('escalateAndAwaitRetryDecision("budget_exceeded")');
 });
 
 // ── A normal (non-budget) failure at the new call sites must still surface
 // as a real error, not be silently swallowed as if it were a budget halt ────
 
-test("a non-budget error thrown by isBudgetExceededFailure's own check path is rethrown, not swallowed, at every new call site", () => {
-  // Every new catch block in this task follows the identical
-  // `if (!isBudgetExceededFailure(err)) throw err;` shape used by the
-  // already-correct Stage 5 site — count must be at least 3 (pre-QA
-  // compile, post-QA compile, Stage 6 deploy) plus the pre-existing Stage 5
-  // one = 4.
+test("a non-budget error thrown by isBudgetExceededFailure's own check path is rethrown, not swallowed, at the compile-repair call sites", () => {
+  // 2026-08-30: count dropped from >=4 to >=3 — Stage 6 deploy no longer
+  // uses this exact rethrow-on-non-budget shape (see the two tests below
+  // for why and what replaced it). Pre-QA compile, post-QA compile, and the
+  // pre-existing Stage 5 site are unchanged by this fix and still must
+  // rethrow anything that isn't a budget failure — this test guards that
+  // the fix below didn't overcorrect into swallowing errors everywhere.
   const occurrences = source.split("if (!isBudgetExceededFailure(err)) throw err;").length - 1;
-  expect(occurrences).toBeGreaterThanOrEqual(4);
+  expect(occurrences).toBeGreaterThanOrEqual(3);
+});
+
+// ── Real, live 4th occurrence of the "uncaught activity failure bypasses
+// Stage 6's retry logic" class this file's own header comments already
+// document three times over (fulfillio1 x2, the ContextChainViolation case)
+// — confirmed live (project 05b590e98102): a NIM call hung for 14+ minutes,
+// well past both application-level timeouts guarding it, because a worker
+// restart orphaned it; Temporal's own "Activity task timed out" then
+// propagated UNCAUGHT out of the whole workflow via the old
+// `if (!isBudgetExceededFailure(err)) throw err;` shape, discarding a
+// project that had already passed QA and compile-check. ───────────────────
+
+test("a non-budget Stage 6 deploy failure is NOT rethrown uncaught — it routes through the same retry decision as budget_exceeded", () => {
+  const callIdx = source.indexOf("deployResult = await deployRetestAct.runDeployWithLiveRetest(projectId);");
+  const surrounding = source.slice(callIdx, callIdx + 3200);
+  // The old bug, explicitly absent: nothing at this call site may
+  // unconditionally rethrow just because the error isn't a budget failure.
+  expect(surrounding).not.toContain("if (!isBudgetExceededFailure(err)) throw err;");
+  expect(surrounding).toContain('escalateAndAwaitRetryDecision("deploy_activity_error")');
+  expect(surrounding).toContain('act.markProjectFailed(projectId, "deploy_activity_error")');
+});
+
+test("deploy_activity_error is registered in the retryable-reasons set both API routes and the UI card key off of", () => {
+  const apiSrc = require("node:fs").readFileSync(
+    new URL("../../apps/api/src/routes/pipeline.ts", import.meta.url), "utf-8",
+  );
+  expect(apiSrc).toContain('"deploy_activity_error"');
+  const uiSrc = require("node:fs").readFileSync(
+    new URL("../../apps/web/components/ide/IdeWorkspace.tsx", import.meta.url), "utf-8",
+  );
+  expect(uiSrc).toContain("deploy_activity_error");
 });

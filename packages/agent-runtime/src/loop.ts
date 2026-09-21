@@ -658,6 +658,22 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   const MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5;
   let consecutiveTransportFailures = 0;
   let abortedOnTransportFailures = false;
+  // 2026-08-30: real live incident (project 05b590e98102, ~15:33-15:53Z) —
+  // NIM's mistralai/mistral-nemotron endpoint was unresponsive for the full
+  // NIM_TIMEOUT_MS (4 min, nim.ts) on every call. MAX_CONSECUTIVE_TRANSPORT_
+  // FAILURES (5) exists to tolerate FAST-failing transient errors (a 4xx, a
+  // dropped connection) cheaply, but a genuine timeout costs the full 4
+  // minutes whether it's the 1st or the 5th — paying that 5 times (~20 min)
+  // before falling back to the already-working Gemini escalation path is a
+  // lot of dead time for the same outcome 2 timeouts would already show.
+  // Tracked separately from consecutiveTransportFailures (which still allows
+  // 5 FAST failures — those stay cheap) so this only shortcuts the
+  // expensive case, confirmed via err.name === "AbortError" (the
+  // AbortController in nim.ts's nimChatWithTools, not a guess from the
+  // message string).
+  const MAX_CONSECUTIVE_TIMEOUT_FAILURES = 2;
+  let consecutiveTimeoutFailures = 0;
+  let transportAbortReason = "";
 
   // 2026-08-27: logged config.model, which is the model as CONFIGURED — not
   // necessarily the one this run will use, because sanitizeModelChain above
@@ -687,7 +703,25 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     let response;
     try {
       const estimatedTokens = estimateTokenCount(messages);
+      // 2026-08-30: real, live, repeated (3x in one night) silent hang —
+      // "Starting — model: X" logs, then nothing at all for 8-14+ minutes:
+      // no error, no usage line, no escalation. Ruled out by direct
+      // inspection: nim.ts's waitForToken (has a 120s cap as of tonight),
+      // its fetch AbortController (240s, and clearTimeout is in a `finally`
+      // that covers res.json() too, so a slow body-read is still covered),
+      // a stale FileLock directory (checked live, not present), and genuine
+      // 40 RPM throttling (checked live, request count was 1 — nowhere near
+      // the cap). That rules out everything currently instrumented, which
+      // means the hang is happening in whichever of these two calls runs
+      // WITHOUT a log line bracketing it — bucket.acquire() has no start/end
+      // log at all, so a hang inside SharedTokenBucket's own FileLock retry
+      // loop (packages/agent-runtime/src/token-bucket.ts) would look
+      // EXACTLY like what's been observed. Root cause not confirmed; this
+      // makes the NEXT occurrence diagnosable instead of silent — whichever
+      // log line is last on screen when it hangs again tells us which call.
+      console.log(`[${config.agentName}:agent] acquiring rate-limit token for ${currentModel}...`);
       await bucket.acquire(estimatedTokens);
+      console.log(`[${config.agentName}:agent] token acquired, calling ${currentModel}...`);
 
       response = await nimChatWithTools(currentModel, messages, tools, config.apiKey);
 
@@ -720,8 +754,30 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         continue; // no sleep — a different model's circuit breaker is likely still closed
       }
       consecutiveTransportFailures++;
+      // AbortError is specifically what nim.ts's own AbortController throws
+      // when NIM_TIMEOUT_MS elapses (name is spec-defined, not a message-
+      // string guess) — distinct from a fast-failing 4xx/5xx or a dropped
+      // connection, which throw other error shapes and stay cheap to retry.
+      const isTimeout = err instanceof Error && err.name === "AbortError";
+      consecutiveTimeoutFailures = isTimeout ? consecutiveTimeoutFailures + 1 : 0;
+      // 2026-08-30: real live gap found tonight (project 05b590e98102) — this
+      // branch (last model in the chain, no fallback left) pushed the error
+      // to the in-memory `errors` array but never printed it, unlike the
+      // fallback branch above which logs the real reason. That left the live
+      // log showing only repeated "acquiring/token acquired" pairs with the
+      // actual failure invisible until (if ever) the run's final result was
+      // inspected. Logging it here so the reason is visible the moment it
+      // happens, not just in a post-mortem.
+      console.log(`[${config.agentName}:agent] ${currentModel} call failed (${consecutiveTransportFailures}/${MAX_CONSECUTIVE_TRANSPORT_FAILURES}${isTimeout ? `, timeout ${consecutiveTimeoutFailures}/${MAX_CONSECUTIVE_TIMEOUT_FAILURES}` : ""}): ${String(err).slice(0, 300)} — retrying in 5s`);
+      if (consecutiveTimeoutFailures >= MAX_CONSECUTIVE_TIMEOUT_FAILURES) {
+        transportAbortReason = `${consecutiveTimeoutFailures} consecutive timeouts on ${currentModel} — endpoint appears unresponsive, not spending more time confirming it`;
+        errors.push(`Aborting after ${transportAbortReason}`);
+        abortedOnTransportFailures = true;
+        break;
+      }
       if (consecutiveTransportFailures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES) {
-        errors.push(`Aborting after ${MAX_CONSECUTIVE_TRANSPORT_FAILURES} consecutive transport failures on ${currentModel} — not burning the rest of the iteration budget on network noise`);
+        transportAbortReason = `${MAX_CONSECUTIVE_TRANSPORT_FAILURES} consecutive transport failures on ${currentModel}`;
+        errors.push(`Aborting after ${transportAbortReason} — not burning the rest of the iteration budget on network noise`);
         abortedOnTransportFailures = true;
         break;
       }
@@ -1074,7 +1130,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     summary: exhaustedThreeStrikes
       ? `Three-strikes exhausted (${iterations} real model turns completed)`
       : abortedOnTransportFailures
-        ? `Aborted after ${MAX_CONSECUTIVE_TRANSPORT_FAILURES} consecutive transport failures (${iterations} real model turns completed)`
+        ? `Aborted after ${transportAbortReason} (${iterations} real model turns completed)`
         : `Max iterations (${effectiveMaxIterations}) reached without task_complete`,
     filesWritten,
     iterations,

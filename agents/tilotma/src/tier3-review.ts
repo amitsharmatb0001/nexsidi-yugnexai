@@ -22,7 +22,7 @@
 // pattern exists to provide.
 import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { runAgentEscalated, MAX_ITERATIONS } from "@nexsidi/agent-runtime";
+import { runAgentEscalated } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS } from "@nexsidi/llm-client";
 import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
 import { runWithQuotaWatchAndResume } from "../../../pipeline/activities/quota-retry.ts";
@@ -66,10 +66,28 @@ export function countAppPages(frontendOutputDir: string): number {
 // Budget: a few iterations per real page (navigate, screenshot, sometimes
 // interact — complex1's 9 pages consumed all 40 iterations reading files
 // plus 2 screenshots, well short of a verdict), plus a fixed baseline for
-// setup/investigation/rendering the final verdict. Floored at the shared
-// default so small/simple apps are unaffected.
+// setup/investigation/rendering the final verdict.
+//
+// 2026-08-31: the floor used to be the shared MAX_ITERATIONS (40) — but
+// that only ever binds for pageCount <= 2 (a 3-page app's own formula,
+// 3*6+25=43, already exceeds 40). Live-observed the other direction that
+// same night: a real 7-page project used nearly its full formula-driven 67
+// both times reviewed — cutting the per-page slope or base offset isn't
+// evidence-backed and risks reproducing the complex1 regression this
+// function was written to fix (a 9-page app running out before reaching a
+// verdict). TIER3_MIN_ITERATIONS only lowers the floor that governs small,
+// simple projects (1-2 pages) where the formula alone would already be
+// comfortably above a much smaller floor; every project the formula alone
+// already exceeds 40 for is completely unaffected by this change.
+const TIER3_MIN_ITERATIONS = 25;
 export function computeTier3MaxIterations(pageCount: number): number {
-  return Math.max(MAX_ITERATIONS, pageCount * 6 + 25);
+  return Math.max(TIER3_MIN_ITERATIONS, pageCount * 6 + 25);
+}
+
+// Extracted so the skip decision is unit-testable without invoking a real
+// agent — see runTier3Review's call site for the full reasoning.
+export function shouldSkipStage2(stage1Findings: string[]): boolean {
+  return stage1Findings.length === 0;
 }
 
 // Both passes use runAgentEscalated (Task 15), not plain runAgent: NIM/
@@ -154,6 +172,19 @@ export async function runTier3Review(
   );
 
   const stage1Findings = parseFindings(stage1.summary);
+
+  // 2026-08-31: optimization, live-observed (project 05b590e98102) — Stage 2
+  // exists to independently re-verify Stage 1's CLAIMS before trusting them;
+  // with zero claims there is nothing to re-verify, and it burns a full
+  // second browser-driven pass (up to maxIterations) confirming an empty
+  // list. Real evidence for why the bar is "empty" and not "few": the one
+  // Stage 2 run that actually mattered that night was a 41-iteration pass
+  // that caught and reversed a WRONG Stage 1 claim (a false confidentiality
+  // finding) — shouldSkipStage2 only skips when there is nothing at all to
+  // check, so that exact run would not have been skipped.
+  if (shouldSkipStage2(stage1Findings)) {
+    return { pass: true, findings: [] };
+  }
 
   // ── Stage 2: Reality Checker — a genuinely separate agent run ───────────
   // 2026-08-07: same runWithQuotaWatchAndResume wrapping as Stage 1 above —
@@ -266,7 +297,15 @@ Your workflow:
    - Slop: purple-gradient-over-white-card AI defaults, generic template feel
    - INTERNAL BRAND NAMES in footer/navbar: scan browser_get_text output for
      "NexSidi", "NexUI", "@yugnex" — these must NEVER appear in user-facing text.
-     Report as a finding if found.
+     Report as a finding if found. EXCLUSION: the required footer attribution
+     block — "YugNex" / "YugNex™" / "Developed & Managed by YugNex" / "YugNex
+     Technology (OPC) Private Limited" — is the COMPANY publicly signing its
+     own work, not internal tooling. Do NOT flag it, its logo, or its alt
+     text; do NOT match it against "@yugnex" by substring. It names the
+     company; "NexSidi"/"NexUI"/"@yugnex" name the build system — only the
+     latter is the confidentiality defect. See karan.md's identical exclusion
+     for the live incident (852be5aeaef4) this closes — a prior version of
+     this exact confusion had Aanya remove the required watermark entirely.
    - RAW ISO DATE STRINGS: scan browser_get_text output for dates in ISO format
      like "2026-07-13T00:00:00" or bare "2026-07-13" that should be formatted
      as "13 Jul 2026" or similar. Report as a finding if raw dates are visible.
@@ -340,7 +379,7 @@ the frontend url; a 404/auth-redirect from the FRONTEND origin on an API-shaped
 path is expected behavior, not a bug.`;
 }
 
-const REALITY_CHECKER_PROMPT = `\
+export const REALITY_CHECKER_PROMPT = `\
 You are Tilotma's Stage 2 Reality Checker — the second half of a two-stage,
 evidence-based review. You did NOT write Stage 1's findings and have no memory
 of how it reasoned — you only see its raw claims below. Your job is to
@@ -367,6 +406,12 @@ AUTOMATIC BLOCKING FINDINGS — These ALWAYS produce VERDICT: NEEDS_WORK, never 
   error messages, page title). This is a CONFIDENTIALITY defect, not a minor branding issue.
   The user must never see the name of the internal tooling that built their app. Any instance
   is an automatic block — do NOT classify this as minor or optional.
+  EXCLUSION — do not apply this rule to the required footer attribution block ("YugNex" /
+  "YugNex™" / "Developed & Managed by YugNex" / "YugNex Technology (OPC) Private Limited").
+  That names the COMPANY publicly signing its own work — a deliberate, required signature,
+  not internal tooling — and must never be flagged or treated as matching "@yugnex" by
+  substring. Only "NexSidi", "NexUI", or "@yugnex" as the name of the BUILD SYSTEM is the
+  defect this rule exists to catch.
 - Raw ISO date strings like "2026-07-13" or "2026-07-13T00:00:00" visible in the UI where
   a human-readable date (e.g., "13 Jul 2026") is expected. Users should never see ISO format.
 - An unconditional status badge ("Connected", "API Connected", "Online") that appears on first

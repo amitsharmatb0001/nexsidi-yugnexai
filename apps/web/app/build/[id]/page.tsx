@@ -846,6 +846,14 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   const [changeRequest,  setChangeRequest]  = useState("");
   const [submitting,     setSubmitting]     = useState(false);
   const [previewKey,     setPreviewKey]     = useState(0);
+  // 2026-08-31: the preview iframe/"Open app" link used to point straight at
+  // appUrl with no check the project's containers were actually up — a
+  // delivered project's containers stay running right after the build, but
+  // nothing keeps them up indefinitely. appStarting/appStartError track the
+  // ensure-running call below so the UI shows "starting" instead of
+  // silently rendering a dead iframe.
+  const [appStarting,    setAppStarting]    = useState(false);
+  const [appStartError,  setAppStartError]  = useState<string | null>(null);
 
   const chatEndRef     = useRef<HTMLDivElement | null>(null);
   const termEndRef     = useRef<HTMLDivElement | null>(null);
@@ -1299,6 +1307,36 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   // appUrl, which isDone already treats as done).
   const needsAttention = status === "needs_review" || (status === "failed" && !result?.appUrl);
 
+  // 2026-08-31: real gap found live — a delivered project's containers stay
+  // up right after the build, but nothing keeps them running indefinitely
+  // (a later redeploy's own `docker compose down`, a host reboot, etc.),
+  // and the preview iframe/"Open app" link used to point straight at
+  // appUrl regardless. Fires once per project load; ensure-running itself
+  // is a no-op (no `docker compose up` call at all) when the containers are
+  // already up, so this costs nothing on the common case.
+  useEffect(() => {
+    if (!isDone || !result?.appUrl) return;
+    let cancelled = false;
+    setAppStarting(true);
+    setAppStartError(null);
+    fetch(`${API}/api/pipeline/${id}/ensure-running`, { method: "POST", credentials: "include" })
+      .then(async (res) => {
+        if (cancelled) return;
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          setAppStartError(body?.error ?? "Could not start this project's app.");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setAppStartError("Could not reach the server to start this project's app.");
+      })
+      .finally(() => {
+        if (!cancelled) setAppStarting(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDone, result?.appUrl, id]);
+
   // ── Render: Resolving session ─────────────────────────────────────────────
   // See the sessionResolved comment at its declaration — this is the actual
   // gate. One neutral screen on every load, never the wrong one first.
@@ -1340,6 +1378,8 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       }
       appUrl={result?.appUrl ?? null}
       isDone={isDone}
+      appStarting={appStarting}
+      appStartError={appStartError}
       needsAttention={needsAttention ? { reason: result?.failureReason ?? null } : null}
       onRetry={retry}
       stageMessage={stageMessage}
