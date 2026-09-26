@@ -11,10 +11,11 @@
 // replayed, because that is the only path that compacts in practice.
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import type { GeminiMessage } from "@nexsidi/llm-client";
+import type { GeminiMessage, GeminiPart } from "@nexsidi/llm-client";
 import { compactViaRelevantContext, type FactLedgerEntry } from "../packages/agent-runtime/src/context-selection.ts";
 import { estimateGeminiTokenCount } from "../packages/agent-runtime/src/compaction.ts";
 import { findGeminiPairingViolations } from "../packages/agent-runtime/src/history-validate.ts";
+import { collectCalls } from "../packages/agent-runtime/src/triage-compaction.ts";
 
 export interface CompactionMetrics {
   tokensBefore: number;
@@ -33,39 +34,12 @@ interface ReplayCall {
   isError: boolean;
 }
 
-// What a call acts on, for "was this error later resolved?". Same rules as
-// the triage rules' targetOf (Task 4) — kept local here until then.
-function targetOf(name: string, args: Record<string, unknown>): string | null {
-  if (typeof args.path === "string") return args.path;
-  if (typeof args.command === "string") return args.command;
-  if (typeof args.url === "string") return `${String(args.method ?? "GET")} ${args.url}`;
-  if (name === "docker_compose" && typeof args.action === "string") return `docker ${args.action} ${String(args.service ?? "all")}`;
-  return null;
-}
-
-// Pairs each model turn's functionCall parts (in order) with the next turn's
-// functionResponse parts.
+// Same call/response pairing and target rules as the triage pass itself.
 function callsOf(messages: GeminiMessage[]): ReplayCall[] {
-  const calls: ReplayCall[] = [];
-  messages.forEach((m, i) => {
-    if (m.role !== "model" || !Array.isArray(m.content)) return;
-    const next = messages[i + 1];
-    const responses = next && Array.isArray(next.content) ? next.content.filter((p) => "functionResponse" in p) : [];
-    let r = 0;
-    for (const part of m.content) {
-      if (!("functionCall" in part)) continue;
-      const resp = responses[r++];
-      if (!resp || !("functionResponse" in resp)) continue;
-      const response = resp.functionResponse.response;
-      calls.push({
-        name: part.functionCall.name,
-        target: targetOf(part.functionCall.name, part.functionCall.args ?? {}),
-        responseJson: JSON.stringify(response),
-        isError: (response as { status?: unknown }).status === "error",
-      });
-    }
+  return collectCalls(messages).map((c) => {
+    const part = (messages[c.responseTurn]!.content as GeminiPart[])[c.responsePart] as { functionResponse: { response: unknown } };
+    return { name: c.name, target: c.target, responseJson: JSON.stringify(part.functionResponse.response), isError: c.isError };
   });
-  return calls;
 }
 
 function responseJsonsOf(messages: GeminiMessage[]): Set<string> {

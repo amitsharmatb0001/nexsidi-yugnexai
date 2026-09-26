@@ -1,5 +1,6 @@
 import type { GeminiMessage, GeminiPart } from "@nexsidi/llm-client";
 import { safeTrailingSlice, estimateGeminiTokenCount } from "./compaction.ts";
+import { capJsonStrings, capString } from "./json-caps.ts";
 
 // ── Real relevant-context selection (cost-control plan, Task 2) ────────────
 //
@@ -321,26 +322,8 @@ function isSyntheticContextMessage(message: GeminiMessage): boolean {
 // or `inlineData` (base64 image bytes; truncating would corrupt the image,
 // and estimateGeminiTokenCount doesn't even count it toward the size this
 // cap exists to bound).
-const MAX_TRAILING_STRING = 4_000;
-
-function capString(s: string): string {
-  if (s.length <= MAX_TRAILING_STRING) return s;
-  const headLen = Math.floor(MAX_TRAILING_STRING * 0.7);
-  const tailLen = MAX_TRAILING_STRING - headLen;
-  return `${s.slice(0, headLen)}\n…[${s.length - MAX_TRAILING_STRING} chars truncated]…\n${s.slice(-tailLen)}`;
-}
-
-function capJsonStrings(value: unknown, depth = 0): unknown {
-  if (depth > 6) return value; // pathological nesting guard
-  if (typeof value === "string") return capString(value);
-  if (Array.isArray(value)) return value.map((v) => capJsonStrings(v, depth + 1));
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = capJsonStrings(v, depth + 1);
-    return out;
-  }
-  return value;
-}
+// capString/capJsonStrings (4,000 chars) now live in json-caps.ts, shared
+// with the triage pass.
 
 function capPart(part: GeminiPart): GeminiPart {
   if ("functionCall" in part) {

@@ -157,6 +157,13 @@ async function chatWithGeminiForCompaction(
 }
 
 export function estimateGeminiTokenCount(messages: GeminiMessage[]): number {
+  return Math.round(estimateGeminiChars(messages) / 4);
+}
+
+// The character count behind estimateGeminiTokenCount, exported (2026-09-26)
+// so the triage pass can adjust it exactly and incrementally per replaced
+// functionResponse instead of re-measuring the whole history each time.
+export function estimateGeminiChars(messages: GeminiMessage[]): number {
   let totalChars = 0;
   for (const m of messages) {
     if (typeof m.content === "string") {
@@ -190,7 +197,7 @@ export function estimateGeminiTokenCount(messages: GeminiMessage[]): number {
       else if ("inlineData" in part) totalChars += part.inlineData.data.length;
     }
   }
-  return Math.round(totalChars / 4);
+  return totalChars;
 }
 
 function hasFunctionResponsePart(m: GeminiMessage): boolean {
