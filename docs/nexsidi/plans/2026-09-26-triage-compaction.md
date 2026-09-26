@@ -549,4 +549,30 @@ test("already-stubbed calls are left alone (idempotent)", () => {
 
 ## Results
 
-(filled in by Task 6)
+### Tasks 1-5: done (2026-09-26)
+Commits: d15dd08 (validators), 8cee4ad (NIM/Claude fixes), 2fd022a (replay harness), f189064 (rules + core), 8fb3e28 (wiring, flag default off). 403/403 agent-runtime tests pass; typecheck clean.
+- Task 2 Step 5 (live Claude API check) **not done**: the Anthropic API rejected the request with "credit balance is too low" before looking at it, and Vertex is not configured. Structure verified by `findClaudePairingViolations` only. This also means the Claude escalation tier cannot run on the current key.
+- Validator correction from real data: all 346 unanswered Gemini calls across every saved history are `task_complete` followed by user text (run boundary, which Gemini accepted). Only that exact case is exempt.
+
+### Task 6 gate: 22 unique histories over 120K (165 sources, 19 duplicates)
+
+| Metric | Current | Triage | Criterion |
+|---|---|---|---|
+| Avg tokens after (before: 233,641) | 13,510 | 38,333 | - |
+| Max tokens after | 34,716 | 59,460 | 2. <= 60,000: **pass** |
+| Histories with pairing violations | 0 | 0 | 1. 0: **pass** |
+| Unresolved errors kept (of 123) | 1 | 52 | 3. 100%: **FAIL** |
+| Latest result per distinct call kept (of 1,505) | 54 | 420 | 5. report only |
+| Tool results kept verbatim (of 2,355) | 185 | 629 | - |
+| Max ms per compaction | 1 | 15 | 4. < 50 ms: **pass** |
+
+**Why criterion 3 fails (measured, not guessed):** system prompts are small (3-15K tokens) and most histories get the full 40K middle budget. In the failing histories the middle is dominated by content triage never shrinks: `write_file`/`write_files` call arguments (46-93K tokens) and the model's own text (up to 306K tokens in one shubham history). Even with every result stubbed, the floor exceeds 40K, so the fallback drops the OLDEST turns wholesale and takes the errors with them. QA agents mostly pass (their middles are small apart from images, which are replaced).
+
+Stopped here per this plan's rule ("stop and report, don't tune blindly"). Options for Amit:
+- **C (within current rules):** when the budget still doesn't fit, drop non-error turn pairs (oldest first) instead of a contiguous oldest prefix, so unresolved errors are never the ones dropped.
+- **A (changes a global constraint):** allow the triage pass to replace the file content in superseded `write_file`/`write_files`/`edit_file` call args (file rewritten later) with a one-line note. The trailing window already caps functionCall args live, so the API accepts modified args; it is the biggest part of the floor.
+- **B:** cap old model text in the middle harder (e.g. 1,000 chars per text part).
+- **D:** raise the 60K target (must stay well under the 120K threshold).
+
+Outputs: `.nexsidi/sdd/compaction-replay-baseline.json`, `.nexsidi/sdd/compaction-replay-triage.json`.
+Task 7 (live A/B build) not started: waits on this decision and on Amit's go-ahead.

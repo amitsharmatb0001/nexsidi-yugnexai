@@ -2,7 +2,7 @@
 // what survives (triage compaction plan, docs/nexsidi/plans/2026-09-26-
 // triage-compaction.md, Task 3). Measure first, change behavior second.
 //
-//   bun scripts/compaction-replay.ts [--files "<dir>/*/history-*.json"] [--out <path>] [--no-db]
+//   bun scripts/compaction-replay.ts [--triage] [--files "<dir>/*/history-*.json"] [--out <path>] [--no-db]
 //
 // Sources: every row of agent_conversations (read-only SELECT via
 // DATABASE_URL) plus any --files. De-duplicated by content hash, since many
@@ -12,7 +12,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import type { GeminiMessage, GeminiPart } from "@nexsidi/llm-client";
-import { compactViaRelevantContext, type FactLedgerEntry } from "../packages/agent-runtime/src/context-selection.ts";
+import { compactViaRelevantContext, type FactLedgerEntry, type SelectContextOptions } from "../packages/agent-runtime/src/context-selection.ts";
 import { estimateGeminiTokenCount } from "../packages/agent-runtime/src/compaction.ts";
 import { findGeminiPairingViolations } from "../packages/agent-runtime/src/history-validate.ts";
 import { collectCalls } from "../packages/agent-runtime/src/triage-compaction.ts";
@@ -25,10 +25,13 @@ export interface CompactionMetrics {
   callsWithFullResultAfter: number; // calls whose original result survives unchanged
   unresolvedErrorsBefore: number; // status:"error" results with no later success on the same target
   unresolvedErrorsKept: number;
+  latestResultsBefore: number; // newest successful copy of each distinct call (name + args)
+  latestResultsKept: number; // ...whose result survives, verbatim or capped (not stubbed/dropped)
 }
 
 interface ReplayCall {
   name: string;
+  argsKey: string;
   target: string | null;
   responseJson: string;
   isError: boolean;
@@ -38,8 +41,20 @@ interface ReplayCall {
 function callsOf(messages: GeminiMessage[]): ReplayCall[] {
   return collectCalls(messages).map((c) => {
     const part = (messages[c.responseTurn]!.content as GeminiPart[])[c.responsePart] as { functionResponse: { response: unknown } };
-    return { name: c.name, target: c.target, responseJson: JSON.stringify(part.functionResponse.response), isError: c.isError };
+    return { name: c.name, argsKey: c.argsKey, target: c.target, responseJson: JSON.stringify(part.functionResponse.response), isError: c.isError };
   });
+}
+
+// A kept result may have been capped (4,000 chars per string) rather than
+// stubbed or dropped. Match on the call's identity in `after`, then require
+// that its result is not a compaction stub.
+function survivingSignatures(after: GeminiMessage[]): Set<string> {
+  const set = new Set<string>();
+  for (const c of collectCalls(after)) {
+    const part = (after[c.responseTurn]!.content as GeminiPart[])[c.responsePart] as { functionResponse: { response: Record<string, unknown> } };
+    if (part.functionResponse.response?.compacted !== true) set.add(`${c.name}\u0000${c.argsKey}`);
+  }
+  return set;
 }
 
 function responseJsonsOf(messages: GeminiMessage[]): Set<string> {
@@ -64,6 +79,10 @@ export function measureCompaction(before: GeminiMessage[], after: GeminiMessage[
     if (!c.isError && key) succeededLater.add(key);
   }
 
+  const latest = new Set<string>();
+  for (const c of calls) if (!c.isError) latest.add(`${c.name}\u0000${c.argsKey}`);
+  const surviving = survivingSignatures(after);
+
   return {
     tokensBefore: estimateGeminiTokenCount(before),
     tokensAfter: estimateGeminiTokenCount(after),
@@ -71,7 +90,9 @@ export function measureCompaction(before: GeminiMessage[], after: GeminiMessage[
     callsBefore: calls.length,
     callsWithFullResultAfter: calls.filter((c) => kept.has(c.responseJson)).length,
     unresolvedErrorsBefore: unresolved.length,
-    unresolvedErrorsKept: unresolved.filter((c) => kept.has(c.responseJson)).length,
+    unresolvedErrorsKept: unresolved.filter((c) => kept.has(c.responseJson) || surviving.has(`${c.name}\u0000${c.argsKey}`)).length,
+    latestResultsBefore: latest.size,
+    latestResultsKept: [...latest].filter((s) => surviving.has(s)).length,
   };
 }
 
@@ -135,11 +156,13 @@ async function main(argv: string[]): Promise<void> {
   };
   const files = arg("--files");
   const outPath = arg("--out");
+  const withTriage = argv.includes("--triage");
 
   const sources = [...(argv.includes("--no-db") ? [] : await loadDbSources()), ...(files ? await loadFileSources(files) : [])];
 
   const seen = new Set<string>();
-  const results: Array<{ label: string; ms: number } & CompactionMetrics> = [];
+  type Measured = { ms: number } & CompactionMetrics;
+  const results: Array<{ label: string; triage?: Measured } & Measured> = [];
   let skippedSmall = 0;
   let skippedShape = 0;
   let duplicates = 0;
@@ -150,40 +173,56 @@ async function main(argv: string[]): Promise<void> {
     if (!isGeminiShaped(s.messages)) { skippedShape++; continue; }
     if (estimateGeminiTokenCount(s.messages) < THRESHOLD_TOKENS) { skippedSmall++; continue; }
 
-    const started = performance.now();
-    const after = compactViaRelevantContext(s.messages, firstUserText(s.messages), s.factLedger, THRESHOLD_TOKENS);
-    const ms = Math.round(performance.now() - started);
-    results.push({ label: s.label, ms, ...measureCompaction(s.messages, after) });
+    const task = firstUserText(s.messages);
+    const run = (options: SelectContextOptions): Measured => {
+      const started = performance.now();
+      const after = compactViaRelevantContext(s.messages, task, s.factLedger, THRESHOLD_TOKENS, options);
+      const ms = Math.round(performance.now() - started);
+      return { ms, ...measureCompaction(s.messages, after) };
+    };
+    results.push({ label: s.label, ...run({}), ...(withTriage ? { triage: run(TRIAGE_OPTIONS) } : {}) });
   }
 
-  const sum = (f: (r: CompactionMetrics) => number) => results.reduce((n, r) => n + f(r), 0);
+  const totalsOf = (rows: Measured[]) => {
+    const sum = (f: (r: Measured) => number) => rows.reduce((n, r) => n + f(r), 0);
+    return {
+      avgTokensAfter: rows.length ? Math.round(sum((r) => r.tokensAfter) / rows.length) : 0,
+      maxTokensAfter: rows.reduce((n, r) => Math.max(n, r.tokensAfter), 0),
+      historiesWithPairingViolations: rows.filter((r) => r.pairingViolations.length > 0).length,
+      callsWithFullResultAfter: sum((r) => r.callsWithFullResultAfter),
+      unresolvedErrorsKept: sum((r) => r.unresolvedErrorsKept),
+      latestResultsKept: sum((r) => r.latestResultsKept),
+      maxMs: rows.reduce((n, r) => Math.max(n, r.ms), 0),
+    };
+  };
   const totals = {
     sources: sources.length,
     duplicates,
     skippedNotGemini: skippedShape,
     skippedUnderThreshold: skippedSmall,
     replayed: results.length,
-    avgTokensBefore: results.length ? Math.round(sum((r) => r.tokensBefore) / results.length) : 0,
-    avgTokensAfter: results.length ? Math.round(sum((r) => r.tokensAfter) / results.length) : 0,
-    historiesWithPairingViolations: results.filter((r) => r.pairingViolations.length > 0).length,
-    callsBefore: sum((r) => r.callsBefore),
-    callsWithFullResultAfter: sum((r) => r.callsWithFullResultAfter),
-    unresolvedErrorsBefore: sum((r) => r.unresolvedErrorsBefore),
-    unresolvedErrorsKept: sum((r) => r.unresolvedErrorsKept),
-    maxMs: results.reduce((n, r) => Math.max(n, r.ms), 0),
+    avgTokensBefore: results.length ? Math.round(results.reduce((n, r) => n + r.tokensBefore, 0) / results.length) : 0,
+    callsBefore: results.reduce((n, r) => n + r.callsBefore, 0),
+    unresolvedErrorsBefore: results.reduce((n, r) => n + r.unresolvedErrorsBefore, 0),
+    latestResultsBefore: results.reduce((n, r) => n + r.latestResultsBefore, 0),
+    current: totalsOf(results),
+    ...(withTriage ? { triage: totalsOf(results.map((r) => r.triage!)) } : {}),
   };
 
   console.table(results.map((r) => ({
-    history: r.label.length > 60 ? `…${r.label.slice(-59)}` : r.label,
-    tokens: `${r.tokensBefore} → ${r.tokensAfter}`,
-    results: `${r.callsWithFullResultAfter}/${r.callsBefore}`,
-    unresolvedErrors: `${r.unresolvedErrorsKept}/${r.unresolvedErrorsBefore}`,
-    pairingOk: r.pairingViolations.length === 0,
-    ms: r.ms,
+    history: r.label.length > 52 ? `…${r.label.slice(-51)}` : r.label,
+    tokens: `${r.tokensBefore} → ${r.tokensAfter}${r.triage ? ` | ${r.triage.tokensAfter}` : ""}`,
+    latestKept: `${r.latestResultsKept}${r.triage ? ` | ${r.triage.latestResultsKept}` : ""} /${r.latestResultsBefore}`,
+    unresolvedErrors: `${r.unresolvedErrorsKept}${r.triage ? ` | ${r.triage.unresolvedErrorsKept}` : ""} /${r.unresolvedErrorsBefore}`,
+    pairingOk: r.pairingViolations.length === 0 && (r.triage?.pairingViolations.length ?? 0) === 0,
+    ms: `${r.ms}${r.triage ? ` | ${r.triage.ms}` : ""}`,
   })));
   console.log(JSON.stringify(totals, null, 2));
   if (outPath) writeFileSync(outPath, JSON.stringify({ generatedAt: new Date().toISOString(), totals, results }, null, 2));
 }
+
+// Same values gemini-loop.ts passes when TRIAGE_COMPACTION_ENABLED=true.
+const TRIAGE_OPTIONS: SelectContextOptions = { triageMiddle: { maxMiddleTokens: 40_000, targetTotalTokens: 60_000 } };
 
 if (import.meta.main) {
   await main(process.argv.slice(2));

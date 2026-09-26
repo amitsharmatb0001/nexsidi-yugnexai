@@ -25,6 +25,9 @@ test("measureCompaction: nothing lost when nothing is compacted", () => {
   const m = measureCompaction(history, history);
   expect(m.callsBefore).toBe(6);
   expect(m.callsWithFullResultAfter).toBe(6);
+  // newest successful copy per distinct call: read a.ts (A2), list_files, run_command, GET /health
+  expect(m.latestResultsBefore).toBe(4);
+  expect(m.latestResultsKept).toBe(4);
   expect(m.unresolvedErrorsBefore).toBe(1);
   expect(m.unresolvedErrorsKept).toBe(1);
   expect(m.pairingViolations).toEqual([]);
