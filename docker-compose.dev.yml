@@ -3,6 +3,8 @@ version: "3.9"
 # ─────────────────────────────────────────────────────────────────────────────
 # NexSidi local dev infrastructure
 # Ollama runs NATIVELY on Windows (NOT here) — reach via host.docker.internal:11434
+# Ports are published on 127.0.0.1 only (2026-09-26): on 0.0.0.0, Redis (no
+# password) and Temporal were reachable from every device on the Wi-Fi.
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -14,7 +16,7 @@ services:
       POSTGRES_USER: nexsidi
       POSTGRES_PASSWORD: nexsidi_dev
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -28,7 +30,7 @@ services:
     restart: unless-stopped
     command: redis-server --appendonly yes
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -51,7 +53,7 @@ services:
       POSTGRES_SEEDS: postgres
       DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig.yaml
     ports:
-      - "7233:7233"
+      - "127.0.0.1:7233:7233"
     volumes:
       - ./infra/temporal-dynamicconfig.yaml:/etc/temporal/config/dynamicconfig.yaml
     healthcheck:
@@ -80,7 +82,7 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_CORS_ORIGINS: http://localhost:3000
     ports:
-      - "8088:8080"
+      - "127.0.0.1:8088:8080"
 
   # NOTE: a Dockerized Chromium/CDP-proxy service used to live here (2026-07-11)
   # as a workaround for chromium.launch() "crashing" on the host. Root-caused
