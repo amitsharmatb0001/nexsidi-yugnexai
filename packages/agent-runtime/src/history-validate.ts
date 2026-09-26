@@ -39,6 +39,15 @@ function geminiResponseNames(m: GeminiMessage | undefined): string[] {
   return m.content.flatMap((p) => ("functionResponse" in p ? [p.functionResponse.name] : []));
 }
 
+// The Gemini loop ends on task_complete without sending a functionResponse,
+// and a resumed run appends a user message after it. Measured 2026-09-26:
+// all 346 unanswered calls across every saved history are this exact
+// pattern, and Gemini accepted those requests (the runs continued past
+// them). Every other unanswered call is still a violation.
+function isRunBoundary(calls: string[], next: GeminiMessage | undefined): boolean {
+  return calls.length === 1 && calls[0] === "task_complete" && next?.role === "user" && geminiResponseNames(next).length === 0;
+}
+
 export function findGeminiPairingViolations(messages: GeminiMessage[]): string[] {
   const out: string[] = [];
   messages.forEach((m, i) => {
@@ -47,6 +56,7 @@ export function findGeminiPairingViolations(messages: GeminiMessage[]): string[]
       out.push(`functionResponse turn at ${i} does not follow a matching functionCall turn`);
     }
     const calls = geminiCallNames(m);
+    if (isRunBoundary(calls, messages[i + 1])) return;
     if (calls.length && i < messages.length - 1 && JSON.stringify(geminiResponseNames(messages[i + 1])) !== JSON.stringify(calls)) {
       out.push(`functionCall turn at ${i} is not answered by the next turn`);
     }

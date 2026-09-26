@@ -50,6 +50,24 @@ test("Gemini: an unanswered functionCall turn is fine only as the very last mess
   expect(findGeminiPairingViolations(broken)).toEqual(["functionCall turn at 0 is not answered by the next turn"]);
 });
 
+// Measured 2026-09-26 across every saved history (DB + disk): 346 unanswered
+// Gemini calls, all of them task_complete followed by user text. The loop
+// ends on task_complete without a functionResponse; a resumed run then
+// appends a user message, and Gemini accepted those requests (the histories
+// continue past them). Only that exact case is exempt.
+test("Gemini: an unanswered task_complete at a run boundary is accepted; any other unanswered call is not", () => {
+  const boundary: GeminiMessage[] = [
+    { role: "model", content: [{ text: "Done." }, { functionCall: { name: "task_complete", args: { summary: "ok" } } }] },
+    { role: "user", content: "Resume: fix the failing checks." },
+  ];
+  const otherTool: GeminiMessage[] = [
+    { role: "model", content: [{ functionCall: { name: "http_request", args: {} } }] },
+    { role: "user", content: "Resume." },
+  ];
+  expect(findGeminiPairingViolations(boundary)).toEqual([]);
+  expect(findGeminiPairingViolations(otherTool)).toEqual(["functionCall turn at 0 is not answered by the next turn"]);
+});
+
 test("Claude: tool_result must answer a tool_use in the directly preceding assistant message", () => {
   const ok: ClaudeMessage[] = [
     { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read_file", input: {} }] },
