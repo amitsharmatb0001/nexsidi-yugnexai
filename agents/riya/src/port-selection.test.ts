@@ -1,5 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { findFreePort, isPortUsedByDocker, getRunningDeploymentPorts, ensureProjectRunning } from "./index.ts";
+import { findFreePort, isPortUsedByDocker, getRunningDeploymentPorts, ensureProjectRunning, buildAgentTask } from "./index.ts";
+
+// 2026-09-26 security fix: the deploy agent writes docker-compose.yml itself
+// from this task text, so the text must spell out the localhost-only form.
+// (execDockerCompose also enforces it, so a model that ignores this still
+// can't publish on 0.0.0.0 — this just avoids the rewrite in the normal case.)
+describe("buildAgentTask", () => {
+  test("tells the deploy agent to publish every port on 127.0.0.1 only", () => {
+    const task = buildAgentTask("proj1", "/tmp/proj1", 3202, 3303, 5437, "a".repeat(64));
+    expect(task).toContain(`- "127.0.0.1:5437:5432"`);
+    expect(task).toContain(`- "127.0.0.1:3303:3001"`);
+    expect(task).toContain(`- "127.0.0.1:3202:3000"`);
+  });
+});
 
 describe("isPortUsedByDocker", () => {
   test("reports a port in docker's PORTS column as used", () => {
@@ -12,6 +25,12 @@ describe("isPortUsedByDocker", () => {
     const dockerPsOutput = "0.0.0.0:5435->5432/tcp, [::]:5435->5432/tcp\n";
     const used = isPortUsedByDocker(5436, () => dockerPsOutput);
     expect(used).toBe(false);
+  });
+
+  test("recognizes a port published on 127.0.0.1 only (the form generated apps use since 2026-09-26)", () => {
+    const dockerPsOutput = "127.0.0.1:3202->3000/tcp\n127.0.0.1:5437->5432/tcp\n";
+    expect(isPortUsedByDocker(3202, () => dockerPsOutput)).toBe(true);
+    expect(isPortUsedByDocker(3203, () => dockerPsOutput)).toBe(false);
   });
 
   test("fails closed (treats as used=false, not a crash) when docker CLI itself errors", () => {
@@ -87,6 +106,19 @@ volumes:
   test("returns the real ports from an existing compose file whose containers are currently up", () => {
     const result = getRunningDeploymentPorts("/fake/build/dir", {
       readComposeFile: () => REAL_FULFILLIO1_COMPOSE,
+      isPortUsedByDocker: (p) => p === 3201 || p === 3301,
+    });
+    expect(result).toEqual({ frontendPort: 3201, backendPort: 3301, dbPort: 5436 });
+  });
+
+  // 2026-09-26 security fix: new deploys publish "127.0.0.1:HOST:CONTAINER".
+  // The old "HOST:CONTAINER"-only regex returned null for this form, which
+  // made "open app" and the clone health check report running apps as down.
+  test("reads 127.0.0.1-bound ports — the form new deploys write", () => {
+    const bound = REAL_FULFILLIO1_COMPOSE.replace(/"(\d+):(\d+)"/g, `"127.0.0.1:$1:$2"`);
+    expect(bound).toContain(`"127.0.0.1:3201:3000"`);
+    const result = getRunningDeploymentPorts("/fake/build/dir", {
+      readComposeFile: () => bound,
       isPortUsedByDocker: (p) => p === 3201 || p === 3301,
     });
     expect(result).toEqual({ frontendPort: 3201, backendPort: 3301, dbPort: 5436 });

@@ -3,6 +3,12 @@ import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
 import { truncateOutput } from "./command.ts";
 import { buildSandboxEnv } from "./sandbox-env.ts";
+import { prepareComposeForUp } from "./compose-ports.ts";
+
+export interface DockerComposeDeps {
+  spawnFn?: typeof spawn;
+  prepareCompose?: typeof prepareComposeForUp;
+}
 
 // 2026-08-06: real bug found live (project d749afe43d9c) — this used
 // spawnSync, which blocks Node's ENTIRE event loop for the full duration of
@@ -28,14 +34,32 @@ import { buildSandboxEnv } from "./sandbox-env.ts";
 export function execDockerCompose(
   cwd: string,
   args: { action: "up" | "down" | "logs" | "ps"; service?: string; timeout_ms?: number },
+  deps: DockerComposeDeps = {},
 ): Promise<ToolResult> {
+  const spawnFn = deps.spawnFn ?? spawn;
   const timeout = Math.min(args.timeout_ms ?? 300_000, 600_000);
   let cmdArgs: string[];
+  let boundPorts = 0;
 
   switch (args.action) {
-    case "up":
+    case "up": {
+      // 2026-09-26 security fix: every agent deploy goes through here (docker
+      // is not in run_command's allowlist), so this is where generated apps'
+      // published ports are forced onto 127.0.0.1 — see compose-ports.ts.
+      // Only "up" is guarded: "down" must always be able to tear an exposed
+      // app down.
+      const prep = (deps.prepareCompose ?? prepareComposeForUp)(cwd);
+      if (!prep.ok) {
+        return Promise.resolve({
+          status: "error",
+          summary: prep.error,
+          next_actions: ["Fix the ports: entries in docker-compose.yml, then run docker_compose up again"],
+        });
+      }
+      boundPorts = prep.changed;
       cmdArgs = ["compose", "up", "-d", "--build", "--remove-orphans"];
       break;
+    }
     case "down":
       cmdArgs = ["compose", "down", "--remove-orphans"];
       break;
@@ -48,7 +72,7 @@ export function execDockerCompose(
   }
 
   return new Promise<ToolResult>((resolve) => {
-    const child = spawn("docker", cmdArgs, {
+    const child = spawnFn("docker", cmdArgs, {
       cwd,
       env: buildSandboxEnv({ FORCE_COLOR: "0", COMPOSE_PROGRESS: "plain" }),
     });
@@ -74,7 +98,7 @@ export function execDockerCompose(
       resolve({
         status: success ? "success" : "error",
         summary: success
-          ? `docker compose ${args.action} succeeded`
+          ? `docker compose ${args.action} succeeded${boundPorts > 0 ? ` (bound ${boundPorts} published port(s) to 127.0.0.1)` : ""}`
           : `docker compose ${args.action} failed (exit ${timedOut ? "timeout" : exitCode})`,
         output: combined || "(no output)",
         next_actions: success

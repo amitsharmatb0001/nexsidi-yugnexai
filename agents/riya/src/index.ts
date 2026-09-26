@@ -3,7 +3,7 @@
 // makes HTTP health check, fixes compose/Dockerfile and retries.
 // Agent ACTS via tools — no one-shot generation.
 
-import { runAgentEscalated } from "@nexsidi/agent-runtime";
+import { runAgentEscalated, parseServiceHostPort } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "fs";
 import { execSync } from "child_process";
 import { randomBytes } from "crypto";
@@ -1604,10 +1604,12 @@ Structure:
 - ${buildDir}/frontend/  → Next.js frontend (has Dockerfile)
 - ${buildDir}/db/        → SQL migration files
 
-Ports to use:
-- PostgreSQL: host port ${dbPort} → container port 5432
-- Backend:    host port ${backendPort} → container port 3001
-- Frontend:   host port ${frontendPort} → container port 3000
+Ports to use — write these EXACT lines under each service's ports: key.
+The 127.0.0.1 prefix keeps the app reachable only from this computer, never
+from other devices on the network; never omit it:
+- postgres: - "127.0.0.1:${dbPort}:5432"
+- backend:  - "127.0.0.1:${backendPort}:3001"
+- frontend: - "127.0.0.1:${frontendPort}:3000"
 
 JWT credentials (for environment variables) — use this EXACT value, do not
 invent your own or use a placeholder; the frontend has already been
@@ -1683,11 +1685,15 @@ export async function findFreePort(
 // 2026-08-17: real bug found live (fulfillio1-deploy-resume-2) — see run()'s
 // call site for the full story. Reads the project's own docker-compose.yml
 // (the generator's real, consistent shape: services literally named
-// postgres/backend/frontend, "HOST:CONTAINER" port strings — confirmed
-// against the actual generated file) and returns its ports ONLY when those
+// postgres/backend/frontend) and returns its ports ONLY when those
 // containers are ACTUALLY up right now, per docker itself — a stale compose
 // file left over from a torn-down/crashed deployment must still go through
 // a real fresh deploy, not be blindly trusted.
+//
+// 2026-09-26: port strings are parsed by the shared parseServiceHostPort
+// (agent-runtime tools/compose-ports.ts), which accepts both the old
+// "HOST:CONTAINER" and the "127.0.0.1:HOST:CONTAINER" form new deploys write.
+// The previous local regex returned null for the 127.0.0.1 form.
 export function getRunningDeploymentPorts(
   buildDir: string,
   deps: {
@@ -1701,22 +1707,9 @@ export function getRunningDeploymentPorts(
   const compose = readComposeFile(join(buildDir, "docker-compose.yml"));
   if (!compose) return null;
 
-  const portFor = (service: string): number | null => {
-    // Bounded by the next line that starts with EXACTLY 2 spaces + a
-    // non-space char (the next top-level service key) or end of string —
-    // NOT just "the next line with 2+ leading spaces", which would match
-    // this service's own nested keys (e.g. "    image:", 4 spaces) and
-    // truncate the block before its ports ever appear.
-    const blockMatch = compose.match(new RegExp(`\\n  ${service}:\\n([\\s\\S]*?)(?=\\n {2}\\S|$)`));
-    const captured = blockMatch?.[1];
-    if (!captured) return null;
-    const m = captured.match(/-\s*"(\d+):\d+"/);
-    return m ? Number(m[1]) : null;
-  };
-
-  const frontendPort = portFor("frontend");
-  const backendPort = portFor("backend");
-  const dbPort = portFor("postgres");
+  const frontendPort = parseServiceHostPort(compose, "frontend");
+  const backendPort = parseServiceHostPort(compose, "backend");
+  const dbPort = parseServiceHostPort(compose, "postgres");
   if (frontendPort === null || backendPort === null || dbPort === null) return null;
 
   if (!dockerCheck(frontendPort) || !dockerCheck(backendPort)) return null;
