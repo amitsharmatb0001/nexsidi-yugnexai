@@ -6,6 +6,7 @@ export { FILE_TOOL_DEFS, execWriteFile, execReadFile, execListFiles, execEditFil
 export { COMMAND_TOOL_DEF, execRunCommand } from "./tools/command.ts";
 export { HTTP_TOOL_DEF, execHttpRequest } from "./tools/http.ts";
 export { DOCKER_TOOL_DEF, execDockerCompose } from "./tools/docker.ts";
+export { parseServiceHostPort, bindComposePortsToLoopback, prepareComposeForUp } from "./tools/compose-ports.ts";
 export { WEB_SEARCH_TOOL_DEF, execWebSearch } from "./tools/websearch.ts";
 export { SCREENSHOT_TOOL_DEF, execScreenshot } from "./tools/screenshot.ts";
 export { ESCALATE_FINDING_TOOL_DEF, recordEscalation, type Escalation } from "./tools/escalate.ts";
