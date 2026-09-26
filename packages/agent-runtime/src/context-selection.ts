@@ -1,6 +1,7 @@
 import type { GeminiMessage, GeminiPart } from "@nexsidi/llm-client";
-import { safeTrailingSlice, estimateGeminiTokenCount } from "./compaction.ts";
+import { safeTrailingSlice, estimateGeminiTokenCount, estimateGeminiChars } from "./compaction.ts";
 import { capJsonStrings, capString } from "./json-caps.ts";
+import { triageMiddle } from "./triage-compaction.ts";
 
 // ── Real relevant-context selection (cost-control plan, Task 2) ────────────
 //
@@ -237,6 +238,14 @@ export function formatFactLedgerForPrompt(ledger: FactLedgerEntry[]): string {
 export interface SelectContextOptions {
   /** How many raw trailing turns (non-system messages) to keep for immediate continuity. Default 6, matching compactGeminiHistory's trailing window. */
   trailingTurnCount?: number;
+  /**
+   * 2026-09-26 (TRIAGE_COMPACTION_ENABLED): keep a triaged copy of the middle
+   * of the history (everything before the trailing window) instead of
+   * dropping it. The middle gets min(maxMiddleTokens, targetTotalTokens minus
+   * everything else) tokens, so the whole result stays within
+   * targetTotalTokens. Omitted = the original behavior, byte-identical.
+   */
+  triageMiddle?: { maxMiddleTokens: number; targetTotalTokens: number };
 }
 
 // ── Synthetic-message tagging (review Finding 1 fix) ────────────────────────
@@ -409,7 +418,8 @@ export function selectRelevantContext(
   // capping) — see its own header comment. Anything outside the window is
   // discarded wholesale by the slice anyway, so this only has to handle the
   // handful of turns that survive, and it always preserves the newest image.
-  const trailing = capTrailingWindow(dropStaleInlineData(safeTrailingSlice(nonSys, trailingTurnCount)));
+  const trailingRaw = safeTrailingSlice(nonSys, trailingTurnCount);
+  const trailing = capTrailingWindow(dropStaleInlineData(trailingRaw));
 
   const taskLines = [
     `CURRENT TASK: ${currentTask}`,
@@ -457,8 +467,57 @@ export function selectRelevantContext(
     messages.push(ledgerMsg);
   }
 
+  if (options.triageMiddle) {
+    messages.push(...triagedMiddle(nonSys.slice(0, nonSys.length - trailingRaw.length), currentTask, [...messages, ...trailing], options.triageMiddle));
+  }
+
   messages.push(...trailing);
   return messages;
+}
+
+// The middle is what the original behavior drops wholesale (only the fact
+// ledger survives it). The QA agents' ledger stays empty (it records file
+// writes and command fixes, not http/browser/screenshot evidence), so replay
+// of every saved history showed 1 of 123 unresolved errors surviving.
+// triageMiddle keeps the pairs and stubs what is repeated or superseded.
+function triagedMiddle(
+  middle: GeminiMessage[],
+  currentTask: string,
+  everythingElse: GeminiMessage[],
+  opts: { maxMiddleTokens: number; targetTotalTokens: number },
+): GeminiMessage[] {
+  let turns = middle;
+  // The original task message is already in the synthetic CURRENT TASK block.
+  const first = turns[0];
+  if (first && first.role === "user" && typeof first.content === "string" && first.content === currentTask) turns = turns.slice(1);
+  // Never start on a response whose call is not included.
+  while (turns.length > 0 && Array.isArray(turns[0]!.content) && turns[0]!.content.some((p) => "functionResponse" in p)) turns = turns.slice(1);
+  if (turns.length === 0) return [];
+
+  const budget = Math.max(0, Math.min(opts.maxMiddleTokens, opts.targetTotalTokens - estimateGeminiTokenCount(everythingElse)));
+  const { turns: triaged, stats } = triageMiddle(turns, budget);
+
+  // Even fully stubbed, a middle has a floor (each turn keeps its call and a
+  // one-line note). When that floor is still over budget (e.g. a very large
+  // system prompt), keep only the newest whole turns that fit, never starting
+  // on an orphan response. Dropping all of it is the original behavior.
+  let start = 0;
+  let chars = estimateGeminiChars(triaged);
+  while (start < triaged.length && chars > budget * 4) {
+    chars -= estimateGeminiChars([triaged[start]!]);
+    start++;
+    while (start < triaged.length && Array.isArray(triaged[start]!.content) && (triaged[start]!.content as GeminiPart[]).some((p) => "functionResponse" in p)) {
+      chars -= estimateGeminiChars([triaged[start]!]);
+      start++;
+    }
+  }
+  const kept = triaged.slice(start);
+
+  console.log(
+    `[triage-compaction] middle: ${stats.calls} calls → kept ${stats.kept}, truncated ${stats.truncated}, stubbed ${stats.stubbed}` +
+      `${start > 0 ? `, oldest ${start} turns dropped to fit` : ""}; ~${stats.tokensBefore} → ~${Math.round(chars / 4)} tokens (budget ${budget})`,
+  );
+  return kept;
 }
 
 // ── gemini-loop.ts wiring helpers (cost-control Task 4) ─────────────────────

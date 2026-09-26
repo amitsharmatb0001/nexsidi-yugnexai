@@ -415,3 +415,20 @@ test("summarizeThinking truncates on a word boundary rather than mid-word", () =
 test("summarizeThinking returns empty string for blank reasoning rather than throwing", () => {
   expect(summarizeThinking("   \n  ")).toBe("");
 });
+
+// 2026-09-26: triage compaction ships OFF by default until a live A/B build.
+test("triage compaction is off unless TRIAGE_COMPACTION_ENABLED is exactly \"true\"", async () => {
+  const { isTriageCompactionEnabled } = await import("./gemini-loop.ts");
+  const previous = process.env.TRIAGE_COMPACTION_ENABLED;
+  try {
+    delete process.env.TRIAGE_COMPACTION_ENABLED;
+    expect(isTriageCompactionEnabled()).toBe(false);
+    process.env.TRIAGE_COMPACTION_ENABLED = "1";
+    expect(isTriageCompactionEnabled()).toBe(false);
+    process.env.TRIAGE_COMPACTION_ENABLED = "true";
+    expect(isTriageCompactionEnabled()).toBe(true);
+  } finally {
+    if (previous === undefined) delete process.env.TRIAGE_COMPACTION_ENABLED;
+    else process.env.TRIAGE_COMPACTION_ENABLED = previous;
+  }
+});

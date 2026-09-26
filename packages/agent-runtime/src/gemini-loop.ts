@@ -26,7 +26,7 @@ import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts"
 // pointer text itself would be comparable in length, and small config files
 // are cheap to repeat. See seenFileReads in runGeminiAgent.
 const REREAD_POINTER_MIN_CHARS = 400;
-import { appendFactLedgerEntry, compactViaRelevantContext, type FactLedgerEntry, type TurnToolActivity } from "./context-selection.ts";
+import { appendFactLedgerEntry, compactViaRelevantContext, type FactLedgerEntry, type SelectContextOptions, type TurnToolActivity } from "./context-selection.ts";
 // 2026-08-13 (cost-control Task 1): same CRITICAL gap as loop.ts (see that
 // file's recordSpend import comment for the full root cause) — this is the
 // PARALLEL Gemini-side agentic loop (Shubham/Aanya/Pranav/Riya/Tilotma's
@@ -129,6 +129,25 @@ export function isRelevantContextSelectionEnabled(): boolean {
 // above is a genuine full revert (mechanism AND threshold together) rather
 // than a partial one that could still misbehave.
 const LEGACY_COMPACTION_THRESHOLD_TOKENS = 750_000;
+
+// 2026-09-26 (triage compaction plan): keep a triaged copy of the middle of
+// the history instead of dropping it at compaction. Replay of every saved
+// history showed today's compaction keeps 185 of 2,355 tool results and 1 of
+// 123 unresolved errors. OFF by default (opt in with exactly "true") until a
+// live A/B build shows it is not worse; see
+// docs/nexsidi/plans/2026-09-26-triage-compaction.md, Task 7.
+export function isTriageCompactionEnabled(): boolean {
+  return process.env.TRIAGE_COMPACTION_ENABLED === "true";
+}
+export const TRIAGE_MAX_MIDDLE_TOKENS = 40_000;
+// Half the 120K threshold, so a compaction never immediately re-triggers.
+export const TRIAGE_TARGET_TOTAL_TOKENS = 60_000;
+
+function compactionOptions(): SelectContextOptions {
+  return isTriageCompactionEnabled()
+    ? { triageMiddle: { maxMiddleTokens: TRIAGE_MAX_MIDDLE_TOKENS, targetTotalTokens: TRIAGE_TARGET_TOTAL_TOKENS } }
+    : {};
+}
 
 // Same category of error as claude-loop.ts's isUnrecoverableClaudeError —
 // auth/permission failures on Gemini will repeat identically on every retry
@@ -424,7 +443,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         // that variable is declared further down, seeded from the same
         // loadedFactLedger value.
         messages = isRelevantContextSelectionEnabled()
-          ? compactViaRelevantContext(messages, config.initialMessage, loadedFactLedger, COMPACTION_THRESHOLD_TOKENS)
+          ? compactViaRelevantContext(messages, config.initialMessage, loadedFactLedger, COMPACTION_THRESHOLD_TOKENS, compactionOptions())
           : await compactGeminiHistory(messages, undefined, LEGACY_COMPACTION_THRESHOLD_TOKENS);
         messages.push({ role: "user", content: config.initialMessage });
       }
@@ -610,7 +629,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     // avoid, so disabling this lever must revert BOTH the mechanism and the
     // threshold together, not just the mechanism.
     messages = isRelevantContextSelectionEnabled()
-      ? compactViaRelevantContext(messages, config.initialMessage, factLedger, COMPACTION_THRESHOLD_TOKENS)
+      ? compactViaRelevantContext(messages, config.initialMessage, factLedger, COMPACTION_THRESHOLD_TOKENS, compactionOptions())
       : await compactGeminiHistory(messages, undefined, LEGACY_COMPACTION_THRESHOLD_TOKENS);
 
     let response;

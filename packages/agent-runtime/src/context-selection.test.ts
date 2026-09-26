@@ -11,6 +11,10 @@ import {
   type TurnToolActivity,
 } from "./context-selection.ts";
 import { estimateGeminiTokenCount } from "./compaction.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { findGeminiPairingViolations } from "./history-validate.ts";
+import { buildQaHistory, QA_TASK, TURN5_ERROR } from "./test-fixtures/qa-history.ts";
 
 // ── Screenshot replay (2026-08-27) ──────────────────────────────────────────
 // Real bug found live: project 852be5aeaef4 burned $322 / 68.5M input tokens.
@@ -625,4 +629,62 @@ test("normal-sized task/touched-files content is completely unaffected by the ca
   expect(taskMsg!.content).toContain("CURRENT TASK: Deploy the project");
   expect(taskMsg!.content).toContain("docker-compose.yml");
   expect(taskMsg!.content).not.toContain("truncated"); // real content this small must never be touched
+});
+
+// ── Triage compaction (2026-09-26, TRIAGE_COMPACTION_ENABLED) ────────────
+// Replay of every real saved history showed today's compaction keeps 185 of
+// 2,355 tool results and 1 of 123 unresolved errors: the QA agents' fact
+// ledger stays empty, so everything outside the last 6 turns is lost.
+
+const TRIAGE = { triageMiddle: { maxMiddleTokens: 40_000, targetTotalTokens: 60_000 } };
+const LEDGER: FactLedgerEntry[] = [{ type: "file_written", file: "frontend/app/page.tsx", summary: "wrote frontend/app/page.tsx", turnIndex: 3 }];
+const responsesOf = (messages: GeminiMessage[]) =>
+  messages.flatMap((m) => (Array.isArray(m.content) ? m.content.flatMap((p) => ("functionResponse" in p ? [p.functionResponse.response] : [])) : []));
+
+test("flag off: selectRelevantContext output is byte-identical to before triage existed", () => {
+  const fixture = JSON.parse(readFileSync(join(import.meta.dir, "test-fixtures", "select-relevant-context.flag-off.json"), "utf-8"));
+  const out = selectRelevantContext(buildQaHistory(100), QA_TASK, ["frontend/app/page.tsx"], [], LEDGER);
+  expect(JSON.parse(JSON.stringify(out))).toEqual(fixture);
+});
+
+test("triage: an unresolved error from turn 5 survives compaction at turn 100 with an empty fact ledger", () => {
+  const history = buildQaHistory(100);
+  const without = selectRelevantContext(history, QA_TASK, [], [], []);
+  const withTriage = selectRelevantContext(history, QA_TASK, [], [], [], TRIAGE);
+  expect(responsesOf(without)).not.toContainEqual(TURN5_ERROR); // today's amnesia
+  expect(responsesOf(withTriage)).toContainEqual(TURN5_ERROR);
+});
+
+test("triage: order is system, task, ledger, triaged middle, trailing — and every call stays paired", () => {
+  const out = selectRelevantContext(buildQaHistory(100), QA_TASK, ["frontend/app/page.tsx"], [], LEDGER, TRIAGE);
+  expect(out[0]!.role).toBe("system");
+  expect(String(out[1]!.content)).toStartWith("CURRENT TASK:");
+  expect(String(out[2]!.content)).toStartWith("FACT LEDGER");
+  expect(out[3]!.role).toBe("model"); // middle starts on a call turn, never an orphan response
+  expect(findGeminiPairingViolations(out)).toEqual([]);
+});
+
+test("triage: the original task message is not repeated inside the middle", () => {
+  const out = selectRelevantContext(buildQaHistory(100), QA_TASK, [], [], [], TRIAGE);
+  const taskCopies = out.filter((m) => typeof m.content === "string" && m.content.includes(QA_TASK));
+  expect(taskCopies.length).toBe(1); // only the synthetic CURRENT TASK block
+});
+
+test("triage: a ~580K-token history compacts to at most 60,000 tokens (no immediate re-trigger at 120K)", () => {
+  const huge = buildQaHistory(100, { outputChars: 23_000 });
+  expect(estimateGeminiTokenCount(huge)).toBeGreaterThan(550_000);
+  const out = selectRelevantContext(huge, QA_TASK, [], [], [], TRIAGE);
+  expect(estimateGeminiTokenCount(out)).toBeLessThanOrEqual(60_000);
+  expect(findGeminiPairingViolations(out)).toEqual([]);
+});
+
+test("triage: a 50,000-token system prompt shrinks the middle so the total still fits", () => {
+  const out = selectRelevantContext(buildQaHistory(100, { systemChars: 200_000 }), QA_TASK, [], [], [], TRIAGE);
+  expect(estimateGeminiTokenCount(out)).toBeLessThanOrEqual(60_000);
+  expect(findGeminiPairingViolations(out)).toEqual([]); // oldest turns dropped whole, never an orphan response
+});
+
+test("compactViaRelevantContext passes the triage option through", () => {
+  const out = compactViaRelevantContext(buildQaHistory(100), QA_TASK, [], 1, TRIAGE);
+  expect(responsesOf(out)).toContainEqual(TURN5_ERROR);
 });
