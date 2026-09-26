@@ -94,6 +94,26 @@ services:
   expect(parseComposePorts(compose)).toEqual({ frontendPort: 3200, backendPort: 3301, dbPort: 5437 });
 });
 
+test("parseComposePorts reads the 127.0.0.1-bound form new deploys write (2026-09-26)", () => {
+  const compose = `services:\n  postgres:\n    ports:\n      - "127.0.0.1:5437:5432"\n  backend:\n    ports:\n      - "127.0.0.1:3301:3001"\n  frontend:\n    ports:\n      - "127.0.0.1:3200:3000"\n`;
+  expect(parseComposePorts(compose)).toEqual({ frontendPort: 3200, backendPort: 3301, dbPort: 5437 });
+});
+
+test("rewriteComposePorts swaps 127.0.0.1-bound host ports, keeps the prefix, and survives a new port equal to another service's old port", () => {
+  const compose = `services:\n  postgres:\n    ports:\n      - "127.0.0.1:5437:5432"\n  backend:\n    environment:\n      CORS_ORIGIN: http://localhost:3200\n    ports:\n      - "127.0.0.1:3301:3001"\n  frontend:\n    environment:\n      NEXT_PUBLIC_API_URL: http://localhost:3301\n    ports:\n      - "127.0.0.1:3200:3000"\n`;
+  const result = rewriteComposePorts(
+    compose,
+    { frontendPort: 3200, backendPort: 3301, dbPort: 5437 },
+    { frontendPort: 3301, backendPort: 3402, dbPort: 5538 }, // new frontend == old backend
+  );
+  expect(result).toContain('"127.0.0.1:5538:5432"');
+  expect(result).toContain('"127.0.0.1:3402:3001"');
+  expect(result).toContain('"127.0.0.1:3301:3000"');
+  expect(result).toContain("NEXT_PUBLIC_API_URL: http://localhost:3402");
+  expect(result).toContain("CORS_ORIGIN: http://localhost:3301");
+  expect(result).not.toContain("5437");
+});
+
 test("parseComposePorts returns null when a service is missing rather than guessing", () => {
   const compose = `services:\n  postgres:\n    ports:\n      - "5437:5432"\n`;
   expect(parseComposePorts(compose)).toBeNull();
@@ -181,9 +201,45 @@ test("cloneProject assigns fresh ports and rewrites docker-compose.yml to use th
 
   expect(result.ports).toEqual({ frontendPort: 3301, backendPort: 3402, dbPort: 5538 });
   const compose = readFileSync(join(tempBuildDir, "clone4", "docker-compose.yml"), "utf-8");
-  expect(compose).toContain('"3301:3000"');
-  expect(compose).toContain('"3402:3001"');
-  expect(compose).toContain('"5538:5432"');
+  // 2026-09-26: clones are also bound to this PC only (see the next test).
+  expect(compose).toContain('"127.0.0.1:3301:3000"');
+  expect(compose).toContain('"127.0.0.1:3402:3001"');
+  expect(compose).toContain('"127.0.0.1:5538:5432"');
+});
+
+// 2026-09-26 security fix: generated apps published every port on 0.0.0.0
+// (reachable from the whole Wi-Fi). Existing projects still have that form,
+// so a clone of one must come out bound to 127.0.0.1 regardless.
+test("cloneProject binds every published port to 127.0.0.1 even when the source was published on all interfaces", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  makeFixtureSource(tempBuildDir, "source9"); // plain "HOST:CONTAINER" form, like every existing project
+
+  const result = await cloneProject(
+    { sourceProjectId: "source9", newProjectId: "clone9", oldName: "Acme Co", newName: "Beacon Labs", sourcePorts: { frontendPort: 3200, backendPort: 3301, dbPort: 5437 }, buildDir: tempBuildDir },
+    { findFreePort: async (start) => start },
+  );
+
+  const compose = readFileSync(join(tempBuildDir, "clone9", "docker-compose.yml"), "utf-8");
+  expect(compose).toContain(`"127.0.0.1:${result.ports.frontendPort}:3000"`);
+  expect(compose).toContain(`"127.0.0.1:${result.ports.backendPort}:3001"`);
+  expect(compose).toContain(`"127.0.0.1:${result.ports.dbPort}:5432"`);
+  expect(compose).not.toMatch(/-\s*"\d+:\d+"/); // no entry left published on all interfaces
+  expect(parseComposePorts(compose)).toEqual(result.ports);
+});
+
+test("cloneProject refuses a source whose compose has a port it cannot bind to 127.0.0.1 — before copying anything", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  makeFixtureSource(tempBuildDir, "source10");
+  const sourceCompose = join(tempBuildDir, "source10", "docker-compose.yml");
+  writeFileSync(sourceCompose, readFileSync(sourceCompose, "utf-8") + `  adminer:\n    ports:\n      - "8080"\n`);
+
+  await expect(
+    cloneProject(
+      { sourceProjectId: "source10", newProjectId: "clone10", oldName: "Acme Co", newName: "Beacon Labs", sourcePorts: { frontendPort: 3200, backendPort: 3301, dbPort: 5437 }, buildDir: tempBuildDir },
+      { findFreePort: async (start) => start },
+    ),
+  ).rejects.toThrow("cannot be bound to 127.0.0.1");
+  expect(existsSync(join(tempBuildDir, "clone10"))).toBe(false); // no half-made clone left behind
 });
 
 test("cloneProject always varies the accent color, even with no LLM changes requested — two clones must never look identical", async () => {
