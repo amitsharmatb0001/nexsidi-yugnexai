@@ -475,9 +475,11 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
 
     messages.push({ role: "user", content: toolResultBlocks });
 
-    // Proactively compact history if it grows too large
+    // Proactively compact history if it grows too large. 2026-09-26: this
+    // never fired before (the token estimate was blind to Claude's block
+    // content); compactHistory now handles this shape directly, no casts.
     const { compactHistory } = await import("./compaction.ts");
-    messages = (await compactHistory(messages as any)) as any;
+    messages = await compactHistory(messages);
   }
 
   await saveHistory();

@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
-import type { NimMessage, GeminiMessage, GeminiPart } from "@nexsidi/llm-client";
+import type { GeminiMessage, GeminiPart } from "@nexsidi/llm-client";
 
 export type CompactionChat = (
   messages: Array<{ role: "user"; content: string }>,
@@ -10,18 +10,76 @@ async function chatWithGemini(messages: Array<{ role: "user"; content: string }>
   return geminiChat(messages);
 }
 
-export function estimateTokenCount(messages: { role: string; content?: string | null }[]): number {
+// 2026-09-26: compactHistory serves two shapes — NimMessage (loop.ts: string
+// content, tool calls in `tool_calls`, results as role "tool") and
+// ClaudeMessage (claude-loop.ts: content is an array of text/tool_use/
+// tool_result/image blocks). The old estimate read `content.length`, which
+// for a block array is the NUMBER OF BLOCKS: a ~50K-token Claude history was
+// estimated at 2 tokens, so the Claude escalation tier never compacted at all.
+type CompactableMessage = { role: string; content?: unknown };
+
+// Claude bills an image by its pixel size (about 1,600 tokens for a full
+// screenshot), not by its base64 length.
+const CLAUDE_IMAGE_TOKENS = 1_600;
+
+function contentChars(content: unknown): number {
+  if (typeof content === "string") return content.length;
+  if (!Array.isArray(content)) return 0;
+  let n = 0;
+  for (const block of content as Array<Record<string, unknown>>) {
+    if (block.type === "image") {
+      n += CLAUDE_IMAGE_TOKENS * 4;
+      continue;
+    }
+    if (typeof block.text === "string") n += block.text.length;
+    if (block.type === "tool_use") n += JSON.stringify(block.input ?? {}).length;
+    if (block.type === "tool_result") n += contentChars(block.content);
+  }
+  return n;
+}
+
+export function estimateTokenCount(messages: ReadonlyArray<{ role: string; content?: unknown; tool_calls?: unknown }>): number {
   let totalChars = 0;
   for (const m of messages) {
-    if (m.content) totalChars += m.content.length;
+    totalChars += contentChars(m.content);
+    if (m.tool_calls) totalChars += JSON.stringify(m.tool_calls).length;
   }
   return Math.round(totalChars / 4);
 }
 
-export async function compactHistory(
-  messages: NimMessage[],
+function isToolResultMessage(m: CompactableMessage): boolean {
+  if (m.role === "tool") return true;
+  return m.role === "user" && Array.isArray(m.content) && (m.content as Array<{ type?: string }>).some((b) => b.type === "tool_result");
+}
+
+// Same hazard class as safeTrailingSlice (Gemini, below): walk the window
+// start back so a tool result never appears without the assistant turn that
+// called it. A plain "last 4 messages" could start on a NIM `tool` message
+// or a Claude tool_result whose call had just been summarized away, which
+// both APIs reject.
+export function safeToolTrailingStart(messages: ReadonlyArray<CompactableMessage>, desiredCount: number, floor: number): number {
+  let start = Math.max(floor, messages.length - desiredCount);
+  while (start > floor && isToolResultMessage(messages[start]!)) start--;
+  return start;
+}
+
+// Never send screenshot bytes to the summarizer: they are what compaction is
+// removing, and a placeholder still tells it an image existed.
+function summarizableContent(content: unknown): unknown {
+  if (!Array.isArray(content)) return content;
+  return (content as Array<Record<string, unknown>>).map((b) =>
+    b.type === "image"
+      ? { type: "text", text: "[screenshot]" }
+      : b.type === "tool_result"
+        ? { ...b, content: summarizableContent(b.content) }
+        : b,
+  );
+}
+
+export async function compactHistory<T extends CompactableMessage>(
+  messages: T[],
   chat: CompactionChat = chatWithGemini,
-): Promise<NimMessage[]> {
+): Promise<T[]> {
   const tokens = estimateTokenCount(messages);
   if (tokens < 30000) return messages; // No compaction needed
 
@@ -32,15 +90,17 @@ export async function compactHistory(
   const systemPrompt = messages[0]!;
   const initialUserMessage = messages[1]!;
 
-  // Preserve the last 4 messages for immediate turn context
-  const trailingCount = 4;
-  const trailingMessages = messages.slice(messages.length - trailingCount);
+  // Preserve the last ~4 messages for immediate turn context, widened when
+  // needed so no tool result is separated from its call.
+  const start = safeToolTrailingStart(messages, 4, 2);
+  const trailingMessages = messages.slice(start);
 
   // The middle portion to compact
-  const middleMessages = messages.slice(2, messages.length - trailingCount);
+  const middleMessages = messages.slice(2, start);
+  if (middleMessages.length === 0) return messages; // pairing-safety consumed the whole window
 
   try {
-    const middleSerialized = JSON.stringify(middleMessages.map((m) => ({ role: m.role, content: m.content })));
+    const middleSerialized = JSON.stringify(middleMessages.map((m) => ({ role: m.role, content: summarizableContent(m.content) })));
     const prompt = `\
 You are a context compaction utility.
 Summarize the following sequence of agent actions, file edits, compilation errors, and command outputs into a single cohesive summary.
@@ -60,15 +120,12 @@ ${middleSerialized}`;
 
     console.log(`[compaction] Successfully compacted history. Summary size: ${Math.round(summary.length / 4)} tokens.`);
 
-    return [
-      systemPrompt,
-      initialUserMessage,
-      {
-        role: "user",
-        content: `Here is a summary of the work and debugging steps you completed so far:\n${summary}\n\nPlease proceed with the next steps.`,
-      },
-      ...trailingMessages,
-    ];
+    // A plain { role: "user", content: string } is valid in both NIM and Claude shapes.
+    const summaryMessage = {
+      role: "user",
+      content: `Here is a summary of the work and debugging steps you completed so far:\n${summary}\n\nPlease proceed with the next steps.`,
+    } as T;
+    return [systemPrompt, initialUserMessage, summaryMessage, ...trailingMessages];
   } catch (err) {
     console.error("[compaction] Context compaction failed:", err);
     return messages;

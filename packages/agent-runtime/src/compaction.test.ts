@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { estimateTokenCount, compactHistory, findSymbolInFile, estimateGeminiTokenCount, compactGeminiHistory } from "./compaction.ts";
-import type { GeminiMessage, NimMessage } from "@nexsidi/llm-client";
+import type { ClaudeMessage, GeminiMessage, NimMessage } from "@nexsidi/llm-client";
+import { findNimPairingViolations, findClaudePairingViolations } from "./history-validate.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -233,4 +234,73 @@ test("compactGeminiHistory tells the summarizer a screenshot existed, never disg
   // And must never receive the raw base64 payload — that is the thing being
   // compacted away in the first place.
   expect(promptSeen).not.toContain("AAAA");
+});
+
+// ── 2026-09-26: NIM/Claude compactHistory bugs ───────────────────────────
+// (1) claude-loop.ts passes Claude-shaped history (content = block arrays)
+// into compactHistory, whose estimate read `content.length` = number of
+// blocks: a ~50K-token history was estimated at 2 tokens, so the Claude
+// escalation tier never compacted at all. (2) The fixed "last 4 messages"
+// window could start on a tool result whose call was summarized away,
+// which every provider's API rejects.
+
+test("estimateTokenCount counts Claude blocks (was: 2 tokens for a ~50K-token history)", () => {
+  const big = "x".repeat(200_000);
+  const m = [
+    { role: "system", content: "sys" }, { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read_file", input: { path: "a.ts" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: big }] },
+  ];
+  expect(estimateTokenCount(m)).toBeGreaterThan(50_000);
+});
+
+test("estimateTokenCount prices a Claude image block at a fixed 1,600 tokens, not its base64 length", () => {
+  const img = { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(400_000) } };
+  const m = [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: [img] }] }];
+  expect(estimateTokenCount(m)).toBe(1_600);
+});
+
+test("estimateTokenCount counts NIM tool_calls arguments", () => {
+  const args = JSON.stringify({ path: "a.ts", content: "y".repeat(40_000) });
+  const m: NimMessage[] = [{ role: "assistant", content: null, tool_calls: [{ id: "c", type: "function", function: { name: "write_file", arguments: args } }] }];
+  expect(estimateTokenCount(m)).toBeGreaterThan(10_000);
+});
+
+test("compactHistory never starts the trailing window on an orphaned NIM tool result", async () => {
+  const huge = "x".repeat(130_000);
+  const m: NimMessage[] = [
+    { role: "system", content: "sys" }, { role: "user", content: "task" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "read_file", arguments: "{\"path\":\"a\"}" } }] },
+    { role: "tool", tool_call_id: "c1", content: huge },
+    { role: "assistant", content: null, tool_calls: [
+      { id: "c2", type: "function", function: { name: "read_file", arguments: "{\"path\":\"b\"}" } },
+      { id: "c3", type: "function", function: { name: "read_file", arguments: "{\"path\":\"c\"}" } },
+    ] },
+    { role: "tool", tool_call_id: "c2", content: "b" }, { role: "tool", tool_call_id: "c3", content: "c" },
+    { role: "assistant", content: "done" }, { role: "user", content: "next" },
+  ];
+  const out = await compactHistory(m, mockChat);
+  expect(findNimPairingViolations(out)).toEqual([]);
+  expect(out.some((x) => x.role === "assistant" && x.tool_calls?.some((c) => c.id === "c2"))).toBe(true);
+});
+
+test("compactHistory on a Claude-shaped history compacts, stays paired, and sends no base64 to the summarizer", async () => {
+  let prompt = "";
+  const chat = async (msgs: Array<{ role: "user"; content: string }>) => { prompt = msgs[0]!.content; return { content: "SUMMARY" }; };
+  const img = { type: "image", source: { type: "base64", media_type: "image/png", data: "QUJD".repeat(10) } };
+  const big = "y".repeat(130_000);
+  const m = [
+    { role: "system", content: "sys" }, { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "screenshot", input: {} }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: big }, img] }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "read_file", input: { path: "a" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t2", content: "a" }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "t3", name: "read_file", input: { path: "b" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t3", content: "b" }] },
+  ] as ClaudeMessage[];
+  const out = await compactHistory(m, chat);
+  expect(out.length).toBeLessThan(m.length);
+  expect(findClaudePairingViolations(out)).toEqual([]);
+  expect(prompt).not.toContain("QUJD");
+  expect(prompt).toContain("[screenshot]");
 });
