@@ -268,3 +268,27 @@ export function prepareComposeForUp(cwd: string, fs: ComposeFs = nodeFs) {
    - (c) Also make `ensureProjectRunning` bind to 127.0.0.1 when it restarts a stopped project. That changes existing projects' compose files, which the task said not to do without asking.
 3. **Apply the dev-stack change now** (Task 4 Step 4)? Redis (no password) and Temporal are currently reachable from your Wi-Fi.
 4. **Machine-wide backstop (you'd do this yourself; it's a Docker system setting):** Docker Desktop → Settings → Docker Engine → add `"ip": "127.0.0.1"`, then Apply & Restart. Any port published without an explicit IP then defaults to 127.0.0.1 on this PC. It restarts every running container once.
+
+## Results (2026-09-26)
+
+Commits: 46a5f0a (shared module), 5464284 (tool guard + Riya), e4d1f20 (clone path), 85e38f1 (dev stack file).
+Tests: 457 pass / 0 fail across `pipeline` + `apps/api`; 157/158 across `agents/riya` + agent-runtime tools. The one failure (`websearch.test.ts`, a 5 s timeout) is pre-existing and unrelated: no changed file is in its import graph. Typecheck clean for agent-runtime, pipeline and api.
+
+Live verification (real clone via `POST /api/projects/ac85eb0fa344/clone` as Amit, then the agent tool path on the same clone):
+
+| Check | Result |
+|---|---|
+| Clone compose | all 3 entries `"127.0.0.1:…"`, fresh ports, CORS/API URLs rewritten |
+| `docker ps` | `127.0.0.1:3207->3000`, `127.0.0.1:3307->3001`, `127.0.0.1:5442->5432` (no 0.0.0.0) |
+| Tool path | frontend entry reset to plain `"3207:3000"` → `execDockerCompose up` → "bound 1 published port(s) to 127.0.0.1", success |
+| `getRunningDeploymentPorts` | `{3207, 3307, 5442}` (parses the new form) |
+| `http://localhost:3207/`, `:3307/health` | 200, 200; page renders ("Port Fix Check B") |
+| LAN IP 10.62.192.240 on 3207 / 3307 / 5442 | refused / refused / refused (control: old project 3202 still reachable) |
+
+Pre-existing bugs found during verification (not caused by this change; filed separately):
+1. `copyProjectDir` skips `dist/` at every level, dropping prebuilt `frontend/vendor/nexui*/dist`. Clones of NexUI-era projects (88d7b375eaef, 5b25274f2abc) fail `npm run build` with "Can't resolve '@yugnex/nexui-react'". Failed test clone: a809215390e8.
+2. `isPortUsedByDocker` returns **false** (port free) when `docker ps` fails, and the socket fallback can't see Docker Desktop ports on Windows. The first port check of clone 3bfe53ae6a38 picked 3206, which gthrdeploy45t holds. The backend and db checks in the same call skipped taken ports correctly, and a rerun reports 3206 as used.
+3. `websearch.test.ts` "not-configured" test times out (network call).
+
+Still exposed on 0.0.0.0 (awaiting Amit's decision): 5b25274f2abc, gthrdeploy45t, ac85eb0fa344, 88d7b375eaef, and the running dev stack (postgres 5434, redis 6379 with no password, temporal 7233, temporal-ui 8088).
+Test clones left for Amit to decide on: a809215390e8 "Port Fix Check" (build failed, no containers), 3bfe53ae6a38 "Port Fix Check B" (running, 127.0.0.1-bound).
