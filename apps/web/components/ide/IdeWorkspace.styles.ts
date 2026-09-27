@@ -22,15 +22,22 @@ const fadeUp = keyframes({
   to: { opacity: 1, transform: "translateY(0)" },
 });
 
+// 2026-09-27: gridTemplateColumns was missing, so the one implicit column was
+// `auto` and grew to the widest nowrap line in the build stream — the page
+// laid out wider than the window and clipped its right edge (Panels drawer,
+// account menu, "Approve & launch"). See IdeWorkspace.styles.test.ts.
+export const wsRootStyle = {
+  display: "grid",
+  gridTemplateRows: "44px 1fr",
+  gridTemplateColumns: "minmax(0, 1fr)",
+  height: "100dvh",
+  backgroundColor: ground.void,
+  color: theme.color.foreground,
+  overflow: "hidden",
+} as const;
+
 export const ws = {
-  root: css({
-    display: "grid",
-    gridTemplateRows: "44px 1fr",
-    height: "100dvh",
-    backgroundColor: ground.void,
-    color: theme.color.foreground,
-    overflow: "hidden",
-  }),
+  root: css(wsRootStyle),
 
   /* ── Title bar ─────────────────────────────────────────────────────── */
   titlebar: css({
