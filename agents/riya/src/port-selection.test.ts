@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { findFreePort, isPortUsedByDocker, getRunningDeploymentPorts, ensureProjectRunning, buildAgentTask } from "./index.ts";
+import { findFreePort, isPortUsedByDocker, getRunningDeploymentPorts, ensureProjectRunning, buildAgentTask, queryDockerPublishedPorts, parsePublishedPorts, isPortFreeOnHost } from "./index.ts";
+import { createServer, type Server } from "node:net";
 
 // 2026-09-26 security fix: the deploy agent writes docker-compose.yml itself
 // from this task text, so the text must spell out the localhost-only form.
@@ -33,11 +34,15 @@ describe("isPortUsedByDocker", () => {
     expect(isPortUsedByDocker(3203, () => dockerPsOutput)).toBe(false);
   });
 
-  test("fails closed (treats as used=false, not a crash) when docker CLI itself errors", () => {
+  // 2026-09-27: deliberately changed. This used to return false ("port
+  // free") on ANY docker error, silently — the cause of a real collision
+  // (Express Build picked 3206 while gthrdeploy45t held it). An unknown answer
+  // is now reported as null and logged; findFreePort decides what to do.
+  test("reports unknown (null), not free, when the docker CLI itself errors", () => {
     const used = isPortUsedByDocker(5435, () => {
       throw new Error("docker: command not found");
-    });
-    expect(used).toBe(false);
+    }, { warn: () => {} });
+    expect(used).toBeNull();
   });
 });
 
@@ -210,5 +215,139 @@ describe("ensureProjectRunning", () => {
       existsFn: () => false,
     });
     expect(result).toEqual({ running: false, started: false, ports: null, error: "no docker-compose.yml found for this project" });
+  });
+});
+
+// ── Port finder hardening (2026-09-27) ───────────────────────────────────
+// Real collision: an Express Build picked frontend 3206 although
+// gthrdeploy45t-frontend-1 published 0.0.0.0:3206. The first `docker ps`
+// failed (fits the documented Windows "spawnSync cmd.exe ETIMEDOUT" glitch),
+// the error was swallowed as "port free", and the socket fallback (127.0.0.1
+// only) cannot see Docker Desktop's 0.0.0.0 publishes. Measured on this PC:
+// those are visible only as a listener on ::1 (wslrelay).
+
+const transient = () => {
+  throw new Error("Error: spawnSync C:\WINDOWS\system32\cmd.exe ETIMEDOUT");
+};
+
+describe("queryDockerPublishedPorts", () => {
+  test("parses every published host port, IPv4 and IPv6, into one snapshot", () => {
+    const out = "0.0.0.0:3202->3000/tcp, [::]:3202->3000/tcp\n127.0.0.1:3204->3000/tcp\n\n5432/tcp\n";
+    expect([...parsePublishedPorts(out)].sort()).toEqual([3202, 3204]);
+  });
+
+  test("retries once after a transient spawn failure, logs it, and returns the snapshot", () => {
+    const warnings: string[] = [];
+    let calls = 0;
+    const snap = queryDockerPublishedPorts((cmd) => {
+      calls++;
+      if (calls === 1) transient();
+      return "127.0.0.1:3206->3000/tcp\n";
+    }, { warn: (m) => warnings.push(m) });
+    expect(calls).toBe(2);
+    expect(snap && [...snap]).toEqual([3206]);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain("ETIMEDOUT");
+  });
+
+  test("does not retry a non-transient error; returns null (unknown) and logs", () => {
+    const warnings: string[] = [];
+    let calls = 0;
+    const snap = queryDockerPublishedPorts(() => {
+      calls++;
+      throw new Error("docker: command not found");
+    }, { warn: (m) => warnings.push(m) });
+    expect(calls).toBe(1);
+    expect(snap).toBeNull();
+    expect(warnings[0]).toContain("docker: command not found");
+  });
+
+  test("gives up after the retry also fails", () => {
+    let calls = 0;
+    const snap = queryDockerPublishedPorts(() => { calls++; return transient(); }, { warn: () => {} });
+    expect(calls).toBe(2);
+    expect(snap).toBeNull();
+  });
+});
+
+describe("findFreePort (hardened)", () => {
+  test("asks docker once per search, not once per candidate port", async () => {
+    let dockerCalls = 0;
+    const port = await findFreePort(3201, 3210, {
+      dockerPorts: () => { dockerCalls++; return new Set([3201, 3202, 3203, 3204, 3205, 3206]); },
+      isPortFreeOnHost: async () => true,
+    });
+    expect(port).toBe(3207);
+    expect(dockerCalls).toBe(1);
+  });
+
+  test("when docker can't be asked, relies on the socket check and warns once", async () => {
+    const warnings: string[] = [];
+    const port = await findFreePort(3201, 3210, {
+      dockerPorts: () => null,
+      isPortFreeOnHost: async (p) => p >= 3207,
+      warn: (m) => warnings.push(m),
+    });
+    expect(port).toBe(3207);
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain("socket check");
+  });
+
+  test("throws when every port in the range is in use, instead of handing out a taken one", async () => {
+    await expect(findFreePort(3201, 3203, {
+      dockerPorts: () => new Set([3201, 3202]),
+      isPortFreeOnHost: async (p) => p !== 3203,
+    })).rejects.toThrow("no free port in 3201-3203");
+  });
+});
+
+describe("isPortFreeOnHost (real sockets)", () => {
+  async function holdPort(host: string): Promise<{ port: number; server: Server } | null> {
+    return new Promise((resolve) => {
+      const server = createServer();
+      server.once("error", () => resolve(null)); // e.g. no IPv6 on this machine
+      server.listen({ port: 0, host, ipv6Only: host.includes(":") }, () => {
+        resolve({ port: (server.address() as { port: number }).port, server });
+      });
+    });
+  }
+
+  test("sees a port held on ::1 — how Docker Desktop's 0.0.0.0 publishes appear on Windows", async () => {
+    const held = await holdPort("::1");
+    if (!held) return; // no IPv6 loopback available here; nothing to check
+    try {
+      expect(await isPortFreeOnHost(held.port)).toBe(false);
+    } finally {
+      held.server.close();
+    }
+  });
+
+  test("sees a port held on 127.0.0.1, and reports a truly free port as free", async () => {
+    const held = await holdPort("127.0.0.1");
+    try {
+      expect(await isPortFreeOnHost(held!.port)).toBe(false);
+    } finally {
+      held!.server.close();
+    }
+    const probe = await holdPort("127.0.0.1");
+    const freePort = probe!.port;
+    await new Promise((r) => probe!.server.close(r));
+    expect(await isPortFreeOnHost(freePort)).toBe(true);
+  });
+});
+
+describe("getRunningDeploymentPorts (hardened)", () => {
+  const compose = `services:\n  postgres:\n    ports:\n      - "127.0.0.1:5436:5432"\n  backend:\n    ports:\n      - "127.0.0.1:3301:3001"\n  frontend:\n    ports:\n      - "127.0.0.1:3201:3000"\n`;
+
+  test("uses one docker snapshot and returns the ports when they are published", () => {
+    let calls = 0;
+    const result = getRunningDeploymentPorts("/fake", { readComposeFile: () => compose, dockerPorts: () => { calls++; return new Set([3201, 3301, 5436]); } });
+    expect(result).toEqual({ frontendPort: 3201, backendPort: 3301, dbPort: 5436 });
+    expect(calls).toBe(1);
+  });
+
+  test("returns null (not running) when docker can't be asked — only docker can confirm the containers are ours", () => {
+    const result = getRunningDeploymentPorts("/fake", { readComposeFile: () => compose, dockerPorts: () => null });
+    expect(result).toBeNull();
   });
 });

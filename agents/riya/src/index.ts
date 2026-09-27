@@ -1640,46 +1640,137 @@ Health check frontend at http://localhost:${frontendPort}`;
 // containers to free the port — a destructive fix for what should have been
 // a "pick a different port" fix. This closes the gap so that workaround is
 // never needed again.)
-export function isPortUsedByDocker(
-  port: number,
-  execFn: (cmd: string) => string = (cmd) => execSync(cmd, { encoding: "utf-8", timeout: 5000 }),
-): boolean {
-  try {
-    const output = execFn(`docker ps --format "{{.Ports}}"`);
-    return new RegExp(`:${port}->`).test(output);
-  } catch {
-    // docker CLI unreachable/not installed — fall through to the socket
-    // check alone rather than treating "can't ask docker" as "port is used".
-    return false;
-  }
+// 2026-09-27: real collision found live — an Express Build picked frontend
+// port 3206 while gthrdeploy45t-frontend-1 published 0.0.0.0:3206. The first
+// `docker ps` of that search failed (it fits the documented Windows
+// "spawnSync cmd.exe ETIMEDOUT" glitch, see clone-deploy.ts), the error was
+// swallowed as "port free", and the socket fallback below (then 127.0.0.1
+// only) cannot see Docker Desktop's 0.0.0.0 publishes. Now: one snapshot of
+// published ports per search (was one `docker ps` spawn per candidate port),
+// one retry on the transient spawn failure, and every failure is logged.
+
+type DockerExec = (cmd: string, timeoutMs: number) => string;
+const defaultDockerExec: DockerExec = (cmd, timeoutMs) => execSync(cmd, { encoding: "utf-8", timeout: timeoutMs });
+
+function isTransientSpawnFailure(err: unknown): boolean {
+  const msg = String(err);
+  return msg.includes("ETIMEDOUT") && msg.includes("spawnSync");
 }
 
-async function isPortFreeOnHost(port: number): Promise<boolean> {
+/** Every host port Docker currently publishes, from `docker ps` output. */
+export function parsePublishedPorts(output: string): Set<number> {
+  const ports = new Set<number>();
+  for (const m of output.matchAll(/:(\d+)->/g)) ports.add(Number(m[1]));
+  return ports;
+}
+
+/**
+ * Snapshot of Docker's published host ports, or null when docker can't be
+ * asked. Retries once (with a longer timeout) after a transient spawn
+ * failure; never retries a real error such as a missing docker CLI.
+ */
+export function queryDockerPublishedPorts(
+  execFn: DockerExec = defaultDockerExec,
+  opts: { warn?: (msg: string) => void } = {},
+): Set<number> | null {
+  const warn = opts.warn ?? ((m: string) => console.warn(m));
+  const timeouts = [5_000, 15_000];
+  for (let attempt = 0; attempt < timeouts.length; attempt++) {
+    try {
+      return parsePublishedPorts(execFn(`docker ps --format "{{.Ports}}"`, timeouts[attempt]!));
+    } catch (err) {
+      const transient = isTransientSpawnFailure(err);
+      warn(`[ports] docker ps failed (attempt ${attempt + 1}/${timeouts.length}${transient ? ", transient" : ""}): ${String(err).split("\n")[0]}`);
+      if (!transient) break;
+    }
+  }
+  return null;
+}
+
+// 2026-08-10: real bug found live (freshtst1) — the plain socket-bind check
+// reported 5435 free while meridianbk4's postgres container published it,
+// because Docker Desktop's port forwarding does not always create an
+// OS-visible conflict on 127.0.0.1. `docker ps` is the ground truth; check it
+// FIRST. (Riya's agent once "fixed" this by deleting another project's
+// containers — never needed again.)
+//
+// Returns true/false, or null when docker can't be asked (2026-09-27: this
+// used to return false, i.e. "free", on ANY error, silently).
+export function isPortUsedByDocker(
+  port: number,
+  execFn: DockerExec = defaultDockerExec,
+  opts: { warn?: (msg: string) => void } = {},
+): boolean | null {
+  const snapshot = queryDockerPublishedPorts(execFn, opts);
+  return snapshot === null ? null : snapshot.has(port);
+}
+
+// 2026-09-27: measured on this PC — a port Docker publishes on 0.0.0.0 is
+// held on the IPv6 side only (com.docker.backend on "::", wslrelay on
+// "::1"), so an IPv4 listen on 127.0.0.1 or 0.0.0.0 still "succeeds"; a port
+// published on 127.0.0.1 is held on 127.0.0.1 itself. Probing 127.0.0.1, ::1
+// and :: caught every Docker-held port here (old 0.0.0.0 apps and new
+// 127.0.0.1 ones) while free ports stayed free. An address this machine
+// can't bind at all (e.g. no IPv6) is skipped, not counted as "in use".
+const PROBE_HOSTS = ["127.0.0.1", "::1", "::"];
+
+function probeListen(port: number, host: string): Promise<"free" | "used" | "unsupported"> {
   return new Promise((resolve) => {
     import("net").then(({ createServer }) => {
       const server = createServer();
-      server.once("error", () => resolve(false));
-      server.once("listening", () => { server.close(() => resolve(true)); });
-      server.listen(port, "127.0.0.1");
+      server.once("error", (err: NodeJS.ErrnoException) => {
+        resolve(err.code === "EADDRINUSE" || err.code === "EACCES" ? "used" : "unsupported");
+      });
+      server.once("listening", () => { server.close(() => resolve("free")); });
+      server.listen({ port, host, ipv6Only: host.includes(":") });
     });
   });
+}
+
+export async function isPortFreeOnHost(port: number): Promise<boolean> {
+  for (const host of PROBE_HOSTS) {
+    if ((await probeListen(port, host)) === "used") return false;
+  }
+  return true;
 }
 
 export async function findFreePort(
   start: number,
   end: number,
   deps: {
-    isPortUsedByDocker?: (port: number) => boolean;
+    // Per-port docker answer (kept for tests and callers that inject one).
+    isPortUsedByDocker?: (port: number) => boolean | null;
+    // Snapshot provider; default asks docker once for the whole search.
+    dockerPorts?: () => Set<number> | null;
     isPortFreeOnHost?: (port: number) => Promise<boolean>;
+    warn?: (msg: string) => void;
   } = {},
 ): Promise<number> {
-  const dockerCheck = deps.isPortUsedByDocker ?? isPortUsedByDocker;
   const hostCheck = deps.isPortFreeOnHost ?? isPortFreeOnHost;
+  const warn = deps.warn ?? ((m: string) => console.warn(m));
+  let dockerUsed: (port: number) => boolean | null;
+  if (deps.isPortUsedByDocker) {
+    dockerUsed = deps.isPortUsedByDocker;
+  } else {
+    const snapshot = (deps.dockerPorts ?? (() => queryDockerPublishedPorts()))();
+    dockerUsed = snapshot === null ? () => null : (p) => snapshot.has(p);
+  }
+
+  let warned = false;
   for (let port = start; port <= end; port++) {
-    if (dockerCheck(port)) continue;
+    const used = dockerUsed(port);
+    if (used === true) continue;
+    // Amit's decision (2026-09-27): when docker can't be asked, rely on the
+    // IPv4+IPv6 socket check above (evidence-based, see PROBE_HOSTS) with a
+    // loud warning, rather than failing the build or guessing "free".
+    if (used === null && !warned) {
+      warn(`[ports] docker unavailable — relying on the socket check (${PROBE_HOSTS.join(", ")}) for ${start}-${end}`);
+      warned = true;
+    }
     if (await hostCheck(port)) return port;
   }
-  return start; // Fallback — every port in range genuinely occupied
+  // Was `return start` — silently handing out a port known to be taken.
+  throw new Error(`no free port in ${start}-${end} (all in use)`);
 }
 
 // 2026-08-17: real bug found live (fulfillio1-deploy-resume-2) — see run()'s
@@ -1698,11 +1789,11 @@ export function getRunningDeploymentPorts(
   buildDir: string,
   deps: {
     readComposeFile?: (path: string) => string | null;
-    isPortUsedByDocker?: (port: number) => boolean;
+    isPortUsedByDocker?: (port: number) => boolean | null;
+    dockerPorts?: () => Set<number> | null;
   } = {},
 ): { frontendPort: number; backendPort: number; dbPort: number } | null {
   const readComposeFile = deps.readComposeFile ?? ((path: string) => (existsSync(path) ? readFileSync(path, "utf-8") : null));
-  const dockerCheck = deps.isPortUsedByDocker ?? isPortUsedByDocker;
 
   const compose = readComposeFile(join(buildDir, "docker-compose.yml"));
   if (!compose) return null;
@@ -1712,7 +1803,16 @@ export function getRunningDeploymentPorts(
   const dbPort = parseServiceHostPort(compose, "postgres");
   if (frontendPort === null || backendPort === null || dbPort === null) return null;
 
-  if (!dockerCheck(frontendPort) || !dockerCheck(backendPort)) return null;
+  // Only docker can confirm these are OUR containers, so an unknown answer
+  // (docker unreachable after a retry, already logged) means "not running".
+  let dockerCheck: (port: number) => boolean | null;
+  if (deps.isPortUsedByDocker) {
+    dockerCheck = deps.isPortUsedByDocker;
+  } else {
+    const snapshot = (deps.dockerPorts ?? (() => queryDockerPublishedPorts()))();
+    dockerCheck = snapshot === null ? () => null : (p) => snapshot.has(p);
+  }
+  if (dockerCheck(frontendPort) !== true || dockerCheck(backendPort) !== true) return null;
 
   return { frontendPort, backendPort, dbPort };
 }
