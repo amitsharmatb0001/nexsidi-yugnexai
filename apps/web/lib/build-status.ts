@@ -12,3 +12,16 @@ export function statusForStageEvent(stage: string): { status: "building" | null;
   if (stage === "error") return { status: null, refetchResult: true };
   return { status: "building", refetchResult: stage === "done" || stage === "deliver" };
 }
+
+export type ResultStatus = "waiting" | "building" | "done" | "failed" | "needs_review";
+
+// What GET /api/pipeline/:id's result means for the page. An app URL has
+// always meant "done" (including a failure that still shipped an app) —
+// EXCEPT needs_review: 2026-09-28 (project a61968de2ecf) the app was up but
+// its post-launch check failed, and treating the URL as "done" hid the
+// "needs your attention" card and its Retry button, so the build could not
+// be resumed from the UI.
+export function statusFromResult(r: { status: ResultStatus; appUrl?: string | null }): ResultStatus {
+  if (r.status === "needs_review") return "needs_review";
+  return r.appUrl ? "done" : r.status;
+}

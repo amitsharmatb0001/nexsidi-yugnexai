@@ -9,7 +9,7 @@ import PlanPreview, { type BuildPlan } from "../../../components/ide/PlanPreview
 import { useReviewState } from "@/components/nexui/review-gate";
 import { Button } from "@/components/nexui/button";
 import type { ApiNode } from "../../../lib/tree";
-import { statusForStageEvent } from "../../../lib/build-status";
+import { statusForStageEvent, statusFromResult } from "../../../lib/build-status";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -1184,8 +1184,10 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       if (!r.ok) return;
       const data: ProjectResult = await r.json();
       setResult(data);
-      if (data.appUrl) { setStatus("done"); setStageMessage("Your app is ready!"); }
-      else setStatus(data.status);
+      // See lib/build-status.ts — needs_review wins over an existing appUrl.
+      const next = statusFromResult(data);
+      setStatus(next);
+      if (next === "done") setStageMessage("Your app is ready!");
     } catch {}
   }
 
