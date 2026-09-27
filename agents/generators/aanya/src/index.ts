@@ -10,7 +10,7 @@ import { join } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
 import { formatDesignBriefForPrompt } from "../../../vanya/src/index.ts";
-import { buildFontOverrideCss, buildThemeOverrideTokens, themeColorMode } from "./theme.ts";
+import { buildFontOverrideCss, buildThemeOverrideTokens, googleFontStylesheets, themeColorMode } from "./theme.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
 
@@ -77,8 +77,13 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
   // on this path (see Task 4 of the migration plan).
   vendorNexui(outputDir);
 
-  // 2. Write static scaffold
-  writeStaticScaffold(plan, outputDir);
+  // 2. Write static scaffold. The brief's fonts are checked against Google
+  // Fonts first (see theme.ts googleFontStylesheets) so the layout only links
+  // families that really load.
+  const fontStylesheets = plan.designBrief
+    ? await googleFontStylesheets([plan.designBrief.typography.display, plan.designBrief.typography.body])
+    : [];
+  writeStaticScaffold(plan, outputDir, fontStylesheets);
 
   // 3. Run real agent loop
   // Primary history: kimi-k2.6 (failed, F7) -> z-ai/glm-5.2 (2026-07-03) ->
@@ -836,7 +841,18 @@ export function hasRoleColumn(plan: BuildPlan): boolean {
   return plan.dbSchema.tables.some((t) => t.columns.some((c) => c.name === "role"));
 }
 
-export function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
+// <head> tags for the verified Google Fonts stylesheets (empty when none).
+function fontLinkTags(hrefs: string[]): string {
+  if (hrefs.length === 0) return "";
+  const tags = [
+    '<link rel="preconnect" href="https://fonts.googleapis.com" />',
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />',
+    ...hrefs.map((h) => `<link rel="stylesheet" href="${h}" />`),
+  ];
+  return tags.map((t) => `\n        ${t}`).join("");
+}
+
+export function writeStaticScaffold(plan: BuildPlan, outputDir: string, fontStylesheets: string[] = []): void {
   const backendPort = plan.apiContract.baseUrl?.match(/:(\d+)/)?.[1] ?? "3001";
   const roleGated = hasRoleColumn(plan);
 
@@ -1018,7 +1034,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <head>
-        <NoFoucScript />
+        <NoFoucScript />${fontLinkTags(fontStylesheets)}
       </head>
       <body>
         <StyleRegistry>

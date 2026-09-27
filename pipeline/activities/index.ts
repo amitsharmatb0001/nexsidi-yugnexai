@@ -6,6 +6,7 @@ import { run as runSaanviAgent }  from "../../agents/saanvi/src/index.ts";
 import { run as runArjunAgent, getBuildDir, pathToNextjsFile } from "../../agents/arjun/src/index.ts";
 import { run as runShubhamAgent, runFix as runShubhamFix } from "../../agents/generators/shubham/src/index.ts";
 import { run as runAanyaAgent, runFix as runAanyaFix }   from "../../agents/generators/aanya/src/index.ts";
+import { ensureClientDirectiveForStyledModules } from "../../agents/generators/aanya/src/client-directive.ts";
 import { run as runPranavAgent }  from "../../agents/generators/pranav/src/index.ts";
 // 2026-07-24 (P1, full agentic upgrade): the real GAN (evidence-gated QA +
 // peer debate + fault isolation + instinct memory) and the real deploy +
@@ -483,6 +484,15 @@ export async function runCompileCheck(
   const frontendDir = join(buildDir, "frontend");
   const results: string[] = [];
   let timedOut = false;
+
+  // 2026-09-28: runs before every compile check (post-generation AND
+  // post-QA), so whatever last touched the frontend, a styled Server
+  // Component can't ship unstyled — see client-directive.ts.
+  if (existsSync(join(frontendDir, "tsconfig.json"))) {
+    const directive = ensureClientDirectiveForStyledModules(frontendDir);
+    if (directive.updated.length) console.log(`[compile-check] frontend: added "use client" to ${directive.updated.join(", ")}`);
+    for (const s of directive.skipped) console.warn(`[compile-check] frontend: ${s.path} calls css() but can't be a client module (${s.reason})`);
+  }
 
   for (const [label, dir] of [["backend", backendDir], ["frontend", frontendDir]] as const) {
     if (!existsSync(join(dir, "tsconfig.json"))) continue;

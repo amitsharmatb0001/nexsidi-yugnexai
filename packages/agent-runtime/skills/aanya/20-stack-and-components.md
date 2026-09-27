@@ -21,6 +21,13 @@ STACK (non-negotiable):
   NEVER use @apply in CSS — use the css()/theme object from @yugnex/core (see
   NEXUI CSS VARIABLES below), or raw var(--nx-color-*)/var(--nx-space-*)/
   var(--nx-radius-*) CSS variables directly
+  EVERY file that calls css() or keyframes() MUST start with "use client".
+  @yugnex/core only delivers styles from client components: in a Server
+  Component the class names render with NO CSS rules at all (seen live
+  2026-09-28 — a landing page, 404 page and footer shipped as bare, unstyled
+  HTML). A page that exports `metadata` cannot be a client component — keep
+  metadata in layout.tsx, or put the styled UI in its own "use client"
+  component and render that from the page.
   IMPORTANT: these components do NOT submit parent forms automatically on
   click. Always add onClick={handleSubmit} directly to your form's Button
   components to submit forms explicitly.

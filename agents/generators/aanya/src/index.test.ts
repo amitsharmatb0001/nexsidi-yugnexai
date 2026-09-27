@@ -829,3 +829,26 @@ test("vendorNexui uses the latest verified @yugnex/cli (0.2.0)", async () => {
   const { NEXUI_CLI_VERSION } = await import("./index.ts");
   expect(NEXUI_CLI_VERSION).toBe("0.2.0");
 });
+
+test("writeStaticScaffold links the verified font stylesheets in the root layout's <head>", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aanya-scaffold-fonts-"));
+  try {
+    const href = "https://fonts.googleapis.com/css2?family=Lexend+Deca:wght@400;500;600;700&display=swap";
+    writeStaticScaffold(FIX_TEST_PLAN, dir, [href]);
+    const layout = readFileSync(join(dir, "app", "layout.tsx"), "utf-8");
+    expect(layout).toContain(`<link rel="stylesheet" href="${href}" />`);
+    expect(layout).toContain('<link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeStaticScaffold adds no font links when none were verified", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aanya-scaffold-nofonts-"));
+  try {
+    writeStaticScaffold(FIX_TEST_PLAN, dir);
+    expect(readFileSync(join(dir, "app", "layout.tsx"), "utf-8")).not.toContain("fonts.googleapis.com");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -308,3 +308,41 @@ h1, h2, h3, h4, h5, h6 {
 }
 `;
 }
+
+// 2026-09-28: real finding (project a61968de2ecf, Cardwise). The brief's
+// typefaces were NAMED in theme-overrides.css (buildFontOverrideCss above)
+// but never LOADED — no <link>, no @font-face, no next/font — so every
+// visitor saw -apple-system/Segoe UI instead of the chosen fonts. The
+// scaffold now links each family from Google Fonts. Each URL is checked once
+// here (at generation time, where the network is already required for
+// vendorNexui): Google answers 400 for an unknown family or a weight the
+// family doesn't have, and one bad family in a combined URL would drop ALL
+// of them — so it's one link per family, weights first, then the plain
+// family, and a family Google doesn't serve (e.g. a commercial face) is
+// simply left to its CSS fallback chain.
+const GOOGLE_FONTS_CSS = "https://fonts.googleapis.com/css2";
+const FONT_WEIGHTS = ":wght@400;500;600;700";
+const SAFE_FAMILY = /^[A-Za-z0-9][A-Za-z0-9 ]{0,60}$/;
+
+export type FontFetch = (url: string) => Promise<{ ok: boolean }>;
+
+const defaultFontFetch: FontFetch = (url) => fetch(url, { signal: AbortSignal.timeout(5_000) });
+
+export async function googleFontStylesheets(families: string[], fetchFn: FontFetch = defaultFontFetch): Promise<string[]> {
+  const names = [...new Set(families.map((f) => parseFontSpec(f).name).filter((n) => SAFE_FAMILY.test(n)))];
+  const hrefs: string[] = [];
+  for (const name of names) {
+    const family = name.trim().replace(/ +/g, "+");
+    for (const url of [
+      `${GOOGLE_FONTS_CSS}?family=${family}${FONT_WEIGHTS}&display=swap`,
+      `${GOOGLE_FONTS_CSS}?family=${family}&display=swap`,
+    ]) {
+      try {
+        if ((await fetchFn(url)).ok) { hrefs.push(url); break; }
+      } catch {
+        // offline / timeout — leave this family to its CSS fallback chain
+      }
+    }
+  }
+  return hrefs;
+}

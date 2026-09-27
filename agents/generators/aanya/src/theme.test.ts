@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { buildFontOverrideCss, buildThemeOverrideTokens, parseFontSpec, themeColorMode } from "./theme.ts";
+import { buildFontOverrideCss, buildThemeOverrideTokens, googleFontStylesheets, parseFontSpec, themeColorMode } from "./theme.ts";
 import type { DesignBrief } from "../../../vanya/src/index.ts";
 import { FALLBACK_BRIEF } from "../../../vanya/src/index.ts";
 
@@ -253,4 +253,36 @@ test("parseFontSpec splits a '(fallback: ...)' annotation into a clean name and 
 test("parseFontSpec returns the name unchanged with no fallbacks when there is no annotation", () => {
   expect(parseFontSpec("Fraunces")).toEqual({ name: "Fraunces", fallbacks: [] });
   expect(parseFontSpec("IBM Plex Sans")).toEqual({ name: "IBM Plex Sans", fallbacks: [] });
+});
+
+// 2026-09-28: real finding (project a61968de2ecf, Cardwise). The brief's
+// fonts (Lexend Deca / Plus Jakarta Sans) were named in theme-overrides.css
+// but never LOADED — every visitor saw system fallbacks. The scaffold now
+// links each family from Google Fonts, checked once at generation time so an
+// unknown family (or unsupported weights) can never break the stylesheet.
+const okFor = (urls: string[]) => async (url: string) => ({ ok: urls.includes(url) });
+const W = ":wght@400;500;600;700";
+
+test("googleFontStylesheets links each brief family with its weights when Google serves them", async () => {
+  const a = `https://fonts.googleapis.com/css2?family=Lexend+Deca${W}&display=swap`;
+  const b = `https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans${W}&display=swap`;
+  expect(await googleFontStylesheets(["Lexend Deca", "Plus Jakarta Sans"], okFor([a, b]))).toEqual([a, b]);
+});
+
+test("googleFontStylesheets falls back to the plain family URL when the weighted one is rejected", async () => {
+  const plain = "https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap";
+  expect(await googleFontStylesheets(["Bebas Neue"], okFor([plain]))).toEqual([plain]);
+});
+
+test("googleFontStylesheets skips a family Google does not have, and unsafe names without fetching", async () => {
+  const seen: string[] = [];
+  const fetchFn = async (url: string) => { seen.push(url); return { ok: false }; };
+  expect(await googleFontStylesheets(["Satoshi", 'Inter"><script>'], fetchFn)).toEqual([]);
+  expect(seen.every((u) => u.includes("Satoshi"))).toBe(true);
+});
+
+test("googleFontStylesheets de-duplicates, reads the name out of a '(fallback: ...)' spec, and survives a network error", async () => {
+  const a = `https://fonts.googleapis.com/css2?family=Inter${W}&display=swap`;
+  expect(await googleFontStylesheets(["Inter (fallback: Arial, sans-serif)", "Inter"], okFor([a]))).toEqual([a]);
+  expect(await googleFontStylesheets(["Inter"], async () => { throw new Error("offline"); })).toEqual([]);
 });
