@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
-import { verifyLiveAuthenticatedRoundTrip, buildPayloadForRequestType, verifyAllResourceCrud, resolveForeignKeyId } from "./index.ts";
+import { verifyLiveAuthenticatedRoundTrip, buildPayloadForRequestType, verifyAllResourceCrud, resolveForeignKeyId, resolveAuthPaths } from "./index.ts";
 
 // Real gap found live (project=simple1, 2026-07-26): this check was written
 // for Sprint 1's NexTech-style CRUD app (an authenticated POST resource
@@ -1092,4 +1092,67 @@ test("a genuine failure on a resource that DOES have a working registration path
   } finally {
     srv.close();
   }
+});
+
+// 2026-09-28: real false deploy failure (project a61968de2ecf, Cardwise).
+// The test user was always registered at the hard-coded
+// /api/v1/auth/register + /login, but this app's approved contract names
+// them /api/v1/auth/sign-up + /sign-in — "custom register failed: returned
+// 404: Route not found" on a backend whose real sign-up returned 201 by hand.
+// The auth paths now come from the project's own api-contract.json.
+test("resolveAuthPaths reads sign-up/sign-in (or register/login) paths from the contract", () => {
+  expect(resolveAuthPaths([
+    { method: "POST", path: "/api/v1/auth/sign-up", auth: false },
+    { method: "POST", path: "/api/v1/auth/sign-in", auth: false },
+  ])).toEqual({ registerPath: "/api/v1/auth/sign-up", loginPath: "/api/v1/auth/sign-in" });
+  expect(resolveAuthPaths([
+    { method: "POST", path: "/api/v1/auth/signup", auth: false },
+    { method: "POST", path: "/api/v1/auth/signin", auth: false },
+  ])).toEqual({ registerPath: "/api/v1/auth/signup", loginPath: "/api/v1/auth/signin" });
+  expect(resolveAuthPaths([
+    { method: "POST", path: "/api/v1/auth/register", auth: false },
+    { method: "POST", path: "/api/v1/auth/login", auth: false },
+  ])).toEqual({ registerPath: "/api/v1/auth/register", loginPath: "/api/v1/auth/login" });
+});
+
+test("resolveAuthPaths falls back to register/login when the contract names no auth endpoints", () => {
+  expect(resolveAuthPaths([{ method: "GET", path: "/api/v1/decks", auth: true }]))
+    .toEqual({ registerPath: "/api/v1/auth/register", loginPath: "/api/v1/auth/login" });
+});
+
+test("verifyLiveAuthenticatedRoundTrip registers and logs in through the contract's own sign-up/sign-in routes", async () => {
+  writeContract([
+    { method: "POST", path: "/api/v1/auth/sign-up", auth: false },
+    { method: "POST", path: "/api/v1/auth/sign-in", auth: false },
+    { method: "POST", path: "/api/v1/decks", auth: true },
+  ]);
+  const backendUrl = await new Promise<string>((resolve) => {
+    server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        if (req.url === "/api/v1/auth/sign-up" && req.method === "POST") {
+          res.writeHead(201, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ token: "t", user: { id: "u1" } }));
+        } else if (req.url === "/api/v1/auth/sign-in" && req.method === "POST") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ token: "fake-jwt-token" }));
+        } else if (req.url === "/api/v1/decks" && req.method === "POST") {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Forbidden" }));
+        } else {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Route not found" }));
+        }
+      });
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(`http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`);
+    });
+  });
+
+  const result = await verifyLiveAuthenticatedRoundTrip(dir, backendUrl);
+
+  // 403 on create = auth worked (existing rule); a 404 on register would be ok:false.
+  expect(result).toEqual({ ok: true, reason: expect.stringContaining("403") });
 });

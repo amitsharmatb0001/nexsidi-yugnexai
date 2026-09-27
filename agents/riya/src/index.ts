@@ -663,7 +663,32 @@ export async function resolveForeignKeyId(
 // verifyAllResourceCrud below can share the exact same real-user auth flow
 // instead of duplicating it — behavior unchanged from what this file already
 // verified live.
-async function registerAndLoginTestUser(backendUrl: string, role?: string): Promise<{ token: string } | { error: string }> {
+// 2026-09-28: real false deploy failure (project a61968de2ecf, Cardwise) —
+// the test user was always registered at the hard-coded /api/v1/auth/register
+// and /login. Cardwise's approved contract names them /auth/sign-up and
+// /auth/sign-in, so the check 404'd ("custom register failed ... Route not
+// found") on a backend whose real sign-up returned 201 when tried by hand.
+// The paths now come from the project's own contract; register/login stays
+// the fallback for a contract that lists no auth endpoints at all.
+export interface AuthPaths { registerPath: string; loginPath: string }
+const DEFAULT_AUTH_PATHS: AuthPaths = { registerPath: "/api/v1/auth/register", loginPath: "/api/v1/auth/login" };
+
+export function resolveAuthPaths(endpoints: Array<{ method: string; path: string; auth?: boolean }>): AuthPaths {
+  const post = endpoints.filter((e) => e.method.toUpperCase() === "POST").map((e) => e.path);
+  const lastSeg = (p: string) => p.replace(/\/$/, "").split("/").pop()!.toLowerCase().replace(/[-_]/g, "");
+  const registerPath = post.find((p) => ["register", "signup"].includes(lastSeg(p)));
+  const loginPath = post.find((p) => ["login", "signin"].includes(lastSeg(p)));
+  return {
+    registerPath: registerPath ?? DEFAULT_AUTH_PATHS.registerPath,
+    loginPath: loginPath ?? DEFAULT_AUTH_PATHS.loginPath,
+  };
+}
+
+async function registerAndLoginTestUser(
+  backendUrl: string,
+  role?: string,
+  paths: AuthPaths = DEFAULT_AUTH_PATHS,
+): Promise<{ token: string } | { error: string }> {
   const email = `verify+${role ?? "user"}+${Date.now()}@example.com`;
   const password = `StrongPass123!${Date.now()}`;
   // 2026-07-25 (Phase 7, full MVP upgrade): real bug found live on
@@ -700,7 +725,7 @@ async function registerAndLoginTestUser(backendUrl: string, role?: string): Prom
   // exception) and killing the whole workflow execution outright.
   let regRes: Response;
   try {
-    regRes = await fetch(`${backendUrl}/api/v1/auth/register`, {
+    regRes = await fetch(`${backendUrl}${paths.registerPath}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(role ? { email, password, name, role } : { email, password, name }),
@@ -714,7 +739,7 @@ async function registerAndLoginTestUser(backendUrl: string, role?: string): Prom
 
   let loginRes: Response;
   try {
-    loginRes = await fetch(`${backendUrl}/api/v1/auth/login`, {
+    loginRes = await fetch(`${backendUrl}${paths.loginPath}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
@@ -777,7 +802,7 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
   const deleteEp = endpoints.find((e) => e.method === "DELETE" && e.auth && hasPathParam(e.path));
 
   try {
-    const auth = await registerAndLoginTestUser(backendUrl);
+    const auth = await registerAndLoginTestUser(backendUrl, undefined, resolveAuthPaths(endpoints));
     if ("error" in auth) return { ok: false, reason: auth.error };
     const { token } = auth;
 
@@ -1100,7 +1125,7 @@ export async function verifyAllResourceCrud(
   async function getBaseToken(): Promise<string | null> {
     if (baseAttempted) return baseToken;
     baseAttempted = true;
-    const result = await registerAndLoginTestUser(backendUrl);
+    const result = await registerAndLoginTestUser(backendUrl, undefined, resolveAuthPaths(endpoints));
     if ("error" in result) { baseAuthError = result.error; return null; }
     baseToken = result.token;
     return baseToken;
@@ -1122,7 +1147,7 @@ export async function verifyAllResourceCrud(
   async function getAdminToken(): Promise<string | null> {
     if (adminAttempted) return adminToken;
     adminAttempted = true;
-    const adminAuth = await registerAndLoginTestUser(backendUrl, "admin");
+    const adminAuth = await registerAndLoginTestUser(backendUrl, "admin", resolveAuthPaths(endpoints));
     if (!("error" in adminAuth)) adminToken = adminAuth.token;
     return adminToken;
   }
