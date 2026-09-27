@@ -349,3 +349,70 @@ test("cloneProject renames the app but never rewrites vendored library code", as
     expect(readFileSync(join(fe, file), "utf-8")).toBe(readFileSync(join(srcFe, file), "utf-8"));
   }
 });
+
+// ── Express Build: no trace of the source project (2026-09-27) ──────────
+// Real finding: a clone carried the source's agent histories, logs and QA
+// notes, kept the source's project id in package.json/package-lock.json,
+// and kept the source customer's own request as user-request.txt. A
+// customer must not be able to tell their project started from another.
+import { readdirSync as readdirForTrace, statSync as statForTrace } from "node:fs";
+
+function allFiles(dir: string): string[] {
+  return readdirForTrace(dir).flatMap((entry) => {
+    const full = join(dir, entry);
+    return statForTrace(full).isDirectory() ? allFiles(full) : [full];
+  });
+}
+
+function makeSourceWithTraces(buildDir: string, projectId: string): void {
+  makeFixtureSource(buildDir, projectId);
+  const dir = join(buildDir, projectId);
+  writeFileSync(join(dir, "history-tilotma-reality-checker.json"), JSON.stringify([{ role: "system", content: "internal prompt" }]));
+  writeFileSync(join(dir, "qa-submissions.json"), "[]");
+  writeFileSync(join(dir, "planner-plan.json"), "{}");
+  mkdirSync(join(dir, "logs"), { recursive: true });
+  writeFileSync(join(dir, "logs", "pipeline.log"), "internal log");
+  writeFileSync(join(dir, "user-request.txt"), "Acme Co needs a site for our confidential product launch in March.");
+  mkdirSync(join(dir, "backend"), { recursive: true });
+  writeFileSync(join(dir, "backend", "package.json"), JSON.stringify({ name: `${projectId}-backend` }));
+  writeFileSync(join(dir, "backend", "package-lock.json"), JSON.stringify({ name: `${projectId}-backend`, packages: { "": { name: `${projectId}-backend` } } }));
+}
+
+async function expressFrom(buildDir: string, sourceId: string, newId: string, extra: { requestText?: string } = {}) {
+  return cloneProject(
+    { sourceProjectId: sourceId, newProjectId: newId, oldName: "Acme Co", newName: "Beacon Labs", sourcePorts: { frontendPort: 3200, backendPort: 3301, dbPort: 5437 }, buildDir, ...extra },
+    { findFreePort: async (start) => start },
+  );
+}
+
+test("an Express Build never copies the source's pipeline files (histories, logs, QA notes)", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  makeSourceWithTraces(tempBuildDir, "srcaaa000001");
+  await expressFrom(tempBuildDir, "srcaaa000001", "newbbb000002");
+  const dir = join(tempBuildDir, "newbbb000002");
+  for (const f of ["history-tilotma-reality-checker.json", "qa-submissions.json", "planner-plan.json", "logs"]) {
+    expect(existsSync(join(dir, f))).toBe(false);
+  }
+});
+
+test("an Express Build leaves no trace of the source project's id anywhere in the new project", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  makeSourceWithTraces(tempBuildDir, "srcaaa000001");
+  await expressFrom(tempBuildDir, "srcaaa000001", "newbbb000002");
+  const dir = join(tempBuildDir, "newbbb000002");
+  const withSourceId = allFiles(dir).filter((f) => readFileSync(f, "utf-8").includes("srcaaa000001"));
+  expect(withSourceId).toEqual([]);
+  expect(JSON.parse(readFileSync(join(dir, "backend", "package.json"), "utf-8")).name).toBe("newbbb000002-backend");
+});
+
+test("an Express Build writes the new project's own request, never the source customer's", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  makeSourceWithTraces(tempBuildDir, "srcaaa000001");
+  await expressFrom(tempBuildDir, "srcaaa000001", "newbbb000002", { requestText: "Beacon Labs: a site for our lighthouse tours." });
+  expect(readFileSync(join(tempBuildDir, "newbbb000002", "user-request.txt"), "utf-8")).toBe("Beacon Labs: a site for our lighthouse tours.");
+
+  await expressFrom(tempBuildDir, "srcaaa000001", "newccc000003"); // no request text: name + the site's own description
+  const fallback = readFileSync(join(tempBuildDir, "newccc000003", "user-request.txt"), "utf-8");
+  expect(fallback).toStartWith("Beacon Labs");
+  expect(fallback).not.toContain("confidential product launch");
+});

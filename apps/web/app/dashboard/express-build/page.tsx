@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
-import { clone as s } from "./clone.styles";
+import { expressBuild as s } from "./express-build.styles";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -14,22 +14,22 @@ interface DoneProject {
 
 type Mode = "auto" | "manual";
 
-interface CloneResult {
+interface ExpressBuildResult {
   ok: boolean;
   status: number;
   body: Record<string, unknown>;
 }
 
-export default function ClonePage() {
+export default function ExpressBuildPage() {
   const [doneProjects, setDoneProjects] = useState<DoneProject[]>([]);
   const [mode, setMode] = useState<Mode>("auto");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [sourceId, setSourceId] = useState("");
+  const [basedOn, setBasedOn] = useState("");
   const [changes, setChanges] = useState("");
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  const [result, setResult] = useState<CloneResult | null>(null);
+  const [result, setResult] = useState<ExpressBuildResult | null>(null);
 
   useEffect(() => {
     fetch(`${API}/api/projects`, { credentials: "include" })
@@ -37,7 +37,7 @@ export default function ClonePage() {
       .then((data) => {
         const done = (data.projects ?? []).filter((p: DoneProject) => p.status === "done");
         setDoneProjects(done);
-        if (done.length > 0) setSourceId(done[0].id);
+        if (done.length > 0) setBasedOn(done[0].id);
       })
       .catch(() => {});
   }, []);
@@ -54,12 +54,12 @@ export default function ClonePage() {
     setElapsed(0);
     setResult(null);
 
-    const path = mode === "auto" ? "auto" : sourceId;
     const body: Record<string, string> = { name, changes };
     if (mode === "auto") body.description = description;
+    else body.basedOn = basedOn;
 
     try {
-      const r = await fetch(`${API}/api/projects/${path}/clone`, {
+      const r = await fetch(`${API}/api/projects/express-build`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -74,28 +74,28 @@ export default function ClonePage() {
     }
   }
 
-  const canSubmit = name.trim().length > 0 && changes.trim().length > 0 && (mode === "auto" ? description.trim().length > 0 : sourceId.length > 0) && !busy;
+  const canSubmit = name.trim().length > 0 && changes.trim().length > 0 && (mode === "auto" ? description.trim().length > 0 : basedOn.length > 0) && !busy;
 
   return (
     <Sidebar>
       <main className={s.main}>
         <header className={s.masthead}>
-          <span className={s.eyebrow}>Clone a project</span>
-          <h1 className={s.title}>Clone with changes</h1>
+          <span className={s.eyebrow}>Express Build</span>
+          <h1 className={s.title}>Your site, built in minutes</h1>
           <p className={s.sub}>
-            Copies one of your delivered projects and applies your requested changes —
-            content, a new page, a new backend feature, color — before deploying it as
-            a new project. Runs for real; expect this to take several minutes.
+            Name it, describe it, say what you want — content, a new page, a new
+            feature, colors. Express Build sets it up, applies your changes and
+            deploys it as a new project. Usually a few minutes.
           </p>
         </header>
 
         <form className={s.form} onSubmit={submit}>
           <div className={s.field}>
-            <label className={s.label} htmlFor="name">New project name</label>
+            <label className={s.label} htmlFor="name">Project name</label>
             <input
               id="name"
               className={s.input}
-              placeholder="e.g. Ferro & Wade Advisory"
+              placeholder="e.g. Harbor & Pine Studio"
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={busy}
@@ -104,7 +104,7 @@ export default function ClonePage() {
           </div>
 
           <div className={s.field}>
-            <span className={s.label}>Which project to clone from</span>
+            <span className={s.label}>Starting point</span>
             <div className={s.modeRow}>
               <button
                 type="button"
@@ -112,7 +112,7 @@ export default function ClonePage() {
                 onClick={() => setMode("auto")}
                 disabled={busy}
               >
-                Let the system decide
+                Automatic
               </button>
               <button
                 type="button"
@@ -120,14 +120,14 @@ export default function ClonePage() {
                 onClick={() => setMode("manual")}
                 disabled={busy}
               >
-                I'll pick one
+                Choose from my projects
               </button>
             </div>
           </div>
 
           {mode === "auto" ? (
             <div className={s.field}>
-              <label className={s.label} htmlFor="description">Describe the new project</label>
+              <label className={s.label} htmlFor="description">Describe the site</label>
               <textarea
                 id="description"
                 className={s.textarea}
@@ -136,22 +136,19 @@ export default function ClonePage() {
                 onChange={(e) => setDescription(e.target.value)}
                 disabled={busy}
               />
-              <span className={s.hint}>
-                The system picks the closest structural match from your own delivered
-                projects — you won't see which one until it responds.
-              </span>
+              <span className={s.hint}>Express Build chooses the best starting point automatically.</span>
             </div>
           ) : (
             <div className={s.field}>
-              <label className={s.label} htmlFor="source">Source project</label>
+              <label className={s.label} htmlFor="basedOn">Project</label>
               {doneProjects.length === 0 ? (
-                <span className={s.hint}>No delivered projects to clone from yet.</span>
+                <span className={s.hint}>No finished projects yet.</span>
               ) : (
                 <select
-                  id="source"
+                  id="basedOn"
                   className={s.select}
-                  value={sourceId}
-                  onChange={(e) => setSourceId(e.target.value)}
+                  value={basedOn}
+                  onChange={(e) => setBasedOn(e.target.value)}
                   disabled={busy}
                 >
                   {doneProjects.map((p) => (
@@ -163,7 +160,7 @@ export default function ClonePage() {
           )}
 
           <div className={s.field}>
-            <label className={s.label} htmlFor="changes">What should change</label>
+            <label className={s.label} htmlFor="changes">What you want</label>
             <textarea
               id="changes"
               className={s.textarea}
@@ -176,7 +173,7 @@ export default function ClonePage() {
           </div>
 
           <button type="submit" className={s.submit} disabled={!canSubmit}>
-            {busy ? `Working… ${elapsed}s` : "Clone it"}
+            {busy ? `Working… ${elapsed}s` : "Start Express Build"}
           </button>
         </form>
 
@@ -185,7 +182,7 @@ export default function ClonePage() {
             {busy && (
               <div className={s.statusRow}>
                 <span className={s.spinner} />
-                <span>Cloning, planning, building, and deploying — this runs for real, usually several minutes.</span>
+                <span>Building and deploying your new project — usually a few minutes.</span>
               </div>
             )}
 
@@ -197,18 +194,6 @@ export default function ClonePage() {
                   </span>
                 </div>
 
-                {typeof result.body.clonedFromName === "string" && (
-                  <p className={s.resultLine}>
-                    <span className={s.resultLabel}>Cloned from</span>
-                    {result.body.clonedFromName}
-                  </p>
-                )}
-                {typeof result.body.sourcePickReasoning === "string" && (
-                  <p className={s.resultLine}>
-                    <span className={s.resultLabel}>Why</span>
-                    {result.body.sourcePickReasoning}
-                  </p>
-                )}
                 {typeof result.body.appUrl === "string" && (
                   <p className={s.resultLine}>
                     <span className={s.resultLabel}>Live at</span>

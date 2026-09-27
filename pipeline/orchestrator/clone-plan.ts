@@ -41,7 +41,7 @@ export function buildPlanPrompt(
   backendFileList: string,
   frontendFileList: string,
 ): string {
-  return `A user wants to apply this change to an already-delivered app that's being cloned:
+  return `A user wants to apply this change to an already-delivered app that is being customized into a new project:
 "${changes}"
 
 The app's REAL, CURRENT backend already has these endpoints:

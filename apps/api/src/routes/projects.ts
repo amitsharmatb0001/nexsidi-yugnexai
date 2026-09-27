@@ -283,22 +283,27 @@ projectsRouter.get("/:id/similar", async (c) => {
 // the user's own real "done" projects, a one-shot call picks the closest
 // structural match — then everything below runs completely unchanged
 // against whichever real id it resolved to.
-projectsRouter.post("/:id/clone", async (c) => {
+// 2026-09-27: customer-facing name is "Express Build" (was POST /:id/clone).
+// "Clone" told customers their project started from someone else's, and the
+// response named the source project. The starting project now travels in the
+// body as `basedOn` (omitted = the system picks), never in the URL, and the
+// source's identity and every raw internal error go to the server log only.
+projectsRouter.post("/express-build", async (c) => {
   const userId = c.get("userId") as string;
-  let sourceId = c.req.param("id");
 
-  const body = (await c.req.json().catch(() => null)) as { name?: unknown; changes?: unknown; description?: unknown } | null;
+  const body = (await c.req.json().catch(() => null)) as { name?: unknown; changes?: unknown; description?: unknown; basedOn?: unknown } | null;
   const newName = typeof body?.name === "string" ? body.name.trim() : "";
   if (!newName) return c.json({ error: "name_required" }, 400);
   if (newName.length > 200) return c.json({ error: "name_too_long" }, 400);
   const changes = typeof body?.changes === "string" ? body.changes.trim() : "";
   if (changes.length > 4000) return c.json({ error: "changes_too_long" }, 400);
+  const description = typeof body?.description === "string" ? body.description.trim() : "";
+  let sourceId = typeof body?.basedOn === "string" && body.basedOn.trim() ? body.basedOn.trim() : "auto";
 
   let sourcePickReasoning: string | null = null;
   if (sourceId === "auto") {
-    const description = typeof body?.description === "string" ? body.description.trim() : "";
     if (!description) {
-      return c.json({ error: "description_required", message: "sourceId 'auto' needs a 'description' field so the system can pick the closest existing project to clone from." }, 400);
+      return c.json({ error: "description_required", message: "Describe the site you want, so Express Build can find the best starting point." }, 400);
     }
     const { pickCloneSource } = await import("../../../../pipeline/orchestrator/clone-source-picker.ts");
     const { readFileSync: readFileSyncForPick, existsSync: existsSyncForPick } = await import("node:fs");
@@ -306,7 +311,7 @@ projectsRouter.post("/:id/clone", async (c) => {
     const BUILD_DIR_FOR_PICK = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
 
     const doneProjects = await db.select({ id: projects.id, name: projects.name }).from(projects).where(and(eq(projects.userId, userId), eq(projects.status, "done")));
-    if (doneProjects.length === 0) return c.json({ error: "no_candidates", message: "You have no delivered projects yet to clone from." }, 409);
+    if (doneProjects.length === 0) return c.json({ error: "no_candidates", message: "Express Build needs at least one finished project on your account." }, 409);
 
     const candidates = doneProjects.map((p) => {
       const specPath = joinForPick(BUILD_DIR_FOR_PICK, p.id, "spec.json");
@@ -327,14 +332,15 @@ projectsRouter.post("/:id/clone", async (c) => {
       sourceId = picked.sourceId;
       sourcePickReasoning = picked.reasoning;
     } catch (err) {
-      return c.json({ error: "source_pick_failed", message: String(err) }, 502);
+      console.error(`[express-build] picking a starting point failed: ${String(err)}`);
+      return c.json({ error: "express_build_failed", message: "Express Build couldn't start. Please try again." }, 502);
     }
   }
 
   const [source] = await db.select().from(projects).where(and(eq(projects.id, sourceId), eq(projects.userId, userId))).limit(1);
   if (!source) return c.json({ error: "not_found" }, 404);
   if (source.status !== "done") {
-    return c.json({ error: "source_not_delivered", message: "Only a delivered (done) project can be cloned from." }, 409);
+    return c.json({ error: "base_not_ready", message: "That project isn't finished yet." }, 409);
   }
 
   const { readFileSync, existsSync } = await import("node:fs");
@@ -349,14 +355,27 @@ projectsRouter.post("/:id/clone", async (c) => {
   const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
 
   const sourceSpecPath = join(BUILD_DIR, sourceId, "spec.json");
-  if (!existsSync(sourceSpecPath)) return c.json({ error: "source_spec_missing" }, 409);
+  if (!existsSync(sourceSpecPath)) {
+    console.error(`[express-build] base ${sourceId} has no spec.json`);
+    return c.json({ error: "base_unusable" }, 409);
+  }
   const sourceSpec = JSON.parse(readFileSync(sourceSpecPath, "utf-8"));
   const oldName = sourceSpec.name as string;
 
   const sourceComposePath = join(BUILD_DIR, sourceId, "docker-compose.yml");
-  if (!existsSync(sourceComposePath)) return c.json({ error: "source_compose_missing" }, 409);
+  if (!existsSync(sourceComposePath)) {
+    console.error(`[express-build] base ${sourceId} has no docker-compose.yml`);
+    return c.json({ error: "base_unusable" }, 409);
+  }
   const sourcePorts = parseComposePorts(readFileSync(sourceComposePath, "utf-8"));
-  if (!sourcePorts) return c.json({ error: "source_ports_unreadable" }, 409);
+  if (!sourcePorts) {
+    console.error(`[express-build] base ${sourceId}: ports unreadable`);
+    return c.json({ error: "base_unusable" }, 409);
+  }
+
+  // The new project's own request (never the base project's customer's).
+  const requestText = [newName, description, changes ? `Requested changes:\n${changes}` : ""].filter(Boolean).join("\n\n");
+  const hasOwnRequest = Boolean(description || changes);
 
   // Same collision-retry as POST / above — id is both the primary key and
   // the on-disk build directory name.
@@ -367,17 +386,19 @@ projectsRouter.post("/:id/clone", async (c) => {
 
     let cloneResult: Awaited<ReturnType<typeof cloneProject>>;
     try {
-      cloneResult = await cloneProject({ sourceProjectId: sourceId, newProjectId: newId, oldName, newName, sourcePorts, buildDir: BUILD_DIR });
+      cloneResult = await cloneProject({ sourceProjectId: sourceId, newProjectId: newId, oldName, newName, sourcePorts, buildDir: BUILD_DIR, ...(hasOwnRequest ? { requestText } : {}) });
     } catch (err) {
-      return c.json({ error: "clone_failed", message: String(err) }, 500);
+      console.error(`[express-build] ${newId} from ${sourceId} failed: ${String(err)}`);
+      return c.json({ error: "express_build_failed", message: "Express Build couldn't create the project. Please try again." }, 500);
     }
+    console.log(`[express-build] ${newId} "${newName}" based on ${sourceId} ("${source.name}")${sourcePickReasoning ? ` — ${sourcePickReasoning}` : ""}; theme: ${cloneResult.theme.applied ? `accent ${cloneResult.theme.newAccent}` : `unchanged (${cloneResult.theme.reason})`}`);
 
     await db.insert(projects).values({
       id: newId,
       userId,
       name: newName,
       status: "building",
-      context: changes ? `Cloned from ${source.name} (${sourceId}); requested changes: ${changes}` : `Cloned from ${source.name} (${sourceId})`,
+      context: [description, changes ? `Requested changes: ${changes}` : ""].filter(Boolean).join("\n\n") || newName,
     });
 
     // Optional content-edit pass — runs AFTER the deterministic rename
@@ -418,7 +439,8 @@ projectsRouter.post("/:id/clone", async (c) => {
         // error), fall back to the pre-planning behavior — one frontend-only
         // pass on the user's raw request — rather than failing the whole
         // clone over a planning-step hiccup.
-        plan = { needsBackendChanges: false, reasoning: `planning failed, defaulted to frontend-only: ${String(err)}`, backendInstructions: null, frontendInstructions: changes };
+        console.warn(`[express-build] ${newId}: change planning failed, defaulting to frontend-only: ${String(err)}`);
+        plan = { needsBackendChanges: false, reasoning: "planning failed, defaulted to frontend-only", backendInstructions: null, frontendInstructions: changes };
       }
       planReasoning = plan.reasoning;
 
@@ -463,12 +485,12 @@ projectsRouter.post("/:id/clone", async (c) => {
       if (backendContext) {
         const contractResult = checkCrossLayerContract({ buildDir: cloneResult.buildDir, frontendFilesWritten: changeResult.filesWritten });
         if (contractResult.checked && contractResult.mismatches.length > 0) {
-          await db.update(projects).set({ status: "error", failureReason: "clone_contract_mismatch", updatedAt: new Date() }).where(eq(projects.id, newId));
+          await db.update(projects).set({ status: "error", failureReason: "express_build_contract_mismatch", updatedAt: new Date() }).where(eq(projects.id, newId));
           return c.json({
             error: "contract_mismatch",
             message: "The frontend calls an endpoint the backend never registered — the two layers disagree on the real request shape.",
             mismatches: contractResult.mismatches,
-            projectId: newId, clonedFrom: sourceId, ...(sourcePickReasoning ? { sourcePickReasoning } : {}), theme: cloneResult.theme, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors,
+            projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors,
           }, 502);
         }
       }
@@ -482,8 +504,9 @@ projectsRouter.post("/:id/clone", async (c) => {
       // times, well inside the existing budget.
       await deployWithRetry(join(cloneResult.buildDir, "docker-compose.yml"));
     } catch (err) {
-      await db.update(projects).set({ status: "error", failureReason: "clone_deploy_failed", updatedAt: new Date() }).where(eq(projects.id, newId));
-      return c.json({ error: "deploy_failed", message: String(err), projectId: newId, clonedFrom: sourceId, ...(sourcePickReasoning ? { sourcePickReasoning } : {}), theme: cloneResult.theme, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors }, 502);
+      await db.update(projects).set({ status: "error", failureReason: "express_build_deploy_failed", updatedAt: new Date() }).where(eq(projects.id, newId));
+      console.error(`[express-build] ${newId}: deploy failed: ${String(err)}`);
+      return c.json({ error: "deploy_failed", message: "The new project didn't start. The details are in the server log.", projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors }, 502);
     }
 
     // 2026-09-02: `docker compose up -d` can return success once containers
@@ -500,8 +523,8 @@ projectsRouter.post("/:id/clone", async (c) => {
       livePorts = getRunningDeploymentPorts(cloneResult.buildDir);
     }
     if (!livePorts) {
-      await db.update(projects).set({ status: "error", failureReason: "clone_deploy_unhealthy", updatedAt: new Date() }).where(eq(projects.id, newId));
-      return c.json({ error: "deploy_unhealthy", message: "docker compose reported success but the containers never became reachable on their expected ports — likely a bad migration or a crash-looping service", projectId: newId, clonedFrom: sourceId, ...(sourcePickReasoning ? { sourcePickReasoning } : {}), theme: cloneResult.theme, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors }, 502);
+      await db.update(projects).set({ status: "error", failureReason: "express_build_unhealthy", updatedAt: new Date() }).where(eq(projects.id, newId));
+      return c.json({ error: "deploy_unhealthy", message: "docker compose reported success but the containers never became reachable on their expected ports — likely a bad migration or a crash-looping service", projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors }, 502);
     }
 
     const appUrl = `http://localhost:${cloneResult.ports.frontendPort}`;
@@ -511,11 +534,7 @@ projectsRouter.post("/:id/clone", async (c) => {
       id: newId,
       name: newName,
       appUrl,
-      clonedFrom: sourceId,
-      clonedFromName: source.name,
-      ...(sourcePickReasoning ? { sourcePickReasoning } : {}),
       ports: cloneResult.ports,
-      theme: cloneResult.theme,
       ...(changes ? { planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors } : {}),
     }, 201);
   }

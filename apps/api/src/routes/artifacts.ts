@@ -17,6 +17,7 @@ import { Hono } from "hono";
 import { readdir, readFile, stat } from "fs/promises";
 import { existsSync } from "fs";
 import { join, resolve, relative, extname, sep } from "path";
+import { isPipelineBookkeeping } from "../../../../packages/agent-runtime/src/pipeline-files.ts";
 import { execFileSync } from "child_process";
 import { db, projects, diffReviews } from "@nexsidi/db";
 import { and, eq } from "drizzle-orm";
@@ -180,23 +181,9 @@ function resolveBaseline(git: (args: string[]) => string): string {
  * not the run's logs and QA bookkeeping — those dominate the diff by line
  * count and bury the handful of real edits.
  */
-// 2026-09-27: also the gate that keeps these files out of the customer's IDE
-// (tree + file viewer); they carry internal system prompts and agent names.
-// Top-level paths only, so an app's own backend/logs/ stays visible. The old
-// history pattern ([a-z]+) missed hyphenated names like
-// history-tilotma-reality-checker.json.
-export function isPipelineBookkeeping(path: string): boolean {
-  return (
-    path === "logs" ||
-    path.startsWith("logs/") ||
-    path === "checkpoints" ||
-    path.startsWith("checkpoints/") ||
-    path.endsWith(".jsonl") ||
-    /^history-[a-z0-9-]+\.json$/.test(path) ||
-    path === "qa-submissions.json" ||
-    path === "planner-plan.json"
-  );
-}
+// 2026-09-27: the definition moved to agent-runtime so the IDE, the delivery
+// .gitignore and Express Build all share one list; re-exported here.
+export { isPipelineBookkeeping };
 
 /**
  * A git subprocess runner bound to one project's working directory — the

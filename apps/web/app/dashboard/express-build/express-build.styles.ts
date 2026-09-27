@@ -11,7 +11,7 @@ const spin = keyframes({
   to: { transform: "rotate(360deg)" },
 });
 
-export const clone = {
+export const expressBuild = {
   main: css({
     position: "relative",
     maxWidth: "720px",
