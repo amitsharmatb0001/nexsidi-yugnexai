@@ -67,7 +67,7 @@ const FETCH_URL_TOOL = {
 // propose_plan — shows the structured plan panel before triggering the build.
 // The user sees it like Claude Code's plan: Accept / Revise / Reject.
 // When the user accepts, the planner calls trigger_build with the same pages.
-const PROPOSE_PLAN_TOOL = {
+export const PROPOSE_PLAN_TOOL = {
   type: "function" as const,
   function: {
     name: "propose_plan",
@@ -120,12 +120,14 @@ const PROPOSE_PLAN_TOOL = {
             // description the model defaulted to the statistically common
             // real-world pairing ("Next.js, Tailwind CSS") — actively
             // misleading, since the mandated stack (CLAUDE.md) is
-            // Next.js + @yugnex/nexui-react, never Tailwind/shadcn/@radix-ui,
+            // Next.js + @yugnex/core (NexUI), never Tailwind/shadcn/@radix-ui,
             // and every downstream agent already enforces that independently.
             // Fixed at the source (state the truth) rather than downstream,
             // since this field's only job is to accurately preview what will
             // actually be built.
-            frontend: { type: "string", description: "Always \"Next.js + @yugnex/nexui-react\" — never Tailwind, shadcn/ui, or @radix-ui; those are not used on this platform." },
+            // 2026-09-27: was "Next.js + @yugnex/nexui-react", an old package that
+            // no longer exists since the 2026-08-16 NexUI migration.
+            frontend: { type: "string", description: "Always \"Next.js + @yugnex/core (NexUI components)\" — never Tailwind, shadcn/ui, or @radix-ui; those are not used on this platform." },
             backend: { type: "string" },
             database: { type: "string" }, auth:     { type: "string" },
           },

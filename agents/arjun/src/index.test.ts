@@ -405,3 +405,14 @@ test("run() calls Vanya fresh on the first-ever attempt — no prior brief to re
 
   expect(vanyaCalls).toBe(1);
 });
+
+// 2026-09-27: real finding — the planning side still told agents the UI
+// library is "@yugnex/nexui-react", which does not exist since the 2026-08-16
+// migration (the generator uses @yugnex/core + components vendored into
+// components/nexui/*.tsx by @yugnex/cli). Arjun writes the tasks the
+// generator follows, so the two gave contradictory instructions.
+test("ARJUN_SYSTEM_PROMPT names the real UI stack (@yugnex/core + components/nexui), never @yugnex/nexui-react", () => {
+  expect(ARJUN_SYSTEM_PROMPT).not.toContain("@yugnex/nexui-react");
+  expect(ARJUN_SYSTEM_PROMPT).toContain("@yugnex/core");
+  expect(ARJUN_SYSTEM_PROMPT).toContain("components/nexui/");
+});

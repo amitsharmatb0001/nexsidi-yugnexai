@@ -501,8 +501,13 @@ PAGE ROUTES — use what the spec says, nothing else:
 - DO NOT add pages the spec does not mention.
 
 FRONTEND UI STACK — the generated app uses NexUI, never Tailwind:
-- The frontend imports components from "@yugnex/nexui-react" (Button, Panel, Card,
-  Input, Badge, Modal, Tabs, Select, Spinner, etc.), styled with NexUI CSS variables.
+- UI runtime: the "@yugnex/core" npm package (styling engine + theme). NexUI
+  component source files are added to components/nexui/*.tsx by @yugnex/cli
+  (Button, Card, Input, Badge, Checkbox, Modal, Tabs, Select, Tooltip, Switch,
+  Progress, Skeleton, Avatar, Separator); each is imported from its own file,
+  e.g. import { Button } from "@/components/nexui/button". UI components come
+  only from components/nexui/; @yugnex/core's theme/providers are already
+  wired into the root layout by the scaffold.
 - NEVER use Tailwind, shadcn/ui, or @radix-ui. Never list tailwind.config.ts,
   postcss.config.js, or components/ui/*.tsx in any outputFiles array.
 - Never write a task description that mentions configuring Tailwind or installing

@@ -48,3 +48,12 @@ describe("buildSeedRecords", () => {
     expect(rendered).toContain("proxy.ts");
   });
 });
+
+// 2026-09-27: a seeded instinct (added to agents' prompts) still said "the
+// generated stack is @yugnex/nexui-react ONLY".
+test("no seeded instinct names the old @yugnex/nexui-react package as the stack", async () => {
+  const { SPRINT1_SEEDED_INSTINCTS } = await import("./seed-instincts.ts");
+  const text = JSON.stringify(SPRINT1_SEEDED_INSTINCTS);
+  expect(text).not.toContain("@yugnex/nexui-react");
+  expect(text).toContain("@yugnex/core");
+});

@@ -338,7 +338,9 @@ export const NEXUI_CONFIRMED_COMPONENTS = [
 const DEFAULT_NEXUI_REGISTRY_URL = "https://new.yugnex.com";
 // Pinned to the version confirmed live/working during this migration's
 // audit — bump deliberately, not silently, when a newer CLI is verified.
-const NEXUI_CLI_VERSION = "0.1.1";
+// 2026-09-27: 0.1.1 -> 0.2.0. Verified: 0.2.0's dist is byte-identical to
+// 0.1.1 (only a LICENSE file added) and init/add work against the registry.
+export const NEXUI_CLI_VERSION = "0.2.0";
 
 export type VendorExecFn = (command: string, options: { cwd: string }) => string;
 
@@ -857,7 +859,9 @@ export function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
           next: "^16.2.0",
           react: "^19.0.0",
           "react-dom": "^19.0.0",
-          "@yugnex/core": "^0.1.0",
+          // 2026-09-27: ^0.1.0 never resolves 0.2.0 (0.x caret). 0.2.0's code
+          // is byte-identical to 0.1.0 (version bump only), verified.
+          "@yugnex/core": "^0.2.0",
         },
         devDependencies: {
           typescript: "^5.7.0",

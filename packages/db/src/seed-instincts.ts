@@ -45,7 +45,7 @@ export const SPRINT1_SEEDED_INSTINCTS: SeedInstinct[] = [
     domain: "code-style",
     trigger: "tailwind.config.ts, shadcn/ui, or @radix-ui/* appears anywhere in a generated frontend",
     action:
-      "The generated stack is @yugnex/nexui-react ONLY — NEVER Tailwind, NEVER shadcn/ui, NEVER @radix-ui, in either NexSidi's own platform or any generated app. This was previously observed live: a generator wrote tailwind.config.ts despite its own system prompt already saying not to (nextech8, 2026-07-25). Do not add a tailwind.config.ts, do not import from @radix-ui or shadcn/ui, do not use @apply — use NexUI components and nexui-utils.css classnames/CSS variables instead.",
+      "The generated UI stack is NexUI ONLY: the @yugnex/core package plus component files in components/nexui/*.tsx (added by @yugnex/cli) — NEVER Tailwind, NEVER shadcn/ui, NEVER @radix-ui, in either NexSidi's own platform or any generated app. This was previously observed live: a generator wrote tailwind.config.ts despite its own system prompt already saying not to (nextech8, 2026-07-25). Do not add a tailwind.config.ts, do not import from @radix-ui or shadcn/ui, do not use @apply — use the NexUI components from components/nexui/ and @yugnex/core's theme instead.",
   },
   {
     domain: "code-style",

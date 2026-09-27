@@ -476,7 +476,8 @@ test("scaffold package.json depends on @yugnex/core as a real dependency, not a 
   try {
     writeStaticScaffold(FIX_TEST_PLAN, dir);
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
-    expect(pkg.dependencies["@yugnex/core"]).toBe("^0.1.0");
+    // 2026-09-27: bumped deliberately — 0.2.0 verified (code byte-identical to 0.1.0; ^0.1.0 never resolves 0.2.0).
+    expect(pkg.dependencies["@yugnex/core"]).toBe("^0.2.0");
     expect(pkg.dependencies["@yugnex/core"]).not.toContain("file:");
     expect(pkg.dependencies["@yugnex/nexui"]).toBeUndefined();
     expect(pkg.dependencies["@yugnex/nexui-react"]).toBeUndefined();
@@ -822,4 +823,9 @@ test("STACK section and loading-state rule no longer mention the removed Spinner
   const prompt = effectivePrompt("preview");
   expect(prompt).not.toContain("use Spinner while fetching");
   expect(prompt).toContain("isLoading prop for in-button loading");
+});
+
+test("vendorNexui uses the latest verified @yugnex/cli (0.2.0)", async () => {
+  const { NEXUI_CLI_VERSION } = await import("./index.ts");
+  expect(NEXUI_CLI_VERSION).toBe("0.2.0");
 });
