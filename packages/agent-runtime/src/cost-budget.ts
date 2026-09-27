@@ -17,12 +17,17 @@
 export interface ModelRate {
   inputPerMillion: number;
   outputPerMillion: number;
+  // Price for input tokens served from the prompt cache. Absent = no cache
+  // discount known, charge the full input rate (safe direction).
+  cachedInputPerMillion?: number;
 }
 
 export type PricedModel =
   | "gemini-3.1-pro-preview"
   | "gemini-3.5-flash"
   | "gemini-3.6-flash"
+  | "gemini-3.7-flash"
+  | "gemini-3.8-flash"
   | "gemini-2.5-flash-lite"
   | "claude-sonnet-5"
   | "claude-opus-4-8"
@@ -30,22 +35,20 @@ export type PricedModel =
 
 // $/1M tokens.
 //
-// Gemini (Vertex AI) — no official 3.x pricing exists anywhere in this repo
-// and none was found live (grepped the full repo for "pricing"/"$/1M"/
-// "per million" before writing this table — the only hits were unrelated
-// UI copy, not a rate card). These are ESTIMATES, extrapolated from
-// Google's publicly documented Gemini 2.5-generation pricing (2.5 Flash:
-// $0.30 in / $2.50 out per 1M; 2.5 Pro, <=200K context: $1.25 in / $10.00
-// out per 1M; 2.5 Flash-Lite: $0.10 in / $0.40 out per 1M) onto the same
-// tier for the 3.x model names this repo actually calls (see gemini.ts's
-// resolveGeminiModel/GEMINI_ESCALATION_MODEL). "Flash-tier cost" is
-// explicitly how Google positions 3.5/3.6 Flash in this repo's own
-// reference docs (gemini_3_5_flash.md / gemini_3_6_flash.md), so mapping
-// them onto the 2.5 Flash price tier is the closest documented anchor
-// available. gemini-3.6-flash is nudged slightly above 3.5 (not identical)
-// only to avoid the table silently implying the two are priced the same —
-// update this whole block the moment real 3.x pricing is published; it is
-// a placeholder for budget math, not a bill.
+// 2026-09-28: Gemini rates are Google's PUBLISHED paid-tier prices, read from
+// ai.google.dev/gemini-api/docs/pricing on 2026-09-28 — this block used to be
+// estimates extrapolated from 2.5-generation pricing, and was wrong in both
+// directions: 3.5-flash is $1.50/$9.00 (was guessed $0.30/$2.50), 3.1-pro is
+// $2/$12 (guessed $1.25/$10), and gemini-3.7-flash was MISSING entirely, so
+// every call on it fell through to FALLBACK_RATE (Opus, $5/$25) — the direct
+// cause of project a61968de2ecf "spending" $55.23 (really ~$10) and being
+// halted before deploy. Output prices include thinking tokens (Google bills
+// them as output — see gemini.ts's billedOutputTokens). 3.1-pro is the
+// <=200K-prompt tier ($4/$18 above that); no NexSidi prompt gets near 200K.
+//
+// 3.6/3.7/3.8 flash are on introductory pricing through 2026-12-31 and
+// double on 2027-01-01 (Google's own dates) — encoded below so the counter
+// switches on the day instead of silently under-counting by half.
 //
 // Claude — per this task's brief (claude-api skill's pricing reference):
 // Sonnet 5 intro pricing is given as a $2-3in/$10-15out range; the concrete
@@ -55,15 +58,23 @@ export type PricedModel =
 // table exists so budget math is ready the moment a Claude backend is
 // actually enabled — Claude-on-Vertex is currently blocked project-wide
 // (see gemini.ts's header comment) — not because it's in use today.
+const FLASH_3X_STANDARD: ModelRate = { inputPerMillion: 1.5, outputPerMillion: 7.5, cachedInputPerMillion: 0.15 };
+const FLASH_3X_INTRO: ModelRate = { inputPerMillion: 0.75, outputPerMillion: 3.75, cachedInputPerMillion: 0.075 };
+const FLASH_3X_INTRO_ENDS = Date.parse("2027-01-01T00:00:00Z");
+
 const PRICING: Record<PricedModel, ModelRate> = {
-  "gemini-3.1-pro-preview": { inputPerMillion: 1.25, outputPerMillion: 10.0 },
-  "gemini-3.5-flash": { inputPerMillion: 0.3, outputPerMillion: 2.5 },
-  "gemini-3.6-flash": { inputPerMillion: 0.35, outputPerMillion: 2.75 },
-  "gemini-2.5-flash-lite": { inputPerMillion: 0.1, outputPerMillion: 0.4 },
+  "gemini-3.1-pro-preview": { inputPerMillion: 2.0, outputPerMillion: 12.0, cachedInputPerMillion: 0.2 },
+  "gemini-3.5-flash": { inputPerMillion: 1.5, outputPerMillion: 9.0, cachedInputPerMillion: 0.15 },
+  "gemini-3.6-flash": FLASH_3X_STANDARD,
+  "gemini-3.7-flash": FLASH_3X_STANDARD,
+  "gemini-3.8-flash": FLASH_3X_STANDARD,
+  "gemini-2.5-flash-lite": { inputPerMillion: 0.1, outputPerMillion: 0.4, cachedInputPerMillion: 0.01 },
   "claude-sonnet-5": { inputPerMillion: 3.0, outputPerMillion: 15.0 },
   "claude-opus-4-8": { inputPerMillion: 5.0, outputPerMillion: 25.0 },
   "claude-haiku-4-5": { inputPerMillion: 1.0, outputPerMillion: 5.0 },
 };
+
+const INTRO_PRICED = new Set<string>(["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"]);
 
 // Fallback for a model name not in PRICING (e.g. a new model added to a
 // router pool before this table is updated). Priced at the highest rate in
@@ -72,15 +83,37 @@ const PRICING: Record<PricedModel, ModelRate> = {
 // at all (unsafe — exactly the unbounded-spend gap this task exists to
 // close). Reusing claude-opus-4-8's rate (this table's most expensive
 // entry) keeps that guarantee without hardcoding a second magic number.
+// cost-budget.test.ts now fails the build if any router-pool model is
+// missing here, so this should only ever catch a model outside the pools.
 const FALLBACK_RATE: ModelRate = PRICING["claude-opus-4-8"];
 
-export function rateForModel(model: string): ModelRate {
+export function isPricedModel(model: string): boolean {
+  return Object.hasOwn(PRICING, model);
+}
+
+export function rateForModel(model: string, now: Date = new Date()): ModelRate {
+  if (INTRO_PRICED.has(model) && now.getTime() < FLASH_3X_INTRO_ENDS) return FLASH_3X_INTRO;
   return (PRICING as Record<string, ModelRate>)[model] ?? FALLBACK_RATE;
 }
 
-export function computeCostUsd(tokensIn: number, tokensOut: number, model: string): number {
-  const rate = rateForModel(model);
-  return (tokensIn / 1_000_000) * rate.inputPerMillion + (tokensOut / 1_000_000) * rate.outputPerMillion;
+/**
+ * Cost of one call. `cachedTokensIn` is the part of `tokensIn` served from
+ * the prompt cache (Gemini's cachedContentTokenCount), billed at the model's
+ * cache rate instead of the full input rate.
+ */
+export function computeCostUsd(
+  tokensIn: number,
+  tokensOut: number,
+  model: string,
+  cachedTokensIn = 0,
+  now: Date = new Date(),
+): number {
+  const rate = rateForModel(model, now);
+  const cached = Math.min(Math.max(cachedTokensIn, 0), tokensIn);
+  const cachedRate = rate.cachedInputPerMillion ?? rate.inputPerMillion;
+  return ((tokensIn - cached) / 1_000_000) * rate.inputPerMillion
+    + (cached / 1_000_000) * cachedRate
+    + (tokensOut / 1_000_000) * rate.outputPerMillion;
 }
 
 // ── Cap resolution ───────────────────────────────────────────────────────
@@ -189,8 +222,9 @@ export async function recordSpend(
   tokensOut: number,
   model: string,
   store: SpendStore = dbSpendStore,
+  cachedTokensIn = 0,
 ): Promise<void> {
-  const costUsd = computeCostUsd(tokensIn, tokensOut, model);
+  const costUsd = computeCostUsd(tokensIn, tokensOut, model, cachedTokensIn);
   await store.addTotals(projectId, tokensIn, tokensOut, costUsd);
 }
 

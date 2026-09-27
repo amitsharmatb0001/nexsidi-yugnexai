@@ -56,6 +56,9 @@ export type ModelId =
   // freshly-released model could plausibly have the same kind of gap; kept
   // as an immediate fallback rather than assuming full parity untested.
   | "gemini-3.7-flash"
+  // 2026-09-28: verified live on the aiayug project (global; 404 in
+  // asia-southeast1). Same published price as 3.6/3.7-flash.
+  | "gemini-3.8-flash"
   | "gemini-2.5-flash-lite";
 
 // Per-agent primary model assignment (D4)

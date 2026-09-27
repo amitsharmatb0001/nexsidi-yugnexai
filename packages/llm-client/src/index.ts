@@ -1,4 +1,4 @@
-export { agentChat, routeWithFallback, routeToolsWithFallback, poolForTier, thinkingLevelForTier } from "./router.ts";
+export { agentChat, routeWithFallback, routeToolsWithFallback, poolForTier, thinkingLevelForTier, allPoolModels } from "./router.ts";
 export type { GeminiTier } from "./router.ts";
 export { nimChat, nimChatWithTools } from "./nim.ts";
 export type { NimToolDef, NimToolCall, NimMessage, NimToolResponse } from "./nim.ts";

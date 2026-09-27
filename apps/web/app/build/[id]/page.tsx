@@ -9,6 +9,7 @@ import PlanPreview, { type BuildPlan } from "../../../components/ide/PlanPreview
 import { useReviewState } from "@/components/nexui/review-gate";
 import { Button } from "@/components/nexui/button";
 import type { ApiNode } from "../../../lib/tree";
+import { statusForStageEvent } from "../../../lib/build-status";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -1073,11 +1074,16 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       if (ev.type === "waiting") { setStatus("waiting"); return; }
       if (ev.type === "complete") { setStatus("done"); fetchResult(); fetchTree(); return; }
       if (ev.stage) {
+        // See lib/build-status.ts — an "error" stage must not overwrite a
+        // needs_review/failed status with "building".
+        const next = statusForStageEvent(ev.stage);
         setStage(ev.stage);
-        setStatus("building");
-        if (ev.message) setStageMessage(ev.message);
+        if (next.status) {
+          setStatus(next.status);
+          if (ev.message) setStageMessage(ev.message);
+        }
         if (ev.stage === "await_spec_approval") fetchBuildPlanForModal();
-        if (ev.stage === "done" || ev.stage === "deliver") { fetchResult(); fetchTree(); }
+        if (next.refetchResult) { fetchResult(); fetchTree(); }
       }
     };
     es.onerror = () => { fetchResult(); fetchTree(); };

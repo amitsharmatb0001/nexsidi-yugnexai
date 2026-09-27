@@ -297,6 +297,18 @@ export interface GeminiUsageMetadata {
   candidatesTokenCount: number;
   totalTokenCount: number;
   cachedContentTokenCount?: number;
+  // Thinking tokens — NOT included in candidatesTokenCount, but billed as
+  // output (see billedOutputTokens).
+  thoughtsTokenCount?: number;
+}
+
+// 2026-09-28: Google bills thinking tokens at the output rate ("Output
+// (including thinking tokens)", ai.google.dev/gemini-api/docs/pricing), but
+// candidatesTokenCount excludes them — so completionTokens (the spend
+// counter's output figure) silently dropped every call's thinking. Measured
+// on project a61968de2ecf: 262K thinking tokens never counted.
+export function billedOutputTokens(usage: GeminiUsageMetadata): number {
+  return usage.candidatesTokenCount + (usage.thoughtsTokenCount ?? 0);
 }
 
 // 2026-07-24 (W0.3): pure formatter, extracted so the cache-hit visibility
@@ -577,7 +589,7 @@ export async function geminiChatWithTools(
       rawParts: parts,
       promptTokens: data.usageMetadata?.promptTokenCount,
       cachedContentTokens: data.usageMetadata?.cachedContentTokenCount,
-      completionTokens: data.usageMetadata?.candidatesTokenCount,
+      completionTokens: data.usageMetadata ? billedOutputTokens(data.usageMetadata) : undefined,
     };
   } catch (err) {
     recordFailure(circuitKey);

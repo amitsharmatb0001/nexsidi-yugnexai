@@ -14,6 +14,7 @@ import {
   partsToToolCalls,
   buildGeminiContents,
   formatUsageLog,
+  billedOutputTokens,
   GEMINI_ESCALATION_MODEL,
 } from "./gemini.ts";
 import type { NimToolDef } from "./nim.ts";
@@ -405,4 +406,12 @@ test("buildGeminiContents round-trips thoughtSignature through JSON.stringify (w
   const { contents } = buildGeminiContents(history);
   const wireBody = JSON.parse(JSON.stringify({ contents }));
   expect(wireBody.contents[0].parts[0].thoughtSignature).toBe("sig-xyz789");
+});
+
+// 2026-09-28: Google bills thinking tokens as output ("Output (including
+// thinking tokens)", ai.google.dev pricing). candidatesTokenCount excludes
+// them, so the spend counter under-counted every thinking-enabled call.
+test("billedOutputTokens adds thinking tokens to the visible output tokens", () => {
+  expect(billedOutputTokens({ promptTokenCount: 1000, candidatesTokenCount: 200, totalTokenCount: 1500, thoughtsTokenCount: 300 })).toBe(500);
+  expect(billedOutputTokens({ promptTokenCount: 1000, candidatesTokenCount: 200, totalTokenCount: 1200 })).toBe(200);
 });

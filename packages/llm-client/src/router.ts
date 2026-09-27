@@ -166,11 +166,19 @@ export type GeminiTier = "plan" | "design" | "qa" | "generation" | "a2a" | "user
 // aiayug project tonight (404 in asia-southeast1), so a brand-new model
 // could plausibly have a similar gap on a fresh project — this degrades
 // gracefully instead of assuming untested full parity.
+// 2026-09-28: gemini-3.8-flash added ahead of 3.7-flash in every Flash slot
+// (Amit's request). Same published price as 3.6/3.7 flash
+// (ai.google.dev/gemini-api/docs/pricing). Verified live on this project:
+// answers on "global", 404 on asia-southeast1 — so a global 429 that falls
+// back to that region fails over to the next model here, exactly like
+// 3.6-flash's earlier regional gap. Every model listed here MUST also be in
+// cost-budget.ts's PRICING (enforced by cost-budget.test.ts) — 3.7-flash
+// wasn't, and was billed at the Opus fallback rate for six weeks.
 const TIER_POOLS: Record<GeminiTier, string[]> = {
-  plan:       ["gemini-3.1-pro-preview", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-  design:     ["gemini-3.1-pro-preview", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-  qa:         ["gemini-3.1-pro-preview", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-  generation: ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+  plan:       ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+  design:     ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+  qa:         ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+  generation: ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
   a2a:        ["gemini-2.5-flash-lite", "gemini-3.5-flash"],
   user:       ["gemini-2.5-flash-lite", "gemini-3.5-flash"],
 };
@@ -193,6 +201,11 @@ const TIER_THINKING_LEVEL: Record<GeminiTier, GeminiThinkingLevel> = {
 // it unset uses the full tier pool with zero-wait fallback.
 export function poolForTier(tier: GeminiTier, explicitModel?: string): string[] {
   return explicitModel ? [explicitModel] : TIER_POOLS[tier];
+}
+
+/** Every model any tier pool can pick, once each — what the spend table must price. */
+export function allPoolModels(): string[] {
+  return [...new Set(Object.values(TIER_POOLS).flat())];
 }
 
 export function thinkingLevelForTier(tier: GeminiTier): GeminiThinkingLevel {
