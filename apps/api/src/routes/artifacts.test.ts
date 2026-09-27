@@ -210,3 +210,48 @@ test("revertFile checks out the baseline blob to restore a deleted file", () => 
 
   expect(calls).toEqual([["checkout", "abc1234", "--", "src/f.ts"]]);
 });
+
+// ── Confidentiality (2026-09-27) ─────────────────────────────────────────
+// Real leak found live: the IDE file tree listed history-tilotma-*.json,
+// logs/ and qa-submissions.json for every project, and the file viewer
+// served them — including the full internal system prompt of a QA agent.
+// The old history pattern ([a-z]+) also missed hyphenated agent names.
+import { buildTree } from "./artifacts.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+test("isPipelineBookkeeping covers hyphenated agent histories, the logs folder itself, checkpoints and planner output", () => {
+  expect(isPipelineBookkeeping("history-tilotma-reality-checker.json")).toBe(true);
+  expect(isPipelineBookkeeping("history-tilotma-evidence-collector.json")).toBe(true);
+  expect(isPipelineBookkeeping("logs")).toBe(true);
+  expect(isPipelineBookkeeping("checkpoints")).toBe(true);
+  expect(isPipelineBookkeeping("checkpoints/stage4.json")).toBe(true);
+  expect(isPipelineBookkeeping("planner-plan.json")).toBe(true);
+});
+
+test("isPipelineBookkeeping only matches the project's top level, never the app's own files", () => {
+  expect(isPipelineBookkeeping("backend/logs/app.log")).toBe(false);
+  expect(isPipelineBookkeeping("backend/logs")).toBe(false);
+  expect(isPipelineBookkeeping("frontend/history-page.json")).toBe(false);
+  expect(isPipelineBookkeeping("spec.json")).toBe(false);
+});
+
+test("buildTree hides the pipeline's own files from the customer's file tree", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "nexsidi-artifacts-test-"));
+  try {
+    writeFileSync(join(dir, "history-tilotma-reality-checker.json"), "[]");
+    writeFileSync(join(dir, "qa-submissions.json"), "[]");
+    writeFileSync(join(dir, "spec.json"), "{}");
+    mkdirSync(join(dir, "logs"));
+    writeFileSync(join(dir, "logs", "pipeline.log"), "internal");
+    mkdirSync(join(dir, "backend", "logs"), { recursive: true });
+    writeFileSync(join(dir, "backend", "logs", "app.log"), "app log");
+    const tree = await buildTree(dir, dir);
+    expect(tree.map((n) => n.name).sort()).toEqual(["backend", "spec.json"]);
+    const backend = tree.find((n) => n.name === "backend")!;
+    expect(backend.children!.map((n) => n.name)).toEqual(["logs"]); // the app's own logs stay visible
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

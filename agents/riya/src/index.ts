@@ -3,7 +3,7 @@
 // makes HTTP health check, fixes compose/Dockerfile and retries.
 // Agent ACTS via tools — no one-shot generation.
 
-import { runAgentEscalated, parseServiceHostPort } from "@nexsidi/agent-runtime";
+import { runAgentEscalated, parseServiceHostPort, ensureDeliveryGitignore } from "@nexsidi/agent-runtime";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "fs";
 import { execSync } from "child_process";
 import { randomBytes } from "crypto";
@@ -1778,15 +1778,23 @@ export async function ensureProjectRunning(
   };
 }
 
-async function archiveToGitHub(projectId: string, buildDir: string): Promise<string | null> {
+// Exported (with an injectable exec) for testing the .gitignore ordering.
+export async function archiveToGitHub(
+  projectId: string,
+  buildDir: string,
+  deps: { execFn?: (cmd: string, opts: { cwd: string }) => void } = {},
+): Promise<string | null> {
   if (!process.env.GITHUB_TOKEN) return null;
   // GitHub archival logic (non-blocking)
   try {
     const { execSync } = await import("child_process");
+    const exec = deps.execFn ?? ((cmd: string, opts: { cwd: string }) => { execSync(cmd, { ...opts, stdio: "ignore", timeout: 30_000 }); });
     const repoName = `nexsidi-${projectId}`;
-    execSync(`git init && git add -A && git commit -m "Initial delivery"`, {
-      cwd: buildDir, stdio: "ignore", timeout: 30_000,
-    });
+    // 2026-09-27 (confidentiality): must run BEFORE `git add -A`, or the
+    // pipeline's own files (agent histories with internal system prompts and
+    // agent names, logs, QA notes) are committed into the customer's repo.
+    ensureDeliveryGitignore(buildDir);
+    exec(`git init && git add -A && git commit -m "Initial delivery"`, { cwd: buildDir });
     return `https://github.com/${process.env.GITHUB_ORG ?? "nexsidi-builds"}/${repoName}`;
   } catch {
     return null;

@@ -16,7 +16,7 @@
 import { Hono } from "hono";
 import { readdir, readFile, stat } from "fs/promises";
 import { existsSync } from "fs";
-import { join, resolve, extname, sep } from "path";
+import { join, resolve, relative, extname, sep } from "path";
 import { execFileSync } from "child_process";
 import { db, projects, diffReviews } from "@nexsidi/db";
 import { and, eq } from "drizzle-orm";
@@ -76,12 +76,16 @@ export function toPosixPath(p: string): string {
   return p.split(/[\\/]+/).filter(Boolean).join("/");
 }
 
-async function buildTree(dir: string, base: string): Promise<FileNode[]> {
+// Exported for testing the customer-visible tree (see isPipelineBookkeeping).
+export async function buildTree(dir: string, base: string): Promise<FileNode[]> {
   const entries = await readdir(dir, { withFileTypes: true });
   const nodes: FileNode[] = [];
 
   for (const entry of entries) {
     if (IGNORED.has(entry.name)) continue;
+    // 2026-09-27 (confidentiality): the pipeline's own top-level files are
+    // not part of the customer's app (see isPipelineBookkeeping).
+    if (dir === base && isPipelineBookkeeping(entry.name)) continue;
 
     const abs  = join(dir, entry.name);
     // 2026-08-19: real bug found live — `rel` came straight off join(), so on
@@ -176,12 +180,21 @@ function resolveBaseline(git: (args: string[]) => string): string {
  * not the run's logs and QA bookkeeping — those dominate the diff by line
  * count and bury the handful of real edits.
  */
+// 2026-09-27: also the gate that keeps these files out of the customer's IDE
+// (tree + file viewer); they carry internal system prompts and agent names.
+// Top-level paths only, so an app's own backend/logs/ stays visible. The old
+// history pattern ([a-z]+) missed hyphenated names like
+// history-tilotma-reality-checker.json.
 export function isPipelineBookkeeping(path: string): boolean {
   return (
+    path === "logs" ||
     path.startsWith("logs/") ||
+    path === "checkpoints" ||
+    path.startsWith("checkpoints/") ||
     path.endsWith(".jsonl") ||
-    /^history-[a-z]+\.json$/.test(path) ||
-    path === "qa-submissions.json"
+    /^history-[a-z0-9-]+\.json$/.test(path) ||
+    path === "qa-submissions.json" ||
+    path === "planner-plan.json"
   );
 }
 
@@ -649,6 +662,15 @@ artifactsRouter.get("/:projectId/file", async (c) => {
   const safeBase = projectDir + sep;
   if (!fullPath.startsWith(safeBase) && fullPath !== projectDir) {
     return c.json({ error: "forbidden" }, 403);
+  }
+
+  // 2026-09-27 (confidentiality): the pipeline's own files (agent histories
+  // with internal system prompts and agent names, logs, QA notes) were served
+  // here to anyone with the project id. Checked on the RESOLVED path so
+  // "./logs/x" or "backend/../history-x.json" can't route around it, and
+  // reported as not_found so their existence isn't revealed either.
+  if (isPipelineBookkeeping(toPosixPath(relative(projectDir, fullPath)))) {
+    return c.json({ error: "not_found" }, 404);
   }
 
   if (!existsSync(fullPath)) {
