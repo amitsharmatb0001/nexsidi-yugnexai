@@ -275,3 +275,77 @@ test("cloneProject refuses to overwrite an existing destination rather than sile
     cloneProject({ sourceProjectId: "source6", newProjectId: "clone6", oldName: "Acme Co", newName: "Beacon Labs", sourcePorts: { frontendPort: 3200, backendPort: 3301, dbPort: 5437 }, buildDir: tempBuildDir }),
   ).rejects.toThrow(/already exists/);
 });
+
+// ── Vendored packages (2026-09-27) ───────────────────────────────────────
+// Real bug found live: a clone of NexTech (88d7b375eaef) failed `npm run
+// build` with "Can't resolve '@yugnex/nexui-react'". Older NexUI-era
+// projects depend on "file:./vendor/nexui-react", whose "main" is
+// ./dist/index.js, and the copy skipped every dist/ at every level. dist/ is
+// build output at the app level (backend/dist) but IS the package inside a
+// vendored one.
+function makeVendoredSource(buildDir: string, projectId: string): string {
+  makeFixtureSource(buildDir, projectId);
+  const fe = join(buildDir, projectId, "frontend");
+  writeFileSync(
+    join(fe, "package.json"),
+    JSON.stringify({
+      name: `${projectId}-frontend`,
+      dependencies: { "@yugnex/nexui": "file:./vendor/nexui", "@yugnex/nexui-react": "file:./vendor/nexui-react", "@acme/ui": "file:./packages/ui" },
+    }),
+  );
+  for (const pkg of ["vendor/nexui", "vendor/nexui-react", "packages/ui"]) {
+    mkdirSync(join(fe, pkg, "dist"), { recursive: true });
+    mkdirSync(join(fe, pkg, "src"), { recursive: true });
+    writeFileSync(join(fe, pkg, "package.json"), JSON.stringify({ name: pkg, main: "./dist/index.js" }));
+    writeFileSync(join(fe, pkg, "dist", "index.js"), `export const lib = "${pkg}";`);
+    // Library code that happens to contain the project's name — must NOT be renamed.
+    writeFileSync(join(fe, pkg, "dist", "index.d.ts"), `/** Example: <Card title="Acme Co" /> */ export declare const lib: string;`);
+    writeFileSync(join(fe, pkg, "src", "index.ts"), `// Example: <Card title="Acme Co" />\nexport const lib = "${pkg}";`);
+  }
+  mkdirSync(join(fe, "vendor", "nexui-react", "node_modules", "react"), { recursive: true });
+  writeFileSync(join(fe, "vendor", "nexui-react", "node_modules", "react", "index.js"), "should not be copied");
+  mkdirSync(join(fe, "dist"), { recursive: true });
+  writeFileSync(join(fe, "dist", "stale.js"), "app-level build output, should not be copied");
+  mkdirSync(join(buildDir, projectId, "backend", "dist"), { recursive: true });
+  writeFileSync(join(buildDir, projectId, "backend", "dist", "index.js"), "app-level build output, should not be copied");
+  return fe;
+}
+
+async function cloneVendored(buildDir: string, sourceId: string, cloneId: string) {
+  return cloneProject(
+    { sourceProjectId: sourceId, newProjectId: cloneId, oldName: "Acme Co", newName: "Beacon Labs", sourcePorts: { frontendPort: 3200, backendPort: 3301, dbPort: 5437 }, buildDir },
+    { findFreePort: async (start) => start },
+  );
+}
+
+test("cloneProject copies dist/ inside vendored packages but still skips app-level dist/ and node_modules", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  const srcFe = makeVendoredSource(tempBuildDir, "source11");
+  await cloneVendored(tempBuildDir, "source11", "clone11");
+  const fe = join(tempBuildDir, "clone11", "frontend");
+
+  expect(readFileSync(join(fe, "vendor", "nexui-react", "dist", "index.js"), "utf-8")).toBe(readFileSync(join(srcFe, "vendor", "nexui-react", "dist", "index.js"), "utf-8"));
+  expect(existsSync(join(fe, "vendor", "nexui", "dist", "index.js"))).toBe(true);
+  expect(existsSync(join(tempBuildDir, "clone11", "backend", "dist"))).toBe(false);
+  expect(existsSync(join(fe, "dist"))).toBe(false);
+  expect(existsSync(join(fe, "vendor", "nexui-react", "node_modules"))).toBe(false);
+});
+
+test("cloneProject copies dist/ of a file: dependency outside vendor/ too", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  makeVendoredSource(tempBuildDir, "source12");
+  await cloneVendored(tempBuildDir, "source12", "clone12");
+  expect(existsSync(join(tempBuildDir, "clone12", "frontend", "packages", "ui", "dist", "index.js"))).toBe(true);
+});
+
+test("cloneProject renames the app but never rewrites vendored library code", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  const srcFe = makeVendoredSource(tempBuildDir, "source13");
+  await cloneVendored(tempBuildDir, "source13", "clone13");
+  const fe = join(tempBuildDir, "clone13", "frontend");
+
+  expect(readFileSync(join(fe, "app", "page.tsx"), "utf-8")).toContain("Beacon Labs"); // app still renamed
+  for (const file of ["vendor/nexui-react/dist/index.d.ts", "vendor/nexui/src/index.ts", "packages/ui/src/index.ts"]) {
+    expect(readFileSync(join(fe, file), "utf-8")).toBe(readFileSync(join(srcFe, file), "utf-8"));
+  }
+});
