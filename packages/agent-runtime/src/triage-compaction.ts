@@ -1,7 +1,7 @@
 import type { GeminiMessage, GeminiPart } from "@nexsidi/llm-client";
 import { estimateGeminiChars } from "./compaction.ts";
 import { capJsonStrings, capString, DEFAULT_MAX_STRING } from "./json-caps.ts";
-import { argsKeyOf, decideByRules, LOG_KEEP_CHARS, rewrittenPathsOf, targetOf, type TriageAction, type TriageCall } from "./triage-rules.ts";
+import { argsKeyOf, contentPathsOf, decideByRules, LOG_KEEP_CHARS, rewrittenPathsOf, targetOf, type TriageAction, type TriageCall } from "./triage-rules.ts";
 
 // Triage of the middle of a Gemini history — the part selectRelevantContext
 // used to drop wholesale at every compaction (triage compaction plan,
@@ -10,12 +10,14 @@ import { argsKeyOf, decideByRules, LOG_KEEP_CHARS, rewrittenPathsOf, targetOf, t
 //
 // Invariants (each has a test):
 // - no message is removed or added, and no functionCall/functionResponse
-//   pair is split: only functionResponse.response, non-thought text, and
-//   screenshot bytes are ever rewritten;
+//   pair is split: only functionResponse.response, the file content inside
+//   superseded write/edit call args, non-thought text, and screenshot bytes
+//   are ever rewritten (call args since 2026-09-27, approved by Amit);
 // - thought parts and thoughtSignatures are never touched;
 // - idempotent: re-running over an already-triaged middle changes nothing;
-// - the result fits the token budget whenever stubbing results can get it
-//   there (non-error results go first, oldest first; errors last).
+// - unresolved errors are never stubbed; everything else is stubbed oldest
+//   first until the middle fits the budget (if the errors alone don't fit,
+//   the caller drops other whole turns — see context-selection.ts).
 
 // A capped string is max + a ~30-char marker long; this slack makes
 // re-capping it a no-op (see capString).
@@ -26,8 +28,37 @@ export interface TriageStats {
   kept: number;
   truncated: number;
   stubbed: number;
+  argsStubbed: number; // calls whose stale file content in args was replaced
   tokensBefore: number;
   tokensAfter: number;
+}
+
+// Marker for file content replaced in call args. Content that already starts
+// with it is left alone, which keeps the pass idempotent.
+const OMITTED_CONTENT = "[content omitted during compaction";
+
+function omitContent(path: string, content: unknown): unknown {
+  if (typeof content !== "string" || content.startsWith(OMITTED_CONTENT)) return content;
+  return `${OMITTED_CONTENT}: ${path} was rewritten later; ${content.length} chars]`;
+}
+
+function stubStaleArgs(name: string, args: Record<string, unknown>, paths: string[]): Record<string, unknown> {
+  const stale = new Set(paths);
+  if (name === "write_file" && typeof args.path === "string" && stale.has(args.path)) {
+    return { ...args, content: omitContent(args.path, args.content) };
+  }
+  if (name === "edit_file" && typeof args.path === "string" && stale.has(args.path)) {
+    return { ...args, old_str: omitContent(args.path, args.old_str), new_str: omitContent(args.path, args.new_str) };
+  }
+  if (name === "write_files" && Array.isArray(args.files)) {
+    return {
+      ...args,
+      files: (args.files as Array<Record<string, unknown>>).map((f) =>
+        typeof f?.path === "string" && stale.has(f.path) ? { ...f, content: omitContent(f.path, f.content) } : f,
+      ),
+    };
+  }
+  return args;
 }
 
 type ResponsePart = { functionResponse: { name: string; response: Record<string, unknown> } };
@@ -53,12 +84,14 @@ export function collectCalls(middle: GeminiMessage[]): TriageCall[] {
       calls.push({
         key: `${callTurn}:${partIndex}`,
         callTurn,
+        callPart: partIndex,
         responseTurn: callTurn + 1,
         responsePart: match.index,
         name: p.functionCall.name,
         argsKey: argsKeyOf(args),
         target: targetOf(p.functionCall.name, args),
         rewrites: rewrittenPathsOf(p.functionCall.name, args),
+        contentPaths: contentPathsOf(p.functionCall.name, args),
         resultChars: JSON.stringify(response).length,
         isError: response.status === "error",
         isStub: response.compacted === true,
@@ -124,15 +157,33 @@ export function triageMiddle(middle: GeminiMessage[], budgetTokens: number): { t
     setResponse(call, responseFor(actions.get(call.key)!, call, reasons.get(call.key)!, original.functionResponse.response));
   }
 
-  // Budget: stub kept/truncated results, non-errors oldest first, then errors
-  // oldest first, until the middle fits. Char count adjusted exactly per
+  // Stale file content in call args (the biggest part of a generator agent's
+  // middle). Only the functionCall's args change; its other fields, including
+  // thoughtSignature, are kept (the trailing window already caps args live).
+  let argsStubbed = 0;
+  const callsByKey = new Map(calls.map((c) => [c.key, c]));
+  for (const d of decisions) {
+    if (!d.stubArgPaths) continue;
+    const call = callsByKey.get(d.key)!;
+    const content = turns[call.callTurn]!.content as GeminiPart[];
+    const part = content[call.callPart] as { functionCall: { name: string; args: Record<string, unknown> } };
+    const args = stubStaleArgs(call.name, part.functionCall.args ?? {}, d.stubArgPaths);
+    if (JSON.stringify(args) === JSON.stringify(part.functionCall.args)) continue;
+    const nextContent = [...content];
+    nextContent[call.callPart] = { ...part, functionCall: { ...part.functionCall, args } } as GeminiPart;
+    turns[call.callTurn] = { ...turns[call.callTurn]!, content: nextContent } as GeminiMessage;
+    argsStubbed++;
+  }
+
+  // Budget: stub kept/truncated results oldest first until the middle fits.
+  // Unresolved errors are never stubbed. Char count adjusted exactly per
   // replaced part (estimateGeminiChars counts JSON.stringify(functionResponse)).
   let chars = estimateGeminiChars(turns);
   const budgetChars = Math.max(0, budgetTokens) * 4;
   if (Math.round(chars / 4) > budgetTokens) {
     const victims = calls
-      .filter((c) => !c.isStub && actions.get(c.key) !== "stub")
-      .sort((a, b) => Number(a.isError) - Number(b.isError) || a.callTurn - b.callTurn);
+      .filter((c) => !c.isStub && actions.get(c.key) !== "stub" && !c.isError)
+      .sort((a, b) => a.callTurn - b.callTurn);
     for (const victim of victims) {
       if (Math.round(chars / 4) <= budgetTokens || chars <= budgetChars) break;
       actions.set(victim.key, "stub");
@@ -148,6 +199,7 @@ export function triageMiddle(middle: GeminiMessage[], budgetTokens: number): { t
       kept: count("keep"),
       truncated: count("truncate"),
       stubbed: count("stub"),
+      argsStubbed,
       tokensBefore: Math.round(estimateGeminiChars(middle) / 4),
       tokensAfter: Math.round(estimateGeminiChars(turns) / 4),
     },

@@ -497,27 +497,49 @@ function triagedMiddle(
   const budget = Math.max(0, Math.min(opts.maxMiddleTokens, opts.targetTotalTokens - estimateGeminiTokenCount(everythingElse)));
   const { turns: triaged, stats } = triageMiddle(turns, budget);
 
-  // Even fully stubbed, a middle has a floor (each turn keeps its call and a
-  // one-line note). When that floor is still over budget (e.g. a very large
-  // system prompt), keep only the newest whole turns that fit, never starting
-  // on an orphan response. Dropping all of it is the original behavior.
-  let start = 0;
+  // Even fully stubbed, a middle has a floor (each turn keeps its call, its
+  // text and a one-line note). When that floor is still over budget, drop
+  // whole units oldest first — but never a unit holding an unresolved error.
+  // 2026-09-27: dropping a contiguous oldest prefix (the first version) lost
+  // every unresolved error in the generator agents' replayed histories, since
+  // errors tend to happen early. Dropping all of the middle is the original
+  // behavior, so any unit kept here is still a strict improvement.
+  const units = unitsOf(triaged);
+  const dropped = new Set<number>();
   let chars = estimateGeminiChars(triaged);
-  while (start < triaged.length && chars > budget * 4) {
-    chars -= estimateGeminiChars([triaged[start]!]);
-    start++;
-    while (start < triaged.length && Array.isArray(triaged[start]!.content) && (triaged[start]!.content as GeminiPart[]).some((p) => "functionResponse" in p)) {
-      chars -= estimateGeminiChars([triaged[start]!]);
-      start++;
-    }
+  for (let u = 0; u < units.length && chars > budget * 4; u++) {
+    const unit = units[u]!;
+    if (unit.hasUnresolvedError) continue;
+    chars -= estimateGeminiChars(triaged.slice(unit.start, unit.end));
+    dropped.add(u);
   }
-  const kept = triaged.slice(start);
+  const kept = units.filter((_, u) => !dropped.has(u)).flatMap((unit) => triaged.slice(unit.start, unit.end));
 
   console.log(
-    `[triage-compaction] middle: ${stats.calls} calls → kept ${stats.kept}, truncated ${stats.truncated}, stubbed ${stats.stubbed}` +
-      `${start > 0 ? `, oldest ${start} turns dropped to fit` : ""}; ~${stats.tokensBefore} → ~${Math.round(chars / 4)} tokens (budget ${budget})`,
+    `[triage-compaction] middle: ${stats.calls} calls → kept ${stats.kept}, truncated ${stats.truncated}, stubbed ${stats.stubbed}, stale write content ${stats.argsStubbed}` +
+      `${dropped.size > 0 ? `, oldest ${dropped.size} non-error units dropped to fit` : ""}; ~${stats.tokensBefore} → ~${Math.round(chars / 4)} tokens (budget ${budget})`,
   );
   return kept;
+}
+
+// A droppable unit: a model turn with functionCall parts together with the
+// turn right after it (its responses, or the user message after a
+// task_complete run boundary), so no call is ever separated from what
+// follows it; any other turn is a unit of its own.
+function unitsOf(turns: GeminiMessage[]): Array<{ start: number; end: number; hasUnresolvedError: boolean }> {
+  const units: Array<{ start: number; end: number; hasUnresolvedError: boolean }> = [];
+  for (let i = 0; i < turns.length; ) {
+    const t = turns[i]!;
+    const hasCalls = t.role === "model" && Array.isArray(t.content) && t.content.some((p) => "functionCall" in p);
+    const end = hasCalls && i + 1 < turns.length ? i + 2 : i + 1;
+    const hasUnresolvedError = turns.slice(i, end).some((m) =>
+      Array.isArray(m.content) &&
+      (m.content as GeminiPart[]).some((p) => "functionResponse" in p && p.functionResponse.response?.status === "error" && p.functionResponse.response?.compacted !== true),
+    );
+    units.push({ start: i, end, hasUnresolvedError });
+    i = end;
+  }
+  return units;
 }
 
 // ── gemini-loop.ts wiring helpers (cost-control Task 4) ─────────────────────

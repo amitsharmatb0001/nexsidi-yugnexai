@@ -11,14 +11,16 @@
 // unresolved errors.
 
 export interface TriageCall {
-  key: string; // `${callTurn}:${partIndex}`
+  key: string; // `${callTurn}:${callPart}`
   callTurn: number; // index of the model turn in the middle array
+  callPart: number; // part index of the functionCall in that turn
   responseTurn: number; // index of the user turn holding the functionResponse
   responsePart: number; // part index of that functionResponse
   name: string;
   argsKey: string; // argsKeyOf(args)
   target: string | null; // what the call acts on, see targetOf
   rewrites: string[]; // paths this call fully overwrites or deletes (on success)
+  contentPaths: string[]; // paths whose file content this call carries in its args
   resultChars: number;
   isError: boolean; // response.status === "error"
   isStub: boolean; // response.compacted === true (stubbed by an earlier compaction)
@@ -28,8 +30,13 @@ export type TriageAction = "keep" | "truncate" | "stub";
 
 export interface TriageDecision {
   key: string;
-  action: TriageAction;
+  action: TriageAction; // what happens to the call's RESULT
   reason: string;
+  // Files whose content in the call's ARGS is stale (fully rewritten or
+  // deleted later) and can be replaced by a one-line note. Only present when
+  // non-empty. Approved by Amit 2026-09-27: the replay showed generator
+  // agents' middles are dominated by write_file content (46-93K tokens).
+  stubArgPaths?: string[];
 }
 
 // Logs above this are cut to head + tail: the tail is usually the final
@@ -72,6 +79,13 @@ export function rewrittenPathsOf(name: string, args: Record<string, unknown>): s
   return [];
 }
 
+// Files whose content a call carries in its args (the big part of a write).
+export function contentPathsOf(name: string, args: Record<string, unknown>): string[] {
+  if ((name === "write_file" || name === "edit_file") && typeof args.path === "string") return [args.path];
+  if (name === "write_files") return rewrittenPathsOf(name, args);
+  return [];
+}
+
 /**
  * One decision per call, in input order. Walks newest to oldest so "a newer
  * copy exists" is a set lookup. First matching rule wins:
@@ -96,7 +110,11 @@ export function decideByRules(calls: TriageCall[]): TriageDecision[] {
     const c = calls[i]!;
     const signature = `${c.name}\u0000${c.argsKey}`;
     const targetKey = c.target === null ? null : `${c.name}\u0000${c.target}`;
-    const decide = (action: TriageAction, reason: string) => decisions.push({ key: c.key, action, reason });
+    // Args: content of a file that a LATER successful call fully rewrites or
+    // deletes is stale. Computed before this call's own rewrites are recorded.
+    const staleContent = c.contentPaths.filter((p) => rewrittenLater.has(p));
+    const decide = (action: TriageAction, reason: string) =>
+      decisions.push({ key: c.key, action, reason, ...(staleContent.length > 0 ? { stubArgPaths: staleContent } : {}) });
 
     if (c.isStub) decide("keep", "already compacted");
     else if (seenSignatures.has(signature)) decide("stub", "same call repeated later");

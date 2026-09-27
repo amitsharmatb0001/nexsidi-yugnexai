@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { findGeminiPairingViolations } from "./history-validate.ts";
 import { buildQaHistory, QA_TASK, TURN5_ERROR } from "./test-fixtures/qa-history.ts";
+import { buildGeneratorHistory, GENERATOR_TASK, TURN3_ERROR } from "./test-fixtures/generator-history.ts";
 
 // ── Screenshot replay (2026-08-27) ──────────────────────────────────────────
 // Real bug found live: project 852be5aeaef4 burned $322 / 68.5M input tokens.
@@ -682,9 +683,31 @@ test("triage: a 50,000-token system prompt shrinks the middle so the total still
   const out = selectRelevantContext(buildQaHistory(100, { systemChars: 200_000 }), QA_TASK, [], [], [], TRIAGE);
   expect(estimateGeminiTokenCount(out)).toBeLessThanOrEqual(60_000);
   expect(findGeminiPairingViolations(out)).toEqual([]); // oldest turns dropped whole, never an orphan response
+  expect(responsesOf(out)).toContainEqual(TURN5_ERROR); // 2026-09-27: dropped turns never include an unresolved error
 });
 
 test("compactViaRelevantContext passes the triage option through", () => {
   const out = compactViaRelevantContext(buildQaHistory(100), QA_TASK, [], 1, TRIAGE);
   expect(responsesOf(out)).toContainEqual(TURN5_ERROR);
+});
+
+// 2026-09-27: the replay gate failed on generator agents (aanya/shubham):
+// their middles are mostly write_file content and model text, so the old
+// fallback dropped the oldest turns and every unresolved error with them.
+test("triage on a generator history keeps the early unresolved error and fits the target", () => {
+  const history = buildGeneratorHistory(60);
+  expect(estimateGeminiTokenCount(history)).toBeGreaterThan(250_000); // ~270K
+  const out = selectRelevantContext(history, GENERATOR_TASK, [], [], [], TRIAGE);
+  expect(responsesOf(out)).toContainEqual(TURN3_ERROR);
+  expect(estimateGeminiTokenCount(out)).toBeLessThanOrEqual(60_000);
+  expect(findGeminiPairingViolations(out)).toEqual([]);
+});
+
+test("triage on a generator history keeps the latest content of every file verbatim when it fits", () => {
+  const history = buildGeneratorHistory(20, { contentChars: 2_000, textChars: 200 });
+  const out = selectRelevantContext(history, GENERATOR_TASK, [], [], [], TRIAGE);
+  const writes = out.flatMap((m) => (Array.isArray(m.content) ? m.content.flatMap((p) => ("functionCall" in p && p.functionCall.name === "write_file" ? [p.functionCall.args as { path: string; content: string }] : [])) : []));
+  const latestByPath = new Map(writes.map((w) => [w.path, w.content]));
+  for (const content of latestByPath.values()) expect(content.startsWith("[content omitted")).toBe(false);
+  expect(writes.some((w) => w.content.startsWith("[content omitted during compaction"))).toBe(true); // older versions stubbed
 });

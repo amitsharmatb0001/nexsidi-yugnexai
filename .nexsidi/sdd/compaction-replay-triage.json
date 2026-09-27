@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-09-26T17:19:11.349Z",
+  "generatedAt": "2026-09-27T07:15:12.058Z",
   "totals": {
-    "sources": 165,
+    "sources": 164,
     "duplicates": 19,
     "skippedNotGemini": 10,
-    "skippedUnderThreshold": 114,
+    "skippedUnderThreshold": 113,
     "replayed": 22,
     "avgTokensBefore": 233641,
     "callsBefore": 2355,
@@ -17,22 +17,22 @@
       "callsWithFullResultAfter": 185,
       "unresolvedErrorsKept": 1,
       "latestResultsKept": 54,
-      "maxMs": 1
+      "maxMs": 3
     },
     "triage": {
-      "avgTokensAfter": 38333,
-      "maxTokensAfter": 59460,
+      "avgTokensAfter": 38371,
+      "maxTokensAfter": 59805,
       "historiesWithPairingViolations": 0,
-      "callsWithFullResultAfter": 629,
-      "unresolvedErrorsKept": 52,
-      "latestResultsKept": 420,
-      "maxMs": 15
+      "callsWithFullResultAfter": 809,
+      "unresolvedErrorsKept": 123,
+      "latestResultsKept": 481,
+      "maxMs": 24
     }
   },
   "results": [
     {
       "label": "db:88d7b375eaef/tilotma-evidence-collector",
-      "ms": 1,
+      "ms": 2,
       "tokensBefore": 194222,
       "tokensAfter": 4464,
       "pairingViolations": [],
@@ -43,7 +43,7 @@
       "latestResultsBefore": 52,
       "latestResultsKept": 3,
       "triage": {
-        "ms": 3,
+        "ms": 11,
         "tokensBefore": 194222,
         "tokensAfter": 19756,
         "pairingViolations": [],
@@ -57,7 +57,7 @@
     },
     {
       "label": "db:88d7b375eaef/tilotma-reality-checker",
-      "ms": 0,
+      "ms": 1,
       "tokensBefore": 274871,
       "tokensAfter": 19263,
       "pairingViolations": [],
@@ -68,7 +68,7 @@
       "latestResultsBefore": 41,
       "latestResultsKept": 1,
       "triage": {
-        "ms": 2,
+        "ms": 3,
         "tokensBefore": 274871,
         "tokensAfter": 39788,
         "pairingViolations": [],
@@ -82,7 +82,7 @@
     },
     {
       "label": "db:19cd08f49562/aanya",
-      "ms": 1,
+      "ms": 3,
       "tokensBefore": 154673,
       "tokensAfter": 8203,
       "pairingViolations": [],
@@ -93,21 +93,21 @@
       "latestResultsBefore": 71,
       "latestResultsKept": 2,
       "triage": {
-        "ms": 15,
+        "ms": 20,
         "tokensBefore": 154673,
-        "tokensAfter": 47978,
+        "tokensAfter": 47669,
         "pairingViolations": [],
         "callsBefore": 123,
-        "callsWithFullResultAfter": 15,
+        "callsWithFullResultAfter": 25,
         "unresolvedErrorsBefore": 10,
-        "unresolvedErrorsKept": 0,
+        "unresolvedErrorsKept": 10,
         "latestResultsBefore": 71,
         "latestResultsKept": 2
       }
     },
     {
       "label": "db:19cd08f49562/shubham",
-      "ms": 1,
+      "ms": 2,
       "tokensBefore": 207456,
       "tokensAfter": 7363,
       "pairingViolations": [],
@@ -118,14 +118,14 @@
       "latestResultsBefore": 199,
       "latestResultsKept": 3,
       "triage": {
-        "ms": 9,
+        "ms": 14,
         "tokensBefore": 207456,
-        "tokensAfter": 47118,
+        "tokensAfter": 47248,
         "pairingViolations": [],
         "callsBefore": 396,
-        "callsWithFullResultAfter": 58,
+        "callsWithFullResultAfter": 69,
         "unresolvedErrorsBefore": 9,
-        "unresolvedErrorsKept": 0,
+        "unresolvedErrorsKept": 9,
         "latestResultsBefore": 199,
         "latestResultsKept": 3
       }
@@ -157,7 +157,7 @@
     },
     {
       "label": "db:complex1/shubham",
-      "ms": 1,
+      "ms": 2,
       "tokensBefore": 194611,
       "tokensAfter": 10610,
       "pairingViolations": [],
@@ -168,14 +168,14 @@
       "latestResultsBefore": 104,
       "latestResultsKept": 3,
       "triage": {
-        "ms": 7,
+        "ms": 13,
         "tokensBefore": 194611,
-        "tokensAfter": 46578,
+        "tokensAfter": 50425,
         "pairingViolations": [],
         "callsBefore": 193,
-        "callsWithFullResultAfter": 45,
+        "callsWithFullResultAfter": 53,
         "unresolvedErrorsBefore": 8,
-        "unresolvedErrorsKept": 0,
+        "unresolvedErrorsKept": 8,
         "latestResultsBefore": 104,
         "latestResultsKept": 3
       }
@@ -193,21 +193,21 @@
       "latestResultsBefore": 73,
       "latestResultsKept": 2,
       "triage": {
-        "ms": 3,
+        "ms": 6,
         "tokensBefore": 405080,
-        "tokensAfter": 51101,
+        "tokensAfter": 51086,
         "pairingViolations": [],
         "callsBefore": 83,
-        "callsWithFullResultAfter": 4,
+        "callsWithFullResultAfter": 38,
         "unresolvedErrorsBefore": 6,
-        "unresolvedErrorsKept": 0,
+        "unresolvedErrorsKept": 6,
         "latestResultsBefore": 73,
-        "latestResultsKept": 2
+        "latestResultsKept": 26
       }
     },
     {
       "label": "db:bae438767bed/tilotma-live-eval",
-      "ms": 0,
+      "ms": 1,
       "tokensBefore": 123777,
       "tokensAfter": 5129,
       "pairingViolations": [],
@@ -218,7 +218,7 @@
       "latestResultsBefore": 45,
       "latestResultsKept": 3,
       "triage": {
-        "ms": 1,
+        "ms": 2,
         "tokensBefore": 123777,
         "tokensAfter": 17010,
         "pairingViolations": [],
@@ -232,7 +232,7 @@
     },
     {
       "label": "db:bae438767bed/aanya",
-      "ms": 1,
+      "ms": 2,
       "tokensBefore": 121340,
       "tokensAfter": 11591,
       "pairingViolations": [],
@@ -243,16 +243,16 @@
       "latestResultsBefore": 64,
       "latestResultsKept": 3,
       "triage": {
-        "ms": 11,
+        "ms": 7,
         "tokensBefore": 121340,
-        "tokensAfter": 50848,
+        "tokensAfter": 51548,
         "pairingViolations": [],
         "callsBefore": 119,
-        "callsWithFullResultAfter": 11,
+        "callsWithFullResultAfter": 77,
         "unresolvedErrorsBefore": 2,
-        "unresolvedErrorsKept": 0,
+        "unresolvedErrorsKept": 2,
         "latestResultsBefore": 64,
-        "latestResultsKept": 3
+        "latestResultsKept": 34
       }
     },
     {
@@ -293,21 +293,21 @@
       "latestResultsBefore": 36,
       "latestResultsKept": 3,
       "triage": {
-        "ms": 2,
+        "ms": 3,
         "tokensBefore": 204041,
-        "tokensAfter": 41279,
+        "tokensAfter": 40696,
         "pairingViolations": [],
         "callsBefore": 67,
         "callsWithFullResultAfter": 47,
         "unresolvedErrorsBefore": 5,
         "unresolvedErrorsKept": 5,
         "latestResultsBefore": 36,
-        "latestResultsKept": 35
+        "latestResultsKept": 30
       }
     },
     {
       "label": "db:rivhdw1/aanya",
-      "ms": 1,
+      "ms": 2,
       "tokensBefore": 390997,
       "tokensAfter": 30277,
       "pairingViolations": [],
@@ -318,21 +318,21 @@
       "latestResultsBefore": 226,
       "latestResultsKept": 3,
       "triage": {
-        "ms": 8,
+        "ms": 24,
         "tokensBefore": 390997,
-        "tokensAfter": 59460,
+        "tokensAfter": 59301,
         "pairingViolations": [],
         "callsBefore": 334,
-        "callsWithFullResultAfter": 10,
+        "callsWithFullResultAfter": 33,
         "unresolvedErrorsBefore": 23,
-        "unresolvedErrorsKept": 0,
+        "unresolvedErrorsKept": 23,
         "latestResultsBefore": 226,
-        "latestResultsKept": 3
+        "latestResultsKept": 4
       }
     },
     {
       "label": "db:rivhdw1/shubham",
-      "ms": 1,
+      "ms": 2,
       "tokensBefore": 465610,
       "tokensAfter": 18039,
       "pairingViolations": [],
@@ -343,14 +343,14 @@
       "latestResultsBefore": 144,
       "latestResultsKept": 0,
       "triage": {
-        "ms": 6,
+        "ms": 10,
         "tokensBefore": 465610,
-        "tokensAfter": 57736,
+        "tokensAfter": 57147,
         "pairingViolations": [],
         "callsBefore": 274,
-        "callsWithFullResultAfter": 0,
+        "callsWithFullResultAfter": 7,
         "unresolvedErrorsBefore": 7,
-        "unresolvedErrorsKept": 0,
+        "unresolvedErrorsKept": 7,
         "latestResultsBefore": 144,
         "latestResultsKept": 0
       }
@@ -368,7 +368,7 @@
       "latestResultsBefore": 3,
       "latestResultsKept": 3,
       "triage": {
-        "ms": 1,
+        "ms": 0,
         "tokensBefore": 181284,
         "tokensAfter": 10436,
         "pairingViolations": [],
@@ -393,7 +393,7 @@
       "latestResultsBefore": 53,
       "latestResultsKept": 2,
       "triage": {
-        "ms": 2,
+        "ms": 4,
         "tokensBefore": 289403,
         "tokensAfter": 48204,
         "pairingViolations": [],
@@ -457,7 +457,7 @@
     },
     {
       "label": "db:a355bbb5fa35/aanya",
-      "ms": 0,
+      "ms": 1,
       "tokensBefore": 134618,
       "tokensAfter": 19660,
       "pairingViolations": [],
@@ -468,16 +468,16 @@
       "latestResultsBefore": 50,
       "latestResultsKept": 2,
       "triage": {
-        "ms": 2,
+        "ms": 3,
         "tokensBefore": 134618,
-        "tokensAfter": 45441,
+        "tokensAfter": 43398,
         "pairingViolations": [],
         "callsBefore": 89,
         "callsWithFullResultAfter": 68,
         "unresolvedErrorsBefore": 12,
         "unresolvedErrorsKept": 12,
         "latestResultsBefore": 50,
-        "latestResultsKept": 47
+        "latestResultsKept": 40
       }
     },
     {
@@ -495,19 +495,19 @@
       "triage": {
         "ms": 4,
         "tokensBefore": 121178,
-        "tokensAfter": 57672,
+        "tokensAfter": 59805,
         "pairingViolations": [],
         "callsBefore": 89,
-        "callsWithFullResultAfter": 3,
+        "callsWithFullResultAfter": 12,
         "unresolvedErrorsBefore": 6,
-        "unresolvedErrorsKept": 0,
+        "unresolvedErrorsKept": 6,
         "latestResultsBefore": 57,
-        "latestResultsKept": 3
+        "latestResultsKept": 5
       }
     },
     {
       "label": "file:E:/tmp/nexsidi-builds/e254eb1b9c55/history-tilotma-reality-checker.json",
-      "ms": 0,
+      "ms": 2,
       "tokensBefore": 307689,
       "tokensAfter": 11190,
       "pairingViolations": [],
@@ -518,21 +518,21 @@
       "latestResultsBefore": 67,
       "latestResultsKept": 2,
       "triage": {
-        "ms": 3,
+        "ms": 12,
         "tokensBefore": 307689,
-        "tokensAfter": 51123,
+        "tokensAfter": 50361,
         "pairingViolations": [],
         "callsBefore": 74,
-        "callsWithFullResultAfter": 29,
+        "callsWithFullResultAfter": 33,
         "unresolvedErrorsBefore": 5,
         "unresolvedErrorsKept": 5,
         "latestResultsBefore": 67,
-        "latestResultsKept": 20
+        "latestResultsKept": 25
       }
     },
     {
       "label": "file:E:/tmp/nexsidi-builds/bae438767bed/history-tilotma-reality-checker.json",
-      "ms": 0,
+      "ms": 1,
       "tokensBefore": 307690,
       "tokensAfter": 11190,
       "pairingViolations": [],
@@ -543,21 +543,21 @@
       "latestResultsBefore": 67,
       "latestResultsKept": 2,
       "triage": {
-        "ms": 3,
+        "ms": 8,
         "tokensBefore": 307690,
-        "tokensAfter": 51123,
+        "tokensAfter": 50361,
         "pairingViolations": [],
         "callsBefore": 74,
-        "callsWithFullResultAfter": 29,
+        "callsWithFullResultAfter": 33,
         "unresolvedErrorsBefore": 5,
         "unresolvedErrorsKept": 5,
         "latestResultsBefore": 67,
-        "latestResultsKept": 20
+        "latestResultsKept": 25
       }
     },
     {
       "label": "file:E:/tmp/nexsidi-builds/0a2fabe6df5e/history-tilotma-reality-checker.json",
-      "ms": 0,
+      "ms": 1,
       "tokensBefore": 307686,
       "tokensAfter": 11190,
       "pairingViolations": [],
@@ -568,16 +568,16 @@
       "latestResultsBefore": 67,
       "latestResultsKept": 2,
       "triage": {
-        "ms": 3,
+        "ms": 7,
         "tokensBefore": 307686,
-        "tokensAfter": 51122,
+        "tokensAfter": 50360,
         "pairingViolations": [],
         "callsBefore": 74,
-        "callsWithFullResultAfter": 29,
+        "callsWithFullResultAfter": 33,
         "unresolvedErrorsBefore": 5,
         "unresolvedErrorsKept": 5,
         "latestResultsBefore": 67,
-        "latestResultsKept": 20
+        "latestResultsKept": 25
       }
     }
   ]

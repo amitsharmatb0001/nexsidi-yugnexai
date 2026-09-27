@@ -88,8 +88,47 @@ test("the budget is enforced by stubbing oldest non-error results first, errors 
   expect(lastResponse.compacted).toBeUndefined(); // newest results are the last to go
 });
 
-test("a zero budget stubs every result but still keeps the pairs", () => {
+// 2026-09-27: unresolved errors are what triage exists to keep, so the budget
+// never stubs them (it used to, last). If they alone don't fit, the caller's
+// fallback drops other whole turns instead (context-selection.ts).
+test("a zero budget stubs every result except the unresolved error, and keeps the pairs", () => {
   const { turns, stats } = triageMiddle(middle, 0);
-  expect(stats.stubbed).toBe(5);
+  expect(stats.stubbed).toBe(4);
+  const errorResponse = (turns[3]!.content as Array<{ functionResponse?: { response: Record<string, unknown> } }>)[0]!.functionResponse!.response;
+  expect(errorResponse).toEqual({ status: "error", summary: "500 Internal Server Error" });
   expect(findGeminiPairingViolations(turns)).toEqual([]);
+});
+
+// ── Superseded file content in call args (2026-09-27) ────────────────────
+const writes: GeminiMessage[] = [
+  ...turn("write_file", { path: "src/app.ts", content: "v1 ".repeat(5_000) }, { status: "success", summary: "written" }, { signature: "sig-w1" }),
+  ...turn("write_files", { files: [{ path: "src/app.ts", content: "v2 ".repeat(5_000) }, { path: "src/db.ts", content: "db ".repeat(5_000) }] }, { status: "success", summary: "written" }),
+  ...turn("edit_file", { path: "src/db.ts", old_str: "db", new_str: "database" }, { status: "success", summary: "edited" }),
+  ...turn("write_file", { path: "src/app.ts", content: "v3 final" }, { status: "success", summary: "written" }),
+];
+const callArgs = (turns: GeminiMessage[], i: number) => (turns[i]!.content as Array<{ functionCall?: { args: Record<string, unknown> } }>).find((p) => p.functionCall)!.functionCall!.args;
+
+test("content of a file rewritten later is replaced by a one-line note; the latest content stays verbatim", () => {
+  const { turns, stats } = triageMiddle(writes, 1_000_000);
+  expect(String(callArgs(turns, 0).content)).toStartWith("[content omitted during compaction: src/app.ts was rewritten later; 15000 chars]");
+  const files = callArgs(turns, 2).files as Array<{ path: string; content: string }>;
+  expect(files[0]!.content).toStartWith("[content omitted during compaction: src/app.ts");
+  expect(files[1]!.content).toBe("db ".repeat(5_000)); // src/db.ts is only edited later, never rewritten
+  expect(callArgs(turns, 4)).toEqual({ path: "src/db.ts", old_str: "db", new_str: "database" });
+  expect(callArgs(turns, 6)).toEqual({ path: "src/app.ts", content: "v3 final" });
+  expect(stats.argsStubbed).toBe(2);
+  expect(stats.tokensAfter).toBeLessThan(stats.tokensBefore / 2);
+  expect(findGeminiPairingViolations(turns)).toEqual([]);
+});
+
+test("stubbing call args keeps the functionCall's thoughtSignature and the thought part", () => {
+  const { turns } = triageMiddle(writes, 1_000_000);
+  const parts = turns[0]!.content as Array<Record<string, unknown>>;
+  expect(parts[0]).toEqual({ thought: true, thoughtSignature: "sig-w1" });
+  expect(parts[1]!.thoughtSignature).toBe("sig-w1");
+});
+
+test("stubbing call args is idempotent", () => {
+  const once = triageMiddle(writes, 1_000_000).turns;
+  expect(triageMiddle(once, 1_000_000).turns).toEqual(once);
 });

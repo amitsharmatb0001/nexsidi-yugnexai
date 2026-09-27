@@ -27,6 +27,7 @@
 - Tests first for every task (`bun test <file>`), then `bun run typecheck` in `packages/agent-runtime`.
 - Never remove a message from history. Never split a call from its result (Gemini functionCall/functionResponse, NIM tool_calls/tool, Claude tool_use/tool_result).
 - Never modify Gemini `thought` parts or any `thoughtSignature`; never modify Claude `thinking`/`redacted_thinking` blocks; never modify assistant/model turns' functionCall args in the triage pass (results only).
+  - **Amended 2026-09-27 (Amit approved option A):** the file content inside `write_file`/`write_files`/`edit_file` args MAY be replaced by a one-line note when that file is fully rewritten or deleted later. The latest content of every file stays verbatim, and the functionCall's other fields (including `thoughtSignature`) are kept.
 - Triage makes no LLM or network calls. Cost: $0.
 - New behavior ships behind `TRIAGE_COMPACTION_ENABLED` (read as `=== "true"`, default off), matching the existing `RELEVANT_CONTEXT_SELECTION_ENABLED` escape-hatch pattern. With the flag off, output must be byte-identical to today.
 - The replay harness only runs `SELECT` against the DB and never writes history back.
@@ -576,3 +577,22 @@ Stopped here per this plan's rule ("stop and report, don't tune blindly"). Optio
 
 Outputs: `.nexsidi/sdd/compaction-replay-baseline.json`, `.nexsidi/sdd/compaction-replay-triage.json`.
 Task 7 (live A/B build) not started: waits on this decision and on Amit's go-ahead.
+
+### Task 6 gate re-run after Amit-approved fixes (2026-09-27): all criteria pass
+
+Changes (options C + A): the fallback drops whole call+response units oldest first but never a unit holding an unresolved error; the budget step never stubs unresolved errors; stale file content in superseded write/edit call args is replaced by a note.
+
+| Metric | Current | Triage v1 | **Triage v2** | Criterion |
+|---|---|---|---|---|
+| Max tokens after | 34,716 | 59,460 | **59,805** | 2. <= 60,000: **pass** |
+| Histories with pairing violations | 0 | 0 | **0** | 1. 0: **pass** |
+| Unresolved errors kept (of 123) | 1 | 52 | **123** | 3. 100%: **pass** |
+| Max ms per compaction | 3 | 15 | **24** | 4. < 50 ms: **pass** |
+| Latest result per distinct call kept (of 1,505) | 54 | 420 | **481** | 5. report |
+| Tool results kept verbatim (of 2,355) | 185 | 629 | **809** | - |
+
+Criterion 5 per agent (latest results kept, current -> triage v2): tilotma-evidence-collector 6 -> 90 of 90, tilotma-live-eval 6 -> 71 of 71, tilotma-reality-checker 12 -> 155 of 334, aanya 18 -> 153 of 557, riya 6 -> 6 of 6, **shubham 6 -> 6 of 447**. Shubham's middles are almost entirely model text (up to 306K tokens), which option B (cap old model text) would address; not approved, so not done. All unresolved errors are kept for every agent.
+
+The "current" column is identical to the 2026-09-26 baseline, so behavior with the flag off is unchanged.
+
+Next: Task 7 (live A/B on a real build) needs Amit's go-ahead; `TRIAGE_COMPACTION_ENABLED` stays off until then.
