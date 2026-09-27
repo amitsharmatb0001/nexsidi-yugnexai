@@ -43,6 +43,8 @@ export const DELIVERY_GITIGNORE_LINES = [
   "*.jsonl",
   "/checkpoints/",
   "/planner-plan.json",
+  // Agents' screenshot evidence, at any depth (e.g. frontend/.nexsidi-evidence/).
+  ".nexsidi-evidence/",
   "node_modules/",
   ".next/",
   "tsconfig.tsbuildinfo",

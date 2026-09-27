@@ -154,7 +154,20 @@ export const READONLY_BLOCKED_TOOLS = new Set([
   "delete_file",
   "run_command",
   "docker_compose",
+  // 2026-09-28: git reset --hard + git clean -fd on the agent's folder — was
+  // still offered to read-only agents (see workspaceTransactionDir).
+  "rollback_workspace",
 ]);
+
+// 2026-09-28: real incident (project a61968de2ecf). The workspace git
+// transaction (git add -A + commit, see tools/git.ts) ran for EVERY agent with
+// a sandboxDir. A read-only agent writes nothing, so it has nothing to
+// checkpoint — and when its folder was wrong (Vanya's was the NexSidi repo
+// itself) the "initial state" commit swept that repo's untracked files into a
+// commit. Read-only agents get no transaction at all.
+export function workspaceTransactionDir(config: { sandboxDir?: string; readOnly?: boolean }): string | null {
+  return config.sandboxDir && !config.readOnly ? config.sandboxDir : null;
+}
 
 export function readOnlyToolBlockedResult(toolName: string): Record<string, unknown> {
   return {
@@ -484,9 +497,8 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     console.error("[mcp] Failed to load/initialize MCP tools:", err);
   }
 
-  if (config.sandboxDir) {
-    initWorkspaceTransaction(config.sandboxDir);
-  }
+  const txDir = workspaceTransactionDir(config);
+  if (txDir) initWorkspaceTransaction(txDir);
 
   // Phase 5 Task 3: per-run ledger backing the completion gate — see
   // enforce/evidence.ts and enforce/completion-gate.ts.
@@ -695,7 +707,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   // Interactive-browser QA session (Tilotma Tier 3). Lazily spawns a Node
   // worker + Chromium on first browser tool call; the `finally` below closes
   // it on every exit path (task_complete, stop, cap, or throw).
-  const browserToolset = config.enableBrowser ? new BrowserToolset() : null;
+  const browserToolset = config.enableBrowser ? new BrowserToolset(config.sandboxDir) : null;
   try {
   while (iterations < effectiveMaxIterations) {
     const currentModel = modelChain[modelIdx] ?? config.model;
@@ -991,7 +1003,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         case "screenshot": {
           const ssArgs = args as { url: string; outputPath: string };
           emitEvent({ type: "tool_call", tool: "screenshot", input: ssArgs });
-          result = await execScreenshot(ssArgs, ledger);
+          result = await execScreenshot(ssArgs, ledger, config.sandboxDir);
           emitEvent({ type: "tool_result", tool: "screenshot", status: result.status, summary: result.summary, outputPath: ssArgs.outputPath });
           break;
         }

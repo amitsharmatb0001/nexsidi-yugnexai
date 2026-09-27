@@ -90,3 +90,7 @@ test("rollback leaves the pipeline's own (ignored) files alone", () => {
   rollbackWorkspaceTransaction(sandboxDir);
   expect(readFileSync(join(sandboxDir, "history-riya.json"), "utf-8")).toBe("[1]");
 });
+
+test("the delivery .gitignore excludes the screenshot evidence folder at any depth", () => {
+  expect(DELIVERY_GITIGNORE_LINES).toContain(".nexsidi-evidence/");
+});

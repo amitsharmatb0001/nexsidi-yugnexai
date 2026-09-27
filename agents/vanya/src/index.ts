@@ -38,6 +38,8 @@
 // packages/agent-runtime/skills/vanya/ as basePrompt's PREFIX, so Vanya's
 // assembled prompt was getting the same instructions twice. Consolidated
 // into the doctrine directory alone; systemPrompt below is now "".
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { runAgentEscalated } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import type { ProjectSpec } from "../../saanvi/src/index.ts";
@@ -65,6 +67,12 @@ export interface VanyaDeps {
 // needs to handle "the whole call didn't produce a usable brief."
 const VANYA_MAX_ITERATIONS = 15;
 
+function vanyaWorkspace(projectId: string): string {
+  const dir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 export async function run(
   spec: ProjectSpec,
   deps: VanyaDeps = { runAgent: runAgentEscalated },
@@ -80,7 +88,12 @@ export async function run(
       apiKey,
       systemPrompt: "",
       initialMessage: buildVanyaTask(spec),
-      sandboxDir: process.cwd(),
+      // 2026-09-28: was process.cwd() — the worker's own folder, i.e. the
+      // NexSidi repo. loop.ts's workspace transaction then ran `git add -A` +
+      // commit THERE (commit "nexsidi-initial-state", project a61968de2ecf),
+      // and every read tool could browse NexSidi's own source. The project's
+      // build folder is the only thing a design brief needs to see.
+      sandboxDir: vanyaWorkspace(spec.projectId),
       enableWebSearch: true,
       // Same D26 reasoning applied to Tier 3/live-eval elsewhere this
       // session — a design-brief step is planning, not fixing. It never

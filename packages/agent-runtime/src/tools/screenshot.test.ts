@@ -45,3 +45,15 @@ test("execScreenshot rejects a sibling-directory path that shares a string prefi
   expect(result.status).toBe("error");
   expect(result.summary).toContain("escapes the working directory");
 });
+
+// 2026-09-28: screenshots were resolved against the WORKER's cwd (the NexSidi
+// repo), so screenshot.png and review/*.png landed in our own repo. They now
+// go under the agent's own workspace, in a hidden evidence folder that the
+// delivery .gitignore and the IDE file tree both exclude.
+test("resolveEvidencePath puts a screenshot under <workspace>/.nexsidi-evidence/, and still rejects traversal", async () => {
+  const { resolveEvidencePath } = await import("./screenshot.ts");
+  const { join, resolve } = await import("node:path");
+  const ws = resolve("/tmp/build/frontend");
+  expect(resolveEvidencePath(ws, "review/home.png")).toEqual({ abs: join(ws, ".nexsidi-evidence", "review", "home.png") });
+  expect(resolveEvidencePath(ws, "../../etc/x.png")).toEqual({ error: "outputPath escapes the working directory" });
+});

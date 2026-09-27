@@ -243,7 +243,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
 
   // Interactive-browser QA session (Tilotma Tier 3) — same lifecycle as
   // loop.ts: lazily spawned, closed in the finally on every exit path.
-  const browserToolset = config.enableBrowser ? new BrowserToolset() : null;
+  const browserToolset = config.enableBrowser ? new BrowserToolset(config.sandboxDir) : null;
   try {
   while (iterations < effectiveMaxIterations) {
     iterations++;
@@ -395,7 +395,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         case "screenshot": {
           const ssArgs = args as { url: string; outputPath: string };
           emitEvent({ type: "tool_call", tool: "screenshot", input: ssArgs });
-          result = await execScreenshot(ssArgs);
+          result = await execScreenshot(ssArgs, undefined, config.sandboxDir);
           emitEvent({ type: "tool_result", tool: "screenshot", status: result.status, summary: result.summary, outputPath: ssArgs.outputPath });
           break;
         }

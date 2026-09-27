@@ -21,6 +21,9 @@ export function isPipelineBookkeeping(path: string): boolean {
     path.endsWith(".jsonl") ||
     /^history-[a-z0-9-]+\.json$/.test(path) ||
     path === "qa-submissions.json" ||
-    path === "planner-plan.json"
+    path === "planner-plan.json" ||
+    // 2026-09-28: agents' screenshot evidence (tools/screenshot.ts), which
+    // lives inside an agent's own folder (e.g. frontend/), so any depth.
+    path.split("/").includes(".nexsidi-evidence")
   );
 }

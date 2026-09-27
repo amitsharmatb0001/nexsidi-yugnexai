@@ -1,4 +1,4 @@
-import { resolve, sep } from "path";
+import { join, resolve, sep } from "path";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
 import { BrowserSession } from "../browser/client.ts";
@@ -17,20 +17,37 @@ import type { EvidenceLedger } from "../enforce/evidence.ts";
 // standalone {url,outputPath} form is kept for any caller that just wants a
 // one-shot screenshot of a single URL.
 
+// 2026-09-28: screenshots used to resolve against the WORKER's cwd (the
+// NexSidi repo) — screenshot.png and review/*.png landed in our own repo.
+// They now go under the agent's own workspace, in a hidden evidence folder
+// that the delivery .gitignore (tools/git.ts) and the IDE file tree
+// (pipeline-files.ts) both exclude, so QA evidence never ships to a customer.
+export const EVIDENCE_DIR = ".nexsidi-evidence";
+
+export function resolveEvidencePath(workspace: string, outputPath: string): { abs: string } | { error: string } {
+  const base = resolve(join(workspace, EVIDENCE_DIR));
+  const abs = resolve(base, outputPath);
+  if (abs !== base && !abs.startsWith(base + sep)) {
+    return { error: "outputPath escapes the working directory" };
+  }
+  return { abs };
+}
+
 export async function execScreenshot(
   args: { url: string; outputPath: string },
   ledger?: EvidenceLedger,
+  workspace: string = process.cwd(),
 ): Promise<ToolResult> {
   let parsed: URL;
   try { parsed = new URL(args.url); } catch { return { status: "error", summary: `screenshot: invalid URL '${args.url}'` }; }
   if (parsed.hostname !== "localhost" && parsed.hostname !== "127.0.0.1") {
     return { status: "error", summary: `screenshot blocked: only localhost allowed, got '${parsed.hostname}'` };
   }
-  const outAbs = resolve(args.outputPath);
-  const cwdAbs = resolve(process.cwd());
-  if (outAbs !== cwdAbs && !outAbs.startsWith(cwdAbs + sep)) {
+  const target = resolveEvidencePath(workspace, args.outputPath);
+  if ("error" in target) {
     return { status: "error", summary: "screenshot outputPath escapes the working directory" };
   }
+  const outAbs = target.abs;
 
   const session = new BrowserSession();
   try {

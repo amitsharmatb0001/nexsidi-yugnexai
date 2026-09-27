@@ -188,3 +188,29 @@ test("VANYA_SYSTEM_PROMPT instructs per-page emphasis variation instead of one u
   expect(VANYA_SYSTEM_PROMPT).toMatch(/reads as templated/i);
   expect(VANYA_SYSTEM_PROMPT).toMatch(/emphasis shifts by page/i);
 });
+
+// 2026-09-28: real incident (project a61968de2ecf). Vanya ran with
+// sandboxDir: process.cwd() — the worker's own folder, i.e. the NexSidi repo —
+// and loop.ts's workspace transaction ran `git add -A` + commit there, sweeping
+// untracked files (ref repo/, worker.lock) into commit "nexsidi-initial-state".
+// Its workspace is now the project's own build folder.
+test("run() gives Vanya the project's build folder as its workspace, never the worker's cwd (the NexSidi repo)", async () => {
+  let captured: any;
+  const deps: VanyaDeps = {
+    runAgent: async (config: any) => { captured = config; return agentResult(JSON.stringify(VALID_BRIEF)); },
+  };
+  const prior = process.env.BUILD_DIR;
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const base = mkdtempSync(join(tmpdir(), "vanya-build-"));
+  process.env.BUILD_DIR = base;
+  try {
+    await run(TEST_SPEC, deps);
+    expect(captured.sandboxDir).toBe(join(base, TEST_SPEC.projectId));
+    expect(captured.sandboxDir).not.toBe(process.cwd());
+  } finally {
+    if (prior === undefined) delete process.env.BUILD_DIR; else process.env.BUILD_DIR = prior;
+    rmSync(base, { recursive: true, force: true });
+  }
+});

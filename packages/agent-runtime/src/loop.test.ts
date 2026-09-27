@@ -134,3 +134,17 @@ test("evaluateCommandStrike does not conflate different failures on the same com
   // errB is a DIFFERENT failure signature — should not be exhausted yet
   expect((await evaluateCommandStrike(counter, "npm test", errB, noDiagnostics)).exhausted).toBe(false);
 });
+
+// 2026-09-28: a read-only agent must never commit or roll back its folder.
+// loop.ts ran initWorkspaceTransaction (git add -A + commit) for EVERY agent
+// with a sandboxDir, read-only or not — and rollback_workspace (git reset
+// --hard + git clean -fd) was still offered to read-only agents. With Vanya's
+// folder pointing at the NexSidi repo, that was one tool call from wiping
+// uncommitted work.
+test("read-only agents get no workspace git transaction and cannot call rollback_workspace", async () => {
+  const { workspaceTransactionDir, READONLY_BLOCKED_TOOLS } = await import("./loop.ts");
+  expect(workspaceTransactionDir({ sandboxDir: "/w", readOnly: true })).toBeNull();
+  expect(workspaceTransactionDir({ sandboxDir: "/w", readOnly: false })).toBe("/w");
+  expect(workspaceTransactionDir({ sandboxDir: "/w" })).toBe("/w");
+  expect(READONLY_BLOCKED_TOOLS.has("rollback_workspace")).toBe(true);
+});

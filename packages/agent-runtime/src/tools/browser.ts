@@ -9,7 +9,7 @@
 // agent run and shared across every browser tool call in that run, so the
 // agent can navigate then click then screenshot the *result* — real
 // interaction, not disconnected one-shots.
-import { resolve, sep } from "path";
+import { resolveEvidencePath } from "./screenshot.ts";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
 import { BrowserSession } from "../browser/client.ts";
@@ -24,20 +24,16 @@ function guardLocalhost(url: string): string | null {
   return null;
 }
 
-function guardOutputPath(outputPath: string): { abs: string } | { error: string } {
-  const abs = resolve(outputPath);
-  const cwdAbs = resolve(process.cwd());
-  if (abs !== cwdAbs && !abs.startsWith(cwdAbs + sep)) {
-    return { error: "outputPath escapes the working directory" };
-  }
-  return { abs };
-}
 
 // A per-run holder: the session (and its Node worker + Chromium) is only
 // spawned on the first browser tool call, so agents that never touch the
 // browser pay nothing.
 export class BrowserToolset {
   private session: BrowserSession | null = null;
+
+  // The agent's own workspace — screenshots go under its evidence folder
+  // (see screenshot.ts's resolveEvidencePath), never the worker's cwd.
+  constructor(private readonly workspace: string = process.cwd()) {}
 
   private ensure(): BrowserSession {
     if (!this.session) this.session = new BrowserSession();
@@ -60,7 +56,7 @@ export class BrowserToolset {
           };
         }
         case "browser_screenshot": {
-          const g = guardOutputPath(String(args.outputPath ?? ""));
+          const g = resolveEvidencePath(this.workspace, String(args.outputPath ?? ""));
           if ("error" in g) return { status: "error", summary: g.error };
           await this.ensure().send("screenshot", { path: g.abs, fullPage: args.fullPage ?? true });
           // 2026-08-10: records "visual_check" evidence — see evidence.ts's

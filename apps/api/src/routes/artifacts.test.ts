@@ -255,3 +255,9 @@ test("buildTree hides the pipeline's own files from the customer's file tree", a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("isPipelineBookkeeping hides the agents' screenshot evidence folder wherever it sits", () => {
+  expect(isPipelineBookkeeping("frontend/.nexsidi-evidence/review/home.png")).toBe(true);
+  expect(isPipelineBookkeeping(".nexsidi-evidence/x.png")).toBe(true);
+  expect(isPipelineBookkeeping("frontend/app/review/page.tsx")).toBe(false);
+});

@@ -607,7 +607,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
 
   // Interactive-browser QA session (Tilotma Tier 3) — same lifecycle as
   // loop.ts: lazily spawned, closed in the finally on every exit path.
-  const browserToolset = config.enableBrowser ? new BrowserToolset() : null;
+  const browserToolset = config.enableBrowser ? new BrowserToolset(config.sandboxDir) : null;
   try {
   while (iterations < effectiveMaxIterations) {
     iterations++;
@@ -930,7 +930,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "screenshot": {
-          result = await execScreenshot(args as { url: string; outputPath: string }, ledger);
+          result = await execScreenshot(args as { url: string; outputPath: string }, ledger, config.sandboxDir);
           break;
         }
         case "escalate_finding": {
