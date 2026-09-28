@@ -92,6 +92,30 @@ export interface LockedPage {
 
 // Convert a URL path to the exact Next.js App Router file path.
 // Done in code (deterministic) so the LLM never has to guess the mapping.
+// 2026-09-28: real crash (project a034f90ba50e). dbSchema is LLM-authored
+// JSON and drifts in shape between runs: tables named via "tableName" instead
+// of "name", column lists under "fields" instead of "columns". Pranav patched
+// the drift for itself (2026-08-18) but the frontend generator crashed on
+// `t.columns.some`. One normaliser, applied where the plan is produced
+// (pipeline runArjun) and again right after handoff verification before any
+// generator reads it (plans already on disk keep their original, hashed shape).
+export function withNormalizedDbSchema<P extends { dbSchema?: { tables?: unknown[] } }>(plan: P): P {
+  const tables = Array.isArray(plan.dbSchema?.tables) ? plan.dbSchema!.tables! : [];
+  let changed = !Array.isArray(plan.dbSchema?.tables);
+  const normalized = tables.map((raw) => {
+    const t = raw as Record<string, unknown>;
+    if (typeof t.name === "string" && Array.isArray(t.columns)) return raw;
+    changed = true;
+    const { fields, tableName, ...rest } = t;
+    return {
+      ...rest,
+      name: typeof t.name === "string" ? t.name : typeof tableName === "string" ? tableName : "",
+      columns: Array.isArray(t.columns) ? t.columns : Array.isArray(fields) ? fields : [],
+    };
+  });
+  return changed ? { ...plan, dbSchema: { ...(plan.dbSchema ?? {}), tables: normalized } } : plan;
+}
+
 export function pathToNextjsFile(urlPath: string): string {
   if (urlPath === "/") return "app/page.tsx";
   // Auth routes get the route group wrapper (auth) for the middleware layout

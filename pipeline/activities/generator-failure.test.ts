@@ -59,7 +59,9 @@ test("runShubham, runAanya, and runPranav all route their failure case through g
 });
 
 test("runShubham, runAanya, and runPranav all route their generator call through runGeneratorWithQuotaRetry", () => {
-  expect(source).toContain('runGeneratorWithQuotaRetry(() => runShubhamAgent(plan))');
-  expect(source).toContain('runGeneratorWithQuotaRetry(() => runAanyaAgent(plan, "integrate"))');
-  expect(source).toContain('runGeneratorWithQuotaRetry(() => runPranavAgent(plan))');
+  // 2026-09-28: each generator gets the verified plan with its dbSchema shape
+  // normalised (see agents/arjun withNormalizedDbSchema).
+  expect(source).toContain('runGeneratorWithQuotaRetry(() => runShubhamAgent(withNormalizedDbSchema(plan)))');
+  expect(source).toContain('runGeneratorWithQuotaRetry(() => runAanyaAgent(withNormalizedDbSchema(plan), "integrate"))');
+  expect(source).toContain('runGeneratorWithQuotaRetry(() => runPranavAgent(withNormalizedDbSchema(plan)))');
 });

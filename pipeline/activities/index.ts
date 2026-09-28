@@ -3,7 +3,7 @@
 // All TODO stubs are now replaced with real agent calls.
 
 import { run as runSaanviAgent }  from "../../agents/saanvi/src/index.ts";
-import { run as runArjunAgent, getBuildDir, pathToNextjsFile } from "../../agents/arjun/src/index.ts";
+import { run as runArjunAgent, getBuildDir, pathToNextjsFile, withNormalizedDbSchema } from "../../agents/arjun/src/index.ts";
 import { run as runShubhamAgent, runFix as runShubhamFix } from "../../agents/generators/shubham/src/index.ts";
 import { run as runAanyaAgent, runFix as runAanyaFix }   from "../../agents/generators/aanya/src/index.ts";
 import { ensureClientDirectiveForStyledModules } from "../../agents/generators/aanya/src/client-directive.ts";
@@ -218,7 +218,8 @@ export async function runArjun(projectId: string, rejectionFeedback?: string): P
     } catch {
       // No prior build-plan.json — first attempt at this project, nothing to reuse.
     }
-    const plan = await runArjunAgent(spec, { chat: agentChat }, lockedPages, plannerPlan?.authType, priorDesignBrief, rejectionFeedback);
+    // 2026-09-28: normalised before it's written and hashed (see withNormalizedDbSchema).
+    const plan = withNormalizedDbSchema(await runArjunAgent(spec, { chat: agentChat }, lockedPages, plannerPlan?.authType, priorDesignBrief, rejectionFeedback));
 
     planCache.set(projectId, plan);
     writeCacheFile(projectId, "build-plan.json", JSON.stringify(plan, null, 2));
@@ -413,7 +414,7 @@ export async function runShubham(projectId: string): Promise<void> {
     await assertWithinBudget(projectId, "shubham");
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "shubham", plan);
-    const result = await runGeneratorWithQuotaRetry(() => runShubhamAgent(plan));
+    const result = await runGeneratorWithQuotaRetry(() => runShubhamAgent(withNormalizedDbSchema(plan)));
     if (!result.success) generatorFailure("shubham", result.errors);
     console.log(`[activity:shubham] ${result.filesWritten.length} files → ${result.outputDir}`);
   } finally {
@@ -428,7 +429,8 @@ export async function runAanya(projectId: string): Promise<void> {
     await assertWithinBudget(projectId, "aanya");
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "aanya", plan);
-    const result = await runGeneratorWithQuotaRetry(() => runAanyaAgent(plan, "integrate"));
+    // Verified in its on-disk (hashed) shape, then normalised for the generator.
+    const result = await runGeneratorWithQuotaRetry(() => runAanyaAgent(withNormalizedDbSchema(plan), "integrate"));
     if (!result.success) generatorFailure("aanya", result.errors);
     console.log(`[activity:aanya] ${result.filesWritten.length} files → ${result.outputDir}`);
   } finally {
@@ -443,7 +445,7 @@ export async function runPranav(projectId: string): Promise<void> {
     await assertWithinBudget(projectId, "pranav");
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "pranav", plan);
-    const result = await runGeneratorWithQuotaRetry(() => runPranavAgent(plan));
+    const result = await runGeneratorWithQuotaRetry(() => runPranavAgent(withNormalizedDbSchema(plan)));
     if (!result.success) generatorFailure("pranav", result.errors);
     console.log(`[activity:pranav] ${result.filesWritten.length} DB files written`);
   } finally {

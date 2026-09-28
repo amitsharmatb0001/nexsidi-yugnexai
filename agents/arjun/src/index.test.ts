@@ -430,3 +430,21 @@ test("pathToNextjsFile turns :param segments into Next.js [param] folders", asyn
   expect(pathToNextjsFile("/plants/[id]")).toBe("app/plants/[id]/page.tsx");
   expect(pathToNextjsFile("/about/")).toBe("app/about/page.tsx");
 });
+
+// 2026-09-28: real crash (project a034f90ba50e). Arjun's dbSchema is LLM JSON;
+// this run named each table's column list "fields" (not "columns"), and the
+// frontend generator crashed on `t.columns.some` in writeStaticScaffold. Pranav
+// had already patched the same drift for itself (2026-08-18) — now the plan is
+// normalised once, for every consumer.
+test("withNormalizedDbSchema maps fields->columns and tableName->name, leaving a correct plan unchanged", async () => {
+  const { withNormalizedDbSchema } = await import("./index.ts");
+  const drifted = { dbSchema: { tables: [
+    { name: "users", fields: [{ name: "id", type: "uuid" }, { name: "role", type: "text" }] },
+    { tableName: "plants", columns: [{ name: "id", type: "uuid" }] },
+  ] } } as any;
+  const out = withNormalizedDbSchema(drifted);
+  expect(out.dbSchema.tables.map((t: any) => [t.name, t.columns.map((c: any) => c.name)])).toEqual([["users", ["id", "role"]], ["plants", ["id"]]]);
+  const good = { dbSchema: { tables: [{ name: "a", columns: [{ name: "id" }] }] } } as any;
+  expect(withNormalizedDbSchema(good)).toEqual(good);
+  expect(withNormalizedDbSchema({ dbSchema: undefined } as any).dbSchema).toEqual({ tables: [] });
+});
