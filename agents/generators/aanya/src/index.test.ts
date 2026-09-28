@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAgentPrompt, buildAgentTask, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui, NEXUI_CONFIRMED_COMPONENTS, countPlannedPages, writeStaticScaffold } from "./index.ts";
+import { buildAgentPrompt, buildAgentTask, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui, execVendorCommand, NEXUI_CONFIRMED_COMPONENTS, countPlannedPages, writeStaticScaffold } from "./index.ts";
 import type { VendorExecFn } from "./index.ts";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { FALLBACK_BRIEF } from "../../../vanya/src/index.ts";
@@ -219,7 +219,7 @@ function fakeExecThatWritesStubComponents(
   };
 }
 
-test("vendorNexui shells out to the CLI's init then add commands with the configured registry URL and outputDir as cwd", () => {
+test("vendorNexui shells out to the CLI's init then add commands with the configured registry URL and outputDir as cwd", async () => {
   const outputDir = mkdtempSync(join(tmpdir(), "aanya-vendor-cmd-shape-"));
   const calls: Array<{ command: string; cwd: string }> = [];
   const fakeExec = fakeExecThatWritesStubComponents(calls);
@@ -227,7 +227,7 @@ test("vendorNexui shells out to the CLI's init then add commands with the config
   const previous = process.env.NEXUI_REGISTRY_URL;
   process.env.NEXUI_REGISTRY_URL = "https://fixture.example.test";
   try {
-    vendorNexui(outputDir, ["button", "card"], fakeExec);
+    await vendorNexui(outputDir, ["button", "card"], fakeExec);
   } finally {
     if (previous === undefined) delete process.env.NEXUI_REGISTRY_URL;
     else process.env.NEXUI_REGISTRY_URL = previous;
@@ -244,7 +244,7 @@ test("vendorNexui shells out to the CLI's init then add commands with the config
   expect(calls[1]?.command).toContain("card");
 });
 
-test("vendorNexui defaults to the confirmed live registry URL when NEXUI_REGISTRY_URL is unset", () => {
+test("vendorNexui defaults to the confirmed live registry URL when NEXUI_REGISTRY_URL is unset", async () => {
   const outputDir = mkdtempSync(join(tmpdir(), "aanya-vendor-default-registry-"));
   const calls: Array<{ command: string; cwd: string }> = [];
   const fakeExec = fakeExecThatWritesStubComponents(calls);
@@ -252,7 +252,7 @@ test("vendorNexui defaults to the confirmed live registry URL when NEXUI_REGISTR
   const previous = process.env.NEXUI_REGISTRY_URL;
   delete process.env.NEXUI_REGISTRY_URL;
   try {
-    vendorNexui(outputDir, ["button"], fakeExec);
+    await vendorNexui(outputDir, ["button"], fakeExec);
   } finally {
     if (previous !== undefined) process.env.NEXUI_REGISTRY_URL = previous;
     rmSync(outputDir, { recursive: true, force: true });
@@ -261,7 +261,7 @@ test("vendorNexui defaults to the confirmed live registry URL when NEXUI_REGISTR
   expect(calls[0]?.command).toContain("https://new.yugnex.com");
 });
 
-test("vendorNexui defaults to the 13 confirmed-mapped components when none are specified", () => {
+test("vendorNexui defaults to the 13 confirmed-mapped components when none are specified", async () => {
   // Component API audit (docs/nexsidi/plans/2026-08-16-aanya-nexui-migration.md):
   // aanyaTasks/BuildPlan only carry freeform task descriptions and output
   // file paths — no structured record of which UI components a task
@@ -272,7 +272,7 @@ test("vendorNexui defaults to the 13 confirmed-mapped components when none are s
   const calls: Array<{ command: string; cwd: string }> = [];
   const fakeExec = fakeExecThatWritesStubComponents(calls);
   try {
-    vendorNexui(outputDir, undefined, fakeExec);
+    await vendorNexui(outputDir, undefined, fakeExec);
   } finally {
     rmSync(outputDir, { recursive: true, force: true });
   }
@@ -303,7 +303,7 @@ test("vendorNexui defaults to the 13 confirmed-mapped components when none are s
 // silently fails — it returns normally (exit 0 semantics) but never writes
 // that component's .tsx file to disk — and assert vendorNexui throws,
 // identifying the missing component by name, instead of returning silently.
-test("vendorNexui throws naming the missing component(s) when the CLI subprocess exits 0 but a component file never lands on disk", () => {
+test("vendorNexui throws naming the missing component(s) when the CLI subprocess exits 0 but a component file never lands on disk", async () => {
   const outputDir = mkdtempSync(join(tmpdir(), "aanya-vendor-partial-fail-"));
   try {
     // Simulate the real CLI's actual on-disk behavior for a partial failure:
@@ -319,9 +319,9 @@ test("vendorNexui throws naming the missing component(s) when the CLI subprocess
       return ""; // real CLI exits 0 even though "card" was never fetched
     };
 
-    expect(() => vendorNexui(outputDir, ["button", "card"], fakeExec)).toThrow(/card/);
+    await expect(vendorNexui(outputDir, ["button", "card"], fakeExec)).rejects.toThrow(/card/);
     try {
-      vendorNexui(outputDir, ["button", "card"], fakeExec);
+      await vendorNexui(outputDir, ["button", "card"], fakeExec);
     } catch (err) {
       expect(String(err)).not.toContain("button"); // only the ACTUALLY-missing one is named
     }
@@ -330,7 +330,7 @@ test("vendorNexui throws naming the missing component(s) when the CLI subprocess
   }
 });
 
-test("vendorNexui does not throw when the CLI subprocess exits 0 and every requested component file actually landed on disk", () => {
+test("vendorNexui does not throw when the CLI subprocess exits 0 and every requested component file actually landed on disk", async () => {
   const outputDir = mkdtempSync(join(tmpdir(), "aanya-vendor-success-"));
   try {
     const fakeExec = (command: string, options: { cwd: string }) => {
@@ -342,7 +342,7 @@ test("vendorNexui does not throw when the CLI subprocess exits 0 and every reque
       return "";
     };
 
-    expect(() => vendorNexui(outputDir, ["button", "card"], fakeExec)).not.toThrow();
+    await expect(vendorNexui(outputDir, ["button", "card"], fakeExec)).resolves.toBeUndefined();
   } finally {
     rmSync(outputDir, { recursive: true, force: true });
   }
@@ -356,7 +356,7 @@ test("vendorNexui does not throw when the CLI subprocess exits 0 and every reque
 // REAL @yugnex/cli subprocess end-to-end (init writes components.json, add
 // resolves registryDependencies and copies real file content) with zero
 // live network calls to the actual product registry.
-test("vendorNexui (real CLI subprocess) writes components.json and copies real component source into outputDir/components/nexui", () => {
+test("vendorNexui (real CLI subprocess) writes components.json and copies real component source into outputDir/components/nexui", async () => {
   const registryDir = mkdtempSync(join(tmpdir(), "nexsidi-nexui-registry-fixture-"));
   const outputDir = mkdtempSync(join(tmpdir(), "nexsidi-aanya-vendor-output-"));
   try {
@@ -380,7 +380,7 @@ test("vendorNexui (real CLI subprocess) writes components.json and copies real c
     const previous = process.env.NEXUI_REGISTRY_URL;
     process.env.NEXUI_REGISTRY_URL = registryDir;
     try {
-      vendorNexui(outputDir, ["card"]); // real (default) execFn — actually spawns the CLI
+      await vendorNexui(outputDir, ["card"]); // real (default) execFn — actually spawns the CLI
     } finally {
       if (previous === undefined) delete process.env.NEXUI_REGISTRY_URL;
       else process.env.NEXUI_REGISTRY_URL = previous;
@@ -851,4 +851,45 @@ test("writeStaticScaffold adds no font links when none were verified", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// 2026-09-28: real failure (project a034f90ba50e, Plantly). Inside the
+// long-running worker, the synchronous execSync used here failed INSTANTLY
+// with "spawnSync cmd.exe ETIMEDOUT" (~250ms, against a 180s timeout) on all 5
+// activity attempts — the frontend never started. The same command succeeded
+// 5/5 in a separate process, and the agents' own commands (async spawn in
+// tools/command.ts) ran fine in the same worker at the same time. So the
+// install now runs asynchronously, and retries only that instant ETIMEDOUT.
+test("execVendorCommand retries a command that fails instantly with ETIMEDOUT, then returns its output", async () => {
+  let calls = 0;
+  const sleeps: number[] = [];
+  const out = await execVendorCommand("npx x init", { cwd: "/w" }, {
+    execAsync: async () => {
+      calls++;
+      if (calls < 3) throw Object.assign(new Error("spawn cmd.exe ETIMEDOUT"), { code: "ETIMEDOUT" });
+      return "ok";
+    },
+    sleep: async (ms) => { sleeps.push(ms); },
+  });
+  expect(out).toBe("ok");
+  expect(calls).toBe(3);
+  expect(sleeps.length).toBe(2);
+});
+
+test("execVendorCommand does not retry a real failure (e.g. the CLI exiting non-zero)", async () => {
+  let calls = 0;
+  await expect(execVendorCommand("npx x init", { cwd: "/w" }, {
+    execAsync: async () => { calls++; throw Object.assign(new Error("Command failed: exit 1"), { code: 1 }); },
+    sleep: async () => {},
+  })).rejects.toThrow(/exit 1/);
+  expect(calls).toBe(1);
+});
+
+test("execVendorCommand gives up after its retries if the instant ETIMEDOUT keeps happening", async () => {
+  let calls = 0;
+  await expect(execVendorCommand("npx x init", { cwd: "/w" }, {
+    execAsync: async () => { calls++; throw Object.assign(new Error("spawn cmd.exe ETIMEDOUT"), { code: "ETIMEDOUT" }); },
+    sleep: async () => {},
+  })).rejects.toThrow(/ETIMEDOUT/);
+  expect(calls).toBe(3);
 });

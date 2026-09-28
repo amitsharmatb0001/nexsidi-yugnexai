@@ -5,7 +5,7 @@
 import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { execSync } from "child_process";
+import { execSync, exec } from "child_process";
 import { randomBytes } from "crypto";
 import { join } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
@@ -76,7 +76,7 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
   // confirm real network egress (npm registry + the NexUI registry host) is
   // available in whatever environment actually runs generation before relying
   // on this path (see Task 4 of the migration plan).
-  vendorNexui(outputDir);
+  await vendorNexui(outputDir);
 
   // 2. Write static scaffold. The brief's fonts are checked against Google
   // Fonts first (see theme.ts googleFontStylesheets) so the layout only links
@@ -348,7 +348,7 @@ const DEFAULT_NEXUI_REGISTRY_URL = "https://new.yugnex.com";
 // 0.1.1 (only a LICENSE file added) and init/add work against the registry.
 export const NEXUI_CLI_VERSION = "0.2.0";
 
-export type VendorExecFn = (command: string, options: { cwd: string }) => string;
+export type VendorExecFn = (command: string, options: { cwd: string }) => string | Promise<string>;
 
 // 2026-08-16 (review fix, Finding C): no other execSync/spawnSync call site in
 // this codebase that talks to a network endpoint goes unbounded — see
@@ -364,13 +364,50 @@ export type VendorExecFn = (command: string, options: { cwd: string }) => string
 // fast, clean failure matters more here than elsewhere (there wasn't one).
 const VENDOR_EXEC_TIMEOUT_MS = 180_000;
 
-const defaultVendorExecFn: VendorExecFn = (command, options) =>
-  execSync(command, {
-    cwd: options.cwd,
-    encoding: "utf-8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: VENDOR_EXEC_TIMEOUT_MS,
+// 2026-09-28: real failure (project a034f90ba50e). Inside the long-running
+// worker, the synchronous execSync used here failed INSTANTLY with "spawnSync
+// cmd.exe ETIMEDOUT" (~250ms against a 180s timeout) on all 5 activity
+// attempts, so the frontend never started. The same command succeeded 5/5 in
+// a separate process, and the agents' own commands (async spawn, see
+// agent-runtime tools/command.ts) ran fine in the same worker at the same
+// time. So this runs asynchronously now, and retries ONLY that instant
+// ETIMEDOUT (a real CLI failure — non-zero exit, bad registry — fails at once).
+type VendorAsyncExec = (command: string, options: { cwd: string; timeout: number }) => Promise<string>;
+
+const execAsyncDefault: VendorAsyncExec = (command, options) =>
+  new Promise((resolve, reject) => {
+    exec(
+      command,
+      { cwd: options.cwd, timeout: options.timeout, encoding: "utf-8", maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+      (err, stdout, stderr) => (err ? reject(Object.assign(err, { stdout, stderr })) : resolve(String(stdout))),
+    );
   });
+
+const VENDOR_RETRY_DELAYS_MS = [2_000, 5_000];
+
+export async function execVendorCommand(
+  command: string,
+  options: { cwd: string },
+  deps: { execAsync: VendorAsyncExec; sleep: (ms: number) => Promise<void> } = {
+    execAsync: execAsyncDefault,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  },
+): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    const started = Date.now();
+    try {
+      return await deps.execAsync(command, { cwd: options.cwd, timeout: VENDOR_EXEC_TIMEOUT_MS });
+    } catch (err) {
+      const code = (err as { code?: unknown })?.code;
+      const instantTimeout = (code === "ETIMEDOUT" || /ETIMEDOUT/.test(String(err))) && Date.now() - started < 10_000;
+      if (!instantTimeout || attempt >= VENDOR_RETRY_DELAYS_MS.length) throw err;
+      console.warn(`[aanya] "${command.slice(0, 60)}" failed instantly with ETIMEDOUT (attempt ${attempt + 1}) — retrying in ${VENDOR_RETRY_DELAYS_MS[attempt]}ms`);
+      await deps.sleep(VENDOR_RETRY_DELAYS_MS[attempt]!);
+    }
+  }
+}
+
+const defaultVendorExecFn: VendorExecFn = (command, options) => execVendorCommand(command, options);
 
 // ── Vendor NexUI components into the generated project ─────────────────────
 // 2026-08-16 (aanya-nexui-migration Task 1): replaces the old whole-package
@@ -433,19 +470,19 @@ function missingVendoredComponents(outputDir: string, components: readonly strin
   return components.filter((name) => !existsSync(join(componentsDir, `${name}.tsx`)));
 }
 
-export function vendorNexui(
+export async function vendorNexui(
   outputDir: string,
   components: readonly string[] = NEXUI_CONFIRMED_COMPONENTS,
   execFn: VendorExecFn = defaultVendorExecFn,
-): void {
+): Promise<void> {
   const registryUrl = process.env.NEXUI_REGISTRY_URL ?? DEFAULT_NEXUI_REGISTRY_URL;
   const cli = `npx --yes @yugnex/cli@${NEXUI_CLI_VERSION}`;
 
-  execFn(`${cli} init --yes --registry "${registryUrl}"`, { cwd: outputDir });
+  await execFn(`${cli} init --yes --registry "${registryUrl}"`, { cwd: outputDir });
 
   if (components.length > 0) {
     const names = components.map((name) => `"${name}"`).join(" ");
-    execFn(`${cli} add ${names} --yes --registry "${registryUrl}"`, { cwd: outputDir });
+    await execFn(`${cli} add ${names} --yes --registry "${registryUrl}"`, { cwd: outputDir });
 
     const missing = missingVendoredComponents(outputDir, components);
     if (missing.length > 0) {
