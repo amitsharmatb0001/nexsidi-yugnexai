@@ -8,8 +8,17 @@
 // attention" card and its Retry button, and left only the stream's generic
 // "Execution failed. View system logs for details." on screen. An error stage
 // is terminal: keep the status the result endpoint reports, and re-fetch it.
-export function statusForStageEvent(stage: string): { status: "building" | null; refetchResult: boolean } {
-  if (stage === "error") return { status: null, refetchResult: true };
+//
+// 2026-09-28: same bug, wider (project a034f90ba50e): after generation failed
+// the stream kept reporting the stage the workflow is parked at ("generate"),
+// and "building" hid the Retry card for 30 minutes. While the page believes
+// the project needs review, a stage event re-checks the result endpoint (the
+// DB status is authoritative; a retry from anywhere sets it back to building).
+export function statusForStageEvent(
+  stage: string,
+  currentStatus?: string,
+): { status: "building" | null; refetchResult: boolean } {
+  if (stage === "error" || currentStatus === "needs_review") return { status: null, refetchResult: true };
   return { status: "building", refetchResult: stage === "done" || stage === "deliver" };
 }
 

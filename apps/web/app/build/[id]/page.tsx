@@ -831,6 +831,9 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
 
   // ── Build phase state ─────────────────────────────────────────────────────
   const [status,          setStatus]          = useState<BuildStatus>("waiting");
+  // Current status for the long-lived stream handler (its closure would see a stale value) — see lib/build-status.ts.
+  const statusRef = useRef<BuildStatus>("waiting");
+  useEffect(() => { statusRef.current = status; }, [status]);
   const [stage,           setStage]           = useState("spec");
   const [stageMessage,    setStageMessage]    = useState("Initializing...");
   const [result,          setResult]          = useState<ProjectResult | null>(null);
@@ -1076,7 +1079,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       if (ev.stage) {
         // See lib/build-status.ts — an "error" stage must not overwrite a
         // needs_review/failed status with "building".
-        const next = statusForStageEvent(ev.stage);
+        const next = statusForStageEvent(ev.stage, statusRef.current);
         setStage(ev.stage);
         if (next.status) {
           setStatus(next.status);

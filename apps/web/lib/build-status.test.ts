@@ -34,3 +34,15 @@ test("an app URL still means done for every other status (existing behaviour)", 
   expect(statusFromResult({ status: "failed", appUrl: "http://localhost:3200" })).toBe("done");
   expect(statusFromResult({ status: "building", appUrl: null })).toBe("building");
 });
+
+// 2026-09-28: real bug seen live (project a034f90ba50e, Plantly). Generation
+// failed and the project was needs_review, but the status stream kept
+// reporting the stage the workflow is parked at ("generate"), and every stage
+// event forced "building" — the page showed "Writing your code… 2-4 minutes"
+// for 30 minutes with no Retry button. While a project needs review, a stage
+// event re-checks the result instead (a retry from anywhere flips it back).
+test("a stage event never overrides needs_review — it re-checks the result instead", () => {
+  expect(statusForStageEvent("generate", "needs_review")).toEqual({ status: null, refetchResult: true });
+  expect(statusForStageEvent("deploy", "needs_review")).toEqual({ status: null, refetchResult: true });
+  expect(statusForStageEvent("generate", "building")).toEqual({ status: "building", refetchResult: false });
+});
