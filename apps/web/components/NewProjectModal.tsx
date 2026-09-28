@@ -8,6 +8,7 @@ import { Textarea } from "@/components/nexui/textarea";
 import { Button } from "@/components/nexui/button";
 import { css, themeVars as theme } from "@yugnex/core";
 import { ground } from "@/lib/design";
+import { newProjectError } from "@/lib/new-project";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -69,8 +70,9 @@ export default function NewProjectModal({
   const submit = async () => {
     const trimmedName = name.trim();
     const trimmedContext = context.trim();
-    if (!trimmedName) return setError("Give the project a name.");
-    if (!trimmedContext) return setError("Describe what you want built.");
+    // Description is optional — see lib/new-project.ts.
+    const invalid = newProjectError(trimmedName, trimmedContext);
+    if (invalid) return setError(invalid);
 
     setSubmitting(true);
     setError(null);
@@ -104,8 +106,8 @@ export default function NewProjectModal({
         <ModalHeader>
           <ModalTitle>New project</ModalTitle>
           <ModalDescription>
-            Name it and describe what you want built — this becomes the project&apos;s own context, kept
-            separate from every other project.
+            Give it a name. Describing what you want built is optional — you can explain it in the chat
+            next. Anything you write here becomes the project&apos;s own context.
           </ModalDescription>
         </ModalHeader>
 
@@ -122,7 +124,7 @@ export default function NewProjectModal({
         </div>
 
         <div className={field} style={{ marginBottom: 0 }}>
-          <label className={label} htmlFor="np-context">What are you building?</label>
+          <label className={label} htmlFor="np-context">What are you building? (optional)</label>
           <Textarea
             id="np-context"
             value={context}

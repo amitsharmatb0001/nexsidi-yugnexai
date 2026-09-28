@@ -23,3 +23,15 @@ test("the old clone route is gone", async () => {
   });
   expect(res.status).toBe(404);
 });
+
+// 2026-09-28 (Amit): the description is optional when creating a project —
+// people often start with just a name and explain the app in the chat. It was
+// required ("context_required"), which pushed people to type filler like "a".
+test("validateNewProject accepts an empty description but still requires a name and caps the description length", async () => {
+  const { validateNewProject } = await import("./projects.ts");
+  expect(validateNewProject({ name: "Plantly", context: "" })).toEqual({ name: "Plantly", context: "" });
+  expect(validateNewProject({ name: "Plantly" })).toEqual({ name: "Plantly", context: "" });
+  expect(validateNewProject({ name: "  Plantly ", context: "  plants  " })).toEqual({ name: "Plantly", context: "plants" });
+  expect(validateNewProject({ name: "", context: "x" })).toEqual({ error: "name_required" });
+  expect(validateNewProject({ name: "P", context: "x".repeat(8001) })).toEqual({ error: "context_too_long" });
+});

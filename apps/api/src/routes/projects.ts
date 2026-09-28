@@ -118,17 +118,27 @@ function newProjectId(): string {
 // immediately after this returns (sessionId = the returned id) — this route
 // itself does not talk to the planner, so a validation failure here can
 // never leave a half-started chat session behind.
+// 2026-09-28 (Amit): the description is optional — people often start with
+// just a name and explain the app in the chat. It used to be required
+// ("context_required"), which pushed people to type filler like "a".
+export function validateNewProject(
+  body: { name?: unknown; context?: unknown } | null,
+): { name: string; context: string } | { error: "name_required" | "name_too_long" | "context_too_long" } {
+  const name = typeof body?.name === "string" ? body.name.trim() : "";
+  const context = typeof body?.context === "string" ? body.context.trim() : "";
+  if (!name) return { error: "name_required" };
+  if (name.length > 200) return { error: "name_too_long" };
+  if (context.length > 8000) return { error: "context_too_long" };
+  return { name, context };
+}
+
 projectsRouter.post("/", async (c) => {
   const userId = c.get("userId") as string;
 
   const body = (await c.req.json().catch(() => null)) as { name?: unknown; context?: unknown } | null;
-  const name = typeof body?.name === "string" ? body.name.trim() : "";
-  const context = typeof body?.context === "string" ? body.context.trim() : "";
-
-  if (!name) return c.json({ error: "name_required" }, 400);
-  if (name.length > 200) return c.json({ error: "name_too_long" }, 400);
-  if (!context) return c.json({ error: "context_required" }, 400);
-  if (context.length > 8000) return c.json({ error: "context_too_long" }, 400);
+  const valid = validateNewProject(body);
+  if ("error" in valid) return c.json({ error: valid.error }, 400);
+  const { name, context } = valid;
 
   // Collision odds on a 12-hex-char id are negligible (16^12), but the id is
   // also this project's primary key and its on-disk build directory name —
