@@ -99,7 +99,11 @@ export function pathToNextjsFile(urlPath: string): string {
   if (/^\/(sign-?up)$/i.test(urlPath)) return "app/(auth)/sign-up/page.tsx";
   // Everything else: /about → app/about/page.tsx
   const clean = urlPath.replace(/\/+$/, ""); // strip trailing slash
-  return `app${clean}/page.tsx`;
+  // 2026-09-28: Express-style ":id" → Next.js "[id]" (project a034f90ba50e
+  // got "app/plants/:id/page.tsx" — not a dynamic route, and ":" is illegal in
+  // a Windows folder name).
+  const nextjs = clean.replace(/\/:([A-Za-z_][A-Za-z0-9_]*)/g, "/[$1]");
+  return `app${nextjs}/page.tsx`;
 }
 
 // ── Main entry ────────────────────────────────────────────────────────────────

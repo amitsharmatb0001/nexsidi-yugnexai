@@ -416,3 +416,17 @@ test("ARJUN_SYSTEM_PROMPT names the real UI stack (@yugnex/core + components/nex
   expect(ARJUN_SYSTEM_PROMPT).toContain("@yugnex/core");
   expect(ARJUN_SYSTEM_PROMPT).toContain("components/nexui/");
 });
+
+// 2026-09-28: real bug (project a034f90ba50e, Plantly). The planner wrote the
+// plant page as "/plants/:id" (Express-style) and this function copied it
+// straight into the file path, so the frontend task said
+// "app/plants/:id/page.tsx" — not a Next.js dynamic route, and ":" isn't even
+// a legal Windows folder name. Earlier plans happened to write "[id]".
+test("pathToNextjsFile turns :param segments into Next.js [param] folders", async () => {
+  const { pathToNextjsFile } = await import("./index.ts");
+  expect(pathToNextjsFile("/plants/:id")).toBe("app/plants/[id]/page.tsx");
+  expect(pathToNextjsFile("/plants/:id/edit")).toBe("app/plants/[id]/edit/page.tsx");
+  expect(pathToNextjsFile("/users/:userId/posts/:postId")).toBe("app/users/[userId]/posts/[postId]/page.tsx");
+  expect(pathToNextjsFile("/plants/[id]")).toBe("app/plants/[id]/page.tsx");
+  expect(pathToNextjsFile("/about/")).toBe("app/about/page.tsx");
+});
