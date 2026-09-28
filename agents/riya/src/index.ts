@@ -4,7 +4,7 @@
 // Agent ACTS via tools — no one-shot generation.
 
 import { runAgentEscalated, parseServiceHostPort, ensureDeliveryGitignore } from "@nexsidi/agent-runtime";
-import { DEFAULT_AGENT_MODEL } from "@nexsidi/llm-client";
+import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "fs";
 import { execSync } from "child_process";
 import { randomBytes } from "crypto";
@@ -1487,10 +1487,10 @@ export async function run(
   // with the same unverified-assumption risk that caused this exact bug.
   const result = await runAgentEscalated({
     agentName: "riya",
-    // 2026-09-28: both NIM models retired (kimi-k2.6 404, mistral-nemotron
-    // 410) — see llm-client RETIRED_NIM_MODELS. Runs on the provider directly.
-    model: DEFAULT_AGENT_MODEL,
-    fallbackModels: [],
+    // 2026-09-28: kimi-k2.6 / mistral-nemotron were retired (see llm-client
+    // RETIRED_NIM_MODELS); Riya's chain now comes from the model registry.
+    model: AGENT_MODELS.riya,
+    fallbackModels: FALLBACK_CHAIN.riya,
     apiKey: process.env.NIM_API_KEY ?? "",
     systemPrompt: "",
     initialMessage: buildAgentTask(projectId, buildDir, frontendPort, backendPort, dbPort, jwtSecret),

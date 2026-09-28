@@ -110,7 +110,7 @@ test("runAgent auto-discovers and executes MCP tools from mcp-config.json", asyn
       // disallowed value anyway instead of failing). nimChatWithTools is
       // fully mocked above and ignores the model string entirely — this is
       // a placeholder, not a real model to add to ModelId.
-      model: "google/mock-model" as ModelId,
+      model: "meta/muse-glimmer-30b", // 2026-09-28: a real registry model — the tool loop no longer accepts made-up names
       apiKey: "key",
       systemPrompt: "prompt",
       initialMessage: "start",

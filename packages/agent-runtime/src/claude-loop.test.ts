@@ -15,7 +15,7 @@ const BASE_CONFIG: AgentRunConfig = {
   agentName: "test-agent",
   // 2026-09-28: any NIM-callable model — kimi-k2.6 was retired (404); this
   // fixture exercises the NIM -> escalation path, which needs one.
-  model: "nvidia/nemotron-3-super-120b-a12b" as AgentRunConfig["model"],
+  model: "meta/muse-glimmer-30b",
   apiKey: "nim-key",
   systemPrompt: "system",
   initialMessage: "do the thing",
@@ -327,4 +327,24 @@ test("runAgentEscalated defaults the logged reason to cannot_finish when escalat
     console.log = originalLog;
   }
   expect(logs.some((l) => l.includes("reason: cannot_finish"))).toBe(true);
+});
+
+// 2026-09-28 (Amit): NIM models are free but 2-3x slower than Gemini; like
+// Claude they are behind an env flag. NIM_ENABLED=false sends every agent
+// straight to its provider without a code change (default: on).
+test("NIM_ENABLED=false skips the NIM loop even for an agent with NIM models configured", async () => {
+  const prior = process.env.NIM_ENABLED;
+  process.env.NIM_ENABLED = "false";
+  try {
+    let nimCalled = false;
+    const deps: AgentEscalationDeps = {
+      runNim: async () => { nimCalled = true; return { success: true, summary: "", filesWritten: [], iterations: 1, errors: [] }; },
+      runClaude: async () => ({ success: true, summary: "provider", filesWritten: [], iterations: 1, errors: [] }),
+    };
+    const result = await runAgentEscalated({ agentName: "riya", model: "meta/muse-glimmer-30b", apiKey: "", systemPrompt: "", initialMessage: "t", sandboxDir: "/w" } as AgentRunConfig, deps);
+    expect(nimCalled).toBe(false);
+    expect(result.summary).toBe("provider");
+  } finally {
+    if (prior === undefined) delete process.env.NIM_ENABLED; else process.env.NIM_ENABLED = prior;
+  }
 });

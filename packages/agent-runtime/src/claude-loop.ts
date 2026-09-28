@@ -32,7 +32,8 @@ import {
 // task — see claude.ts) makes the real per-call token counts available here.
 import { recordSpend } from "./cost-budget.ts";
 import { isClaudeEnabled, usesClaude } from "./claude-flag.ts";
-import { runAgent, buildToolList, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult, sanitizeModelChain } from "./loop.ts";
+import { runAgent, buildToolList, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult, sanitizeModelChain, toolChatProviderFor } from "./loop.ts";
+import { isNimEnabled } from "@nexsidi/llm-client";
 import { join } from "path";
 import { readFileSync } from "node:fs";
 import { runAgentWithGemini, screenshotImagePathFor } from "./gemini-loop.ts";
@@ -543,9 +544,11 @@ export function resolveEscalationRunner(): (config: AgentRunConfig) => Promise<A
 
 // A model the NIM loop (loop.ts runAgent) can actually call — Gemini and
 // local Ollama models are served elsewhere, retired ones are dropped.
+// NIM_ENABLED=false (llm-client isNimEnabled) leaves only local tool-capable
+// Ollama models.
 function nimCallable(config: AgentRunConfig): string[] {
-  return sanitizeModelChain([config.model, ...(config.fallbackModels ?? [])])
-    .filter((m) => !m.startsWith("google/") && !m.startsWith("gemini-"));
+  const chain = sanitizeModelChain([config.model, ...(config.fallbackModels ?? [])]);
+  return isNimEnabled() ? chain : chain.filter((m) => toolChatProviderFor(m) === "ollama");
 }
 
 export async function runAgentEscalated(

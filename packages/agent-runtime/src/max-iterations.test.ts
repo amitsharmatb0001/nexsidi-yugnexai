@@ -65,7 +65,7 @@ test("config.maxIterations overrides the default MAX_ITERATIONS cap for this run
       // disallowed model anyway). A bare "mock-model" has no allowed
       // provider prefix and would be dropped before ever reaching the
       // mocked nimChatWithTools below — not a real model to add to ModelId.
-      model: "google/mock-model" as any,
+      model: "meta/muse-glimmer-30b", // 2026-09-28: a real registry model — the tool loop no longer accepts made-up names
       apiKey: "x",
       systemPrompt: "test",
       initialMessage: "test",

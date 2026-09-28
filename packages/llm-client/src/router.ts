@@ -1,10 +1,10 @@
 import { nimChat } from "./nim.ts";
 import { ollamaChat } from "./ollama.ts";
 import { geminiChat, geminiChatWithTools, circuitKeyFor, type GeminiMessage, type GeminiToolDef, type GeminiChatWithToolsResult, type GeminiThinkingLevel } from "./gemini.ts";
-import { AGENT_MODELS, FALLBACK_CHAIN, type AgentName, type ChatMessage, type ModelId } from "./types.ts";
+import { AGENT_MODELS, FALLBACK_CHAIN, type AgentName, type ChatMessage, type ModelId, OLLAMA_MODELS, isNimEnabled } from "./types.ts";
 import { getState } from "./circuit-breaker.ts";
 
-const OLLAMA_MODELS = new Set<ModelId>(["qwen2.5-coder:7b-instruct-q4_K_M"]);
+// 2026-09-28: OLLAMA_MODELS now lives in types.ts (one registry for every model name).
 
 // 2026-07-08: root-caused why a Gemini-primary generation run still took
 // 6.5 hours despite generation finishing in minutes — Navya/Karan/Deepika's
@@ -84,7 +84,8 @@ export async function agentChat(
     return { content, modelUsed: "gemini-3.5-flash" };
   }
 
-  const chain = FALLBACK_CHAIN[agentName];
+  // NIM_ENABLED=false keeps only local Ollama entries (types.ts isNimEnabled).
+  const chain = isNimEnabled() ? FALLBACK_CHAIN[agentName] : FALLBACK_CHAIN[agentName].filter((m) => OLLAMA_MODELS.has(m));
   const errors: string[] = [];
 
   // 2026-09-28: every NIM model was retired (types.ts RETIRED_NIM_MODELS), so

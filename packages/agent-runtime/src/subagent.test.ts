@@ -150,7 +150,7 @@ test("dynamic subagent spawning and execution", async () => {
   try {
     const result = await runAgent({
       agentName: "parent-agent",
-      model: "gemini-3.5-flash",
+      model: "meta/muse-glimmer-30b", // 2026-09-28: a real registry model — the tool loop no longer accepts made-up names
       apiKey: "key",
       systemPrompt: "prompt",
       initialMessage: "start",

@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { MCPClient } from "./mcp/client.ts";
-import { nimChatWithTools, type NimToolDef, type NimMessage, type NimToolCall, RETIRED_NIM_MODELS } from "@nexsidi/llm-client";
+import { nimChatWithTools, type NimToolDef, type NimMessage, type NimToolCall, RETIRED_NIM_MODELS, ACTIVE_NIM_MODELS, OLLAMA_MODELS, OLLAMA_TOOL_MODELS, ollamaChatWithTools } from "@nexsidi/llm-client";
 import { execWriteFile, execWriteFiles, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol, FILE_TOOL_DEFS } from "./tools/file.ts";
 import { initWorkspaceTransaction, commitWorkspaceTransaction } from "./tools/git.ts";
 import { compactHistory, estimateTokenCount } from "./compaction.ts";
@@ -376,35 +376,39 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
 // types.ts RETIRED_NIM_MODELS.
 const KNOWN_DEAD_MODELS = new Set(Object.keys(RETIRED_NIM_MODELS));
 
-export function sanitizeModelChain(models: string[]): string[] {
-  const allowedPrefixes = ["google/", "mistralai/", "meta/", "qwen/", "nvidia/"];
-  const allowedExact = ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash"];
+// 2026-09-28: was a NAME-PREFIX allowlist (google/, mistralai/, meta/, qwen/,
+// nvidia/), which dropped real models outside those prefixes (the local
+// Ollama "qwen2.5-coder:7b..." has no slash; moonshotai/, z-ai/,
+// deepseek-ai/) and let through names nothing here could serve (Claude names
+// were rewritten to "google/gemini-3.5-flash" and then sent to NIM). Now a
+// lookup in llm-client's model registry: a model survives only if this tool
+// loop can actually call it — an active NIM model, or an Ollama model that
+// can make tool calls. Gemini/Claude run through the provider path
+// (claude-loop.ts runAgentEscalated), not this loop.
+export function sanitizeModelChain(
+  models: string[],
+  opts: { ollamaToolModels?: ReadonlySet<string> } = {},
+): string[] {
+  const ollamaTools = opts.ollamaToolModels ?? OLLAMA_TOOL_MODELS;
+  const activeNim = new Set<string>(ACTIVE_NIM_MODELS);
+  return models.filter((m) => {
+    if (KNOWN_DEAD_MODELS.has(m)) {
+      console.warn(`[model-routing] Dropping retired model "${m}" — ${RETIRED_NIM_MODELS[m]}`);
+      return false;
+    }
+    if (activeNim.has(m) || ollamaTools.has(m)) return true;
+    if (OLLAMA_MODELS.has(m)) {
+      console.warn(`[model-routing] Skipping "${m}" for tool work — this local model can't make tool calls (see llm-client OLLAMA_TOOL_MODELS)`);
+    } else if (!m.startsWith("gemini-") && !m.startsWith("google/") && !m.includes("claude")) {
+      console.warn(`[model-routing] Dropping unknown model "${m}" — not in llm-client's model registry`);
+    }
+    return false;
+  });
+}
 
-  return models
-    .filter((m) => {
-      if (KNOWN_DEAD_MODELS.has(m)) {
-        console.warn(`[model-routing] Dropping known-dead model "${m}" (permanent 410 — see KNOWN_DEAD_MODELS)`);
-        return false;
-      }
-      return true;
-    })
-    .map((m) => {
-      if (m.startsWith("anthropic/") || m.includes("claude") || m.includes("vertex")) {
-        console.warn(`[model-routing] Replacing disallowed model "${m}" with "google/gemini-3.5-flash"`);
-        return "google/gemini-3.5-flash";
-      }
-      return m;
-    })
-    .filter((m) => {
-      const lower = m.toLowerCase();
-      const isAllowed =
-        allowedPrefixes.some((prefix) => lower.startsWith(prefix)) ||
-        allowedExact.some((exact) => lower.includes(exact));
-      if (!isAllowed) {
-        console.warn(`[model-routing] Dropping disallowed model "${m}"`);
-      }
-      return isAllowed;
-    });
+// Which endpoint serves a tool-calling request for this model.
+export function toolChatProviderFor(model: string): "ollama" | "nim" {
+  return OLLAMA_MODELS.has(model) || OLLAMA_TOOL_MODELS.has(model) ? "ollama" : "nim";
 }
 
 export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> {
@@ -720,7 +724,9 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
       await bucket.acquire(estimatedTokens);
       console.log(`[${config.agentName}:agent] token acquired, calling ${currentModel}...`);
 
-      response = await nimChatWithTools(currentModel, messages, tools, config.apiKey);
+      response = toolChatProviderFor(currentModel) === "ollama"
+        ? await ollamaChatWithTools(currentModel, messages, tools)
+        : await nimChatWithTools(currentModel, messages, tools, config.apiKey);
 
       const usage = (response as any).usage ?? { prompt_tokens: estimatedTokens, completion_tokens: 300 };
       budget.recordRequest(usage.prompt_tokens, usage.completion_tokens);

@@ -4,23 +4,27 @@ import { sanitizeModelChain } from "./loop.ts";
 
 const loopSource = readFileSync(new URL("./loop.ts", import.meta.url), "utf-8");
 
-test("sanitizeModelChain filters and replaces disallowed models", () => {
+// 2026-09-28: the chain used to be filtered by NAME PREFIX (google/, mistralai/,
+// meta/, qwen/, nvidia/). That dropped every real model outside those prefixes
+// (the local Ollama "qwen2.5-coder:7b..." has no slash; moonshotai/, z-ai/,
+// deepseek-ai/) and let through names nothing could serve (Claude names were
+// rewritten to "google/gemini-3.5-flash", which this loop then sent to NIM).
+// It is now a lookup in the model registry: only models the tool loop can
+// actually call (active NIM models, tool-capable Ollama models) survive.
+test("sanitizeModelChain keeps only registry models the tool loop can call", () => {
   const models = [
-    "anthropic/claude-3-5-sonnet", // Disallowed -> replace with gemini-3.5-flash
-    "google/gemini-3.1-pro-preview", // Allowed
-    "vertex/claude-3",             // Disallowed -> replace with gemini-3.5-flash
-    "meta/llama-3.1-405b",         // Allowed
-    "openai/gpt-4o",               // Disallowed -> drop
+    "anthropic/claude-3-5-sonnet",       // served by the provider path, not this loop -> drop
+    "google/gemini-3.1-pro-preview",     // served by the provider path -> drop
+    "meta/muse-glimmer-30b",             // active NIM model -> keep
+    "qwen2.5-coder:7b-instruct-q4_K_M",  // known Ollama model, but no tool calling -> drop
+    "openai/gpt-4o",                     // unknown name -> drop
+    "nvidia/nemotron-3-ultra-550b-a55b", // active NIM model -> keep
   ];
+  expect(sanitizeModelChain(models)).toEqual(["meta/muse-glimmer-30b", "nvidia/nemotron-3-ultra-550b-a55b"]);
+});
 
-  const result = sanitizeModelChain(models);
-
-  expect(result).toEqual([
-    "google/gemini-3.5-flash",
-    "google/gemini-3.1-pro-preview",
-    "google/gemini-3.5-flash",
-    "meta/llama-3.1-405b",
-  ]);
+test("sanitizeModelChain keeps a tool-capable Ollama model (by name, no slash needed)", () => {
+  expect(sanitizeModelChain(["qwen3-coder:30b"], { ollamaToolModels: new Set(["qwen3-coder:30b"]) })).toEqual(["qwen3-coder:30b"]);
 });
 
 // 2026-08-06: real bug found live (project bae438767bed) — qwen/qwen3-next-
@@ -37,12 +41,12 @@ test("sanitizeModelChain drops the known-dead qwen3-next-80b model even though i
   const models = [
     "qwen/qwen3-next-80b-a3b-instruct", // known-dead -> drop
     "moonshotai/kimi-k2.6",             // disallowed provider -> drop
-    "nvidia/nemotron-3-super-120b-a12b", // allowed (2026-09-28: was mistral-nemotron, now retired too)
+    "meta/muse-glimmer-30b",             // active (2026-09-28: was mistral-nemotron, now retired too)
   ];
 
   const result = sanitizeModelChain(models);
 
-  expect(result).toEqual(["nvidia/nemotron-3-super-120b-a12b"]);
+  expect(result).toEqual(["meta/muse-glimmer-30b"]);
 });
 
 // 2026-08-09: real bug found live (project meridianbk4) — at the time,
@@ -95,8 +99,8 @@ test("sanitizeModelChain drops every retired NIM model (Riya's old kimi + mistra
 // those agents' first raw-NIM attempt (whenever Gemini-tier routing isn't
 // active) is a guaranteed wasted 410 before falling through.
 test("sanitizeModelChain drops the known-dead mistral-medium-3.5-128b model even though its provider prefix is otherwise allowed", () => {
-  const result = sanitizeModelChain(["mistralai/mistral-medium-3.5-128b", "nvidia/nemotron-3-super-120b-a12b"]);
-  expect(result).toEqual(["nvidia/nemotron-3-super-120b-a12b"]);
+  const result = sanitizeModelChain(["mistralai/mistral-medium-3.5-128b", "meta/muse-glimmer-30b"]);
+  expect(result).toEqual(["meta/muse-glimmer-30b"]);
 });
 
 test("runAgent fails fast with escalationReason cannot_finish when the sanitized model chain is empty, instead of silently reusing the disallowed model", () => {

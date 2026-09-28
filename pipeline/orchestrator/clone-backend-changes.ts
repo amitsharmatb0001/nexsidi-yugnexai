@@ -23,7 +23,7 @@
 // db/migrations/ after the agent run completes, then deletes the hand-off
 // file. The agent's write access never actually widens.
 import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
-import { DEFAULT_AGENT_MODEL } from "@nexsidi/llm-client";
+import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { join } from "node:path";
 import { resolveGeneratorRunner, type GeneratorRunner } from "../../packages/agent-runtime/src/generator-tier.ts";
 
@@ -108,8 +108,8 @@ export async function applyCloneBackendChanges(
     agentName: "shubham-clone-edit",
     // Same primary + fallback Shubham's own generator uses — this literally
     // IS his job (backend endpoints), just scoped to an existing app.
-    model: DEFAULT_AGENT_MODEL, // 2026-09-28: NIM models retired — see llm-client RETIRED_NIM_MODELS
-    fallbackModels: [],
+    model: AGENT_MODELS.shubham, // 2026-09-28: from llm-client's model registry (types.ts)
+    fallbackModels: FALLBACK_CHAIN.shubham,
     apiKey: opts.apiKey,
     systemPrompt: CLONE_BACKEND_EDIT_SYSTEM_PROMPT,
     initialMessage: buildBackendEditTask(opts.instructions),

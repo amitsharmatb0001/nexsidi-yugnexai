@@ -148,3 +148,11 @@ test("read-only agents get no workspace git transaction and cannot call rollback
   expect(workspaceTransactionDir({ sandboxDir: "/w" })).toBe("/w");
   expect(READONLY_BLOCKED_TOOLS.has("rollback_workspace")).toBe(true);
 });
+
+// 2026-09-28: the tool loop now picks the endpoint per model instead of
+// sending everything to NIM.
+test("toolChatProviderFor routes Ollama models to Ollama and everything else to NIM", async () => {
+  const { toolChatProviderFor } = await import("./loop.ts");
+  expect(toolChatProviderFor("qwen2.5-coder:7b-instruct-q4_K_M")).toBe("ollama");
+  expect(toolChatProviderFor("meta/muse-glimmer-30b")).toBe("nim");
+});
