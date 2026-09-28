@@ -183,8 +183,8 @@ test("run() retries once on an empty/unparseable first response before giving up
     chat: async () => {
       callCount++;
       return callCount === 1
-        ? { content: "", modelUsed: "mistralai/mistral-nemotron" as const }
-        : { content: JSON.stringify({ findings: [] }), modelUsed: "mistralai/mistral-nemotron" as const };
+        ? { content: "", modelUsed: "gemini-3.8-flash" as const }
+        : { content: JSON.stringify({ findings: [] }), modelUsed: "gemini-3.8-flash" as const };
     },
   };
   const result = await run("diag", 1, "// some code", deps);
@@ -194,7 +194,7 @@ test("run() retries once on an empty/unparseable first response before giving up
 });
 
 test("run() returns the default-FAIL result (not a thrown error) when BOTH attempts are empty/unparseable", async () => {
-  const deps = { chat: async () => ({ content: "", modelUsed: "mistralai/mistral-nemotron" as const }) };
+  const deps = { chat: async () => ({ content: "", modelUsed: "gemini-3.8-flash" as const }) };
   const result = await run("diag", 1, "// some code", deps);
   expect(result.passed).toBe(false);
   expect(result.findings[0]!.severity).toBe("CRITICAL");
@@ -213,7 +213,7 @@ test("run() requests a wide output budget so a full-codebase review isn't trunca
   const deps = {
     chat: async (_agent: string, _messages: unknown, _apiKey: string, opts?: { maxTokens?: number }) => {
       capturedOpts = opts;
-      return { content: JSON.stringify({ findings: [] }), modelUsed: "mistralai/mistral-nemotron" as const };
+      return { content: JSON.stringify({ findings: [] }), modelUsed: "gemini-3.8-flash" as const };
     },
   };
   await run("diag", 1, "// some code", deps as unknown as NavyaDeps);

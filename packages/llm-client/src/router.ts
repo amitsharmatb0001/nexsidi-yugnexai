@@ -87,6 +87,14 @@ export async function agentChat(
   const chain = FALLBACK_CHAIN[agentName];
   const errors: string[] = [];
 
+  // 2026-09-28: every NIM model was retired (types.ts RETIRED_NIM_MODELS), so
+  // most chains are empty on purpose — Gemini is the configured path, not a
+  // last resort.
+  if (chain.length === 0) {
+    const { content } = await geminiChat(messages, { maxTokens: opts?.maxTokens });
+    return { content, modelUsed: "gemini-3.5-flash" };
+  }
+
   for (const model of chain) {
     const circuitKey = OLLAMA_MODELS.has(model) ? `ollama:${model}` : `nim:${model}`;
     if (getState(circuitKey) === "OPEN") continue;

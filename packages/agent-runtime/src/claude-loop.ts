@@ -31,7 +31,8 @@ import {
 // any of the three loops). claudeChatWithTools's usage field (added this
 // task — see claude.ts) makes the real per-call token counts available here.
 import { recordSpend } from "./cost-budget.ts";
-import { runAgent, buildToolList, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
+import { isClaudeEnabled, usesClaude } from "./claude-flag.ts";
+import { runAgent, buildToolList, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult, sanitizeModelChain } from "./loop.ts";
 import { join } from "path";
 import { readFileSync } from "node:fs";
 import { runAgentWithGemini, screenshotImagePathFor } from "./gemini-loop.ts";
@@ -527,14 +528,38 @@ export interface AgentEscalationDeps {
 // Gemini has no such gating and was confirmed working live. ESCALATION_PROVIDER
 // swaps the second-tier model per environment without touching
 // runAgentEscalated's own orchestration logic below.
+//
+// 2026-09-28 (Amit): Claude is a feature flag, OFF unless CLAUDE_ENABLED=true —
+// see ./claude-flag.ts. While off, every escalation goes to Gemini.
+export { isClaudeEnabled };
+
+export function escalationProviderName(): "Claude" | "Gemini" {
+  return usesClaude() ? "Claude" : "Gemini";
+}
+
 export function resolveEscalationRunner(): (config: AgentRunConfig) => Promise<AgentRunResult> {
-  return process.env.ESCALATION_PROVIDER === "gemini" ? runAgentWithGemini : runAgentWithClaude;
+  return usesClaude() ? runAgentWithClaude : runAgentWithGemini;
+}
+
+// A model the NIM loop (loop.ts runAgent) can actually call — Gemini and
+// local Ollama models are served elsewhere, retired ones are dropped.
+function nimCallable(config: AgentRunConfig): string[] {
+  return sanitizeModelChain([config.model, ...(config.fallbackModels ?? [])])
+    .filter((m) => !m.startsWith("google/") && !m.startsWith("gemini-"));
 }
 
 export async function runAgentEscalated(
   config: AgentRunConfig,
   deps: AgentEscalationDeps = { runNim: runAgent, runClaude: resolveEscalationRunner() },
 ): Promise<AgentRunResult & { escalated: boolean }> {
+  // 2026-09-28: no NIM model configured (all were retired) — the provider IS
+  // this agent's normal path, so run it directly instead of running the NIM
+  // loop just to fail and "escalate".
+  if (nimCallable(config).length === 0) {
+    console.log(`[${config.agentName}] no NIM model configured — running on ${escalationProviderName()}`);
+    return { ...(await deps.runClaude(config)), escalated: false };
+  }
+
   const nimResult = await deps.runNim(config);
 
   if (nimResult.success) {
@@ -545,7 +570,7 @@ export async function runAgentEscalated(
   // with cause, not just that it happened.
   console.log(
     `[${config.agentName}:escalation] NIM path failed (success=false) after ${nimResult.iterations} iterations — ` +
-      `reason: ${nimResult.escalationReason ?? "cannot_finish"} — escalating to Claude (claude-sonnet-5) as one-time retry`,
+      `reason: ${nimResult.escalationReason ?? "cannot_finish"} — escalating to ${escalationProviderName()} as one-time retry`,
   );
 
   const claudeConfig: AgentRunConfig = { ...config, initialMessage: buildEscalationMessage(config.initialMessage, nimResult) };

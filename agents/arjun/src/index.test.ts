@@ -42,7 +42,7 @@ test("a single empty response is retried once and succeeds on the second attempt
   let callCount = 0;
   const stubChat = async () => {
     callCount++;
-    return { content: callCount === 1 ? "" : VALID_PLAN_JSON, modelUsed: "mistralai/mistral-nemotron" as const };
+    return { content: callCount === 1 ? "" : VALID_PLAN_JSON, modelUsed: "gemini-3.8-flash" as const };
   };
 
   const plan = await run(MINIMAL_SPEC, { chat: stubChat, runVanya: stubRunVanya });
@@ -52,7 +52,7 @@ test("a single empty response is retried once and succeeds on the second attempt
 });
 
 test("two consecutive empty responses still throw", async () => {
-  const stubChat = async () => ({ content: "", modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: "", modelUsed: "gemini-3.8-flash" as const });
 
   await expect(run(MINIMAL_SPEC, { chat: stubChat, runVanya: stubRunVanya })).rejects.toThrow();
 });
@@ -61,7 +61,7 @@ test("two consecutive empty responses still throw", async () => {
 // BuildPlan at all (Aanya relied solely on spec.description). This proves
 // Vanya's brief actually reaches the plan Aanya receives.
 test("Vanya's design brief flows through into BuildPlan.designBrief", async () => {
-  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "gemini-3.8-flash" as const });
   const customBrief: DesignBrief = {
     mood: "Playful and bold",
     palette: [{ name: "ink", hex: "#111111" }, { name: "paper", hex: "#FFFFFF" }, { name: "accent", hex: "#FF6600" }],
@@ -131,7 +131,7 @@ test("run() in annotation mode self-heals dropped locked pages — aanyaTasks in
     pranavTasks: [],
     independenceVerified: true,
   });
-  const stubChat = async () => ({ content: incompletePlanJson, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: incompletePlanJson, modelUsed: "gemini-3.8-flash" as const });
 
   const plan = await run(MINIMAL_SPEC, { chat: stubChat, runVanya: stubRunVanya }, LOCKED_PAGES, "none");
 
@@ -142,7 +142,7 @@ test("run() in annotation mode self-heals dropped locked pages — aanyaTasks in
 });
 
 test("run() does NOT run reconciliation in free-form mode (no lockedPages provided) — nothing to reconcile against", async () => {
-  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "gemini-3.8-flash" as const });
   const plan = await run(MINIMAL_SPEC, { chat: stubChat, runVanya: stubRunVanya }); // no lockedPages arg
   expect(plan.aanyaTasks).toEqual([]); // untouched — no synthesized tasks appended
 });
@@ -313,7 +313,7 @@ const SPEC_WITH_FEATURES: ProjectSpec = {
 };
 
 test("BuildPlan carries the spec's features through to the generators", async () => {
-  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "gemini-3.8-flash" as const });
 
   const plan = await run(SPEC_WITH_FEATURES, { chat: stubChat, runVanya: stubRunVanya });
 
@@ -376,7 +376,7 @@ test("run() reuses the prior design brief when a prior brief exists and feedback
   let vanyaCalls = 0;
   const trackedRunVanya = async (): Promise<DesignBrief> => { vanyaCalls++; return FALLBACK_BRIEF; };
   const priorBrief: DesignBrief = { ...FALLBACK_BRIEF, mood: "a distinctive prior mood, not the fallback" };
-  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "gemini-3.8-flash" as const });
 
   const plan = await run(MINIMAL_SPEC, { chat: stubChat, runVanya: trackedRunVanya }, undefined, undefined, priorBrief, "remove the sign-up endpoint");
 
@@ -388,7 +388,7 @@ test("run() still calls Vanya fresh when feedback IS design-related, even with a
   let vanyaCalls = 0;
   const trackedRunVanya = async (): Promise<DesignBrief> => { vanyaCalls++; return FALLBACK_BRIEF; };
   const priorBrief: DesignBrief = { ...FALLBACK_BRIEF, mood: "the old mood the user wants changed" };
-  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "gemini-3.8-flash" as const });
 
   await run(MINIMAL_SPEC, { chat: stubChat, runVanya: trackedRunVanya }, undefined, undefined, priorBrief, "make the accent color warmer");
 
@@ -398,7 +398,7 @@ test("run() still calls Vanya fresh when feedback IS design-related, even with a
 test("run() calls Vanya fresh on the first-ever attempt — no prior brief to reuse", async () => {
   let vanyaCalls = 0;
   const trackedRunVanya = async (): Promise<DesignBrief> => { vanyaCalls++; return FALLBACK_BRIEF; };
-  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: VALID_PLAN_JSON, modelUsed: "gemini-3.8-flash" as const });
 
   // No priorDesignBrief, no rejectionFeedback — the very first pass through the loop.
   await run(MINIMAL_SPEC, { chat: stubChat, runVanya: trackedRunVanya });

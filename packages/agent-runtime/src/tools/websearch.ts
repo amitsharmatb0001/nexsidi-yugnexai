@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { CLAUDE_ESCALATION_MODEL, geminiWebSearch, type NimToolDef } from "@nexsidi/llm-client";
+import { usesClaude } from "../claude-flag.ts";
 import type { ToolResult } from "./file.ts";
 
 // Real server-side web search via Claude's Messages API — the `web_search`
@@ -32,12 +33,19 @@ async function execWebSearchViaGemini(args: { query: string; timeout_ms?: number
   }
 }
 
+// 2026-09-28: web search is a Claude call (Anthropic's web_search tool), so it
+// obeys the same CLAUDE_ENABLED feature flag as agent escalation — see
+// ../claude-flag.ts. Off by default: Gemini's google_search grounding.
+export function webSearchProvider(): "claude" | "gemini" {
+  return usesClaude() ? "claude" : "gemini";
+}
+
 export async function execWebSearch(args: { query: string; timeout_ms?: number }): Promise<ToolResult> {
   if (!args.query.trim()) {
     return { status: "error", summary: "web_search requires a non-empty query" };
   }
 
-  if (process.env.ESCALATION_PROVIDER === "gemini") {
+  if (webSearchProvider() === "gemini") {
     return execWebSearchViaGemini(args);
   }
 

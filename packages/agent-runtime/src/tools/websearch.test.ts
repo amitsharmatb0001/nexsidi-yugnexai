@@ -13,9 +13,17 @@ test("execWebSearch rejects an empty query", async () => {
   expect(result.summary).toContain("query");
 });
 
+// 2026-09-28: this test used to pass only because another test file deleted
+// ESCALATION_PROVIDER and never restored it; with the real env
+// (ESCALATION_PROVIDER=gemini) it made a live Gemini call and timed out. It
+// now pins the Claude path explicitly — Claude is behind CLAUDE_ENABLED.
 test("execWebSearch reports not-configured when ANTHROPIC_API_KEY is unset (no network call made)", async () => {
   const previous = process.env.ANTHROPIC_API_KEY;
+  const prevFlag = process.env.CLAUDE_ENABLED;
+  const prevProvider = process.env.ESCALATION_PROVIDER;
   delete process.env.ANTHROPIC_API_KEY;
+  process.env.CLAUDE_ENABLED = "true";
+  delete process.env.ESCALATION_PROVIDER;
   try {
     const result = await execWebSearch({ query: "does npm package left-pad exist" });
     expect(result.status).toBe("error");
@@ -23,6 +31,8 @@ test("execWebSearch reports not-configured when ANTHROPIC_API_KEY is unset (no n
     expect(result.summary).not.toContain("WEB_SEARCH_API_URL");
     expect(result.summary).not.toContain("WEB_SEARCH_API_KEY");
   } finally {
+    if (prevFlag === undefined) delete process.env.CLAUDE_ENABLED; else process.env.CLAUDE_ENABLED = prevFlag;
+    if (prevProvider === undefined) delete process.env.ESCALATION_PROVIDER; else process.env.ESCALATION_PROVIDER = prevProvider;
     if (previous === undefined) {
       delete process.env.ANTHROPIC_API_KEY;
     } else {
@@ -71,11 +81,15 @@ test("execWebSearch routes to Gemini and reports not-configured on GOOGLE_CLOUD_
   }
 });
 
-test("execWebSearch still uses the Claude path (ANTHROPIC_API_KEY check) when ESCALATION_PROVIDER is unset", async () => {
+// 2026-09-28: Claude is behind CLAUDE_ENABLED (see ../claude-flag.ts) — this
+// is the "enabled, provider unset" case.
+test("execWebSearch uses the Claude path (ANTHROPIC_API_KEY check) when CLAUDE_ENABLED=true and ESCALATION_PROVIDER is unset", async () => {
   const previousProvider = process.env.ESCALATION_PROVIDER;
   const previousKey = process.env.ANTHROPIC_API_KEY;
+  const previousFlag = process.env.CLAUDE_ENABLED;
   delete process.env.ESCALATION_PROVIDER;
   delete process.env.ANTHROPIC_API_KEY;
+  process.env.CLAUDE_ENABLED = "true";
   try {
     const result = await execWebSearch({ query: "does npm package left-pad exist" });
     expect(result.status).toBe("error");
@@ -85,5 +99,24 @@ test("execWebSearch still uses the Claude path (ANTHROPIC_API_KEY check) when ES
     else process.env.ESCALATION_PROVIDER = previousProvider;
     if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = previousKey;
+    if (previousFlag === undefined) delete process.env.CLAUDE_ENABLED;
+    else process.env.CLAUDE_ENABLED = previousFlag;
+  }
+});
+
+test("web search uses Claude only when CLAUDE_ENABLED=true (and ESCALATION_PROVIDER isn't gemini)", async () => {
+  const { webSearchProvider } = await import("./websearch.ts");
+  const prevFlag = process.env.CLAUDE_ENABLED;
+  const prevProvider = process.env.ESCALATION_PROVIDER;
+  try {
+    delete process.env.CLAUDE_ENABLED; delete process.env.ESCALATION_PROVIDER;
+    expect(webSearchProvider()).toBe("gemini");
+    process.env.CLAUDE_ENABLED = "true";
+    expect(webSearchProvider()).toBe("claude");
+    process.env.ESCALATION_PROVIDER = "gemini";
+    expect(webSearchProvider()).toBe("gemini");
+  } finally {
+    if (prevFlag === undefined) delete process.env.CLAUDE_ENABLED; else process.env.CLAUDE_ENABLED = prevFlag;
+    if (prevProvider === undefined) delete process.env.ESCALATION_PROVIDER; else process.env.ESCALATION_PROVIDER = prevProvider;
   }
 });

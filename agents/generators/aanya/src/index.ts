@@ -3,6 +3,7 @@
 // UI: @yugnex/core (NexSidi's own UI runtime) + vendored components/nexui/*.tsx — NO Tailwind, NO shadcn/ui.
 
 import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
+import { DEFAULT_AGENT_MODEL } from "@nexsidi/llm-client";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { randomBytes } from "crypto";
@@ -101,14 +102,14 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
 
   const result = await resolveGeneratorRunner()({
     agentName: "aanya",
-    model: "mistralai/mistral-medium-3.5-128b",
+    model: DEFAULT_AGENT_MODEL, // 2026-09-28: NIM models retired — see llm-client RETIRED_NIM_MODELS
     // 2026-07-24: qwen3.5-122b-a10b (chosen for being a genuinely different
     // architecture from the primary) returns HTTP 410 Gone as of 2026-07-20
     // — the NIM endpoint was permanently removed (see types.ts's ModelId
     // comment). Using it as a fallback meant a real failure of the primary
     // model fell through to a fallback that would ALWAYS also fail. Swapped
     // for qwen3-next-80b, the documented working replacement.
-    fallbackModels: ["qwen/qwen3-next-80b-a3b-instruct"],
+    fallbackModels: [],
     apiKey,
     systemPrompt: loadAndInjectContract(plan.projectId, knownMistakesPrefix + buildAgentPrompt(mode)),
     initialMessage: buildAgentTask(plan, mode),
@@ -258,11 +259,11 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
 
   const result = await resolveGeneratorRunner()({
     agentName: "aanya",
-    model: "mistralai/mistral-medium-3.5-128b",
+    model: DEFAULT_AGENT_MODEL, // 2026-09-28: NIM models retired — see llm-client RETIRED_NIM_MODELS
     // 2026-07-24: see run()'s identical fix above — qwen3.5-122b-a10b 410s
     // (endpoint permanently removed 2026-07-20); swapped for the documented
     // working replacement, qwen3-next-80b.
-    fallbackModels: ["qwen/qwen3-next-80b-a3b-instruct"],
+    fallbackModels: [],
     apiKey,
     systemPrompt: knownMistakesPrefix + buildAgentPrompt("integrate"), // fix always happens post-integrate, per Stage 5's placement after Stage 4
     initialMessage: buildFixTask(findings, plan),

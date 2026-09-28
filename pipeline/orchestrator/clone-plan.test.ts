@@ -75,7 +75,7 @@ function makeFakeChat(response: { needsBackendChanges: boolean; reasoning: strin
   const calls: { agentName: AgentName; messages: ChatMessage[] }[] = [];
   const chatFn = async (agentName: AgentName, messages: ChatMessage[], _apiKey: string) => {
     calls.push({ agentName, messages });
-    return { content: JSON.stringify(response), modelUsed: "mistralai/mistral-nemotron" as ModelId };
+    return { content: JSON.stringify(response), modelUsed: "gemini-3.8-flash" as ModelId };
   };
   return { chatFn, calls };
 }

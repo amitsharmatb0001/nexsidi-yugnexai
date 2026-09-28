@@ -37,12 +37,12 @@ test("sanitizeModelChain drops the known-dead qwen3-next-80b model even though i
   const models = [
     "qwen/qwen3-next-80b-a3b-instruct", // known-dead -> drop
     "moonshotai/kimi-k2.6",             // disallowed provider -> drop
-    "mistralai/mistral-nemotron",       // allowed
+    "nvidia/nemotron-3-super-120b-a12b", // allowed (2026-09-28: was mistral-nemotron, now retired too)
   ];
 
   const result = sanitizeModelChain(models);
 
-  expect(result).toEqual(["mistralai/mistral-nemotron"]);
+  expect(result).toEqual(["nvidia/nemotron-3-super-120b-a12b"]);
 });
 
 // 2026-08-09: real bug found live (project meridianbk4) — at the time,
@@ -79,9 +79,12 @@ test("sanitizeModelChain on a bare moonshotai model with no fallbacks produces a
 // CURRENT real config (moonshotai primary + the one fallback whose failure
 // was never independently confirmed as a real availability problem) to
 // prove the chain is genuinely non-empty.
-test("sanitizeModelChain on Riya's current real config (moonshotai primary + one allowed, non-dead fallback) is non-empty", () => {
-  const result = sanitizeModelChain(["moonshotai/kimi-k2.6", "mistralai/mistral-nemotron"]);
-  expect(result).toEqual(["mistralai/mistral-nemotron"]);
+// 2026-09-28: Riya's old config (kimi-k2.6 + mistral-nemotron) is gone — every
+// NIM model it named was retired, so the whole old chain sanitizes to empty
+// and claude-loop.ts's runAgentEscalated runs the provider directly.
+test("sanitizeModelChain drops every retired NIM model (Riya's old kimi + mistral-nemotron chain sanitizes to empty)", () => {
+  expect(sanitizeModelChain(["moonshotai/kimi-k2.6", "mistralai/mistral-nemotron"])).toEqual([]);
+  expect(sanitizeModelChain(["z-ai/glm-5.2", "qwen/qwen3-next-80b-a3b-instruct", "mistralai/mistral-medium-3.5-128b"])).toEqual([]);
 });
 
 // 2026-08-17: real bug found live (fulfillio1) — confirmed via NIM's own
@@ -92,8 +95,8 @@ test("sanitizeModelChain on Riya's current real config (moonshotai primary + one
 // those agents' first raw-NIM attempt (whenever Gemini-tier routing isn't
 // active) is a guaranteed wasted 410 before falling through.
 test("sanitizeModelChain drops the known-dead mistral-medium-3.5-128b model even though its provider prefix is otherwise allowed", () => {
-  const result = sanitizeModelChain(["mistralai/mistral-medium-3.5-128b", "mistralai/mistral-nemotron"]);
-  expect(result).toEqual(["mistralai/mistral-nemotron"]);
+  const result = sanitizeModelChain(["mistralai/mistral-medium-3.5-128b", "nvidia/nemotron-3-super-120b-a12b"]);
+  expect(result).toEqual(["nvidia/nemotron-3-super-120b-a12b"]);
 });
 
 test("runAgent fails fast with escalationReason cannot_finish when the sanitized model chain is empty, instead of silently reusing the disallowed model", () => {

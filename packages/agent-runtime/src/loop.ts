@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { MCPClient } from "./mcp/client.ts";
-import { nimChatWithTools, type NimToolDef, type NimMessage, type NimToolCall } from "@nexsidi/llm-client";
+import { nimChatWithTools, type NimToolDef, type NimMessage, type NimToolCall, RETIRED_NIM_MODELS } from "@nexsidi/llm-client";
 import { execWriteFile, execWriteFiles, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol, FILE_TOOL_DEFS } from "./tools/file.ts";
 import { initWorkspaceTransaction, commitWorkspaceTransaction } from "./tools/git.ts";
 import { compactHistory, estimateTokenCount } from "./compaction.ts";
@@ -371,25 +371,10 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
 // AGENT_MODEL_FALLBACKS directly too when a workable replacement is found;
 // this list is a safety net that survives even if a config edit misses a
 // reference, not a substitute for fixing the config.
-const KNOWN_DEAD_MODELS = new Set([
-  "qwen/qwen3-next-80b-a3b-instruct", // HTTP 410 Gone, EOL 2026-07-27
-  // 2026-08-17: real bug found live (fulfillio1) — confirmed via NIM's own
-  // response: "The model 'mistralai/mistral-medium-3.5-128b' has reached
-  // its end of life on 2026-08-07T09:00:00Z and is no longer available."
-  // This was the fallback model just added to Riya's config as "aanya/
-  // shubham's own primary, proven reliable for tool-calling work all
-  // night" — that assumption was wrong: a broad search across every agent
-  // log from tonight's entire session found ZERO successful raw-NIM calls
-  // anywhere at all — every agent has been running exclusively through
-  // Gemini-tier routing (GENERATOR_TIER=gemini) this whole time, so
-  // "reliable all night" was actually observing Gemini, never this model.
-  // It's also AGENT_MODELS.aanya/AGENT_MODELS.shubham's own configured
-  // PRIMARY (packages/llm-client/src/types.ts) — every one of those
-  // agents' first raw-NIM attempt (whenever Gemini routing isn't active)
-  // is a guaranteed wasted 410 before falling through, same failure shape
-  // as the qwen3-next-80b entry above.
-  "mistralai/mistral-medium-3.5-128b", // HTTP 410 Gone, EOL 2026-08-07
-]);
+// 2026-09-28: was a hand-kept list here; the single record of retired NIM
+// models (with the live evidence for each) now lives in llm-client's
+// types.ts RETIRED_NIM_MODELS.
+const KNOWN_DEAD_MODELS = new Set(Object.keys(RETIRED_NIM_MODELS));
 
 export function sanitizeModelChain(models: string[]): string[] {
   const allowedPrefixes = ["google/", "mistralai/", "meta/", "qwen/", "nvidia/"];

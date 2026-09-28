@@ -7,13 +7,15 @@
 // the mandatory stress-test runs, not unit tests, mirroring how loop.ts's
 // runAgent() itself has no direct unit test of its live-call behavior.
 import { test, expect } from "bun:test";
-import { runAgentEscalated, buildEscalationMessage, isUnrecoverableClaudeError, resolveEscalationRunner, runAgentWithClaude, type AgentEscalationDeps } from "./claude-loop.ts";
+import { runAgentEscalated, buildEscalationMessage, isUnrecoverableClaudeError, resolveEscalationRunner, runAgentWithClaude, isClaudeEnabled, escalationProviderName, type AgentEscalationDeps } from "./claude-loop.ts";
 import { runAgentWithGemini } from "./gemini-loop.ts";
 import type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
 const BASE_CONFIG: AgentRunConfig = {
   agentName: "test-agent",
-  model: "moonshotai/kimi-k2.6",
+  // 2026-09-28: any NIM-callable model — kimi-k2.6 was retired (404); this
+  // fixture exercises the NIM -> escalation path, which needs one.
+  model: "nvidia/nemotron-3-super-120b-a12b" as AgentRunConfig["model"],
   apiKey: "nim-key",
   systemPrompt: "system",
   initialMessage: "do the thing",
@@ -245,21 +247,53 @@ test("isUnrecoverableClaudeError does NOT flag a generic transient error (networ
 // evidence) — Gemini has no such gating and was confirmed working live.
 // ESCALATION_PROVIDER lets the second-tier model be swapped per environment
 // without touching runAgentEscalated's own orchestration logic.
-test("resolveEscalationRunner defaults to runAgentWithClaude when ESCALATION_PROVIDER is unset", () => {
-  delete process.env.ESCALATION_PROVIDER;
-  expect(resolveEscalationRunner()).toBe(runAgentWithClaude);
+// 2026-09-28 (Amit): Claude is a feature flag — OFF unless CLAUDE_ENABLED=true,
+// so it can be switched back on (when the Anthropic account has credit)
+// without a code change. While off, escalation always goes to Gemini.
+function withEnv(vars: Record<string, string | undefined>, fn: () => void) {
+  const prior = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(vars)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  try { fn(); } finally {
+    for (const [k, v] of Object.entries(prior)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+}
+
+test("Claude is off by default: escalation goes to Gemini even with ESCALATION_PROVIDER unset", () => {
+  withEnv({ CLAUDE_ENABLED: undefined, ESCALATION_PROVIDER: undefined }, () => {
+    expect(isClaudeEnabled()).toBe(false);
+    expect(resolveEscalationRunner()).toBe(runAgentWithGemini);
+    expect(escalationProviderName()).toBe("Gemini");
+  });
+  withEnv({ CLAUDE_ENABLED: undefined, ESCALATION_PROVIDER: "claude" }, () => {
+    expect(resolveEscalationRunner()).toBe(runAgentWithGemini);
+  });
 });
 
-test("resolveEscalationRunner returns runAgentWithGemini when ESCALATION_PROVIDER=gemini", () => {
-  process.env.ESCALATION_PROVIDER = "gemini";
-  expect(resolveEscalationRunner()).toBe(runAgentWithGemini);
-  delete process.env.ESCALATION_PROVIDER;
+test("CLAUDE_ENABLED=true turns Claude escalation back on, unless ESCALATION_PROVIDER=gemini pins Gemini", () => {
+  withEnv({ CLAUDE_ENABLED: "true", ESCALATION_PROVIDER: undefined }, () => {
+    expect(isClaudeEnabled()).toBe(true);
+    expect(resolveEscalationRunner()).toBe(runAgentWithClaude);
+    expect(escalationProviderName()).toBe("Claude");
+  });
+  withEnv({ CLAUDE_ENABLED: "true", ESCALATION_PROVIDER: "gemini" }, () => {
+    expect(resolveEscalationRunner()).toBe(runAgentWithGemini);
+  });
 });
 
-test("resolveEscalationRunner falls back to runAgentWithClaude for any other value", () => {
-  process.env.ESCALATION_PROVIDER = "anthropic";
-  expect(resolveEscalationRunner()).toBe(runAgentWithClaude);
-  delete process.env.ESCALATION_PROVIDER;
+// 2026-09-28: with no working NIM model configured for an agent, the NIM
+// loop used to be run anyway just to fail ("No usable model in the chain")
+// and then "escalate" — noisy, and the log wrongly said Claude. Such agents
+// now go straight to the escalation provider as their normal path.
+test("an agent with no NIM model in its chain skips the NIM loop and runs the provider directly (not an escalation)", async () => {
+  let nimCalled = false;
+  const deps: AgentEscalationDeps = {
+    runNim: async () => { nimCalled = true; return { success: false, summary: "", filesWritten: [], iterations: 0, errors: [] }; },
+    runClaude: async () => ({ success: true, summary: "ok", filesWritten: [], iterations: 1, errors: [] }),
+  };
+  const result = await runAgentEscalated({ agentName: "riya", model: "gemini-3.8-flash", apiKey: "", systemPrompt: "", initialMessage: "t", sandboxDir: "/w" } as AgentRunConfig, deps);
+  expect(nimCalled).toBe(false);
+  expect(result.success).toBe(true);
+  expect(result.escalated).toBe(false);
 });
 
 // Phase 5 Task 4: nexsidi-token-budget requires every escalation logged with

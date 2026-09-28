@@ -11,6 +11,7 @@
 // is actually active in this environment rather than hardcoding an
 // assumption about it.
 import { join } from "node:path";
+import { DEFAULT_AGENT_MODEL } from "@nexsidi/llm-client";
 // Deep relative import, not the "@nexsidi/agent-runtime" package alias —
 // pipeline/package.json's dependencies list does not include agent-runtime
 // (only agent-bus/context-chain/db/llm-client/workspace-contract), and every
@@ -103,8 +104,8 @@ export async function applyCloneChanges(
     // src/types.ts's AGENT_MODELS.aanya) — this literally IS Aanya's job
     // (frontend content edits), just scoped to an existing app instead of a
     // fresh one, so it gets her same model routing.
-    model: "mistralai/mistral-medium-3.5-128b",
-    fallbackModels: ["qwen/qwen3-next-80b-a3b-instruct"],
+    model: DEFAULT_AGENT_MODEL, // 2026-09-28: NIM models retired — see llm-client RETIRED_NIM_MODELS
+    fallbackModels: [],
     apiKey: opts.apiKey,
     systemPrompt: CLONE_EDIT_SYSTEM_PROMPT,
     initialMessage: buildCloneEditTask(opts.changes, opts.newName, opts.backendContext),

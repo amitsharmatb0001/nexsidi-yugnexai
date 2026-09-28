@@ -22,7 +22,7 @@ test("a single empty response is retried once and succeeds on the second attempt
   let callCount = 0;
   const stubChat = async () => {
     callCount++;
-    return { content: callCount === 1 ? "" : VALID_SPEC_JSON, modelUsed: "mistralai/mistral-nemotron" as const };
+    return { content: callCount === 1 ? "" : VALID_SPEC_JSON, modelUsed: "gemini-3.8-flash" as const };
   };
 
   const result = await run("proj123", "build me a task app", { chat: stubChat });
@@ -33,7 +33,7 @@ test("a single empty response is retried once and succeeds on the second attempt
 });
 
 test("two consecutive empty responses still throw — retry is not infinite masking of a real outage", async () => {
-  const stubChat = async () => ({ content: "", modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: "", modelUsed: "gemini-3.8-flash" as const });
 
   await expect(run("proj123", "build me a task app", { chat: stubChat })).rejects.toThrow();
 });
@@ -42,7 +42,7 @@ test("a well-formed first response does not trigger a second call at all", async
   let callCount = 0;
   const stubChat = async () => {
     callCount++;
-    return { content: VALID_SPEC_JSON, modelUsed: "mistralai/mistral-nemotron" as const };
+    return { content: VALID_SPEC_JSON, modelUsed: "gemini-3.8-flash" as const };
   };
 
   await run("proj123", "build me a task app", { chat: stubChat });
@@ -71,7 +71,7 @@ test("spec.auth is null when no endpoint is marked auth: true — a public site 
     dbTables: [],
     successCriteria: [],
   });
-  const stubChat = async () => ({ content: noAuthSpecJson, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: noAuthSpecJson, modelUsed: "gemini-3.8-flash" as const });
 
   const result = await run("proj123", "build a marketing site, no accounts", { chat: stubChat });
 
@@ -100,7 +100,7 @@ test("spec.auth is sign-in ONLY when no registration endpoint exists — an admi
     dbTables: [],
     successCriteria: [],
   });
-  const stubChat = async () => ({ content: authSpecJson, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: authSpecJson, modelUsed: "gemini-3.8-flash" as const });
 
   const result = await run("proj123", "build an app with a private admin dashboard", { chat: stubChat });
 
@@ -122,7 +122,7 @@ test("spec.auth includes sign-up only when the spec actually describes a registr
     dbTables: [],
     successCriteria: [],
   });
-  const stubChat = async () => ({ content: publicAccountsJson, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: publicAccountsJson, modelUsed: "gemini-3.8-flash" as const });
 
   const result = await run("proj123", "build an app where users sign up for accounts", { chat: stubChat });
 
@@ -139,7 +139,7 @@ const CLARIFICATION_JSON = JSON.stringify({
 });
 
 test("run() returns needs_clarification with the model's questions instead of guessing a spec", async () => {
-  const stubChat = async () => ({ content: CLARIFICATION_JSON, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: CLARIFICATION_JSON, modelUsed: "gemini-3.8-flash" as const });
 
   const result = await run("proj123", "app for my thing", { chat: stubChat });
 
@@ -151,7 +151,7 @@ test("run() returns needs_clarification with the model's questions instead of gu
 
 test("run() falls through to a normal spec when needsClarification is true but questions is empty", async () => {
   const emptyQuestionsJson = JSON.stringify({ needsClarification: true, questions: [], ...JSON.parse(VALID_SPEC_JSON) });
-  const stubChat = async () => ({ content: emptyQuestionsJson, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: emptyQuestionsJson, modelUsed: "gemini-3.8-flash" as const });
 
   const result = await run("proj123", "build me a task app", { chat: stubChat });
 
@@ -160,7 +160,7 @@ test("run() falls through to a normal spec when needsClarification is true but q
 
 test("run() ignores needsClarification when it's not the literal boolean true", async () => {
   const weirdJson = JSON.stringify({ needsClarification: "yes", ...JSON.parse(VALID_SPEC_JSON) });
-  const stubChat = async () => ({ content: weirdJson, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: weirdJson, modelUsed: "gemini-3.8-flash" as const });
 
   const result = await run("proj123", "build me a task app", { chat: stubChat });
 
@@ -356,7 +356,7 @@ test("end-to-end: run() no longer infers sign-up for an admin-only spec that raw
     dbTables: [],
     successCriteria: [],
   });
-  const stubChat = async () => ({ content: specWithBootstrapSignup, modelUsed: "mistralai/mistral-nemotron" as const });
+  const stubChat = async () => ({ content: specWithBootstrapSignup, modelUsed: "gemini-3.8-flash" as const });
 
   const result = await run("proj123", "admin-only marketing site", { chat: stubChat });
 

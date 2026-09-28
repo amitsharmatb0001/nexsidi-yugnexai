@@ -29,6 +29,9 @@ export async function orchestrate(input: OrchestrateInput, redis: Redis): Promis
 
   // Primary model for Tilotma — deepseek-v4-pro, falls back through FALLBACK_CHAIN
   const modelChain = FALLBACK_CHAIN["tilotma"];
+  // 2026-09-28: every NIM model was retired, so this legacy NIM-only loop has
+  // nothing to call (the live pipeline doesn't use it).
+  if (modelChain.length === 0) throw new Error("tilotma orchestrator: no NIM model configured (all retired — see llm-client RETIRED_NIM_MODELS)");
   let modelIdx = 0;
 
   const messages: NimMessage[] = [
