@@ -27,7 +27,7 @@ import type { Escalation } from "../../../packages/agent-runtime/src/tools/escal
 // not in Stage 5, because System B needs a real deployed URL to browse —
 // the same reason Tier 3 only legitimately runs post-deploy (see
 // runRealLiveRetest below).
-import { runLiveEval, type LiveEvalResult } from "../../../agents/tilotma/src/live-eval.ts";
+import { runLiveEval, LIVE_PASS_THRESHOLD, type LiveEvalResult } from "../../../agents/tilotma/src/live-eval.ts";
 // 2026-08-05: a cheap, mechanical check for literal spec violations that
 // neither System A (bug hunting) nor System B (holistic design judgment) can
 // catch — see spec-compliance.ts's header comment for the exact live bug
@@ -88,6 +88,26 @@ export interface LiveRetestResult {
   // 2026-08-05: literal spec-compliance result, when it ran. Same optionality
   // convention as liveEval above — independent of it, not derived from it.
   specCompliance?: SpecComplianceResult;
+}
+
+// 2026-09-29: real bug (project a034f90ba50e). A failed live design review
+// (5.95 against a 7.0 pass mark) never became a finding, so the fix loop only
+// ever routed the other checks' output and no fixer saw the design critique:
+// every fix round changed nothing. The critique goes to the frontend as one
+// site-wide finding ({ file: "" } routes to Aanya — see splitLiveFindings).
+// Only the reviewer's REASONING is passed on: the evidence list above it is
+// tool output, not critique.
+export function designFindings(liveEval: LiveEvalResult): Array<{ file: string; issue: string }> {
+  if (liveEval.pass) return [];
+  const s = liveEval.scores;
+  const perCriterion = s
+    ? ` (design ${s.designQuality}, originality ${s.originality}, craft ${s.craft}, functionality ${s.functionality})`
+    : "";
+  const critique = (liveEval.summary.match(/REASONING:\s*([\s\S]*)$/i)?.[1] ?? liveEval.summary).trim().slice(0, 4000);
+  return [{
+    file: "",
+    issue: `Live design review failed: ${liveEval.score.toFixed(2)}/10 against a pass mark of ${LIVE_PASS_THRESHOLD}${perCriterion}. The reviewer's critique of the running app: ${critique}`,
+  }];
 }
 
 export interface Stage6Result {
@@ -298,7 +318,7 @@ async function runRealLiveRetest(
 
     return {
       pass: result.pass && liveEval.pass,
-      findings: result.findings,
+      findings: [...result.findings, ...designFindings(liveEval)],
       liveEval,
       specCompliance,
     };

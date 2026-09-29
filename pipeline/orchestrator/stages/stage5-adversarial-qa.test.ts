@@ -709,3 +709,30 @@ test("xFindingToFinding functions degrade gracefully to file-only issue text whe
   const result = karanFindingToFinding({ severity: "LOW", description: "missing rate limit", file: "backend/src/app.ts" });
   expect(result.issue).toBe("backend/src/app.ts — [security/LOW] missing rate limit");
 });
+
+// 2026-09-29: real bug (project a034f90ba50e). A READY reality check still
+// returned its FINDINGS list — which on READY holds verification notes
+// ("Authentication flow: REFUTED…", "Confidentiality: PASS") — as findings.
+// When the live design review then failed, those notes were the only thing
+// routed to the fixer: 6 "issues" that all said the app was fine, and the
+// fix round wrote nothing.
+test("a passed Tier 3 review contributes no findings — its notes are not issues to fix", async () => {
+  const agents = makeAgents({
+    runTier3Review: async (): Promise<Tier3ReviewResult> => ({
+      pass: true,
+      findings: ["Authentication flow: REFUTED. POST /api/v1/auth/sign-in returns 200.", "Confidentiality and Visual QA: PASS."],
+    }),
+  });
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents);
+  expect(result.pass).toBe(true);
+  expect(result.findings).toEqual([]);
+});
+
+test("a failed Tier 3 review still reports its findings", async () => {
+  const agents = makeAgents({
+    runTier3Review: async (): Promise<Tier3ReviewResult> => ({ pass: false, findings: ["Sign-up form posts to the wrong port"] }),
+  });
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents);
+  expect(result.pass).toBe(false);
+  expect(result.findings.map((f) => f.issue)).toEqual(["Sign-up form posts to the wrong port"]);
+});

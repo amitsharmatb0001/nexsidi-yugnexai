@@ -273,7 +273,10 @@ export async function runStage5WithAgents(
   const tier3 = await agents.runTier3Review(projectId, stage4Result);
   return {
     pass: tier3.pass,
-    findings: tier3.findings.map((issue): Finding => ({ file: "", issue })),
+    // 2026-09-29 (project a034f90ba50e): on READY the FINDINGS list holds the
+    // checker's verification notes ("… REFUTED", "… PASS"), not issues — when
+    // a later check failed, those notes were routed to the fixer as bugs.
+    findings: tier3.pass ? [] : tier3.findings.map((issue): Finding => ({ file: "", issue })),
     perAgentFindings,
   };
 }

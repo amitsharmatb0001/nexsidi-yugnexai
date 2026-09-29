@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import {
   buildDeliverySummary,
+  designFindings,
   INTERNAL_AGENT_NAMES,
   isQuotaExhaustionError,
   deployWithQuotaRetry,
@@ -533,4 +534,47 @@ test("shouldSkipExpensiveReview is true when stack-conformance alone fails", () 
 
 test("shouldSkipExpensiveReview is true when both fail", () => {
   expect(shouldSkipExpensiveReview(false, false)).toBe(true);
+});
+
+
+// 2026-09-29: real bug (project a034f90ba50e). The live design review failed
+// (5.95 against a 7.0 pass mark) but its critique was never added to the
+// findings, so no fixer ever saw it — each fix round got the reality checker's
+// notes instead and changed nothing. A failed design review is now a finding
+// routed to the frontend, carrying the reviewer's own critique.
+const FAILED_EVAL = {
+  pass: false,
+  score: 5.95,
+  scores: { designQuality: 6, originality: 5, craft: 7, functionality: 7 },
+  summary: [
+    "Evidence collected:",
+    "- Landing screenshot: landing.png",
+    "",
+    "Scores:",
+    "DESIGN_QUALITY: 6",
+    "ORIGINALITY: 5",
+    "CRAFT: 7",
+    "FUNCTIONALITY: 7",
+    "REASONING: DESIGN_QUALITY: centered hero with three generic feature cards and no imagery. ORIGINALITY: unmodified template patterns.",
+  ].join("\n"),
+};
+
+test("designFindings turns a failed live design review into one site-wide finding with the reviewer's critique", () => {
+  const findings = designFindings(FAILED_EVAL);
+  expect(findings).toHaveLength(1);
+  expect(findings[0].file).toBe("");
+  expect(findings[0].issue).toContain("5.95");
+  expect(findings[0].issue).toContain("7");
+  expect(findings[0].issue).toContain("design 6, originality 5, craft 7, functionality 7");
+  expect(findings[0].issue).toContain("centered hero with three generic feature cards and no imagery");
+  expect(findings[0].issue).not.toContain("Landing screenshot");
+});
+
+test("designFindings adds nothing for a passed design review", () => {
+  expect(designFindings({ ...FAILED_EVAL, pass: true, score: 7.4 })).toEqual([]);
+});
+
+test("designFindings keeps the whole summary when the reviewer wrote no REASONING section", () => {
+  const findings = designFindings({ ...FAILED_EVAL, scores: null, summary: "The layout is generic." });
+  expect(findings[0].issue).toContain("The layout is generic.");
 });
