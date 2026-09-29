@@ -631,6 +631,26 @@ test("when EVERY implicated fix call reports success:false, the loop stops immed
   expect(qaCallCount).toBe(1);
 });
 
+// 2026-09-29 (project a034f90ba50e): a fix that hit its step cap AFTER
+// writing files reports success:false, but the code DID change — a rescan is
+// not wasted, so the loop must not stop as if nothing had been touched.
+test("a fix that reports success:false but wrote files still gets a QA rescan", async () => {
+  let qaCallCount = 0;
+  const deps: QAFixDeps = {
+    runStage5: async () => {
+      qaCallCount++;
+      return qaCallCount === 1 ? failResult(1, "shubham") : { pass: true, findings: [], faultAgent: null } as never;
+    },
+    fixShubham: async () => ({ success: false, filesWritten: ["src/routes/auth.ts"] }),
+    fixAanya: async () => ({ success: true }),
+  };
+
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+
+  expect(qaCallCount).toBe(2);
+  expect(result.stuck).not.toBe(true);
+});
+
 test("when only SOME implicated fix calls fail, the loop still re-runs QA — the other agent's fix may have genuinely helped", async () => {
   let qaCallCount = 0;
   const deps: QAFixDeps = {

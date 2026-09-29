@@ -578,3 +578,35 @@ test("designFindings keeps the whole summary when the reviewer wrote no REASONIN
   const findings = designFindings({ ...FAILED_EVAL, scores: null, summary: "The layout is generic." });
   expect(findings[0].issue).toContain("The layout is generic.");
 });
+
+// 2026-09-29: real waste (project a034f90ba50e). Aanya's design fix rewrote
+// app/page.tsx and both auth pages and passed next build, then spent its last
+// steps clicking through the app and hit its 40-step cap without task_complete
+// — success:false. "Every fix failed outright" then skipped the redeploy as if
+// the code were unchanged; the workflow's auto-retry redeployed those same
+// files a whole activity later. A failed fix that DID write files changed the
+// code, so it is redeployed and retested.
+test("runStage6 still redeploys when a fix reports success:false but wrote files", async () => {
+  let deployCalls = 0;
+  let retestCalls = 0;
+  const deps: Stage6Deps = {
+    deployFn: async () => {
+      deployCalls++;
+      return { success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] };
+    },
+    liveRetestFn: async () => {
+      retestCalls++;
+      return retestCalls === 1
+        ? { pass: false, findings: [{ file: "", issue: "Live design review failed: 5.95/10" }] }
+        : { pass: true, findings: [] };
+    },
+    fixAanya: async () => ({ success: false, filesWritten: ["app/page.tsx"] }),
+  };
+  const plan = { projectId: "test-proj" } as never;
+
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, plan);
+
+  expect(deployCalls).toBe(2);
+  expect(retestCalls).toBe(2);
+  expect(result.success).toBe(true);
+});

@@ -41,6 +41,7 @@ import type { ProjectSpec } from "../../../agents/saanvi/src/index.ts";
 // here for backward compat with this file's own tests/callers.
 import { isQuotaExhaustionError } from "../../../packages/agent-runtime/src/gemini-loop.ts";
 import { dropCodeContradictedFindings } from "../finding-evidence.ts";
+import { fixChangedCode } from "./stage5-qa-fix-loop.ts";
 import { join as joinPath } from "node:path";
 export { isQuotaExhaustionError };
 
@@ -357,15 +358,15 @@ export interface Stage6Deps {
   // 2026-07-28 (live, complex1): escalations is optional on both — existing
   // DI test stubs (which return only {success}) keep compiling unchanged,
   // matching the same convention stage5-qa-fix-loop.ts's QAFixDeps uses.
-  fixShubham?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[] }>;
-  fixAanya?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[] }>;
+  fixShubham?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>;
+  fixAanya?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>;
   // 2026-07-28 (live, complex1): the live post-deploy retest previously had
   // NO fix path for db-owned findings at all — a schema finding (e.g.
   // "backend/init.sql: missing index") was either misrouted to shubham (who
   // is instructed to never touch schema files) or silently dropped if it
   // arrived alone. Optional, same convention as fixShubham/fixAanya above;
   // the real entry point wires Pranav's real runFix.
-  fixPranav?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean }>;
+  fixPranav?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; filesWritten?: string[] }>;
   // 2026-08-05: injectable so tests exercising deployWithQuotaRetry's retry
   // path don't actually wait QUOTA_RETRY_BACKOFF_MS (90s) — defaults to a
   // real setTimeout-based sleep in production (deployWithQuotaRetry's own
@@ -655,7 +656,7 @@ export async function runStage6(
     const { shubham: shubhamFindings, aanya: aanyaFindings, pranav: pranavFindings } = splitLiveFindings(retest.findings);
 
     if (plan) {
-      const fixCalls: Promise<{ agent: string; success: boolean; escalations?: Escalation[] }>[] = [];
+      const fixCalls: Promise<{ agent: string; success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>[] = [];
       if (shubhamFindings.length > 0) {
         console.log(`[stage6] Routing ${shubhamFindings.length} findings to Shubham`);
         fixCalls.push(fixShubhamReal(plan, shubhamFindings).then((r) => ({ agent: "shubham", ...r })));
@@ -680,13 +681,15 @@ export async function runStage6(
         // issue) still triggered a full docker redeploy + live-retest
         // cycle that could only reproduce the exact same findings.
         const fixResults = await Promise.all(fixCalls);
+        // 2026-09-29: a failed fix that wrote files changed the code (see
+        // fixChangedCode) — only skip when nothing was touched.
         const anyFixFailed = fixResults.some((r) => !r.success);
-        if (anyFixFailed && fixResults.every((r) => !r.success)) {
-          console.error(`[stage6] every implicated fix this round failed outright — skipping redeploy, a retest would be wasted`);
+        if (fixResults.every((r) => !fixChangedCode(r))) {
+          console.error(`[stage6] every implicated fix this round failed outright and changed nothing — skipping redeploy, a retest would be wasted`);
           break;
         }
         if (anyFixFailed) {
-          console.error(`[stage6] one or more fixes failed outright this round — redeploying anyway since at least one agent's fix may have succeeded`);
+          console.error(`[stage6] one or more fixes did not finish this round — redeploying anyway since code was changed`);
         }
 
         // 2026-07-28 (live, complex1): mirrors stage5-qa-fix-loop.ts's same

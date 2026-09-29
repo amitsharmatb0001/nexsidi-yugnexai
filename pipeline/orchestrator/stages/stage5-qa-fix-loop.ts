@@ -120,6 +120,14 @@ function formatFinding(f: { file: string; issue: string }): string {
 // reasoning qa-loop.ts's shared file-read cache already documents: mtime
 // resolution can't reliably detect a same-second edit, and filesWritten is
 // the generator's own authoritative record of what it touched.
+// 2026-09-29 (project a034f90ba50e): success:false does NOT mean the code is
+// unchanged — a fixer can write its files, pass the build, then hit its step
+// cap while re-checking and never call task_complete. Only a failed fix that
+// wrote nothing is known to have left the code as it was.
+export function fixChangedCode(outcome: { success: boolean; filesWritten?: string[] }): boolean {
+  return outcome.success || (outcome.filesWritten?.length ?? 0) > 0;
+}
+
 export function computeChangedFiles(
   fixOutcomes: Array<{ agent: string; filesWritten?: string[] }>,
 ): string[] {
@@ -469,11 +477,11 @@ export async function runQAFixLoopWithDeps(
         `[qa-fix-loop] ${agent} fix FAILED to complete — the generator did not resolve its assigned findings this round`,
       );
     }
-    // Every implicated fix this round is KNOWN to have failed outright —
+    // Every implicated fix this round failed outright AND wrote nothing —
     // the code is provably unchanged, so a rescan can only reproduce the
     // exact same findings. Stop now rather than spend a full expensive QA
     // pass confirming what is already known.
-    if (fixOutcomes.length > 0 && failedAgents.length === fixOutcomes.length) {
+    if (fixOutcomes.length > 0 && fixOutcomes.every((o) => !fixChangedCode(o))) {
       console.error(`[qa-fix-loop] stopping — every fix this round failed outright, a rescan would be wasted`);
       return { ...result, iterations, stuck: true };
     }
