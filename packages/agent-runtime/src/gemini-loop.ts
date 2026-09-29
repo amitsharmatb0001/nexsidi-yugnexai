@@ -54,7 +54,7 @@ import { execDbQuery } from "./tools/db.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
-import { isGeminiHistory } from "./history-format.ts";
+import { isGeminiHistory, resumesSavedHistory } from "./history-format.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -406,7 +406,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   // of restarting empty (and being thrown away) on every call.
   let loadedFactLedger: FactLedgerEntry[] = [];
 
-  if (config.projectId) {
+  if (resumesSavedHistory(config)) {
     try {
       const { db } = await import("@nexsidi/db");
       const { agentConversations } = await import("@nexsidi/db/schema");
@@ -1029,6 +1029,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
               geminiModel: config.geminiModel,
               geminiTier: config.geminiTier,
               subagentDepth: (config.subagentDepth ?? 0) + 1,
+              freshStart: config.freshStart,
             });
             result = {
               status: subagentResult.success ? "success" : "error",

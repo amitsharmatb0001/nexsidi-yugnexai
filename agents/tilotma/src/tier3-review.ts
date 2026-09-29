@@ -177,6 +177,7 @@ export async function runTier3Review(
       // run_command are silently available (loop.ts grants them to every
       // agent unconditionally) and nothing in this prompt forbids using them.
       readOnly: true,
+      freshStart: true,
     }),
   );
 
@@ -235,6 +236,7 @@ export async function runTier3Review(
       // in the routed fix-loop that runs AFTER this verdict, via their own
       // proper build+restart pipeline (see agents/generators/aanya/shubham).
       readOnly: true,
+      freshStart: true,
     }),
   );
 

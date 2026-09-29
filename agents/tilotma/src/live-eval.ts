@@ -181,6 +181,7 @@ export async function runLiveEval(
       // off-script to "fix" what it's scoring is the identical failure mode
       // that cost the reality-checker its entire budget twice this session.
       readOnly: true,
+      freshStart: true,
     }),
   );
 

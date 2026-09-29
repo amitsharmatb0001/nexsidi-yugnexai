@@ -42,7 +42,7 @@ import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import type { FactLedgerEntry } from "./context-selection.ts";
 import type { ToolResult } from "./tools/file.ts";
 import type { ModelId } from "@nexsidi/llm-client";
-import { isNimHistory } from "./history-format.ts";
+import { isNimHistory, resumesSavedHistory } from "./history-format.ts";
 
 // Exported so claude-loop.ts's runAgentWithClaude() can reuse the exact same
 // iteration cap instead of redefining it (per Task 15 spec — "same
@@ -144,6 +144,10 @@ export interface AgentRunConfig {
   // depth) — the agent is redirected to report the issue as a finding
   // instead, which is the actual job of an evaluator.
   readOnly?: boolean;
+  // 2026-09-29: never resume this agent's saved conversation — every run
+  // starts from its initial message. For judges, whose previous verdict is
+  // about a build that no longer exists; see history-format.ts.
+  freshStart?: boolean;
 }
 
 // Tool names buildToolList() omits, and the execution switch in loop.ts/
@@ -506,7 +510,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     ? join(buildDir, config.projectId, `history-${config.agentName}.json`)
     : null;
 
-  if (config.projectId) {
+  if (resumesSavedHistory(config)) {
     try {
       const { db } = await import("@nexsidi/db");
       const { agentConversations } = await import("@nexsidi/db/schema");
@@ -1032,6 +1036,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
               enableHttpTools: config.enableHttpTools,
               enableDockerTools: config.enableDockerTools,
               subagentDepth: (config.subagentDepth ?? 0) + 1,
+              freshStart: config.freshStart,
             });
             result = {
               status: subagentResult.success ? "success" : "error",

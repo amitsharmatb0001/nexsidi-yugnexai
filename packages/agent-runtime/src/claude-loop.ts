@@ -49,6 +49,7 @@ import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
+import { resumesSavedHistory } from "./history-format.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -155,7 +156,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   let messages: ClaudeMessage[] = [];
   let loadedFromDb = false;
 
-  if (config.projectId) {
+  if (resumesSavedHistory(config)) {
     try {
       const { db } = await import("@nexsidi/db");
       const { agentConversations } = await import("@nexsidi/db/schema");

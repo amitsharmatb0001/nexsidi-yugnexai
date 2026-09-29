@@ -9,6 +9,15 @@
 
 type Msg = { role?: unknown; content?: unknown };
 
+// 2026-09-29: real bug (project a034f90ba50e). Review judges resumed the
+// conversation saved by the PREVIOUS review round — the reality checker loaded
+// 85 old messages and re-issued its old READY verdict in 2 iterations without
+// looking at the freshly redeployed app. A judge grades the build in front of
+// it (D26: fresh-context evaluator), so freshStart agents never resume.
+export function resumesSavedHistory<T extends { projectId?: string; freshStart?: boolean }>(config: T): config is T & { projectId: string } {
+  return Boolean(config.projectId) && !config.freshStart;
+}
+
 export function isGeminiHistory(messages: unknown): boolean {
   return Array.isArray(messages) && messages.every((m: Msg) =>
     (m?.role === "system" && typeof m.content === "string") ||

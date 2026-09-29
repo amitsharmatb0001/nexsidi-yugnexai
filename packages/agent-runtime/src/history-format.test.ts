@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
-import { isGeminiHistory, isNimHistory } from "./history-format.ts";
+import { isGeminiHistory, isNimHistory, resumesSavedHistory } from "./history-format.ts";
 import { estimateGeminiChars } from "./compaction.ts";
+import { readFileSync } from "node:fs";
 
 // 2026-09-28: real crash (project a034f90ba50e). The NIM loop and the Gemini
 // loop persist an agent's conversation to the SAME agentConversations row
@@ -33,4 +34,30 @@ test("history format checks tell the two loops' saved conversations apart", () =
 test("estimateGeminiChars skips a message with no content instead of crashing", () => {
   expect(() => estimateGeminiChars(nim as never)).not.toThrow();
   expect(estimateGeminiChars([{ role: "user", content: "abcd" }, { role: "model", content: null as never }])).toBe(4);
+});
+
+// 2026-09-29: real bug (project a034f90ba50e). The review judges resumed their
+// saved conversation from the PREVIOUS review round: the reality checker
+// loaded 85 old messages and re-issued its old READY verdict in 2 iterations
+// without looking at the freshly redeployed app (the evidence collector
+// resumed 276 messages, the live design review 54). A judge must grade the
+// build in front of it (D26: fresh-context evaluator), so judges start fresh.
+test("an agent resumes its saved history unless it is a fresh-start agent", () => {
+  expect(resumesSavedHistory({ projectId: "a034f90ba50e" })).toBe(true);
+  expect(resumesSavedHistory({ projectId: "a034f90ba50e", freshStart: true })).toBe(false);
+  expect(resumesSavedHistory({})).toBe(false);
+});
+
+test("every agent loop decides history resumption through resumesSavedHistory", () => {
+  for (const file of ["loop.ts", "gemini-loop.ts", "claude-loop.ts"]) {
+    const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf-8");
+    expect(source).toContain("if (resumesSavedHistory(config)) {");
+  }
+});
+
+test("every review judge is a fresh-start agent", () => {
+  const tier3 = readFileSync(new URL("../../../agents/tilotma/src/tier3-review.ts", import.meta.url), "utf-8");
+  const liveEval = readFileSync(new URL("../../../agents/tilotma/src/live-eval.ts", import.meta.url), "utf-8");
+  expect((tier3.match(/freshStart: true/g) ?? []).length).toBe(2); // evidence collector + reality checker
+  expect((liveEval.match(/freshStart: true/g) ?? []).length).toBe(1);
 });
