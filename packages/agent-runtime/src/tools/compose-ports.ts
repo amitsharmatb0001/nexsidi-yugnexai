@@ -130,6 +130,19 @@ export function prepareComposeForUp(cwd: string, fs: ComposeFs = nodeFs): Prepar
   return { ok: true, file, changed: result.changed };
 }
 
+// 2026-09-29 (project a034f90ba50e): tools/db.ts says Stage 6 sets
+// TIER3_DB_URL, but nothing ever did — every live review reported "db_query
+// unavailable" as a finding and could not check that data really landed.
+// The backend's DATABASE_URL names the database by its compose service; the
+// review runs on the host, so it gets that service's published loopback port.
+export function reviewDbUrl(compose: string): string | null {
+  const url = compose.match(/DATABASE_URL["']?\s*[:=]\s*["']?(postgres(?:ql)?:\/\/[^\s"']+)/)?.[1];
+  const service = url?.match(/@([^:/@]+)(?::\d+)?\//)?.[1];
+  if (!url || !service) return null;
+  const hostPort = parseServiceHostPort(compose, service);
+  return hostPort === null ? null : url.replace(/@[^:/@]+(?::\d+)?\//, `@127.0.0.1:${hostPort}/`);
+}
+
 // 2026-09-29: real bug (project a034f90ba50e), recurring since Sprint 1.
 // NEXT_PUBLIC_* values are baked in at `next build`. The launch step writes
 // frontend/.env.local with the real backend URL, but an ARG/ENV default in

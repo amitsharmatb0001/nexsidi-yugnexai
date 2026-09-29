@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import {
   buildDeliverySummary,
   designFindings,
+  reviewDbUrlForBuild,
   INTERNAL_AGENT_NAMES,
   isQuotaExhaustionError,
   deployWithQuotaRetry,
@@ -609,4 +610,26 @@ test("runStage6 still redeploys when a fix reports success:false but wrote files
   expect(deployCalls).toBe(2);
   expect(retestCalls).toBe(2);
   expect(result.success).toBe(true);
+});
+
+// 2026-09-29 (project a034f90ba50e): the live review never got TIER3_DB_URL
+// (db.ts says Stage 6 sets it; nothing did), so every review reported
+// "db_query unavailable" and could not verify that data landed.
+test("reviewDbUrlForBuild reads the build's compose file next to the frontend dir", () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = require("node:fs");
+  const { join } = require("node:path");
+  const { tmpdir } = require("node:os");
+  const build = mkdtempSync(join(tmpdir(), "review-db-"));
+  mkdirSync(join(build, "frontend"));
+  writeFileSync(join(build, "docker-compose.yml"), 'services:\n  postgres:\n    image: postgres:16-alpine\n    ports:\n      - "127.0.0.1:5435:5432"\n  backend:\n    environment:\n      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/plantly\n');
+  expect(reviewDbUrlForBuild(join(build, "frontend"))).toBe("postgresql://postgres:postgres@127.0.0.1:5435/plantly");
+  expect(reviewDbUrlForBuild(join(tmpdir(), "no-such-build", "frontend"))).toBeNull();
+});
+
+test("the live retest hands the review TIER3_DB_URL and restores it afterwards", () => {
+  const source = require("node:fs").readFileSync(new URL("./stage6-deployment.ts", import.meta.url), "utf-8");
+  const fn = source.slice(source.indexOf("async function runRealLiveRetest"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  expect(body).toContain("process.env.TIER3_DB_URL = ");
+  expect(body).toContain("delete process.env.TIER3_DB_URL");
 });

@@ -42,7 +42,9 @@ import type { ProjectSpec } from "../../../agents/saanvi/src/index.ts";
 import { isQuotaExhaustionError } from "../../../packages/agent-runtime/src/gemini-loop.ts";
 import { dropCodeContradictedFindings } from "../finding-evidence.ts";
 import { fixChangedCode } from "./stage5-qa-fix-loop.ts";
-import { join as joinPath } from "node:path";
+import { join as joinPath, dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { reviewDbUrl } from "../../../packages/agent-runtime/src/tools/compose-ports.ts";
 export { isQuotaExhaustionError };
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
@@ -206,6 +208,14 @@ export function shouldSkipExpensiveReview(specComplianceOk: boolean, stackConfor
   return !specComplianceOk || !stackConformanceOk;
 }
 
+// 2026-09-29 (project a034f90ba50e): tools/db.ts says Stage 6 sets
+// TIER3_DB_URL, but nothing did — every live review reported "db_query
+// unavailable" as a finding and could not verify that data really landed.
+export function reviewDbUrlForBuild(frontendOutputDir: string): string | null {
+  const composePath = joinPath(dirname(frontendOutputDir), "docker-compose.yml");
+  return existsSync(composePath) ? reviewDbUrl(readFileSync(composePath, "utf-8")) : null;
+}
+
 async function runRealLiveRetest(
   projectId: string,
   appUrl: string,
@@ -233,6 +243,9 @@ async function runRealLiveRetest(
   // "no API route" finding. This project's apps use a separate frontend/
   // backend origin; point Tier 3 at Riya's actual backend URL too.
   process.env.TIER3_REVIEW_BACKEND_URL = backendUrl;
+  const previousDbUrl = process.env.TIER3_DB_URL;
+  const dbUrl = reviewDbUrlForBuild(stage4Result.frontendOutputDir);
+  if (dbUrl) process.env.TIER3_DB_URL = dbUrl;
   try {
     // 2026-08-31: reordered to run BEFORE Stage 5 / Tier 3 / live-eval — real
     // live evidence (project 05b590e98102) that these two mechanical checks
@@ -333,6 +346,11 @@ async function runRealLiveRetest(
       delete process.env.TIER3_REVIEW_BACKEND_URL;
     } else {
       process.env.TIER3_REVIEW_BACKEND_URL = previousBackendUrl;
+    }
+    if (previousDbUrl === undefined) {
+      delete process.env.TIER3_DB_URL;
+    } else {
+      process.env.TIER3_DB_URL = previousDbUrl;
     }
   }
 }

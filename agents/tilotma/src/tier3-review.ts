@@ -445,9 +445,13 @@ Specifically:
 4. Call task_complete. End "summary" with EXACTLY this structure:
 
 FINDINGS:
-- <issue 1, confirmed/adjusted/refuted vs Stage 1, or newly found, with the tool evidence>
+- <issue 1 that still needs fixing — confirmed or adjusted vs Stage 1, or newly found, with the tool evidence>
 - <issue 2, ...>
 ...
+NOTES:
+- <each Stage 1 claim you refuted or downgraded, and anything about the review
+  environment rather than the app — NOTES are never sent to a fixer, so never
+  put a real issue here>
 VERDICT: READY
 (or)
 VERDICT: NEEDS_WORK
@@ -501,7 +505,9 @@ export function parseFindings(summary: string): string[] {
   // what makes a genuinely empty findings block (zero issues) correctly
   // match "\nVERDICT:" instead of falling through to "$" and swallowing the
   // VERDICT line itself as if it were unparsed content.
-  const findingsMatch = summary.match(/FINDINGS:([\s\S]*?)(?:\n\s*VERDICT:|$)/i);
+  // 2026-09-29 (project a034f90ba50e): NOTES (refuted claims, review-
+  // environment remarks) end the findings — they used to be routed as bugs.
+  const findingsMatch = summary.match(/FINDINGS:([\s\S]*?)(?:\n\s*(?:NOTES|VERDICT):|$)/i);
   if (!findingsMatch) {
     return summary.trim() ? [summary.trim()] : [];
   }

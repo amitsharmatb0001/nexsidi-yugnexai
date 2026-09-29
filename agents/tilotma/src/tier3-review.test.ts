@@ -183,3 +183,24 @@ test("the reality checker runs on its provider directly (no NIM model); the evid
   const collector = source.slice(source.indexOf('agentName: "tilotma-evidence-collector"'));
   expect(collector.slice(0, 200)).toContain("model: AGENT_MODELS.tilotma");
 });
+
+// 2026-09-29 (project a034f90ba50e): the reality checker's format asked it to
+// list refuted Stage 1 claims and review-environment remarks inside FINDINGS,
+// and everything in FINDINGS is routed to a fixer — "Delete confirmation:
+// REFUTED" and "TIER3_DB_URL not set" were sent to Aanya as bugs. Those now go
+// in a NOTES section, which is never routed.
+test("parseFindings stops at NOTES — refuted claims and environment notes are not findings", () => {
+  const summary = [
+    "FINDINGS:",
+    "- No sign-out action anywhere in the app",
+    "NOTES:",
+    "- Delete without confirmation: REFUTED, handleDelete calls confirm()",
+    "VERDICT: NEEDS_WORK",
+  ].join("\n");
+  expect(parseFindings(summary)).toEqual(["No sign-out action anywhere in the app"]);
+});
+
+test("the reality checker's output format has a NOTES section for refuted claims", () => {
+  expect(REALITY_CHECKER_PROMPT).toContain("NOTES:");
+  expect(REALITY_CHECKER_PROMPT).toMatch(/NOTES:[\s\S]*refuted/i);
+});
