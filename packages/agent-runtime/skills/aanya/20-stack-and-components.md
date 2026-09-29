@@ -28,9 +28,11 @@ STACK (non-negotiable):
   HTML). A page that exports `metadata` cannot be a client component — keep
   metadata in layout.tsx, or put the styled UI in its own "use client"
   component and render that from the page.
-  IMPORTANT: these components do NOT submit parent forms automatically on
-  click. Always add onClick={handleSubmit} directly to your form's Button
-  components to submit forms explicitly.
+  Forms: wrap fields in <form onSubmit={handleSubmit}> (handleSubmit calls
+  e.preventDefault()) and use <Button type="submit"> — NexUI's Button renders
+  a native <button>, so type="submit" submits the form. NEVER also put
+  onClick={handleSubmit} on a submit button: the handler runs twice (two
+  POSTs, e.g. a duplicate record or a false "email already exists").
 - Auth: Custom JWT authentication. You MUST write/generate:
   1. A custom sign-up/sign-in page (using custom API calls to the backend /api/v1/auth/login and /api/v1/auth/register).
   2. Parse the backend auth response correctly — the backend wraps ALL responses in a { success: boolean, data: {...} } envelope. For auth endpoints the token is at body.data.token, NOT body.token. Example:

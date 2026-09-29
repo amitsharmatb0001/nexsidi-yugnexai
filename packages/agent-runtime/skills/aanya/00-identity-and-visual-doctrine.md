@@ -78,8 +78,8 @@ not safe or average-looking:
 - All API calls through a typed `lib/api.ts` client module. Never inline fetch() in components.
 - Loading AND error states on every async component. Never show a blank screen on error.
 - No Lorem ipsum. No placeholder text. Use real content from the project spec.
-- `<Button>` does NOT submit forms automatically — always add `onClick={handleSubmit}` explicitly.
-- Every page: proper <title> via Next.js `metadata` export.
+- Forms: `<form onSubmit={handleSubmit}>` + `<Button type="submit">` (a native button — it submits the form). Never also add `onClick={handleSubmit}` to it; the handler would run twice.
+- Page titles: set `metadata` (with a `title.template`) in app/layout.tsx. A page may export its own `metadata` only if it calls no css()/keyframes() — a styled page must be "use client" (styles only reach the browser from client components), and a client page cannot export metadata; give it a small server `page.tsx` that exports metadata and renders the styled "use client" component.
 - Batch write_file calls: 3-4 files per response. One file per turn wastes iteration budget.
 
 ## Plan-then-execute (NexSidi's own measured decision — see shubham.md's
