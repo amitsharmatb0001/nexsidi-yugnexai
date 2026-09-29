@@ -33,6 +33,8 @@ import { runStage5, type Stage5Result, type Stage5RawFindings } from "./stage5-a
 import type { InstinctDomain } from "@nexsidi/db";
 import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
 import { runGeneratorWithQuotaRetry } from "../../activities/quota-retry.ts";
+import { dropCodeContradictedFindings } from "../finding-evidence.ts";
+import { join as joinPath } from "node:path";
 
 export interface QAFixLoopResult extends Stage5Result {
   iterations: number; // total QA passes run (initial + retests)
@@ -332,9 +334,18 @@ DECISION: VALID   or   DECISION: FALSE_POSITIVE`;
 // CRITICAL/HIGH finding forces pass=false even over an already-passing
 // score. A confirmed MEDIUM/LOW finding does NOT override pass — tolerating
 // that is the entire point of the >=85 threshold, not a gap to close.
-async function applyDebateVerdict(result: Stage5Result, deps: QAFixDeps): Promise<Stage5Result> {
+async function applyDebateVerdict(result: Stage5Result, deps: QAFixDeps, projectId?: string): Promise<Stage5Result> {
   if (!deps.conductPeerDebate || result.findings.length === 0) return result;
-  const debated = await deps.conductPeerDebate(result.findings);
+  // 2026-09-28: CRITICAL findings skip debate, so a claim the real source
+  // disproves (see finding-evidence.ts) is dropped first.
+  let candidates = result.findings;
+  if (projectId) {
+    const { kept, dropped } = dropCodeContradictedFindings(candidates, joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId));
+    for (const d of dropped) console.log(`[debate] Dropped finding contradicted by the code (${d.reason}): ${d.finding.file}`);
+    candidates = kept;
+    if (candidates.length === 0) return { ...result, findings: [], pass: true };
+  }
+  const debated = await deps.conductPeerDebate(candidates);
   if (debated.length === 0) {
     return { ...result, findings: debated, pass: true };
   }
@@ -353,7 +364,7 @@ export async function runQAFixLoopWithDeps(
   stage4Result: Stage4Result,
   deps: QAFixDeps,
 ): Promise<QAFixLoopResult> {
-  let result = await applyDebateVerdict(await deps.runStage5(projectId, stage4Result, plan), deps);
+  let result = await applyDebateVerdict(await deps.runStage5(projectId, stage4Result, plan), deps, projectId);
 
   let iterations = 1;
   let previousFindingCount = result.findings.length;
@@ -519,7 +530,7 @@ export async function runQAFixLoopWithDeps(
     const changedFiles = changedFilesThisRound.size > 0 ? [...changedFilesThisRound] : undefined;
     const previousFindings = changedFiles ? extractPreviousFindings(result) : undefined;
 
-    result = await applyDebateVerdict(await deps.runStage5(projectId, stage4Result, plan, changedFiles, previousFindings), deps);
+    result = await applyDebateVerdict(await deps.runStage5(projectId, stage4Result, plan, changedFiles, previousFindings), deps, projectId);
     iterations++;
 
     const currentFindingCount = result.findings.length;

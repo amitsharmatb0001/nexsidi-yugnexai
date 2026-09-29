@@ -40,6 +40,8 @@ import type { ProjectSpec } from "../../../agents/saanvi/src/index.ts";
 // activities need the identical check for the same reason) — re-exported
 // here for backward compat with this file's own tests/callers.
 import { isQuotaExhaustionError } from "../../../packages/agent-runtime/src/gemini-loop.ts";
+import { dropCodeContradictedFindings } from "../finding-evidence.ts";
+import { join as joinPath } from "node:path";
 export { isQuotaExhaustionError };
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
@@ -60,6 +62,20 @@ const INTERNAL_AGENT_NAMES = [
   "karan",
   "deepika",
 ] as const;
+
+// 2026-09-28: findings whose claim the project's real source disproves (see
+// finding-evidence.ts) are dropped before routing — the live stage has no
+// debate, so a false CRITICAL (project a034f90ba50e) went straight to a fixer.
+// If that leaves no findings and nothing else failed, the retest passes.
+export function guardLiveRetest(projectId: string, retest: LiveRetestResult): LiveRetestResult {
+  if (retest.pass || !Array.isArray(retest.findings) || retest.findings.length === 0) return retest;
+  const projectDir = joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  const { kept, dropped } = dropCodeContradictedFindings(retest.findings as Array<{ file: string; issue?: string; detail?: string }>, projectDir);
+  for (const d of dropped) console.log(`[stage6] dropped finding contradicted by the code (${d.reason}): ${d.finding.file}`);
+  if (dropped.length === 0) return retest;
+  const othersPass = retest.liveEval?.pass !== false && retest.specCompliance?.pass !== false;
+  return { ...retest, findings: kept, pass: kept.length === 0 && othersPass };
+}
 
 export interface LiveRetestResult {
   pass: boolean;
@@ -575,7 +591,7 @@ export async function runStage6(
     return runFix(p, f);
   });
 
-  let retest = await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl);
+  let retest = guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl));
   let prevFindingsSig = "";
   let fixAttempt = 0;
 
@@ -691,7 +707,7 @@ export async function runStage6(
         }
         deployResult = redeployResult;
 
-        retest = await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl);
+        retest = guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl));
       } else {
         console.log(`[stage6] No specific findings to route — exiting fix loop`);
         break;
