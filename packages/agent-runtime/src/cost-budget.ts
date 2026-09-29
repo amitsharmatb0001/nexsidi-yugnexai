@@ -14,6 +14,8 @@
 // real Drizzle-backed store by simply not passing one.
 
 // ── Pricing ──────────────────────────────────────────────────────────────
+import { ACTIVE_NIM_MODELS, OLLAMA_MODELS } from "@nexsidi/llm-client";
+
 export interface ModelRate {
   inputPerMillion: number;
   outputPerMillion: number;
@@ -87,11 +89,21 @@ const INTRO_PRICED = new Set<string>(["gemini-3.6-flash", "gemini-3.7-flash", "g
 // missing here, so this should only ever catch a model outside the pools.
 const FALLBACK_RATE: ModelRate = PRICING["claude-opus-4-8"];
 
+// 2026-09-29: same incident class as 3.7-flash above, bigger (project
+// a034f90ba50e). The NIM loop records each call under the NIM model's name
+// and no NIM model was in PRICING, so every call on NVIDIA's FREE dev tier was
+// charged at FALLBACK_RATE: ~$63 of a recorded $88.73 was phantom (real Gemini
+// spend ~$25) and the build was halted twice by a cap it never reached. NIM
+// (free dev tier) and local Ollama models cost nothing.
+const FREE_RATE: ModelRate = { inputPerMillion: 0, outputPerMillion: 0, cachedInputPerMillion: 0 };
+const FREE_MODELS: ReadonlySet<string> = new Set<string>([...ACTIVE_NIM_MODELS, ...OLLAMA_MODELS]);
+
 export function isPricedModel(model: string): boolean {
-  return Object.hasOwn(PRICING, model);
+  return Object.hasOwn(PRICING, model) || FREE_MODELS.has(model);
 }
 
 export function rateForModel(model: string, now: Date = new Date()): ModelRate {
+  if (FREE_MODELS.has(model)) return FREE_RATE;
   if (INTRO_PRICED.has(model) && now.getTime() < FLASH_3X_INTRO_ENDS) return FLASH_3X_INTRO;
   return (PRICING as Record<string, ModelRate>)[model] ?? FALLBACK_RATE;
 }

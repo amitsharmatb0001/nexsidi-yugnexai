@@ -14,7 +14,7 @@
 // instincts.ts's dynamic `await import("./client.ts")` creates, just made
 // explicit as a parameter instead of an internal import swap.
 import { test, expect } from "bun:test";
-import { allPoolModels } from "@nexsidi/llm-client";
+import { allPoolModels, ACTIVE_NIM_MODELS, OLLAMA_MODELS } from "@nexsidi/llm-client";
 import {
   computeCostUsd,
   isPricedModel,
@@ -210,4 +210,21 @@ test("recordSpend applies the cached-token rate when told how many input tokens 
   const store = new FakeSpendStore();
   await recordSpend("p-cache", 1_000_000, 0, "gemini-3.5-flash", store, 1_000_000);
   expect((await store.getTotals("p-cache"))!.costUsd).toBeCloseTo(0.15, 6);
+});
+
+// 2026-09-29: same incident class, bigger (project a034f90ba50e). The NIM loop
+// records every call's cost under the NIM model name, and no NIM model was in
+// PRICING — so every call on NVIDIA's FREE dev tier was charged at the Opus
+// fallback ($5/$25): ~$63 of a recorded $88.73 was phantom (real Gemini spend
+// ~$25), and the build was halted twice by a budget cap it never reached.
+// NIM (free dev tier) and local Ollama models cost nothing.
+test("NIM and Ollama models are priced, at zero", () => {
+  for (const model of [...ACTIVE_NIM_MODELS, ...OLLAMA_MODELS]) {
+    expect({ model, priced: isPricedModel(model) }).toEqual({ model, priced: true });
+    expect(computeCostUsd(33_000, 120, model)).toBe(0);
+  }
+});
+
+test("an unknown model is still charged at the safe (highest) fallback rate", () => {
+  expect(computeCostUsd(1_000_000, 0, "some/new-model")).toBe(5);
 });
