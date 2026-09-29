@@ -55,6 +55,7 @@ import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { isGeminiHistory, resumesSavedHistory } from "./history-format.ts";
+import { stepBudgetNotice } from "./step-budget.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -1079,6 +1080,8 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       }
     }
 
+    const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
+    if (budgetNotice) responseParts.push({ text: budgetNotice });
     messages.push({ role: "user", content: responseParts });
 
     // Cost-control Task 2: still does not affect what's sent to the model on

@@ -50,6 +50,7 @@ import { checkCompletion } from "./enforce/completion-gate.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { resumesSavedHistory } from "./history-format.ts";
+import { stepBudgetNotice } from "./step-budget.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -476,6 +477,8 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
       }
     }
 
+    const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
+    if (budgetNotice) toolResultBlocks.push({ type: "text", text: budgetNotice });
     messages.push({ role: "user", content: toolResultBlocks });
 
     // Proactively compact history if it grows too large. 2026-09-26: this

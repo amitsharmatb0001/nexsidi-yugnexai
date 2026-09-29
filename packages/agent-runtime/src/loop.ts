@@ -43,6 +43,7 @@ import type { FactLedgerEntry } from "./context-selection.ts";
 import type { ToolResult } from "./tools/file.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 import { isNimHistory, resumesSavedHistory } from "./history-format.ts";
+import { stepBudgetNotice } from "./step-budget.ts";
 
 // Exported so claude-loop.ts's runAgentWithClaude() can reuse the exact same
 // iteration cap instead of redefining it (per Task 15 spec — "same
@@ -1120,6 +1121,8 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     }
 
     messages.push(...toolResults);
+    const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
+    if (budgetNotice) messages.push({ role: "user", content: budgetNotice });
 
     // Proactively compact history if it grows too large
     messages = await compactHistory(messages);
