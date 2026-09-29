@@ -7,6 +7,7 @@ import {
   checkSpecCompliance,
   checkStackConformance,
   checkFrontendApiProxy,
+  checkAuthNavigation,
   runSpecComplianceCheck,
   toFindings,
 } from "./spec-compliance.ts";
@@ -291,4 +292,29 @@ test("checkFrontendApiProxy passes a config with no rewrites, and a rewrite to t
   expect(checkFrontendApiProxy(`export default { reactStrictMode: true };`).pass).toBe(true);
   const internal = `export default { async rewrites() { return [{ source: "/api/:path*", destination: "http://backend:3001/api/:path*" }]; } };`;
   expect(checkFrontendApiProxy(internal).pass).toBe(true);
+});
+
+// 2026-09-29: real bug (project a034f90ba50e), reproduced in the browser. The
+// sign-in form set the token cookie and called router.push("/dashboard"). The
+// header's Dashboard link had been prefetched while signed out, the middleware
+// answered that prefetch with a redirect to /sign-in, and the router reused
+// the cached redirect: login succeeded (200, cookie set) but the user stayed on
+// /sign-in. A change of auth state needs a full navigation.
+test("checkAuthNavigation flags a file that sets the token cookie and navigates with the router", () => {
+  const src = `document.cookie = \`token=\${res.data.token}; path=/\`;\n      router.push("/dashboard");`;
+  const result = checkAuthNavigation([{ path: "components/auth-form.tsx", source: src }]);
+  expect(result.pass).toBe(false);
+  expect(result.violations[0]).toContain("components/auth-form.tsx");
+  expect(result.violations[0]).toContain("window.location.assign");
+});
+
+test("checkAuthNavigation flags sign-out that clears the cookie and uses router.replace", () => {
+  const src = `document.cookie = "token=; path=/; max-age=0";\nrouter.replace("/sign-in");`;
+  expect(checkAuthNavigation([{ path: "components/header.tsx", source: src }]).pass).toBe(false);
+});
+
+test("checkAuthNavigation passes full navigation, and router use in files that don't touch the token", () => {
+  const login = `document.cookie = \`token=\${t}; path=/\`;\nwindow.location.assign("/dashboard");`;
+  const list = `router.push(\`/plants/\${id}\`);`;
+  expect(checkAuthNavigation([{ path: "a.tsx", source: login }, { path: "b.tsx", source: list }]).pass).toBe(true);
 });

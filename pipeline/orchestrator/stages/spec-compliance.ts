@@ -217,21 +217,53 @@ export function checkFrontendApiProxy(nextConfigSource: string): SpecComplianceR
   };
 }
 
+// 2026-09-29: real bug (project a034f90ba50e), reproduced in the browser. The
+// sign-in form set the token cookie then router.push("/dashboard"); the
+// header's Dashboard link had been prefetched while signed out, the
+// middleware answered that prefetch with a redirect to /sign-in, and the
+// router reused the cached redirect — login succeeded (200, cookie set) but
+// the user stayed on /sign-in. A change of auth state needs a full navigation.
+export function checkAuthNavigation(files: Array<{ path: string; source: string }>): SpecComplianceResult {
+  const violations = files
+    .filter(({ source }) => /document\.cookie\s*=\s*[`'"]token=/.test(source) && /router\.(push|replace)\(/.test(source))
+    .map(({ path }) =>
+      `frontend/${path}: sets the token cookie and then navigates with router.push/replace — the router reuses a page prefetched while signed out (the middleware's redirect to /sign-in), so after signing in the user stays on the sign-in page. After the token cookie changes (sign-in or sign-out), navigate with window.location.assign(...) instead.`,
+    );
+  return { pass: violations.length === 0, violations };
+}
+
+function readFrontendSources(frontendOutputDir: string, readdirSync: typeof import("node:fs").readdirSync, readFileSync: typeof import("node:fs").readFileSync, join: typeof import("node:path").join): Array<{ path: string; source: string }> {
+  const out: Array<{ path: string; source: string }> = [];
+  const walk = (rel: string) => {
+    for (const entry of readdirSync(join(frontendOutputDir, rel), { withFileTypes: true })) {
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (!["node_modules", ".next", ".git", "nexui"].includes(entry.name)) walk(childRel);
+      } else if (/\.(tsx?|jsx?)$/.test(entry.name)) {
+        out.push({ path: childRel, source: readFileSync(join(frontendOutputDir, childRel), "utf-8") });
+      }
+    }
+  };
+  for (const dir of ["app", "components", "lib", "hooks"]) {
+    try { walk(dir); } catch { /* directory absent */ }
+  }
+  return out;
+}
+
 export async function runStackConformanceCheck(frontendOutputDir: string): Promise<SpecComplianceResult> {
-  const { readFileSync, existsSync } = await import("node:fs");
+  const { readFileSync, existsSync, readdirSync } = await import("node:fs");
   const { join } = await import("node:path");
-  let result: SpecComplianceResult;
+  const results: SpecComplianceResult[] = [];
   try {
     const packageJson = JSON.parse(readFileSync(join(frontendOutputDir, "package.json"), "utf-8")) as PackageJsonLike;
-    result = checkStackConformance(packageJson);
+    results.push(checkStackConformance(packageJson));
   } catch (err) {
     console.error(`[spec-compliance] Could not read frontend package.json for stack conformance — skipping (fail-open): ${String(err)}`);
-    result = { pass: true, violations: [] };
   }
   const nextConfig = ["next.config.ts", "next.config.mjs", "next.config.js"].map((f) => join(frontendOutputDir, f)).find((p) => existsSync(p));
-  if (!nextConfig) return result;
-  const proxy = checkFrontendApiProxy(readFileSync(nextConfig, "utf-8"));
-  return { pass: result.pass && proxy.pass, violations: [...result.violations, ...proxy.violations] };
+  if (nextConfig) results.push(checkFrontendApiProxy(readFileSync(nextConfig, "utf-8")));
+  results.push(checkAuthNavigation(readFrontendSources(frontendOutputDir, readdirSync, readFileSync, join)));
+  return { pass: results.every((r) => r.pass), violations: results.flatMap((r) => r.violations) };
 }
 
 // Converts violations into Finding-shaped objects ({file, issue} — see

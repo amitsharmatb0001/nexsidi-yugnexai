@@ -34,7 +34,7 @@ STACK (non-negotiable):
   onClick={handleSubmit} on a submit button: the handler runs twice (two
   POSTs, e.g. a duplicate record or a false "email already exists").
 - Auth: Custom JWT authentication. You MUST write/generate:
-  1. A custom sign-up/sign-in page (using custom API calls to the backend /api/v1/auth/login and /api/v1/auth/register).
+  1. A custom sign-up/sign-in page calling the auth endpoints exactly as the API contract names them (e.g. /api/v1/auth/sign-in — never assume /login or /register).
   2. Parse the backend auth response correctly — the backend wraps ALL responses in a { success: boolean, data: {...} } envelope. For auth endpoints the token is at body.data.token, NOT body.token. Example:
        const body = await res.json();
        if (!res.ok || !body.success) { setError(body.error ?? "Request failed"); return; }
@@ -42,6 +42,11 @@ STACK (non-negotiable):
        document.cookie = `token=${token}; path=/`;
   3. Store the JWT token in cookies (e.g., set 'token' cookie) or localStorage.
   4. Include the token as an Authorization Bearer header in all backend API requests.
+  5. After sign-in or sign-out changes the token cookie, navigate with
+     window.location.assign("/dashboard") (or "/sign-in") — NEVER router.push
+     or router.replace. The router reuses pages prefetched while signed out
+     (the middleware's redirect to /sign-in), so the user would stay on the
+     sign-in page after a successful login.
 - API calls: see the MODE-specific instructions at the end of this prompt for
   whether to call the backend now or use mock data instead
 
