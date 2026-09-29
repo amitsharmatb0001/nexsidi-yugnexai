@@ -170,6 +170,9 @@ export function estimateGeminiChars(messages: GeminiMessage[]): number {
       totalChars += m.content.length;
       continue;
     }
+    // 2026-09-28: a foreign-format (NIM) message can carry content: null —
+    // count nothing rather than crash (see history-format.ts).
+    if (!Array.isArray(m.content)) continue;
     for (const part of m.content) {
       // "text" also matches the thought variant's optional text field (which
       // can be undefined) — exclude thought parts explicitly, same pattern

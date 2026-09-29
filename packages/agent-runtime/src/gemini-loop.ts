@@ -54,6 +54,7 @@ import { execDbQuery } from "./tools/db.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
+import { isGeminiHistory } from "./history-format.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -422,7 +423,9 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         )
         .limit(1);
 
-      if (existing[0]) {
+      if (existing[0] && !isGeminiHistory(existing[0].messages)) {
+        console.log(`[${config.agentName}:gemini-agent] Saved history is in another loop's message format (${Array.isArray(existing[0].messages) ? existing[0].messages.length : 0} messages) — starting fresh`);
+      } else if (existing[0]) {
         messages = existing[0].messages as GeminiMessage[];
         const sysIdx = messages.findIndex((m) => m.role === "system");
         if (sysIdx >= 0) {
@@ -449,6 +452,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       }
     } catch (e) {
       console.error(`[${config.agentName}:gemini-agent] Failed to load history:`, e);
+      // 2026-09-28: loadedFromDb was already true when compaction threw, so the
+      // run kept the half-loaded history and crashed on it again — start clean.
+      loadedFromDb = false;
+      loadedFactLedger = [];
     }
   }
 

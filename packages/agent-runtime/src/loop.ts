@@ -42,6 +42,7 @@ import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import type { FactLedgerEntry } from "./context-selection.ts";
 import type { ToolResult } from "./tools/file.ts";
 import type { ModelId } from "@nexsidi/llm-client";
+import { isNimHistory } from "./history-format.ts";
 
 // Exported so claude-loop.ts's runAgentWithClaude() can reuse the exact same
 // iteration cap instead of redefining it (per Task 15 spec — "same
@@ -522,7 +523,9 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         )
         .limit(1);
 
-      if (existing[0]) {
+      if (existing[0] && !isNimHistory(existing[0].messages)) {
+        console.log(`[${config.agentName}:agent] Saved history is in another loop's message format — starting fresh`);
+      } else if (existing[0]) {
         messages = existing[0].messages as NimMessage[];
         const sysIdx = messages.findIndex((m) => m.role === "system");
         if (sysIdx >= 0) {
