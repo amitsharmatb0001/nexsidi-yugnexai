@@ -201,12 +201,12 @@ export function checkFrontendApiProxy(nextConfigSource: string): SpecComplianceR
   const hostOnly = (expr: string) => /localhost|127\.0\.0\.1|NEXT_PUBLIC_API_URL/.test(expr);
   const hostOnlyVars = new Set(
     [...nextConfigSource.matchAll(/(?:const|let|var)\s+(\w+)\s*=\s*([^;\n]+)/g)]
-      .filter(([, , value]) => hostOnly(value))
-      .map(([, name]) => name),
+      .filter((m) => hostOnly(m[2] ?? ""))
+      .map((m) => m[1] ?? ""),
   );
-  const destinations = [...nextConfigSource.matchAll(/destination\s*:\s*([`"'])(.*?)\1/g)].map(([, , d]) => d);
+  const destinations = [...nextConfigSource.matchAll(/destination\s*:\s*([`"'])(.*?)\1/g)].map((m) => m[2] ?? "");
   const bad = destinations.filter(
-    (d) => hostOnly(d) || [...d.matchAll(/\$\{\s*(\w+)\s*\}/g)].some(([, v]) => hostOnlyVars.has(v)),
+    (d) => hostOnly(d) || [...d.matchAll(/\$\{\s*(\w+)\s*\}/g)].some((m) => hostOnlyVars.has(m[1] ?? "")),
   );
   if (bad.length === 0) return { pass: true, violations: [] };
   return {
