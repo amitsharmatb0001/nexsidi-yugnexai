@@ -1581,34 +1581,24 @@ export async function run(
   if (!roundTrip.ok) errors.push(`Live authenticated round-trip failed: ${roundTrip.reason}`);
   if (!crudCheck.ok) errors.push(...crudCheck.findings.map((f) => `CRUD verification: ${f}`));
 
-  // 2026-08-27: real bug found live (project 852be5aeaef4). This used to
-  // write status: "error" on any unsuccessful deploy — but "error" is a
-  // status string NOTHING else in the system recognizes. Every other writer
-  // uses "failed"/"needs_review" (see pipeline/activities/index.ts's
-  // ProjectStatusWriter), and the read path in apps/api/src/routes/
-  // projects.ts branches on building/done/failed/planning only, so "error"
-  // fell through to the generic else → "Queued...". Confirmed live: a
-  // deployment whose containers were genuinely up (frontend AND backend both
-  // 200, all 3 tables present, CRUD verified) showed the user a blank/queued
-  // screen with no explanation, because a TRANSIENT LLM network failure
-  // during the post-deploy verification step flipped result.success to
-  // false. "needs_review" is the honest status — it is recognized
-  // everywhere, and it is what the frontend's needs-attention card keys off.
-  const failureReason = deploySucceeded
-    ? null
-    : `deploy_verification_incomplete: ${errors.slice(0, 3).join("; ") || "post-deploy verification did not complete"}`;
-
   await db
     .update(projects)
-    .set({
-      appUrl,
-      status: deploySucceeded ? "done" : "needs_review",
-      failureReason,
-      updatedAt: new Date(),
-    })
+    .set(projectFieldsAfterDeploy(appUrl))
     .where(eq(projects.id, projectId));
 
   return { success: deploySucceeded, appUrl, backendUrl, githubRepo, errors };
+}
+
+// 2026-09-29: real bug (project a034f90ba50e). This step used to write
+// status "done" (or "needs_review") itself — but Stage 6's live review and
+// fix loop only START after it, and ran for 50+ minutes while the dashboard
+// already said "done"; a failed deploy that Stage 6 was about to retry showed
+// "needs attention" the same way. The workflow owns the project status
+// (markProjectDone after Stage 6 passes, escalateTilotma on failure); this
+// step records only where the app is running, so "open app" works during
+// the review.
+export function projectFieldsAfterDeploy(appUrl: string): { appUrl: string; updatedAt: Date } {
+  return { appUrl, updatedAt: new Date() };
 }
 // 2026-08-23: RIYA_AGENT_SYSTEM_PROMPT moved to
 // packages/agent-runtime/skills/riya/ (00-strategy-and-doctrine.md,

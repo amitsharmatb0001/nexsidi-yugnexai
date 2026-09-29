@@ -917,7 +917,7 @@ export async function applyChangeRequestActivity(projectId: string, changeText: 
 export async function markProjectDone(projectId: string, appUrl: string): Promise<void> {
   await db
     .update(projects)
-    .set({ status: "done", appUrl, updatedAt: new Date() })
+    .set({ status: "done", appUrl, failureReason: null, updatedAt: new Date() })
     .where(eq(projects.id, projectId));
 }
 

@@ -30,7 +30,11 @@ export type ResultStatus = "waiting" | "building" | "done" | "failed" | "needs_r
 // its post-launch check failed, and treating the URL as "done" hid the
 // "needs your attention" card and its Retry button, so the build could not
 // be resumed from the UI.
+//
+// 2026-09-29 (project a034f90ba50e): nor while the build is still running —
+// the app URL is saved at launch, before the live review and its fixes, and a
+// Retry keeps the previous run's URL.
 export function statusFromResult(r: { status: ResultStatus; appUrl?: string | null }): ResultStatus {
-  if (r.status === "needs_review") return "needs_review";
+  if (r.status === "needs_review" || r.status === "building") return r.status;
   return r.appUrl ? "done" : r.status;
 }

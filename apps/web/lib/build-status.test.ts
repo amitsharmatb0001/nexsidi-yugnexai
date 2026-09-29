@@ -46,3 +46,11 @@ test("a stage event never overrides needs_review — it re-checks the result ins
   expect(statusForStageEvent("deploy", "needs_review")).toEqual({ status: null, refetchResult: true });
   expect(statusForStageEvent("generate", "building")).toEqual({ status: "building", refetchResult: false });
 });
+
+// 2026-09-29: real bug (project a034f90ba50e, Plantly). The app URL is saved as
+// soon as the app is launched, but the live review and its fix loop run after
+// that — and a Retry keeps the previous run's URL. "building" with a URL is
+// still building; only the workflow's own "done" finishes the build.
+test("an app URL does not finish a build that is still running", () => {
+  expect(statusFromResult({ status: "building", appUrl: "http://localhost:3207" })).toBe("building");
+});

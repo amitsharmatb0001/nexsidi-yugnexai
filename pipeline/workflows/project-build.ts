@@ -304,6 +304,7 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     // checking in with a human.
     const MAX_AUTO_RETRIES = 3;
     let autoRetryCount = 0;
+    let deliveredAppUrl = "";
     for (;;) {
       // 2026-08-17 (live, fulfillio1 — 3rd occurrence of the same false-
       // positive class as two prior ones): recordHandoff used to be called
@@ -375,7 +376,10 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
         console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (deploy_activity_error)`);
         continue;
       }
-      if (deployResult.success) break;
+      if (deployResult.success) {
+        deliveredAppUrl = deployResult.appUrl;
+        break;
+      }
 
       state.stage = "error";
       // deployResult.stuck === false: the activity's own internal loop saw
@@ -418,6 +422,15 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       console.log(`[workflow] retrying Stage 6 deploy after a human retry decision`);
     }
 
+    // 2026-09-29: real bug (project a034f90ba50e) — the deploy step used to
+    // write "done" itself, BEFORE the live review and fix loop inside Stage 6
+    // had run (see agents/riya/src/index.ts projectFieldsAfterDeploy). The
+    // project is marked done here, only once Stage 6 as a whole passed.
+    // Own patch marker: a history recorded before this change (a query on an
+    // already-finished workflow) must replay without this activity call.
+    if (patched("mark-done-after-live-review-v1")) {
+      await act.markProjectDone(projectId, deliveredAppUrl);
+    }
     state.stage = "done";
   }
 
