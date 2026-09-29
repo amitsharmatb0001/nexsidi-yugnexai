@@ -1514,6 +1514,11 @@ export async function run(
     // a build with a 500ing DB write — see the migrate-and-verify note
     // below). See EvidenceLedger.hasEvidenceOfKind / checkCompletion.
     requiredEvidenceKinds: ["http_check"],
+    // 2026-09-29 (project a034f90ba50e): every redeploy resumed the previous
+    // deploy's conversation (47 → 89 messages over one build: old ports, old
+    // container states, old errors — the "plausible confound" noted above).
+    // Each deploy is a new job; its facts are in the task message.
+    freshStart: true,
   });
 
   // 2026-07-12: DETERMINISTIC migrate-and-verify — do NOT trust the deploy
