@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 // ── Published ports of generated apps (2026-09-26 security fix) ─────────────
 //
@@ -126,5 +126,29 @@ export function prepareComposeForUp(cwd: string, fs: ComposeFs = nodeFs): Prepar
     };
   }
   if (result.changed > 0) fs.write(file, result.content);
+  pinFrontendDockerfile(dirname(file), fs);
   return { ok: true, file, changed: result.changed };
+}
+
+// 2026-09-29: real bug (project a034f90ba50e), recurring since Sprint 1.
+// NEXT_PUBLIC_* values are baked in at `next build`. The launch step writes
+// frontend/.env.local with the real backend URL, but an ARG/ENV default in
+// the frontend Dockerfile (e.g. the contract's :3001) is process env during the
+// build and beats .env.local — the browser called :3001 while the backend
+// listened on :3308. Before every `up`, the Dockerfile is pinned to .env.local.
+export function pinFrontendApiUrl(dockerfile: string, url: string): string {
+  return dockerfile
+    .replace(/^ARG\s+NEXT_PUBLIC_API_URL(?:=[^\r\n]*)?$/gm, `ARG NEXT_PUBLIC_API_URL=${url}`)
+    .replace(/^ENV\s+NEXT_PUBLIC_API_URL(?:=|\s+)(?!\$)[^\r\n]*$/gm, `ENV NEXT_PUBLIC_API_URL=${url}`);
+}
+
+function pinFrontendDockerfile(projectDir: string, fs: ComposeFs): void {
+  const envPath = join(projectDir, "frontend", ".env.local");
+  const dockerfilePath = join(projectDir, "frontend", "Dockerfile");
+  if (!fs.exists(envPath) || !fs.exists(dockerfilePath)) return;
+  const url = fs.read(envPath).match(/^NEXT_PUBLIC_API_URL=(\S+)\s*$/m)?.[1];
+  if (!url) return;
+  const current = fs.read(dockerfilePath);
+  const pinned = pinFrontendApiUrl(current, url);
+  if (pinned !== current) fs.write(dockerfilePath, pinned);
 }
