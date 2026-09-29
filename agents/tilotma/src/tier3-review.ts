@@ -114,6 +114,15 @@ export interface Tier3ReviewResult {
 // orchestrator process is started from.
 const SCREENSHOT_ROOT = "tier3-review-screenshots";
 
+// 2026-09-29: measured on project a034f90ba50e — on the NIM model
+// (meta/muse-glimmer-30b) the reality checker never finished in 3 runs (20, 61
+// and 42+ iterations, re-probing sign-in, ~1.5M input tokens), then Gemini did
+// the job in 25 iterations each time: NIM only added ~25 minutes per review
+// round. A non-NIM model id means runAgentEscalated runs the provider directly
+// (Gemini, or Claude when CLAUDE_ENABLED=true). The evidence collector keeps
+// NIM — it finished there both times.
+const REALITY_CHECKER_MODEL = "gemini-3.8-flash" as const;
+
 export async function runTier3Review(
   projectId: string,
   frontendOutputDir: string,
@@ -193,7 +202,7 @@ export async function runTier3Review(
   const stage2 = await runWithQuotaWatchAndResume(() =>
     runAgentEscalated({
       agentName: "tilotma-reality-checker",
-      model: AGENT_MODELS.tilotma,
+      model: REALITY_CHECKER_MODEL,
       apiKey,
       systemPrompt: REALITY_CHECKER_PROMPT,
       initialMessage: buildRealityCheckerTask(projectId, appUrl, backendUrl, screenshotDir, stage1Findings),

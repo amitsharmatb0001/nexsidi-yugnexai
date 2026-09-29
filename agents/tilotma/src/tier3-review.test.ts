@@ -170,3 +170,16 @@ test("shouldSkipStage2 is false when Stage 1 has even one finding — independen
 test("shouldSkipStage2 does not skip on a single finding, even one that later turns out to be wrong", () => {
   expect(shouldSkipStage2(['"YugNex" visible in footer text'])).toBe(false);
 });
+
+// 2026-09-29: measured on project a034f90ba50e — the reality checker on the NIM
+// model (meta/muse-glimmer-30b) never finished in 3 runs (20, 61 and 42+
+// iterations, re-probing sign-in; ~1.5M input tokens), then Gemini did the job
+// in 25 iterations every time. The evidence collector on NIM finished both
+// times, so only the checker skips NIM and runs on its provider directly.
+test("the reality checker runs on its provider directly (no NIM model); the evidence collector keeps NIM", () => {
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "tier3-review.ts"), "utf-8");
+  const checker = source.slice(source.indexOf('agentName: "tilotma-reality-checker"'));
+  expect(checker.slice(0, 200)).toContain("model: REALITY_CHECKER_MODEL");
+  const collector = source.slice(source.indexOf('agentName: "tilotma-evidence-collector"'));
+  expect(collector.slice(0, 200)).toContain("model: AGENT_MODELS.tilotma");
+});
