@@ -6,6 +6,7 @@ import {
   checkFormFieldCompliance,
   checkSpecCompliance,
   checkStackConformance,
+  checkFrontendApiProxy,
   runSpecComplianceCheck,
   toFindings,
 } from "./spec-compliance.ts";
@@ -263,4 +264,31 @@ test("checkSpecCompliance passes when the live app matches the spec's literal co
     formFieldsByPath: { "/api/v1/contact": ["name", "email", "message"] },
   };
   expect(checkSpecCompliance(spec, live)).toEqual({ pass: true, violations: [] });
+});
+
+// 2026-09-29: real bug (project a034f90ba50e). Aanya added a next.config.ts
+// rewrite proxying /api/:path* to `${process.env.NEXT_PUBLIC_API_URL}` —
+// http://localhost:3308. The rewrite runs INSIDE the frontend container,
+// where localhost is the frontend container itself, so every /api request
+// through it returned 500 and sign-up/sign-in failed in the UI while the
+// backend (called directly) worked.
+test("checkFrontendApiProxy flags a /api rewrite to NEXT_PUBLIC_API_URL", () => {
+  const nextConfig = `const backendUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+const nextConfig = { async rewrites() { return [{ source: "/api/:path*", destination: \`\${backendUrl}/api/:path*\` }]; } };
+export default nextConfig;`;
+  const result = checkFrontendApiProxy(nextConfig);
+  expect(result.pass).toBe(false);
+  expect(result.violations[0]).toContain("next.config");
+  expect(result.violations[0]).toContain("inside the frontend container");
+});
+
+test("checkFrontendApiProxy flags a rewrite to a literal localhost URL", () => {
+  const nextConfig = `export default { async rewrites() { return [{ source: "/api/:path*", destination: "http://localhost:3308/api/:path*" }]; } };`;
+  expect(checkFrontendApiProxy(nextConfig).pass).toBe(false);
+});
+
+test("checkFrontendApiProxy passes a config with no rewrites, and a rewrite to the backend service name", () => {
+  expect(checkFrontendApiProxy(`export default { reactStrictMode: true };`).pass).toBe(true);
+  const internal = `export default { async rewrites() { return [{ source: "/api/:path*", destination: "http://backend:3001/api/:path*" }]; } };`;
+  expect(checkFrontendApiProxy(internal).pass).toBe(true);
 });

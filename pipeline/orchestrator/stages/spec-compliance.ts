@@ -189,16 +189,49 @@ export function checkStackConformance(packageJson: PackageJsonLike): SpecComplia
   return { pass: violations.length === 0, violations };
 }
 
+// 2026-09-29: real bug (project a034f90ba50e). A next.config rewrite proxying
+// /api to `${process.env.NEXT_PUBLIC_API_URL}` (http://localhost:3308) runs
+// INSIDE the frontend container, where localhost is the frontend container
+// itself — every /api request through it returned 500, so sign-up/sign-in
+// failed in the UI while the backend, called directly, worked. NEXT_PUBLIC_API_URL
+// is the BROWSER's address for the backend; a server-side proxy needs the
+// compose service name (http://backend:<container port>).
+export function checkFrontendApiProxy(nextConfigSource: string): SpecComplianceResult {
+  if (!/rewrites\s*\(/.test(nextConfigSource)) return { pass: true, violations: [] };
+  const hostOnly = (expr: string) => /localhost|127\.0\.0\.1|NEXT_PUBLIC_API_URL/.test(expr);
+  const hostOnlyVars = new Set(
+    [...nextConfigSource.matchAll(/(?:const|let|var)\s+(\w+)\s*=\s*([^;\n]+)/g)]
+      .filter(([, , value]) => hostOnly(value))
+      .map(([, name]) => name),
+  );
+  const destinations = [...nextConfigSource.matchAll(/destination\s*:\s*([`"'])(.*?)\1/g)].map(([, , d]) => d);
+  const bad = destinations.filter(
+    (d) => hostOnly(d) || [...d.matchAll(/\$\{\s*(\w+)\s*\}/g)].some(([, v]) => hostOnlyVars.has(v)),
+  );
+  if (bad.length === 0) return { pass: true, violations: [] };
+  return {
+    pass: false,
+    violations: [
+      `frontend/next.config: rewrites() proxies to ${bad.join(", ")} — the rewrite runs inside the frontend container, where localhost is the frontend container itself, so every request through it fails with 500. Remove the rewrites() proxy and call the backend directly at process.env.NEXT_PUBLIC_API_URL from the browser.`,
+    ],
+  };
+}
+
 export async function runStackConformanceCheck(frontendOutputDir: string): Promise<SpecComplianceResult> {
-  const { readFileSync } = await import("node:fs");
+  const { readFileSync, existsSync } = await import("node:fs");
   const { join } = await import("node:path");
+  let result: SpecComplianceResult;
   try {
     const packageJson = JSON.parse(readFileSync(join(frontendOutputDir, "package.json"), "utf-8")) as PackageJsonLike;
-    return checkStackConformance(packageJson);
+    result = checkStackConformance(packageJson);
   } catch (err) {
     console.error(`[spec-compliance] Could not read frontend package.json for stack conformance — skipping (fail-open): ${String(err)}`);
-    return { pass: true, violations: [] };
+    result = { pass: true, violations: [] };
   }
+  const nextConfig = ["next.config.ts", "next.config.mjs", "next.config.js"].map((f) => join(frontendOutputDir, f)).find((p) => existsSync(p));
+  if (!nextConfig) return result;
+  const proxy = checkFrontendApiProxy(readFileSync(nextConfig, "utf-8"));
+  return { pass: result.pass && proxy.pass, violations: [...result.violations, ...proxy.violations] };
 }
 
 // Converts violations into Finding-shaped objects ({file, issue} — see

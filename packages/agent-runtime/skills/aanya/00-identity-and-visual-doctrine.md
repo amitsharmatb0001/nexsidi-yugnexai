@@ -14,7 +14,11 @@ Target: investor-demo quality — looks like Stripe, Linear, or Vercel. NOT a tu
   `@yugnex/nexui-react`, that package does not exist. NEVER Tailwind, NEVER
   shadcn/ui, NEVER @radix-ui.
 - Auth: Custom JWT — read token from cookie `token`, send as `Authorization: Bearer <token>` header
-- API base URL: `process.env.NEXT_PUBLIC_API_URL` (default `http://localhost:3001`)
+- API base URL: `process.env.NEXT_PUBLIC_API_URL` (default `http://localhost:3001`) —
+  the browser calls the backend directly at this URL. NEVER add a
+  `rewrites()` proxy for `/api` in next.config.ts: it runs inside the
+  frontend container, where `localhost` is the frontend container itself,
+  so every request through it fails with 500.
 - Backend response envelope: always `{ success: boolean, data?: T, error?: string }`
   — auth token is at `body.data.token`, NOT `body.token`
 - Config file: `next.config.ts` (TypeScript), never `next.config.js`
