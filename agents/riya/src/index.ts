@@ -470,7 +470,12 @@ export function buildPayloadForRequestType(
   typeName: string,
   marker: string,
 ): Record<string, unknown> | null {
-  const trimmed = typeName.trim();
+  // 2026-09-28: real false deploy failure (project a034f90ba50e) — an update
+  // endpoint typed "Partial<PlantPayload>" found no interface by that literal
+  // name, so the check sent a null body and the app (correctly) answered 400.
+  // Standard TS wrappers resolve to the type they wrap.
+  const wrapped = typeName.trim().match(/^(?:Partial|Required|Readonly|Pick|Omit)<\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:,[^>]*)?>$/);
+  const trimmed = wrapped ? wrapped[1]! : typeName.trim();
   if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
     // fieldsToPayload's regex requires a trailing ";" per field — an inline
     // literal's last field has none before the closing "}" (unlike a named
@@ -480,7 +485,7 @@ export function buildPayloadForRequestType(
     if (body && !body.endsWith(";")) body += ";";
     return fieldsToPayload(body, marker);
   }
-  const typeMatch = sharedTypesSource.match(new RegExp(`interface\\s+${typeName}\\s*\\{([^}]*)\\}`));
+  const typeMatch = sharedTypesSource.match(new RegExp(`interface\\s+${trimmed}\\s*\\{([^}]*)\\}`));
   if (!typeMatch) return null;
   return fieldsToPayload(typeMatch[1] ?? "", marker);
 }
@@ -1320,9 +1325,12 @@ export async function verifyAllResourceCrud(
       const updateEp = eps.find((e) => (e.method === "PATCH" || e.method === "PUT") && isDirectByIdPath(createEp.path, e.path));
       if (updateEp) {
         const updateMarker = `${marker}-updated`;
-        const updatePayload = (updateEp.requestType && updateEp.requestType !== "null"
+        // 2026-09-28: never send a null body — if the update type can't be
+        // resolved, reuse the create payload that already worked above.
+        const derivedUpdate = updateEp.requestType && updateEp.requestType !== "null"
           ? buildPayloadForRequestType(sharedTypesSource, updateEp.requestType, updateMarker)
-          : { title: updateMarker }) as Record<string, unknown>;
+          : null;
+        const updatePayload = (derivedUpdate ?? (createPayload && typeof createPayload === "object" ? { ...createPayload } : { title: updateMarker })) as Record<string, unknown>;
         const updateRes = await fetch(`${backendUrl}${substitutePathParam(updateEp.path, createdId)}`, {
           method: updateEp.method,
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeToken}` },

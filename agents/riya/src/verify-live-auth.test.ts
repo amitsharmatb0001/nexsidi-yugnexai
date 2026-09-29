@@ -1156,3 +1156,18 @@ test("verifyLiveAuthenticatedRoundTrip registers and logs in through the contrac
   // 403 on create = auth worked (existing rule); a 404 on register would be ok:false.
   expect(result).toEqual({ ok: true, reason: expect.stringContaining("403") });
 });
+
+// 2026-09-28: real false deploy failure (project a034f90ba50e, Plantly). The
+// update endpoint's requestType was "Partial<PlantPayload>"; the lookup
+// searched for an interface literally named that, found none, and the check
+// sent a null body — the app correctly answered 400 ("At least one field must
+// be provided"), and the deploy was marked stuck. By hand, PATCH with a real
+// field returned 200. Standard TS wrappers now resolve to the inner type.
+test("buildPayloadForRequestType unwraps Partial<>/Required<>/Readonly<>/Pick<>/Omit<> to the real interface", () => {
+  const shared = "export interface PlantPayload { name: string; species?: string; room: string; watering_interval_days: number; }";
+  for (const t of ["Partial<PlantPayload>", "Required<PlantPayload>", "Readonly<PlantPayload>", "Pick<PlantPayload, \"name\">", "Omit<PlantPayload, \"species\">"]) {
+    const payload = buildPayloadForRequestType(shared, t, "m");
+    expect(payload).not.toBeNull();
+    expect(Object.keys(payload!)).toContain("name");
+  }
+});
