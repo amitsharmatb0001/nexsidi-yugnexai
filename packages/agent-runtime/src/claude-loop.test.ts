@@ -123,7 +123,9 @@ test("both fail -> returns Claude's (more informative) result, escalated: true",
   expect(result.summary).not.toBe("NIM gave up");
 });
 
-test("runAgentEscalated passes the ORIGINAL config unchanged to the NIM path", async () => {
+// 2026-10-01: the NIM leg now also receives timeBudgetMs (nim-time-budget.ts);
+// every other field must still be passed through untouched.
+test("runAgentEscalated passes the original config to the NIM path, adding only the time budget", async () => {
   const seenConfigs: AgentRunConfig[] = [];
   const deps: AgentEscalationDeps = {
     runNim: async (cfg) => {
@@ -136,7 +138,9 @@ test("runAgentEscalated passes the ORIGINAL config unchanged to the NIM path", a
   await runAgentEscalated(BASE_CONFIG, deps);
 
   expect(seenConfigs).toHaveLength(1);
-  expect(seenConfigs[0]).toBe(BASE_CONFIG); // exact same reference — NIM path is untouched
+  const { timeBudgetMs, ...rest } = seenConfigs[0]!;
+  expect(rest).toEqual(BASE_CONFIG);
+  expect(timeBudgetMs).toBeGreaterThan(0);
 });
 
 // L6 (full-system audit): runAgentWithClaude previously started cold with
@@ -347,4 +351,28 @@ test("NIM_ENABLED=false skips the NIM loop even for an agent with NIM models con
   } finally {
     if (prior === undefined) delete process.env.NIM_ENABLED; else process.env.NIM_ENABLED = prior;
   }
+});
+
+// 2026-10-01: the NIM leg of an escalated run gets a time budget (see
+// nim-time-budget.ts) — and ONLY the NIM leg; the provider leg has no cap.
+test("the NIM leg gets a time budget, the provider leg does not, and a budget stop still escalates", async () => {
+  let nimBudget: number | undefined;
+  let providerBudget: number | undefined = -1;
+  const deps: AgentEscalationDeps = {
+    runNim: async (cfg) => {
+      nimBudget = cfg.timeBudgetMs;
+      return { success: false, summary: "Aborted after NIM time budget (20 min) reached — handing over", filesWritten: [], iterations: 12, errors: [], escalationReason: "cannot_finish" };
+    },
+    runClaude: async (cfg) => {
+      providerBudget = cfg.timeBudgetMs;
+      return claudeSuccess();
+    },
+  };
+
+  const result = await runAgentEscalated(BASE_CONFIG, deps);
+
+  expect(nimBudget).toBeGreaterThan(0);
+  expect(providerBudget).toBeUndefined();
+  expect(result.escalated).toBe(true);
+  expect(result.success).toBe(true);
 });

@@ -51,6 +51,7 @@ import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice } from "./step-budget.ts";
+import { nimTimeBudgetMs } from "./nim-time-budget.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -567,7 +568,8 @@ export async function runAgentEscalated(
     return { ...(await deps.runClaude(config)), escalated: false };
   }
 
-  const nimResult = await deps.runNim(config);
+  // 2026-10-01: only the NIM leg gets a time budget — Gemini is behind it.
+  const nimResult = await deps.runNim({ ...config, timeBudgetMs: nimTimeBudgetMs() });
 
   if (nimResult.success) {
     return { ...nimResult, escalated: false };

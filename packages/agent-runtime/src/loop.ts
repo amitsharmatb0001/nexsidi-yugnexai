@@ -44,6 +44,7 @@ import type { ToolResult } from "./tools/file.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 import { isNimHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice } from "./step-budget.ts";
+import { timeBudgetExceeded } from "./nim-time-budget.ts";
 
 // Exported so claude-loop.ts's runAgentWithClaude() can reuse the exact same
 // iteration cap instead of redefining it (per Task 15 spec — "same
@@ -149,6 +150,10 @@ export interface AgentRunConfig {
   // starts from its initial message. For judges, whose previous verdict is
   // about a build that no longer exists; see history-format.ts.
   freshStart?: boolean;
+  // 2026-10-01: wall-clock limit for this run, in ms (0/absent = none). Set
+  // ONLY by runAgentEscalated for its NIM leg, where Gemini is the fallback —
+  // see nim-time-budget.ts.
+  timeBudgetMs?: number;
 }
 
 // Tool names buildToolList() omits, and the execution switch in loop.ts/
@@ -706,7 +711,18 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   // it on every exit path (task_complete, stop, cap, or throw).
   const browserToolset = config.enableBrowser ? new BrowserToolset(config.sandboxDir) : null;
   try {
+  const startedAt = Date.now();
   while (iterations < effectiveMaxIterations) {
+    // 2026-10-01: stop and hand over once the time budget is spent — reuses
+    // the transport-abort exit below (history saved, success:false, reason in
+    // the summary), which runAgentEscalated already escalates.
+    if (timeBudgetExceeded(startedAt, Date.now(), config.timeBudgetMs ?? 0)) {
+      transportAbortReason = `NIM time budget (${Math.round((config.timeBudgetMs ?? 0) / 60_000)} min) reached — handing over`;
+      errors.push(`Aborting after ${transportAbortReason}`);
+      console.log(`[${config.agentName}:agent] ${transportAbortReason}`);
+      abortedOnTransportFailures = true;
+      break;
+    }
     const currentModel = modelChain[modelIdx] ?? config.model;
 
     let response;
