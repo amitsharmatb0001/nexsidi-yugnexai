@@ -53,6 +53,25 @@ Never use `@apply` — style with @yugnex/core's `css()`/theme tokens, not Tailw
   isLoading prop for in-button loading, Skeleton for page/section loading.
 - Mobile-first. Check 375px mentally before marking done.
 
+## Landing page composition
+- The hero shows the product itself: a real preview built from this app's
+  own components and sample data (a dashboard card, a list row, a form) —
+  not a stock image, not a gradient, not an empty block.
+- At least three content sections after the hero, each with a different
+  layout (for example: a how-it-works sequence, a feature split with a
+  preview, a closing call to action). Never three identical cards in a row
+  as the whole page.
+- Every section's copy, colours and imagery come from this app's subject —
+  nothing that could be pasted into another app unchanged.
+
+## Header
+- Signed in: the app's main destinations and Sign Out. Signed out: Sign In
+  and Get Started. Never both.
+
+## Empty states
+- Every list or dashboard with no data shows an icon or illustration, one
+  sentence, and the primary action as a button — never a bare sentence.
+
 ## Anti-slop, expanded (Source: Codex's general system prompt's
 ## "Frontend tasks" section, verbatim, verified live 2026-07-26 — this
 ## is very likely where NexSidi's own "purple gradients over white
