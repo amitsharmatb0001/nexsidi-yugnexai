@@ -1,0 +1,140 @@
+import { test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+import { runAuthSmokeTest, type BrowserLike } from "./auth-smoke.ts";
+
+// Deterministic sign-up -> sign-in -> sign-out check that runs before the
+// expensive live review. Built after project a034f90ba50e lost 3-4 full review
+// rounds (20-60 min each) to auth that was broken in the UI while the backend
+// worked: an /api proxy that returned 500, and a sign-in that left the user on
+// the sign-in page.
+
+const ENDPOINTS = [
+  { method: "POST", path: "/api/v1/auth/sign-up" },
+  { method: "POST", path: "/api/v1/auth/sign-in" },
+  { method: "GET", path: "/api/v1/plants" },
+];
+const BASE = { appUrl: "http://localhost:3207", backendUrl: "http://localhost:3308", endpoints: ENDPOINTS, sleep: async () => {} };
+
+interface FakeOpts {
+  afterSignInPath?: string;
+  hasSignOut?: boolean;
+  cookieAfterSignOut?: boolean;
+  links?: Array<{ text: string; href: string }>;
+}
+
+// Answers each browser action from a tiny scripted state. evaluate()
+// expressions carry a /*tag*/ prefix so the fake knows which step is asking.
+function fakeBrowser(o: FakeOpts): BrowserLike & { calls: string[] } {
+  const calls: string[] = [];
+  let path = "/";
+  let signedIn = false;
+  return {
+    calls,
+    async send(action, args = {}) {
+      calls.push(action === "evaluate" ? `evaluate:${String(args.expression).match(/^\/\*(\w+)\*\//)?.[1]}@${path}` : action);
+      if (action === "navigate") { path = new URL(String(args.url)).pathname; return { status: 200 }; }
+      if (action === "newSession") { signedIn = false; path = "/"; return { reset: true }; }
+      if (action === "exists") return { exists: ["/sign-in", "/sign-up"].includes(path) };
+      if (action === "currentUrl") return { url: `http://localhost:3207${path}` };
+      if (action === "evaluate") {
+        const expr = String(args.expression);
+        if (expr.startsWith("/*links*/")) return { value: o.links ?? [{ text: "Sign In", href: "/sign-in" }, { text: "Get Started", href: "/sign-up" }] };
+        if (expr.startsWith("/*fill*/")) return { value: { filled: 2, hasEmail: true } };
+        if (expr.startsWith("/*submit*/")) {
+          if (path === "/sign-in") { signedIn = true; path = o.afterSignInPath ?? "/dashboard"; }
+          return { value: true };
+        }
+        if (expr.startsWith("/*signout*/")) {
+          if (o.hasSignOut === false) return { value: false };
+          if (!o.cookieAfterSignOut) signedIn = false;
+          path = "/sign-in";
+          return { value: true };
+        }
+        if (expr.startsWith("/*cookie*/")) return { value: signedIn };
+      }
+      return {};
+    },
+    async close() {},
+  };
+}
+
+const loginOk = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+const loginRejected = (async () => new Response("{}", { status: 401 })) as unknown as typeof fetch;
+const loginBadShape = (async () => new Response("{}", { status: 400 })) as unknown as typeof fetch;
+
+test("passes when sign-up creates the user, sign-in leaves the sign-in page and sign-out ends the session", async () => {
+  const r = await runAuthSmokeTest({ ...BASE, browser: fakeBrowser({}), fetchFn: loginOk });
+  expect(r).toEqual({ ran: true, pass: true, findings: [] });
+});
+
+test("fails when the user is still on the sign-in page after signing in", async () => {
+  const r = await runAuthSmokeTest({ ...BASE, browser: fakeBrowser({ afterSignInPath: "/sign-in" }), fetchFn: loginOk });
+  expect(r.ran).toBe(true);
+  expect(r.pass).toBe(false);
+  expect(r.findings[0]).toContain("still on the sign-in page");
+});
+
+test("fails when the sign-up form did not create the account", async () => {
+  const r = await runAuthSmokeTest({ ...BASE, browser: fakeBrowser({}), fetchFn: loginRejected });
+  expect(r.pass).toBe(false);
+  expect(r.findings[0]).toContain("sign-up form");
+  expect(r.findings[0]).toContain("401");
+});
+
+test("fails when Sign Out leaves the token cookie set", async () => {
+  const r = await runAuthSmokeTest({ ...BASE, browser: fakeBrowser({ cookieAfterSignOut: true }), fetchFn: loginOk });
+  expect(r.pass).toBe(false);
+  expect(r.findings[0]).toContain("Sign Out");
+});
+
+test("a login API that rejects the request shape (400) is not judged — skipped, never failed", async () => {
+  const r = await runAuthSmokeTest({ ...BASE, browser: fakeBrowser({}), fetchFn: loginBadShape });
+  expect(r).toMatchObject({ ran: false, pass: true });
+});
+
+test("an app with no sign-out control still passes the sign-up and sign-in checks", async () => {
+  const r = await runAuthSmokeTest({ ...BASE, browser: fakeBrowser({ hasSignOut: false }), fetchFn: loginOk });
+  expect(r).toEqual({ ran: true, pass: true, findings: [] });
+});
+
+test("finds auth pages through the fallback paths when the landing page has no auth links", async () => {
+  const r = await runAuthSmokeTest({ ...BASE, browser: fakeBrowser({ links: [] }), fetchFn: loginOk });
+  expect(r).toEqual({ ran: true, pass: true, findings: [] });
+});
+
+test("skips (never fails) an app without sign-up and sign-in endpoints", async () => {
+  const browser = fakeBrowser({});
+  const r = await runAuthSmokeTest({ ...BASE, endpoints: [{ method: "GET", path: "/api/items" }], browser, fetchFn: loginOk });
+  expect(r).toMatchObject({ ran: false, pass: true });
+  expect(browser.calls).toEqual([]);
+});
+
+test("fails open when the browser throws", async () => {
+  const throwing: BrowserLike = { async send() { throw new Error("browser worker timed out"); }, async close() {} };
+  const r = await runAuthSmokeTest({ ...BASE, browser: throwing, fetchFn: loginOk });
+  expect(r).toMatchObject({ ran: false, pass: true });
+  expect(r.skippedReason).toContain("browser worker timed out");
+});
+
+test("Stage 6 runs the smoke test before the expensive review, behind an off switch", () => {
+  const src = readFileSync(new URL("./stage6-deployment.ts", import.meta.url), "utf-8");
+  const fn = src.slice(src.indexOf("async function runRealLiveRetest"));
+  expect(fn.indexOf("runAuthSmokeTest(")).toBeGreaterThan(-1);
+  expect(fn.indexOf("runAuthSmokeTest(")).toBeLessThan(fn.indexOf("runStage5("));
+  expect(fn).toContain('process.env.AUTH_SMOKE_TEST !== "off"');
+});
+
+
+// Live check on 2026-10-01: with the old router.push sign-in restored, this
+// test still PASSED — the current header shows no Dashboard link while signed
+// out, so nothing prefetched /dashboard and the bug stayed hidden. A real
+// browser prefetches visible links; the test now does the same before signing
+// in, so the latent bug is caught whatever the header shows.
+test("before signing in, it prefetches the app's links and /dashboard like a real browser", async () => {
+  const browser = fakeBrowser({});
+  await runAuthSmokeTest({ ...BASE, browser, fetchFn: loginOk });
+  const prefetch = browser.calls.indexOf("evaluate:prefetch@/sign-in");
+  const signInSubmit = browser.calls.indexOf("evaluate:submit@/sign-in");
+  expect(prefetch).toBeGreaterThan(-1);
+  expect(prefetch).toBeLessThan(signInSubmit);
+});

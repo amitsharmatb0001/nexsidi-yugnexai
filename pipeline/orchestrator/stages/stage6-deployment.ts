@@ -42,6 +42,7 @@ import type { ProjectSpec } from "../../../agents/saanvi/src/index.ts";
 import { isQuotaExhaustionError } from "../../../packages/agent-runtime/src/gemini-loop.ts";
 import { dropCodeContradictedFindings } from "../finding-evidence.ts";
 import { fixChangedCode } from "./stage5-qa-fix-loop.ts";
+import { runAuthSmokeTest } from "./auth-smoke.ts";
 import { join as joinPath, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { reviewDbUrl } from "../../../packages/agent-runtime/src/tools/compose-ports.ts";
@@ -310,6 +311,25 @@ async function runRealLiveRetest(
       // the exact same targeted-fix-and-redeploy cycle regardless of what
       // Stage 5/liveEval would have found.
       return { pass: false, findings: complianceFindings, specCompliance };
+    }
+
+    // 2026-10-01: deterministic sign-up -> sign-in -> sign-out check (see
+    // auth-smoke.ts). A definite failure skips the expensive review, exactly
+    // like the compliance checks above — the fix loop then redeploys and the
+    // FULL retest runs again. A skip or pass changes nothing. Off switch:
+    // AUTH_SMOKE_TEST=off.
+    if (process.env.AUTH_SMOKE_TEST !== "off" && plan) {
+      const { BrowserSession } = await import("../../../packages/agent-runtime/src/browser/client.ts");
+      const browser = new BrowserSession();
+      try {
+        const smoke = await runAuthSmokeTest({ appUrl, backendUrl, endpoints: plan.apiContract.endpoints, browser });
+        console.log(`[stage6] Auth smoke test: ${smoke.ran ? (smoke.pass ? "passed" : "FAILED") : `skipped (${smoke.skippedReason})`}`);
+        if (smoke.ran && !smoke.pass) {
+          return { pass: false, findings: smoke.findings.map((issue) => ({ file: "frontend/app", issue: `[auth-smoke] ${issue}` })), specCompliance };
+        }
+      } finally {
+        await browser.close().catch(() => {});
+      }
     }
 
     // includeTier3=true: this runs AFTER a real deploy, pointed at the
