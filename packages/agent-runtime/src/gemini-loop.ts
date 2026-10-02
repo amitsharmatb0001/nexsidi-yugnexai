@@ -56,6 +56,8 @@ import { checkCompletion } from "./enforce/completion-gate.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { isGeminiHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice } from "./step-budget.ts";
+import { BlockedActionTracker } from "./blocked-actions.ts";
+import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
 
@@ -343,6 +345,10 @@ export function summarizeToolInput(toolName: string, args: unknown): Record<stri
       // it must never be copied into the event payload here (CLAUDE.md
       // CONFIDENTIALITY RULE). Reason/finding text is user-safe.
       return { reason: str(a.reason)?.slice(0, 300) };
+    case "report_blocked":
+      // owner is an internal roster name — never copied into the user feed
+      // (CLAUDE.md CONFIDENTIALITY RULE), same as escalate_finding above.
+      return { what: str(a.what)?.slice(0, 300) };
     case "task_complete":
       return {
         verification_passed: a.verification_passed === true,
@@ -544,6 +550,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   // this loop, not loop.ts, the one actually running in production.
   const strikeCounter = createStrikeCounter();
   let exhaustedThreeStrikes = false;
+  const blockedTracker = new BlockedActionTracker();
   // 2026-07-12: real bug found live (stress-pro run) — Riya was mid-debugging a
   // real Docker build issue and emitted a TEXT reasoning turn ("let's read
   // frontend/vendor/nexui/package.json next...", literally "keep_thinking:true")
@@ -945,6 +952,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           result = loadSkillText(skillArgs.name, skillArgs.file);
           break;
         }
+        case "report_blocked": {
+          result = recordBlocked(config.projectId, config.agentName, args as { owner?: string; what?: string; checked?: string });
+          break;
+        }
         case "web_search": {
           result = await execWebSearch(args as { query: string; timeout_ms?: number });
           break;
@@ -1070,6 +1081,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
       }
 
+      blockedTracker.observe(result);
       turnActivity.push({ toolName, args, result });
       emitEvent({
         type: "tool_result",
@@ -1098,8 +1110,18 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
 
     const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
     if (budgetNotice) responseParts.push({ text: budgetNotice });
+    const blockedNotice = blockedTracker.takeNotice();
+    if (blockedNotice) responseParts.push({ text: blockedNotice });
     messages.push({ role: "user", content: responseParts });
     await saveHistory(); // every step is recorded
+
+    // Every agent does only its own work: a run that keeps hitting other
+    // agents' work stops here (its work is saved) and Tilotma is told.
+    if (blockedTracker.shouldStop) {
+      const reason = blockedTracker.stopSummary();
+      recordBlocked(config.projectId, config.agentName, { owner: "tilotma", what: reason, checked: "The refused actions are in this agent's saved history." });
+      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "blocked", escalations, factLedger };
+    }
 
     // Cost-control Task 2: still does not affect what's sent to the model on
     // any call in this loop (selectRelevantContext remains unwired — that's

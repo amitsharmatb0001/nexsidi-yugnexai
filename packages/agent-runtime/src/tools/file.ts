@@ -4,6 +4,7 @@ import type { NimToolDef } from "@nexsidi/llm-client";
 import type { EvidenceLedger } from "../enforce/evidence.ts";
 import { rollbackWorkspaceTransaction } from "./git.ts";
 import { findSymbolInFile } from "../compaction.ts";
+import { isInsideDir, OUTSIDE_FOLDER_HINT } from "../ownership.ts";
 
 export interface ToolResult {
   status: "success" | "error";
@@ -15,8 +16,8 @@ export interface ToolResult {
 // Guard: all file operations must stay within the sandbox output directory.
 function guardPath(sandboxDir: string, relPath: string): string {
   const abs = resolve(join(sandboxDir, relPath));
-  if (!abs.startsWith(resolve(sandboxDir))) {
-    throw new Error(`Path traversal blocked: "${relPath}" escapes sandbox`);
+  if (!isInsideDir(sandboxDir, abs)) {
+    throw new Error(`Path traversal blocked: "${relPath}" escapes sandbox — it is outside your folder. ${OUTSIDE_FOLDER_HINT}`);
   }
   return abs;
 }

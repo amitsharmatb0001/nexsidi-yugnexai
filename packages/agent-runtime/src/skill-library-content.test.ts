@@ -61,3 +61,12 @@ test("requirements-coverage tells planners to copy the user's exact formats and 
   expect(skill.body).toContain("INV-2026-0001");
   expect(skill.body.toLowerCase()).toContain("word for word");
 });
+
+// 2026-10-02 (approved by Amit): every agent does only its own work and
+// reports instead of assuming.
+test("the core rules every agent gets say: own work only, never assume, report_blocked", () => {
+  const core = readFileSync(new URL("../skills/core-reasoning.md", import.meta.url), "utf-8");
+  expect(core).toContain("OWN WORK ONLY");
+  expect(core).toContain("report_blocked");
+  expect(core.toLowerCase()).toContain("never assume");
+});

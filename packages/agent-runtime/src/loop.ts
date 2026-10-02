@@ -44,6 +44,8 @@ import type { ToolResult } from "./tools/file.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 import { isNimHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice } from "./step-budget.ts";
+import { BlockedActionTracker } from "./blocked-actions.ts";
+import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { timeBudgetExceeded } from "./nim-time-budget.ts";
 import { runStopReason } from "./run-abort.ts";
 import { LOAD_SKILL_TOOL_DEF, loadSkillText, skillsForAgent } from "./skill-library.ts";
@@ -207,7 +209,7 @@ export interface AgentRunResult {
   // that it is. "three_strikes" = the same command failed identically 4
   // times; "cannot_finish" = any other non-success exit (max iterations,
   // agent stopped without task_complete, transport failures).
-  escalationReason?: "three_strikes" | "cannot_finish";
+  escalationReason?: "three_strikes" | "cannot_finish" | "blocked";
   // P3 (agent-autonomy-assessment F3): findings this run handed off to
   // another agent's domain via escalate_finding — see tools/escalate.ts.
   // Optional (matches escalationReason's convention above) — absent means
@@ -361,6 +363,7 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
     ...(config.enableWebSearch ? [WEB_SEARCH_TOOL_DEF] : []),
     ...(config.enableWebFetch ? [FETCH_URL_TOOL_DEF] : []),
     ...(config.enableEscalation ? [ESCALATE_FINDING_TOOL_DEF] : []),
+    REPORT_BLOCKED_TOOL_DEF, // every agent, every stage (see tools/blocked.ts)
     ...(config.enableScreenshot ? [SCREENSHOT_TOOL_DEF] : []),
     ...(config.enableBrowser ? BROWSER_TOOL_DEFS : []),
     ...(config.enableDbQuery ? [DB_QUERY_TOOL_DEF] : []),
@@ -637,6 +640,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   // Phase 5 Task 4: mechanical 3-strike escalation — see enforce/strikes.ts.
   const strikeCounter = createStrikeCounter();
   let exhaustedThreeStrikes = false;
+  const blockedTracker = new BlockedActionTracker();
   // 2026-07-12: real bug found live — evaluateCommandStrike only fires on a
   // run_command call FAILING identically. It never catches a call that keeps
   // SUCCEEDING without making progress (read_file on the same path,
@@ -1021,6 +1025,10 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           result = loadSkillText(skillArgs.name, skillArgs.file);
           break;
         }
+        case "report_blocked": {
+          result = recordBlocked(config.projectId, config.agentName, args as { owner?: string; what?: string; checked?: string });
+          break;
+        }
         case "web_search": {
           const searchArgs = args as { query: string; timeout_ms?: number };
           emitEvent({ type: "tool_call", tool: "web_search", input: { query: searchArgs.query } });
@@ -1153,13 +1161,24 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         }
       }
 
+      blockedTracker.observe(result);
       toolResults.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
     }
 
     messages.push(...toolResults);
     const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
     if (budgetNotice) messages.push({ role: "user", content: budgetNotice });
+    const blockedNotice = blockedTracker.takeNotice();
+    if (blockedNotice) messages.push({ role: "user", content: blockedNotice });
     await saveHistory(); // every step is recorded
+
+    // Every agent does only its own work: a run that keeps hitting other
+    // agents' work stops here (its work is saved) and Tilotma is told.
+    if (blockedTracker.shouldStop) {
+      const reason = blockedTracker.stopSummary();
+      recordBlocked(config.projectId, config.agentName, { owner: "tilotma", what: reason, checked: "The refused actions are in this agent's saved history." });
+      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "blocked", escalations };
+    }
 
     // Proactively compact history if it grows too large
     messages = await compactHistory(messages);

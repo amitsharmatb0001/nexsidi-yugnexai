@@ -1,0 +1,85 @@
+// Ownership — every agent does only its own work (approved by Amit,
+// 2 Oct 2026). Each agent's tools are confined to its own folder; only
+// Tilotma works from the whole project. Found live in Ledgerly benchmark
+// run 2: the frontend builder read ../backend and ../db with its own node
+// scripts, and its compose file built ../backend and mounted
+// ../db/migrations. Earlier runs left restart_backend.js and fix_cors.js.
+// Prompts alone did not stop it, so the boundary is enforced here.
+import { isAbsolute, resolve, sep } from "node:path";
+
+export const OUTSIDE_FOLDER_HINT =
+  "That is another agent's work. Do not work around it — call report_blocked with the owner, what you need and what you checked, then continue with your own task.";
+
+function norm(p: string): string {
+  const r = resolve(p);
+  return process.platform === "win32" ? r.toLowerCase() : r;
+}
+
+/** True when `target` is `root` itself or inside it (a real folder boundary: backend-old is not inside backend). */
+export function isInsideDir(root: string, target: string): boolean {
+  const r = norm(root);
+  const t = norm(target);
+  return t === r || t.startsWith(r.endsWith(sep) ? r : r + sep);
+}
+
+// A plain path token: no spaces, quotes, brackets or other code characters.
+const PATH_LIKE = /^[\w.\-~:@\\/+]+$/;
+
+/** The arguments that name a file or folder outside `cwd`. Flags, URLs and inline code are ignored. */
+export function outsidePathArgs(cwd: string, args: string[]): string[] {
+  return args.filter((arg) => {
+    if (arg.startsWith("-") || /^[a-z][a-z0-9+.-]*:\/\//i.test(arg) || !PATH_LIKE.test(arg)) return false;
+    const looksLikePath = arg.includes("/") || arg.includes("\\") || arg.startsWith(".") || isAbsolute(arg);
+    if (!looksLikePath) return false;
+    return !isInsideDir(cwd, resolve(cwd, arg));
+  });
+}
+
+const BUN_ALLOWED = new Set(["install", "i", "add", "remove", "rm", "pm", "--version", "-v"]);
+const NPX_SCRIPT_RUNNERS = new Set(["tsx", "ts-node", "node", "bun", "esno", "vite-node"]);
+
+/**
+ * Checks one command against the ownership rules and returns the arguments
+ * to actually run. `node` is locked to the agent's folder with Node's
+ * permission mode: reads and writes elsewhere and child processes are
+ * refused (ERR_ACCESS_DENIED) — checked on Node 22.17.1, Windows.
+ */
+export function guardCommand(cmd: string, args: string[], cwd: string): { error?: string; args: string[] } {
+  const outside = outsidePathArgs(cwd, args);
+  if (outside.length > 0) {
+    return { error: `${outside.join(", ")} is outside your folder. ${OUTSIDE_FOLDER_HINT}`, args };
+  }
+  if (cmd === "bun" && !(args[0] && BUN_ALLOWED.has(args[0]))) {
+    return { error: "bun is only for installing packages here — run scripts with node.", args };
+  }
+  if (cmd === "npx" && args[0] && NPX_SCRIPT_RUNNERS.has(args[0])) {
+    return { error: `npx ${args[0]} is not allowed — run scripts with node.`, args };
+  }
+  if (cmd === "node") {
+    const own = resolve(cwd);
+    return { args: ["--permission", `--allow-fs-read=${own}`, `--allow-fs-write=${own}`, "--allow-addons", ...args] };
+  }
+  return { args };
+}
+
+/** Build contexts and writable mounted host folders in a compose file that lie outside `cwd`. */
+export function composePathsOutside(composeText: string, cwd: string): string[] {
+  const found = new Set<string>();
+  const check = (raw: string) => {
+    const p = raw.trim().replace(/^["']|["']$/g, "");
+    if (!p || !(p.startsWith(".") || isAbsolute(p))) return; // named volumes and images are not folders
+    if (!isInsideDir(cwd, resolve(cwd, p))) found.add(p);
+  };
+  for (const line of composeText.split(/\r?\n/)) {
+    const build = line.match(/^\s*(?:build|context)\s*:\s*(\S.*?)\s*$/);
+    if (build) check(build[1]!);
+    // A read-only mount only uses another agent's output (the backend
+    // builder tests against ../db/migrations:...:ro) — it cannot change it.
+    if (/^\s*-\s/.test(line) && /:ro["']?\s*$/.test(line)) continue;
+    const volume = line.match(/^\s*-\s*["']?((?:\.{1,2}[\\/]|\.{1,2}$|[\\/]|[A-Za-z]:[\\/])[^:"']*)(?::|["']?\s*$)/);
+    if (volume) check(volume[1]!);
+    const source = line.match(/^\s*source\s*:\s*(\S.*?)\s*$/);
+    if (source) check(source[1]!);
+  }
+  return [...found];
+}

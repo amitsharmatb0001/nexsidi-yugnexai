@@ -13,6 +13,11 @@ export function stepBudgetNotice(iteration: number, maxIterations: number): stri
   if (left === 1) {
     return "STEP BUDGET: this is your LAST step. Call task_complete now with everything you have established — anything not in task_complete is lost.";
   }
+  // 2026-10-02 (Ledgerly benchmark run 2): 5 steps before the end was too
+  // late — the frontend builder spent them deleting scratch files.
+  if (maxIterations >= 20 && iteration === Math.floor(maxIterations * 0.8)) {
+    return `STEP BUDGET: 80% of your ${maxIterations} steps are used. Finish your own task now — no new checks or side work; get the required checks passing and call task_complete.`;
+  }
   if (left === WRAP_UP_STEPS && maxIterations > WRAP_UP_STEPS) {
     return `STEP BUDGET: ${WRAP_UP_STEPS} steps left of ${maxIterations}. Stop exploring and re-checking; use what you have and call task_complete within the next steps — work that is not reported in task_complete is lost.`;
   }

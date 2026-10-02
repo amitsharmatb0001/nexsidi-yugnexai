@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseFindings, buildEvidenceCollectorTask, buildRealityCheckerTask, countAppPages, computeTier3MaxIterations, shouldSkipStage2, EVIDENCE_COLLECTOR_PROMPT, REALITY_CHECKER_PROMPT } from "./tier3-review.ts";
+import { parseFindings, buildEvidenceCollectorTask, buildRealityCheckerTask, countAppPages, computeTier3MaxIterations, shouldSkipStage2, tilotmaReviewRoot, EVIDENCE_COLLECTOR_PROMPT, REALITY_CHECKER_PROMPT } from "./tier3-review.ts";
 
 // 2026-08-06: real bug found live (project bae438767bed) — both Tier-3
 // stages are evidence-only (their prompts only ever instruct "verify and
@@ -203,4 +203,21 @@ test("parseFindings stops at NOTES — refuted claims and environment notes are 
 test("the reality checker's output format has a NOTES section for refuted claims", () => {
   expect(REALITY_CHECKER_PROMPT).toContain("NOTES:");
   expect(REALITY_CHECKER_PROMPT).toMatch(/NOTES:[\s\S]*refuted/i);
+});
+
+// 2026-10-02 (approved by Amit): only Tilotma sees the whole project, and
+// every report a builder filed with report_blocked reaches Tilotma's live
+// review, which checks each one on the running app.
+test("the evidence collector is told about every blocked report and checks each one live", () => {
+  const task = buildEvidenceCollectorTask("p1", "http://localhost:3005", "http://localhost:3001", "shots/p1", [
+    { agent: "aanya", owner: "shubham", what: "sign-up form could not be tested: backend not running", checked: "http_request to /api/v1/auth/sign-in", at: "2026-10-02T06:30:00Z" },
+  ]);
+  expect(task).toContain("sign-up form could not be tested");
+  expect(task).toContain("BLOCKED REPORTS");
+});
+
+test("Tilotma's reviewers work from the whole project folder, not only the frontend", () => {
+  expect(tilotmaReviewRoot("/b/p1/frontend")).toMatch(/[\/]b[\/]p1$/);
+  const source = readFileSync(new URL("./tier3-review.ts", import.meta.url), "utf-8");
+  expect(source).not.toContain("sandboxDir: frontendOutputDir");
 });

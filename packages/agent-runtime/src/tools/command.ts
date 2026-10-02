@@ -3,6 +3,7 @@ import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
 import type { EvidenceLedger } from "../enforce/evidence.ts";
 import { buildSandboxEnv } from "./sandbox-env.ts";
+import { guardCommand } from "../ownership.ts";
 
 // Command allowlist — from nexsidi-sandbox skill (Anthropic autonomous-coding baseline)
 const ALLOWED_COMMANDS = new Set([
@@ -133,12 +134,23 @@ export function execRunCommand(
     });
   }
 
+  // Every agent does only its own work: no paths outside its folder, and
+  // node scripts are locked to its folder (see ownership.ts).
+  const guarded = guardCommand(cmd, cmdArgs, cwd);
+  if (guarded.error) {
+    return Promise.resolve({
+      status: "error",
+      summary: `Command refused: ${guarded.error}`,
+      next_actions: ["Stay in your own folder", "Call report_blocked if you need another agent's work"],
+    });
+  }
+
   const timeout = Math.min(args.timeout_ms ?? 120_000, 300_000);
 
   return new Promise<ToolResult>((resolve) => {
     let child;
     try {
-      child = spawn(resolveCommandExecutable(cmd), cmdArgs, {
+      child = spawn(resolveCommandExecutable(cmd), guarded.args, {
         cwd,
         env: buildSandboxEnv({ FORCE_COLOR: "0", NPM_CONFIG_FUND: "false", NPM_CONFIG_AUDIT: "false" }, cwd),
       });

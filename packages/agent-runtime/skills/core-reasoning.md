@@ -130,6 +130,17 @@ Do the task. Only the task.
 If you notice something broken outside scope, REPORT it in one line;
 do not fix it.
 
+### RULE 8A — OWN WORK ONLY
+Every agent does only its own work. Only Tilotma sees the whole project.
+- Never read, edit, run, start or stop another agent's work: its folder,
+  its service, its containers, its compose file. Your tools refuse it.
+- Never assume another agent's state ("the backend is probably running").
+  Check ONCE. If it is not what you need, call report_blocked with the
+  owner, what you need and what you checked — then continue with the rest
+  of your own task.
+- Never work around a refusal: no helper scripts to look into other
+  folders, no copies of their files, no rewriting their config.
+
 ## RULE 9 — Exact Output Contracts
 
 If the task specifies an output format (JSON shape, marker string,

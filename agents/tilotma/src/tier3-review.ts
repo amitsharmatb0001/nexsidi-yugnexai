@@ -21,8 +21,8 @@
 // rejected specifically because it would undermine the independence the
 // pattern exists to provide.
 import { mkdirSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { runAgentEscalated } from "@nexsidi/agent-runtime";
+import { dirname, join } from "node:path";
+import { runAgentEscalated, readBlockedReports, type BlockedReport } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS } from "@nexsidi/llm-client";
 import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
 import { runWithQuotaWatchAndResume } from "../../../pipeline/activities/quota-retry.ts";
@@ -123,6 +123,13 @@ const SCREENSHOT_ROOT = "tier3-review-screenshots";
 // NIM — it finished there both times.
 const REALITY_CHECKER_MODEL = "gemini-3.8-flash" as const;
 
+// 2026-10-02 (approved by Amit): only Tilotma sees the whole project. Every
+// builder is confined to its own folder; Tilotma's reviewers work from the
+// project root (frontend/, backend/, db/), read-only.
+export function tilotmaReviewRoot(frontendOutputDir: string): string {
+  return dirname(frontendOutputDir);
+}
+
 export async function runTier3Review(
   projectId: string,
   frontendOutputDir: string,
@@ -146,6 +153,8 @@ export async function runTier3Review(
   const apiKey = process.env.NIM_API_KEY ?? "";
   const screenshotDir = join(SCREENSHOT_ROOT, projectId).replace(/\\/g, "/");
   mkdirSync(join(process.cwd(), screenshotDir), { recursive: true });
+  const reviewRoot = tilotmaReviewRoot(frontendOutputDir);
+  const blockedReports = readBlockedReports(projectId);
 
   // 2026-07-27 (live, complex1): both stages walk the SAME frontend, so one
   // page count drives both budgets — a 9-page app needs more room for both
@@ -165,8 +174,8 @@ export async function runTier3Review(
       model: AGENT_MODELS.tilotma,
       apiKey,
       systemPrompt: EVIDENCE_COLLECTOR_PROMPT,
-      initialMessage: buildEvidenceCollectorTask(projectId, appUrl, backendUrl, screenshotDir),
-      sandboxDir: frontendOutputDir,
+      initialMessage: buildEvidenceCollectorTask(projectId, appUrl, backendUrl, screenshotDir, blockedReports),
+      sandboxDir: reviewRoot,
       projectId,
       enableBrowser: true,   // 2026-07-11: real interactive QA (navigate/click/fill/console-errors/computed-style) via the Node browser worker — replaces the single-shot screenshot tool
       enableHttpTools: true,
@@ -207,7 +216,7 @@ export async function runTier3Review(
       apiKey,
       systemPrompt: REALITY_CHECKER_PROMPT,
       initialMessage: buildRealityCheckerTask(projectId, appUrl, backendUrl, screenshotDir, stage1Findings),
-      sandboxDir: frontendOutputDir,
+      sandboxDir: reviewRoot,
       projectId,
       enableScreenshot: true,
       enableHttpTools: true,
@@ -372,7 +381,17 @@ ready to ship.")
 // (see NEXT_PUBLIC_API_URL). Tier 3 only ever knew the frontend URL, so any
 // API check it attempted was against the wrong origin. Passing backendUrl
 // explicitly and telling it which URL is which closes that gap.
-export function buildEvidenceCollectorTask(projectId: string, appUrl: string, backendUrl: string, screenshotDir: string): string {
+export function buildEvidenceCollectorTask(
+  projectId: string,
+  appUrl: string,
+  backendUrl: string,
+  screenshotDir: string,
+  blockedReports: BlockedReport[] = [],
+): string {
+  const blockedBlock =
+    blockedReports.length > 0
+      ? `\n\nBLOCKED REPORTS — builders said they could not check these. Check each one on the running app and report any that is a real problem as a finding:\n${blockedReports.map((b) => `- ${b.what} (checked: ${b.checked})`).join("\n")}`
+      : "";
   return `PROJECT: ${projectId}
 FRONTEND URL: ${appUrl}
 BACKEND API URL: ${backendUrl}
@@ -387,7 +406,9 @@ finding — report it, do not silently give up.
 This project uses a SEPARATE frontend and backend — the frontend does NOT serve
 API routes itself. Test API endpoints against the BACKEND API URL above, never
 the frontend url; a 404/auth-redirect from the FRONTEND origin on an API-shaped
-path is expected behavior, not a bug.`;
+path is expected behavior, not a bug.
+
+Your folder is the whole project, read-only: frontend/, backend/ and db/.${blockedBlock}`;
 }
 
 export const REALITY_CHECKER_PROMPT = `\

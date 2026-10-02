@@ -11,4 +11,5 @@ export { ensureDeliveryGitignore } from "./tools/git.ts";
 export { WEB_SEARCH_TOOL_DEF, execWebSearch } from "./tools/websearch.ts";
 export { SCREENSHOT_TOOL_DEF, execScreenshot } from "./tools/screenshot.ts";
 export { ESCALATE_FINDING_TOOL_DEF, recordEscalation, type Escalation } from "./tools/escalate.ts";
+export { REPORT_BLOCKED_TOOL_DEF, recordBlocked, readBlockedReports, blockersFile, type BlockedReport } from "./tools/blocked.ts";
 export { skillPromptSection } from "./skill-library.ts";

@@ -393,3 +393,16 @@ test("a NIM leg stopped because the run was cancelled does not escalate", async 
   expect(result.escalated).toBe(false);
   expect(result.success).toBe(false);
 });
+
+// 2026-10-02: a run stopped because the agent kept hitting another agent's
+// folder is not handed to a second model — the same wall would stop it too.
+test("a run stopped for being blocked is not escalated to another model", async () => {
+  let secondCalled = false;
+  const deps: AgentEscalationDeps = {
+    runNim: () => Promise.resolve({ success: false, summary: "blocked", filesWritten: [], iterations: 12, errors: ["Stopped: blocked"], escalationReason: "blocked" }),
+    runClaude: async () => { secondCalled = true; return claudeSuccess(); },
+  };
+  const result = await runAgentEscalated(BASE_CONFIG, deps);
+  expect(secondCalled).toBe(false);
+  expect(result.escalated).toBe(false);
+});

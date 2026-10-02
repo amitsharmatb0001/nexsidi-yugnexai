@@ -4,6 +4,16 @@ import type { ToolResult } from "./file.ts";
 import { truncateOutput } from "./command.ts";
 import { buildSandboxEnv } from "./sandbox-env.ts";
 import { prepareComposeForUp } from "./compose-ports.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { composePathsOutside, OUTSIDE_FOLDER_HINT } from "../ownership.ts";
+
+const COMPOSE_FILES = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
+
+function composeOutsideOwnFolder(cwd: string): string[] {
+  const file = COMPOSE_FILES.map((f) => join(cwd, f)).find((f) => existsSync(f));
+  return file ? composePathsOutside(readFileSync(file, "utf-8"), cwd) : [];
+}
 
 export interface DockerComposeDeps {
   spawnFn?: typeof spawn;
@@ -48,6 +58,16 @@ export function execDockerCompose(
       // published ports are forced onto 127.0.0.1 — see compose-ports.ts.
       // Only "up" is guarded: "down" must always be able to tear an exposed
       // app down.
+      // Every agent runs only its own work: a compose file that builds
+      // another agent's folder or mounts it writable is refused.
+      const outside = composeOutsideOwnFolder(cwd);
+      if (outside.length > 0) {
+        return Promise.resolve({
+          status: "error",
+          summary: `docker compose up refused: ${outside.join(", ")} is outside your folder. ${OUTSIDE_FOLDER_HINT}`,
+          next_actions: ["Remove the other agent's services from your docker-compose.yml", "Call report_blocked if you need them"],
+        });
+      }
       const prep = (deps.prepareCompose ?? prepareComposeForUp)(cwd);
       if (!prep.ok) {
         return Promise.resolve({

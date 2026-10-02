@@ -51,6 +51,8 @@ import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice } from "./step-budget.ts";
+import { BlockedActionTracker } from "./blocked-actions.ts";
+import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { nimTimeBudgetMs } from "./nim-time-budget.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
@@ -244,6 +246,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   let iterations = 0;
   const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
   let abortedOnUnrecoverableError = false;
+  const blockedTracker = new BlockedActionTracker();
   const recentCallSignatures: string[] = [];
 
   console.log(`[${config.agentName}:claude-agent] Starting — model: claude-sonnet-5, maxIter: ${effectiveMaxIterations}`);
@@ -405,6 +408,10 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           result = loadSkillText(skillArgs.name, skillArgs.file);
           break;
         }
+        case "report_blocked": {
+          result = recordBlocked(config.projectId, config.agentName, args as { owner?: string; what?: string; checked?: string });
+          break;
+        }
         case "web_search": {
           const searchArgs = args as { query: string; timeout_ms?: number };
           emitEvent({ type: "tool_call", tool: "web_search", input: { query: searchArgs.query } });
@@ -472,6 +479,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
       // Anthropic's documented shape for a tool that returns an image is a
       // tool_result whose `content` is an array of blocks (text + image),
       // not a bare string — see ToolResultBlockParam.content in the SDK.
+      blockedTracker.observe(result);
       const imagePath = screenshotImagePathFor(toolName, result);
       if (imagePath) {
         try {
@@ -495,8 +503,18 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
 
     const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
     if (budgetNotice) toolResultBlocks.push({ type: "text", text: budgetNotice });
+    const blockedNotice = blockedTracker.takeNotice();
+    if (blockedNotice) toolResultBlocks.push({ type: "text", text: blockedNotice });
     messages.push({ role: "user", content: toolResultBlocks });
     await saveHistory(); // every step is recorded
+
+    // Every agent does only its own work: a run that keeps hitting other
+    // agents' work stops here (its work is saved) and Tilotma is told.
+    if (blockedTracker.shouldStop) {
+      const reason = blockedTracker.stopSummary();
+      recordBlocked(config.projectId, config.agentName, { owner: "tilotma", what: reason, checked: "The refused actions are in this agent's saved history." });
+      return { success: false, summary: reason, filesWritten, iterations, errors: [...errors, reason], escalationReason: "blocked" };
+    }
 
     // Proactively compact history if it grows too large. 2026-09-26: this
     // never fired before (the token estimate was blind to Claude's block
@@ -588,6 +606,12 @@ export async function runAgentEscalated(
   const nimResult = await deps.runNim({ ...config, timeBudgetMs: nimTimeBudgetMs() });
 
   if (nimResult.success) {
+    return { ...nimResult, escalated: false };
+  }
+
+  // A run stopped for repeatedly reaching into other agents' work is not
+  // handed to another model — the same wall would stop it too.
+  if (nimResult.escalationReason === "blocked") {
     return { ...nimResult, escalated: false };
   }
 

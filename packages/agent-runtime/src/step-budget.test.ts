@@ -29,3 +29,12 @@ test("every agent loop appends the step-budget notice after each step's tool res
     expect(source).toContain("stepBudgetNotice(iterations, effectiveMaxIterations)");
   }
 });
+
+// 2026-10-02 (Ledgerly benchmark run 2): a warning only 5 steps from the
+// end came too late — the frontend builder spent those steps deleting
+// scratch files. Agents now also hear at 80% of the budget.
+test("warns once when 80% of the steps are used", () => {
+  expect(stepBudgetNotice(72, 90)).toContain("80%");
+  expect(stepBudgetNotice(71, 90)).toBeNull();
+  expect(stepBudgetNotice(73, 90)).toBeNull();
+});
