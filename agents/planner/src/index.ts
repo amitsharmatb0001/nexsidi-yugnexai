@@ -44,6 +44,7 @@ const WEB_SEARCH_TOOL = {
       properties: {
         query: { type: "string", description: "Search query" },
         limit: { type: "number", description: "Max results (default 5)" },
+        timeout_ms: { type: "number", description: "How long this search may run, in ms (default 120000 = 2 minutes). Ask for more when you need deep research — there is no fixed maximum." },
       },
     },
   },
@@ -589,9 +590,9 @@ export async function* streamReply(
     // agent-runtime's wrapper — one real implementation each, not three.
     let toolResult = "No result.";
     try {
-      const args = JSON.parse(toolCallArgs) as { query?: string; url?: string; limit?: number };
+      const args = JSON.parse(toolCallArgs) as { query?: string; url?: string; limit?: number; timeout_ms?: number };
       if (toolCallName === "web_search" && args.query) {
-        const { content, sources } = await geminiWebSearch(args.query);
+        const { content, sources } = await geminiWebSearch(args.query, { timeoutMs: args.timeout_ms });
         const sourceLines = sources.map((s, i) => `[${i + 1}] ${s.title} — ${s.url}`).join("\n");
         toolResult = [content, sourceLines ? `Sources:\n${sourceLines}` : ""].filter(Boolean).join("\n\n") || "No results found.";
       } else if (toolCallName === "fetch_url" && args.url) {

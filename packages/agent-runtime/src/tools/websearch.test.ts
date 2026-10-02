@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
-import { execWebSearch } from "./websearch.ts";
+import { execWebSearch, WEB_SEARCH_TOOL_DEF } from "./websearch.ts";
+import { readFileSync } from "node:fs";
 
 // execWebSearch now calls Claude's real web_search_20260209 server tool
 // (see websearch.ts) using ANTHROPIC_API_KEY — the old
@@ -119,4 +120,22 @@ test("web search uses Claude only when CLAUDE_ENABLED=true (and ESCALATION_PROVI
     if (prevFlag === undefined) delete process.env.CLAUDE_ENABLED; else process.env.CLAUDE_ENABLED = prevFlag;
     if (prevProvider === undefined) delete process.env.ESCALATION_PROVIDER; else process.env.ESCALATION_PROVIDER = prevProvider;
   }
+});
+
+// 2026-10-02 (decided by Amit): no hard-coded search time. The agent is told
+// it can ask for more time for deep research, and the run's stop signal is
+// what ends a stuck search.
+test("web_search tells agents the 2-minute default and that they can ask for more", () => {
+  const desc = String((WEB_SEARCH_TOOL_DEF.function.parameters as { properties: Record<string, { description: string }> }).properties.timeout_ms!.description);
+  expect(desc).toContain("120000");
+  expect(desc.toLowerCase()).toContain("deep research");
+});
+
+test("searches use the shared time rule and the run's stop signal; no fixed 10 s anywhere", () => {
+  const tool = readFileSync(new URL("./websearch.ts", import.meta.url), "utf-8");
+  expect(tool).toContain("webSearchTimeoutMs(");
+  expect(tool).toContain("currentAbortSignal()");
+  expect(tool).not.toMatch(/Math\.min\(args\.timeout_ms \?\? 10_000, 30_000\)/);
+  const loop = readFileSync(new URL("../loop.ts", import.meta.url), "utf-8");
+  expect(loop).not.toContain("timeout_ms: 10000");
 });

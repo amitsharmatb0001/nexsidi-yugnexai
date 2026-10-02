@@ -687,7 +687,34 @@ export interface GeminiSearchResult {
 // search itself" shape as Claude's web_search_20260209 server tool
 // (packages/agent-runtime/src/tools/websearch.ts), so this is a drop-in
 // alternative for that tool when the escalation provider is Gemini.
-export async function geminiWebSearch(query: string, opts?: { timeoutMs?: number }): Promise<GeminiSearchResult> {
+// 2026-10-02 (Ledgerly benchmark run 3, decided by Amit): searches were cut
+// off at 10 s (max 30 s) while a real grounded search takes about 17 s — all
+// 7 searches in run 3 failed. Default is 2 minutes and there is no ceiling:
+// an agent doing long, deep research asks for the time it needs. A stuck
+// search ends when the run itself is stopped (the abort signal below).
+export const WEB_SEARCH_DEFAULT_TIMEOUT_MS = 120_000;
+
+export function webSearchTimeoutMs(requested?: number): number {
+  return typeof requested === "number" && Number.isFinite(requested) && requested > 0 ? requested : WEB_SEARCH_DEFAULT_TIMEOUT_MS;
+}
+
+/** An abort signal that fires when the search's own time is up or the run is stopped. */
+export function searchAbort(timeoutMs: number, runSignal?: AbortSignal): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onRunAbort = () => controller.abort();
+  if (runSignal?.aborted) controller.abort();
+  else runSignal?.addEventListener("abort", onRunAbort, { once: true });
+  return {
+    signal: controller.signal,
+    clear: () => {
+      clearTimeout(timer);
+      runSignal?.removeEventListener("abort", onRunAbort);
+    },
+  };
+}
+
+export async function geminiWebSearch(query: string, opts?: { timeoutMs?: number; signal?: AbortSignal }): Promise<GeminiSearchResult> {
   projectIdOrThrow();
   const model = resolveGeminiModel();
   const location = resolveGeminiLocation();
@@ -711,8 +738,7 @@ export async function geminiWebSearch(query: string, opts?: { timeoutMs?: number
     generationConfig: { maxOutputTokens: 2048 },
   };
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.min(opts?.timeoutMs ?? 10_000, 30_000));
+  const abort = searchAbort(webSearchTimeoutMs(opts?.timeoutMs), opts?.signal);
 
   try {
     const token = await getAccessToken();
@@ -720,7 +746,7 @@ export async function geminiWebSearch(query: string, opts?: { timeoutMs?: number
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
-      signal: controller.signal,
+      signal: abort.signal,
     }, "gemini:geminiWebSearch");
 
     if (!res.ok) {
@@ -748,6 +774,6 @@ export async function geminiWebSearch(query: string, opts?: { timeoutMs?: number
     recordFailure(circuitKey);
     throw new Error(`[Gemini ${model}] ${describeError(err)}`);
   } finally {
-    clearTimeout(timer);
+    abort.clear();
   }
 }

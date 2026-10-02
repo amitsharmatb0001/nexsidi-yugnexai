@@ -9,6 +9,8 @@ export {
   geminiChat,
   geminiChatWithTools,
   geminiWebSearch,
+  webSearchTimeoutMs,
+  WEB_SEARCH_DEFAULT_TIMEOUT_MS,
   geminiCreateCachedContent,
   translateNimToolToGeminiTool,
   resolveGeminiModel,

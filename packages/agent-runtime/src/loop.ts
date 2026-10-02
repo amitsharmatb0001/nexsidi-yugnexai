@@ -302,7 +302,7 @@ async function diagnoseError(command: string, output: string): Promise<string> {
   
   try {
     const query = `how to resolve compiler error: ${errorLine.trim().slice(0, 150)}`;
-    const searchResult = await execWebSearch({ query, timeout_ms: 10000 });
+    const searchResult = await execWebSearch({ query });
     if (searchResult.status === "success" && searchResult.output) {
       return `\n\n[DIAGNOSTIC ENGINE SEARCH FINDINGS]\nPossible resolution suggestions from web search:\n${searchResult.output.slice(0, 800)}\n`;
     }

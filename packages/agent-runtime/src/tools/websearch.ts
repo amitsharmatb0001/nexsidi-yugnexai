@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { CLAUDE_ESCALATION_MODEL, geminiWebSearch, type NimToolDef } from "@nexsidi/llm-client";
+import { CLAUDE_ESCALATION_MODEL, geminiWebSearch, webSearchTimeoutMs, type NimToolDef } from "@nexsidi/llm-client";
+import { currentAbortSignal } from "../run-abort.ts";
 import { usesClaude } from "../claude-flag.ts";
 import type { ToolResult } from "./file.ts";
 
@@ -24,7 +25,9 @@ const SEARCH_SYSTEM_PROMPT =
 // by the agent tool-calling loop (claude-loop.ts's resolveEscalationRunner).
 async function execWebSearchViaGemini(args: { query: string; timeout_ms?: number }): Promise<ToolResult> {
   try {
-    const { content, sources } = await geminiWebSearch(args.query, { timeoutMs: args.timeout_ms });
+    // No fixed ceiling (decided by Amit, 2 Oct 2026): default 2 minutes, the
+    // agent asks for more for deep research; stopping the run ends the search.
+    const { content, sources } = await geminiWebSearch(args.query, { timeoutMs: webSearchTimeoutMs(args.timeout_ms), signal: currentAbortSignal() });
     const sourceLines = sources.map((s, i) => `[${i + 1}] ${s.title} — ${s.url}`).join("\n");
     const output = [content, sourceLines ? `Sources:\n${sourceLines}` : ""].filter(Boolean).join("\n\n");
     return { status: "success", summary: `search: "${args.query}"`, output: output.slice(0, 3000) };
@@ -58,7 +61,7 @@ export async function execWebSearch(args: { query: string; timeout_ms?: number }
     };
   }
 
-  const timeout = Math.min(args.timeout_ms ?? 10_000, 30_000);
+  const timeout = webSearchTimeoutMs(args.timeout_ms);
   const client = new Anthropic({ apiKey });
 
   try {
@@ -75,7 +78,7 @@ export async function execWebSearch(args: { query: string; timeout_ms?: number }
         // content blocks alongside Claude's own summarizing text.
         tools: [{ type: "web_search_20260209", name: "web_search" }],
       },
-      { timeout },
+      { timeout, signal: currentAbortSignal() },
     );
 
     // Always check stop_reason before reading content.
@@ -128,7 +131,7 @@ export const WEB_SEARCH_TOOL_DEF: NimToolDef = {
       type: "object",
       properties: {
         query: { type: "string", description: "The search query" },
-        timeout_ms: { type: "number", description: "Request timeout in ms (default 10000)" },
+        timeout_ms: { type: "number", description: "How long this search may run, in ms (default 120000 = 2 minutes). Ask for more when you need deep research — there is no fixed maximum." },
       },
       required: ["query"],
     },
