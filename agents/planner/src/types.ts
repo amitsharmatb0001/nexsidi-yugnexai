@@ -40,6 +40,8 @@ export interface BuildPlan {
   dbTables?: Array<{ name: string; keyColumns: string[] }>;
 }
 
+import type { ResearchNotes } from "./research.ts";
+
 export interface PlannerState {
   userId:       string;
   sessionId:    string;
@@ -48,6 +50,7 @@ export interface PlannerState {
   projectId:    string | null;
   buildPlan:    BuildPlan | null;
   proposedPlan: ProposedPlan | null;  // saved after propose_plan fires; used for direct trigger_build conversion
+  research?: ResearchNotes;  // done once, before the first question (Part B, 2 Oct 2026)
 }
 
 // Structured plan shown to the user before the build starts (the "plan panel")
@@ -91,7 +94,8 @@ export interface ElicitationQuestion {
 }
 
 export interface StreamChunk {
-  type: "token" | "plan_proposed" | "elicitation_question" | "build_triggered" | "error" | "done";
+  type: "token" | "plan_proposed" | "elicitation_question" | "build_triggered" | "error" | "done" | "research_status" | "research_done";
+  research?: ResearchNotes;
   content?: string;
   phase?: PlannerState["phase"];
   projectId?: string;

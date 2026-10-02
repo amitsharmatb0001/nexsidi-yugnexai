@@ -228,6 +228,7 @@ chatRouter.get("/:sessionId", async (c) => {
       phase:     project.status === "done" ? "done" : "building",
       projectId: project.id,
       buildPlan: state?.buildPlan ?? null,
+      research: state?.research ?? null,
     });
   }
 
@@ -238,6 +239,7 @@ chatRouter.get("/:sessionId", async (c) => {
     phase:     state.phase,
     projectId: state.projectId,
     buildPlan: state.buildPlan,
+    research: state?.research ?? null,
   });
 });
 

@@ -113,8 +113,30 @@ interface ElicitationQuestion {
   }>;
 }
 
+interface ResearchNotes {
+  notes: string;
+  sources: Array<{ title: string; url: string }>;
+  queries: string[];
+}
+
+// The planner researches before its first question (2 Oct 2026); its notes
+// are shown once, right after the brief, as "What I found".
+function researchMessage(r: ResearchNotes, ts: number): ChatMessage {
+  const sources = r.sources.slice(0, 8).map((s) => `- [${s.title}](${s.url})`).join("\n");
+  const parts = [`**What I found** (${r.queries.length} searches)`, r.notes, sources ? `**Sources**\n${sources}` : ""];
+  return { role: "assistant", content: parts.filter(Boolean).join("\n\n"), ts };
+}
+
+function withResearch(messages: ChatMessage[], r: ResearchNotes | null | undefined): ChatMessage[] {
+  if (!r?.notes) return messages;
+  const firstUser = messages.findIndex((m) => m.role === "user");
+  const at = firstUser === -1 ? 0 : firstUser + 1;
+  return [...messages.slice(0, at), researchMessage(r, messages[firstUser]?.ts ?? 0), ...messages.slice(at)];
+}
+
 interface StreamChunk {
-  type: "token" | "plan_proposed" | "elicitation_question" | "build_triggered" | "error" | "done" | "phase_change" | "project_started";
+  type: "token" | "plan_proposed" | "elicitation_question" | "build_triggered" | "error" | "done" | "phase_change" | "project_started" | "research_status" | "research_done";
+  research?: ResearchNotes;
   content?: string;
   phase?: SessionPhase;
   projectId?: string;
@@ -906,7 +928,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       .then(data => {
         if (!data) return;
         if (data.messages?.length) {
-          setChatMessages(data.messages);
+          setChatMessages(withResearch(data.messages, data.research));
           // Prevent re-sending the ?q= URL param when session already has messages
           firstMsgSent.current = true;
         }
@@ -974,6 +996,18 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
             if (chunk.type === "token" && chunk.content) {
               assistantText += chunk.content;
               setStreamingMsg(assistantText);
+            }
+
+            if (chunk.type === "research_status" && chunk.content) {
+              setStreamingMsg(chunk.content);
+            }
+
+            if (chunk.type === "research_done") {
+              setStreamingMsg("");
+              if (chunk.research?.notes) {
+                const r = chunk.research;
+                setChatMessages(prev => [...prev, researchMessage(r, Date.now())]);
+              }
             }
 
             if (chunk.type === "error" && chunk.content) {

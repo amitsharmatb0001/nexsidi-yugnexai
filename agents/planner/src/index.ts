@@ -12,6 +12,7 @@ import { skillPromptSection } from "../../../packages/agent-runtime/src/skill-li
 import { AGENT_MODELS, MODEL_RPM_LIMITS, NIM_CONTEXT_LIMITS, waitForToken, routeToolsWithFallback, translateNimToolToGeminiTool } from "@nexsidi/llm-client";
 import type { GeminiMessage, GeminiPart, NimToolDef } from "@nexsidi/llm-client";
 import type { PlannerState, StreamChunk, BuildPlan, ProposedPlan, ElicitationQuestion } from "./types.ts";
+import { researchBrief, type ResearchNotes } from "./research.ts";
 // Phase 5 (full agentic upgrade): the same shared primitives every other
 // agent's research capability is built on — see the "web_search /
 // fetch_url" call site below for why the planner's own Firecrawl-only
@@ -406,6 +407,7 @@ function nimToGemini(nimMsgs: NimMsg[]): GeminiMessage[] {
 export async function* streamReply(
   state: PlannerState,
   apiKey: string,
+  deps: { research?: (brief: string) => Promise<ResearchNotes> } = {},
 ): AsyncGenerator<StreamChunk> {
   // ── Fast path: user accepted the plan — convert directly without LLM ────────
   // Bug 2 fix: proposedPlan is saved by the propose_plan handler. When "build it"
@@ -425,10 +427,24 @@ export async function* streamReply(
     return;
   }
 
+  // ── Research first, once per session (Part B, 2 Oct 2026) ─────────────────
+  // Done in code — models skip optional tools — before the first question.
+  if (needsResearch(state)) {
+    yield { type: "research_status", content: "Researching your product…" };
+    const brief = state.messages.filter((m) => m.role === "user").map((m) => m.content ?? "").join("\n\n");
+    try {
+      state.research = await (deps.research ?? ((b: string) => researchBrief(b)))(brief);
+    } catch (err) {
+      console.error("[planner] research failed:", err);
+      state.research = { notes: "", sources: [], queries: [] };
+    }
+    yield { type: "research_done", research: state.research };
+  }
+
   // Build the running message list (mutable — tool results are appended each round)
   type Msg = { role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
   const rawMessages: Msg[] = [
-    { role: "system", content: [SYSTEM_PROMPT, skillPromptSection("planner", state.messages.filter((m) => m.role === "user").map((m) => m.content ?? "").join("\n"))].filter(Boolean).join("\n\n") },
+    { role: "system", content: buildPlannerSystemPrompt(state) },
     ...state.messages.map(m => {
       // Preserve tool_calls on assistant messages (ask_user / propose_plan calls from prior turns)
       if (m.tool_calls?.length) {
@@ -460,9 +476,14 @@ export async function* streamReply(
     }
   }
 
-  const MAX_TOOL_ROUNDS = 6; // max web-search rounds before forcing a reply
+  // No fixed number of rounds (decided by Amit, 2 Oct 2026): the planner
+  // researches as much as a turn needs. A turn ends when the model repeats
+  // an identical search (it is going in circles) or the safety time is up —
+  // the user is waiting in the chat.
+  const turnStarted = Date.now();
+  const seenCalls = new Set<string>();
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+  for (let round = 0; ; round++) {
     // Convert accumulated messages to Gemini format and call the model
     const geminiMsgs = nimToGemini(messages);
     const geminiTools = [ASK_USER_TOOL, WEB_SEARCH_TOOL, FETCH_URL_TOOL, PROPOSE_PLAN_TOOL, TRIGGER_BUILD_TOOL]
@@ -479,8 +500,7 @@ export async function* streamReply(
       // requested Vision and Mission pages — the cheapest model in the
       // fleet was deciding the manifest every downstream stage trusts.
       // Moved to "plan" (gemini-3.1-pro-preview, HIGH thinking, same pool
-      // QA runs on) — bounded to MAX_TOOL_ROUNDS=6 above, so the cost
-      // increase is capped, not unbounded.
+      // QA runs on).
       geminiResult = await routeToolsWithFallback("plan", geminiMsgs, geminiTools);
     } catch (geminiErr) {
       console.error(`[planner] gemini error (round ${round}):`, geminiErr);
@@ -588,6 +608,11 @@ export async function* streamReply(
     // factual grounding" the plan calls for); fetch_url uses the same
     // Firecrawl-backed firecrawlFetchUrl Aanya and Saanvi now use via
     // agent-runtime's wrapper — one real implementation each, not three.
+    if (plannerTurnShouldStop(seenCalls, `${toolCallName} ${toolCallArgs}`, turnStarted, Date.now(), PLANNER_TURN_SAFETY_MS)) {
+      yield { type: "token", content: "\n\n(I have researched as far as this turn allows. Tell me more, or ask me to continue.)" };
+      return;
+    }
+
     let toolResult = "No result.";
     try {
       const args = JSON.parse(toolCallArgs) as { query?: string; url?: string; limit?: number; timeout_ms?: number };
@@ -617,9 +642,30 @@ export async function* streamReply(
       name: toolCallName,
     });
   }
+}
 
-  // Hit max rounds — model never finished, yield a fallback
-  yield { type: "token", content: "\n\n(Research limit reached. Please tell me more directly and I'll proceed.)" };
+const PLANNER_TURN_SAFETY_MS = Number(process.env.PLANNER_TURN_SAFETY_MINUTES ?? 15) * 60_000;
+
+/** True when a planner turn should end: the same tool call again (going in circles) or the safety time is up. No round count. */
+export function plannerTurnShouldStop(seen: Set<string>, callKey: string, startedAt: number, now: number, safetyMs: number): boolean {
+  if (now - startedAt > safetyMs) return true;
+  if (seen.has(callKey)) return true;
+  seen.add(callKey);
+  return false;
+}
+
+/** The planner researches once per session, before its first question. */
+export function needsResearch(state: PlannerState): boolean {
+  return !state.research;
+}
+
+/** The planner's instructions: intake rules, the research notes, and its skills. */
+export function buildPlannerSystemPrompt(state: PlannerState): string {
+  const research = state.research?.notes
+    ? `## What you found (research done before this conversation — use it)\n\n${state.research.notes}\n\nSources: ${state.research.sources.slice(0, 20).map((s) => s.url).join(", ")}`
+    : "";
+  const briefText = state.messages.filter((m) => m.role === "user").map((m) => m.content ?? "").join("\n");
+  return [SYSTEM_PROMPT, research, skillPromptSection("planner", briefText)].filter(Boolean).join("\n\n");
 }
 
 // ─── Stage notifications (called by pipeline route to push updates to chat) ──
