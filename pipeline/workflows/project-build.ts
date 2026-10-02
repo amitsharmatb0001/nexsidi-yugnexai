@@ -541,14 +541,32 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   state.stage = "generate";
   for (;;) {
     const needs = await act.checkPlanNeeds(projectId);
-    const genPromises: Promise<void>[] = [genAct.runAanya(projectId)];
-    if (needs.shubham) {
-      genPromises.push(genAct.runShubham(projectId));
-    }
-    if (needs.pranav) {
-      genPromises.push(genAct.runPranav(projectId));
-    }
+    // 2026-10-02 (Part C.3, approved by Amit): when the approved plan has
+    // build phases, builders work one phase at a time so they never burn out
+    // and stay focused. Each builder skips phases it already finished
+    // (phases.json), so a Retry resumes at the phase that failed. Plans
+    // without phases — and workflows started before this change — keep the
+    // one-shot path below.
+    const phaseCount = patched("generation-phases-v1") ? await act.getBuildPhaseCount(projectId) : 0;
     try {
+      if (phaseCount > 0) {
+        for (let phase = 1; phase <= phaseCount; phase++) {
+          console.log(`[workflow] build phase ${phase} of ${phaseCount}`);
+          const phasePromises: Promise<void>[] = [genAct.runAanyaPhase(projectId, phase)];
+          if (needs.shubham) phasePromises.push(genAct.runShubhamPhase(projectId, phase));
+          // The database schema covers the whole app, built once with phase 1.
+          if (needs.pranav && phase === 1) phasePromises.push(genAct.runPranav(projectId));
+          await Promise.all(phasePromises);
+        }
+        break;
+      }
+      const genPromises: Promise<void>[] = [genAct.runAanya(projectId)];
+      if (needs.shubham) {
+        genPromises.push(genAct.runShubham(projectId));
+      }
+      if (needs.pranav) {
+        genPromises.push(genAct.runPranav(projectId));
+      }
       await Promise.all(genPromises);
       break;
     } catch (err) {

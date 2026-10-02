@@ -407,6 +407,8 @@ export async function assertWithinBudget(projectId: string, agentName: string): 
 // retry behavior without index.ts <-> stage5-qa-fix-loop.ts becoming a
 // circular import (index.ts already imports runQAFixLoop from there).
 import { runGeneratorWithQuotaRetry } from "./quota-retry.ts";
+import { runBuilderPhase, listBuiltFiles, type PhaseStore } from "./build-phases.ts";
+import { recordBlocked } from "../../packages/agent-runtime/src/tools/blocked.ts";
 
 // ── Stage 3a–c: code generators (run in parallel from workflow) ───────────────
 export async function runShubham(projectId: string): Promise<void> {
@@ -438,6 +440,71 @@ export async function runAanya(projectId: string): Promise<void> {
   } finally {
     clearInterval(hb);
   }
+}
+
+// ── Stage 3 (phased): one build phase at a time (Part C.3, 2 Oct 2026) ──────
+// See build-phases.ts. Each builder works phase by phase in a fresh, focused
+// conversation; progress is saved in <build>/phases.json so a Retry resumes
+// from the phase that failed, never from the start.
+const PHASES_FILE = "phases.json";
+
+function phaseStore(projectId: string): PhaseStore {
+  const read = (): Record<string, number[]> => {
+    try { return readCacheFile<Record<string, number[]>>(projectId, PHASES_FILE); } catch { return {}; }
+  };
+  return {
+    isDone: (builder, phase) => (read()[builder] ?? []).includes(phase),
+    markDone: (builder, phase) => {
+      const done = read();
+      done[builder] = [...new Set([...(done[builder] ?? []), phase])].sort((a, b) => a - b);
+      writeCacheFile(projectId, PHASES_FILE, JSON.stringify(done, null, 2));
+    },
+  };
+}
+
+/** How many build phases the approved plan has (0 = no phases: the old one-shot generation). */
+export async function getBuildPhaseCount(projectId: string): Promise<number> {
+  const plan = getPlan(projectId) as BuildPlan & { buildPhases?: unknown[] };
+  return Array.isArray(plan.buildPhases) ? plan.buildPhases.length : 0;
+}
+
+async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phase: number): Promise<void> {
+  const ctx = Context.current();
+  const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
+  try {
+    await assertWithinBudget(projectId, builder);
+    const plan = getPlan(projectId);
+    await verifyHandoff(projectId, "arjun", builder, plan);
+    const normalized = withNormalizedDbSchema(plan);
+    const outputDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, builder === "aanya" ? "frontend" : "backend");
+    await runBuilderPhase({
+      projectId,
+      builder,
+      phase,
+      plan: normalized,
+      store: phaseStore(projectId),
+      scaffoldNeeded: !existsSync(join(outputDir, "package.json")),
+      existingFiles: listBuiltFiles(outputDir),
+      runAgent: async (phasePlan, run) => {
+        const p = phasePlan as unknown as BuildPlan;
+        const result = await runGeneratorWithQuotaRetry(() =>
+          builder === "aanya" ? runAanyaAgent(p, "integrate", run) : runShubhamAgent(p, run),
+        );
+        return { success: result.success, errors: result.errors, filesWritten: result.filesWritten };
+      },
+      reportBlocked: (what, checked) => recordBlocked(projectId, builder, { owner: "tilotma", what, checked }),
+    }).catch((err) => generatorFailure(builder, [String(err instanceof Error ? err.message : err)]));
+  } finally {
+    clearInterval(hb);
+  }
+}
+
+export async function runAanyaPhase(projectId: string, phase: number): Promise<void> {
+  await runPhaseFor(projectId, "aanya", phase);
+}
+
+export async function runShubhamPhase(projectId: string, phase: number): Promise<void> {
+  await runPhaseFor(projectId, "shubham", phase);
 }
 
 export async function runPranav(projectId: string): Promise<void> {

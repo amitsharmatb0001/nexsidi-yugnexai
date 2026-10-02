@@ -62,7 +62,17 @@ export function countPlannedPages(plan: BuildPlan): number {
 //                 before any backend exists — mock data only, no fetch() calls.
 // mode "integrate": wires the already-approved preview UI to the real backend
 //                 API — no layout/visual changes, only mock data → real fetch().
-export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promise<GeneratorResult> {
+// 2026-10-02 (Part C.3): one build phase at a time — see
+// pipeline/activities/build-phases.ts. Absent for plans without phases.
+export interface GeneratorPhaseRun {
+  conversationKey: string;
+  header: string;
+  scaffold: boolean;
+  isLast: boolean;
+  maxSteps: number;
+}
+
+export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?: GeneratorPhaseRun): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId);
   mkdirSync(outputDir, { recursive: true });
@@ -77,10 +87,14 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
   // confirm real network egress (npm registry + the NexUI registry host) is
   // available in whatever environment actually runs generation before relying
   // on this path (see Task 4 of the migration plan).
-  await vendorNexui(outputDir);
+  // Phased builds write the starter files only on the first phase, so a
+  // later phase never overwrites earlier work.
+  if (!phase || phase.scaffold) {
+    await vendorNexui(outputDir);
 
-  // 2. Write static scaffold (includes the in-house fonts — see fonts.ts).
-  writeStaticScaffold(plan, outputDir);
+    // 2. Write static scaffold (includes the in-house fonts — see fonts.ts).
+    writeStaticScaffold(plan, outputDir);
+  }
 
   // 3. Run real agent loop
   // Primary history: kimi-k2.6 (failed, F7) -> z-ai/glm-5.2 (2026-07-03) ->
@@ -108,9 +122,11 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     fallbackModels: FALLBACK_CHAIN.aanya,
     apiKey,
     systemPrompt: loadAndInjectContract(plan.projectId, knownMistakesPrefix + buildAgentPrompt(mode)),
-    initialMessage: buildAgentTask(plan, mode),
+    initialMessage: (phase ? phase.header + "\n\n" : "") + buildAgentTask(plan, mode),
     sandboxDir: outputDir,
     projectId: plan.projectId,
+    conversationKey: phase?.conversationKey,
+    extendStepsWhileProgressing: Boolean(phase),
     // 2026-07-12: Aanya was kept on the cheap flash model to avoid a
     // rate-limit collision with Shubham's parallel run on pro.
     // 2026-07-25 (Phase 1, full MVP upgrade): reversed. Verified against
@@ -160,7 +176,10 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // per required file here mechanically blocks task_complete exactly like
     // the tsc/build commands do — see AANYA required-files doctrine for what
     // each file must actually contain.
-    requiredVerificationCommands: [
+    // Part C.3: a phase before the last checks only what it wrote (type check
+    // and build); the app-wide files and the visual check come in the last
+    // phase, when every page exists.
+    requiredVerificationCommands: phase && !phase.isLast ? ["npx tsc --noEmit", "npx next build"] : [
       "npx tsc --noEmit",
       "npx next build",
       "cat app/not-found.tsx",
@@ -175,7 +194,7 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // multi-page projects only (see countPlannedPages's header comment) so
     // a genuine single-page app, which the prompt explicitly allows to skip
     // this step, is never hard-blocked with no way to satisfy the gate.
-    requiredEvidenceKinds: countPlannedPages(plan) > 1 ? (["visual_check"] as const) : [],
+    requiredEvidenceKinds: phase && !phase.isLast ? [] : countPlannedPages(plan) > 1 ? (["visual_check"] as const) : [],
     // 2026-07-25: raised to 60. Measured live in nextech7: Aanya hit the
     // 40-iteration default exactly while still running npx next build to fix
     // proxy.ts + portal dashboard import issues. Pattern: ~32 write iterations
@@ -194,7 +213,9 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // self-healing variance. 90 gives real margin for larger, multi-role
     // apps while keeping the existing "cap hit costs one attempt" safety net
     // for genuinely pathological cases.
-    maxIterations: 90,
+    // Part C.3: a phase starts from its own size and is extended while it
+    // keeps making progress (extendStepsWhileProgressing above).
+    maxIterations: phase?.maxSteps ?? 90,
   });
 
   return {

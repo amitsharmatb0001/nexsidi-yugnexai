@@ -189,5 +189,14 @@ test("Stage 3 generation failures are caught and retried via the same escalation
   // — a bare call with no surrounding try means the rejection was never
   // actually caught by anything, regardless of what escalation code exists
   // elsewhere in the file.
-  expect(source).toMatch(/try\s*\{\s*await Promise\.all\(genPromises\);/);
+  // 2026-10-02 (Part C.3): the try block now opens with the phased path, so
+  // both generation paths must sit between this try and its catch.
+  const flat = source.replace(/\r\n/g, "\n");
+  const tryAt = flat.indexOf("    try {\n      if (phaseCount > 0) {");
+  const catchAt = flat.indexOf("} catch (err) {", tryAt);
+  expect(tryAt).toBeGreaterThan(0);
+  for (const call of ["await Promise.all(phasePromises);", "await Promise.all(genPromises);"]) {
+    const at = flat.indexOf(call, tryAt);
+    expect({ call, insideTry: at > tryAt && at < catchAt }).toEqual({ call, insideTry: true });
+  }
 });

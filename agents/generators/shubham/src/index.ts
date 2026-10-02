@@ -170,13 +170,27 @@ async function loadKnownMistakesPrefix(): Promise<string> {
 }
 
 // ── Main entry ────────────────────────────────────────────────────────────────
-export async function run(plan: BuildPlan): Promise<GeneratorResult> {
+// 2026-10-02 (Part C.3): one build phase at a time — see
+// pipeline/activities/build-phases.ts. Absent for plans without phases.
+export interface GeneratorPhaseRun {
+  conversationKey: string;
+  header: string;
+  scaffold: boolean;
+  isLast: boolean;
+  maxSteps: number;
+}
+
+export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId);
   mkdirSync(outputDir, { recursive: true });
 
-  // Write static scaffold first — agent focuses only on business logic
-  writeStaticScaffold(plan, outputDir);
+  // Write static scaffold first — agent focuses only on business logic.
+  // Phased builds write it only on the first phase, so a later phase never
+  // overwrites earlier work.
+  if (!phase || phase.scaffold) {
+    writeStaticScaffold(plan, outputDir);
+  }
 
   // Primary history: kimi-k2.6 (failed, F7) -> z-ai/glm-5.2 (2026-07-03) ->
   // mistral-medium-3.5-128b (2026-07-04). glm-5.2 demoted after
@@ -202,9 +216,11 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     fallbackModels: FALLBACK_CHAIN.shubham,
     apiKey,
     systemPrompt: knownMistakesPrefix,
-    initialMessage: buildAgentTask(plan),
+    initialMessage: (phase ? phase.header + "\n\n" : "") + buildAgentTask(plan),
     sandboxDir: outputDir,
     projectId: plan.projectId,
+    conversationKey: phase?.conversationKey,
+    extendStepsWhileProgressing: Boolean(phase),
     // 2026-07-12: pro (thinking) model for code quality; http + docker tools so
     // Shubham self-verifies its own work like a real backend dev (boot a
     // throwaway Postgres, apply migrations, start the server, curl health +
@@ -253,7 +269,9 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     // demanding an exact call-count pattern that could be wrong for an
     // app with unusual endpoint shapes. See FULL CRUD SELF-CHECK below for
     // what this is meant to enforce in practice.
-    requiredEvidenceCounts: countTestableResources(plan) > 0 ? { http_check: countTestableResources(plan) } : {},
+    // Part C.3: a phase before the last tests its own endpoints (any live
+    // check); the per-resource count covers the whole app in the last phase.
+    requiredEvidenceCounts: phase && !phase.isLast ? {} : countTestableResources(plan) > 0 ? { http_check: countTestableResources(plan) } : {},
     // 2026-07-25: raised from 40 (default) to 60 after two consecutive
     // live P4 runs (nextech5, nextech6) both failed at exactly iteration 40
     // while Shubham was still in the live-verification phase. Measured
@@ -269,7 +287,9 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     // a starting estimate (no live measurement yet for this specific
     // addition, unlike the 40->60 change above which was tuned from two
     // real overruns); revisit if a live run hits this cap mid-CRUD-check.
-    maxIterations: 90,
+    // Part C.3: a phase starts from its own size and is extended while it
+    // keeps making progress.
+    maxIterations: phase?.maxSteps ?? 90,
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see
