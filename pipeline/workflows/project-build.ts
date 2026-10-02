@@ -52,8 +52,10 @@ const act = proxyActivities<typeof activities>({
 });
 
 // Long timeout for code generation — multiple sequential NIM calls per task list
+// Ledgerly benchmark: 30 minutes per attempt was too short for a 10-page
+// frontend; the 3-minute heartbeat still catches a dead worker quickly.
 const genAct = proxyActivities<typeof activities>({
-  startToCloseTimeout: "30 minutes",
+  startToCloseTimeout: "2 hours",
   heartbeatTimeout: "3 minutes",   // NIM calls take up to 90s + 30s heartbeat gap
   retry: { maximumAttempts: 5 },   // more headroom while we tune the output format
 });

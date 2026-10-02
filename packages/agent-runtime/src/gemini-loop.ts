@@ -56,6 +56,7 @@ import { checkCompletion } from "./enforce/completion-gate.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { isGeminiHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice } from "./step-budget.ts";
+import { runStopReason } from "./run-abort.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -618,6 +619,15 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   const browserToolset = config.enableBrowser ? new BrowserToolset(config.sandboxDir) : null;
   try {
   while (iterations < effectiveMaxIterations) {
+    // Ledgerly benchmark: stop at the next step once the activity was
+    // cancelled or timed out (see run-abort.ts) — never keep running beside
+    // a retry.
+    const stopReason = runStopReason(config);
+    if (stopReason) {
+      console.log(`[${config.agentName}:gemini-agent] ${stopReason}`);
+      await saveHistory();
+      return { success: false, summary: stopReason, filesWritten, iterations, errors: [...errors, stopReason], escalationReason: "cannot_finish", escalations, factLedger };
+    }
     iterations++;
     console.log(`[${config.agentName}:gemini-agent] Iteration ${iterations}`);
 
@@ -1083,6 +1093,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
     if (budgetNotice) responseParts.push({ text: budgetNotice });
     messages.push({ role: "user", content: responseParts });
+    await saveHistory(); // every step is recorded
 
     // Cost-control Task 2: still does not affect what's sent to the model on
     // any call in this loop (selectRelevantContext remains unwired — that's

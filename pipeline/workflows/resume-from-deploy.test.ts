@@ -51,3 +51,19 @@ test("runGate2AndStage6 re-records the deploy context-chain handoff on every ret
   expect(loopStart).toBeGreaterThan(-1);
   expect(recordCall).toBeGreaterThan(loopStart); // inside the loop, not once before it
 });
+
+// Ledgerly benchmark: code generation had a 30-minute limit per attempt; a
+// 10-page frontend needs longer. Same long limit + heartbeat as deploy, and
+// every agent activity runs inside its cancellation signal.
+test("code generation gets a 2-hour limit with a 3-minute heartbeat", () => {
+  const source = readFileSync(new URL("./project-build.ts", import.meta.url), "utf-8");
+  const gen = source.slice(source.indexOf("const genAct = proxyActivities"));
+  const block = gen.slice(0, gen.indexOf("});"));
+  expect(block).toContain('startToCloseTimeout: "2 hours"');
+  expect(block).toContain('heartbeatTimeout: "3 minutes"');
+});
+
+test("the worker runs every activity inside its own cancellation signal", () => {
+  const source = readFileSync(new URL("../worker.ts", import.meta.url), "utf-8");
+  expect(source).toContain("interceptors: { activity: [abortSignalInterceptors] }");
+});

@@ -12,6 +12,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { execSync } from "child_process";
 import * as activities from "./activities/index.ts";
+import { abortSignalInterceptors } from "./abort-interceptor.ts";
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
 const TASK_QUEUE       = process.env.TEMPORAL_TASK_QUEUE ?? "nexsidi-pipeline";
@@ -110,6 +111,10 @@ async function run(): Promise<void> {
     taskQueue:     TASK_QUEUE,
     workflowsPath: fileURLToPath(new URL("./workflows/project-build.ts", import.meta.url)),
     activities,
+    // Every activity runs inside its own cancellation signal, so an agent
+    // stops at its next step when its activity is cancelled or times out
+    // (see abort-interceptor.ts).
+    interceptors: { activity: [abortSignalInterceptors] },
     // Tune for long-running LLM calls:
     //   maxConcurrentActivityTaskExecutions: how many activities run in parallel
     //   Adjust based on NIM rate limits (3 parallel × 40 RPM = 120 RPM across 3 models)

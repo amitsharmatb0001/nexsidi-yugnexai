@@ -45,6 +45,7 @@ import type { ModelId } from "@nexsidi/llm-client";
 import { isNimHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice } from "./step-budget.ts";
 import { timeBudgetExceeded } from "./nim-time-budget.ts";
+import { runStopReason } from "./run-abort.ts";
 
 // Exported so claude-loop.ts's runAgentWithClaude() can reuse the exact same
 // iteration cap instead of redefining it (per Task 15 spec — "same
@@ -154,6 +155,9 @@ export interface AgentRunConfig {
   // ONLY by runAgentEscalated for its NIM leg, where Gemini is the fallback —
   // see nim-time-budget.ts.
   timeBudgetMs?: number;
+  // Stop this run at its next step when aborted. Normally left unset: the
+  // worker gives every activity its own signal (see run-abort.ts).
+  abortSignal?: AbortSignal;
 }
 
 // Tool names buildToolList() omits, and the execution switch in loop.ts/
@@ -713,6 +717,15 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   try {
   const startedAt = Date.now();
   while (iterations < effectiveMaxIterations) {
+    // Ledgerly benchmark: stop at the next step once the activity was
+    // cancelled or timed out (see run-abort.ts) — never keep running beside
+    // a retry.
+    const stopReason = runStopReason(config);
+    if (stopReason) {
+      console.log(`[${config.agentName}:agent] ${stopReason}`);
+      await saveHistory();
+      return { success: false, summary: stopReason, filesWritten, iterations, errors: [...errors, stopReason], escalationReason: "cannot_finish", escalations };
+    }
     // 2026-10-01: stop and hand over once the time budget is spent — reuses
     // the transport-abort exit below (history saved, success:false, reason in
     // the summary), which runAgentEscalated already escalates.
@@ -1139,6 +1152,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     messages.push(...toolResults);
     const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
     if (budgetNotice) messages.push({ role: "user", content: budgetNotice });
+    await saveHistory(); // every step is recorded
 
     // Proactively compact history if it grows too large
     messages = await compactHistory(messages);

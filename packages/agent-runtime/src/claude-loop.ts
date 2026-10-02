@@ -52,6 +52,7 @@ import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice } from "./step-budget.ts";
 import { nimTimeBudgetMs } from "./nim-time-budget.ts";
+import { runStopReason } from "./run-abort.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -251,6 +252,14 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   const browserToolset = config.enableBrowser ? new BrowserToolset(config.sandboxDir) : null;
   try {
   while (iterations < effectiveMaxIterations) {
+    // Ledgerly benchmark: stop at the next step once the activity was
+    // cancelled or timed out (see run-abort.ts).
+    const stopReason = runStopReason(config);
+    if (stopReason) {
+      console.log(`[${config.agentName}:claude-agent] ${stopReason}`);
+      await saveHistory();
+      return { success: false, summary: stopReason, filesWritten, iterations, errors: [...errors, stopReason] };
+    }
     iterations++;
     console.log(`[${config.agentName}:claude-agent] Iteration ${iterations}`);
 
@@ -481,6 +490,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
     const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
     if (budgetNotice) toolResultBlocks.push({ type: "text", text: budgetNotice });
     messages.push({ role: "user", content: toolResultBlocks });
+    await saveHistory(); // every step is recorded
 
     // Proactively compact history if it grows too large. 2026-09-26: this
     // never fired before (the token estimate was blind to Claude's block
@@ -572,6 +582,13 @@ export async function runAgentEscalated(
   const nimResult = await deps.runNim({ ...config, timeBudgetMs: nimTimeBudgetMs() });
 
   if (nimResult.success) {
+    return { ...nimResult, escalated: false };
+  }
+
+  // A run that was cancelled (activity timed out or was cancelled) is not
+  // rescued by the provider — that would restart the cancelled work in a
+  // second agent beside the retry.
+  if (runStopReason(config)) {
     return { ...nimResult, escalated: false };
   }
 

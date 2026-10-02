@@ -376,3 +376,20 @@ test("the NIM leg gets a time budget, the provider leg does not, and a budget st
   expect(result.escalated).toBe(true);
   expect(result.success).toBe(true);
 });
+
+// Ledgerly benchmark: a cancelled run (activity timed out or was cancelled)
+// must not be "rescued" by escalating to the provider — that would just start
+// the cancelled work again in a second agent.
+test("a NIM leg stopped because the run was cancelled does not escalate", async () => {
+  const { runWithAbortSignal } = await import("./run-abort.ts");
+  const controller = new AbortController();
+  let providerCalled = false;
+  const deps: AgentEscalationDeps = {
+    runNim: async () => { controller.abort("TIMED_OUT"); return nimFailure(); },
+    runClaude: async () => { providerCalled = true; return claudeSuccess(); },
+  };
+  const result = await runWithAbortSignal(controller.signal, () => runAgentEscalated(BASE_CONFIG, deps));
+  expect(providerCalled).toBe(false);
+  expect(result.escalated).toBe(false);
+  expect(result.success).toBe(false);
+});
