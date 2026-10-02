@@ -97,7 +97,7 @@ export function selectSkills(
   args: { agentName: string; taskText: string; maxSkills?: number; maxChars?: number },
   dir: string = SKILL_LIBRARY_DIR,
 ): Skill[] {
-  const maxSkills = args.maxSkills ?? 4;
+  const maxSkills = args.maxSkills ?? 6;
   const maxChars = args.maxChars ?? 16_000;
   const ranked = skillsForAgent(args.agentName, dir)
     .map((skill) => ({ skill, hits: score(skill, args.taskText) }))

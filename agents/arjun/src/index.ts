@@ -5,6 +5,7 @@
 
 import { agentChat } from "@nexsidi/llm-client";
 import { hashContext } from "@nexsidi/context-chain";
+import { skillPromptSection } from "../../../packages/agent-runtime/src/skill-library.ts";
 import type { ProjectSpec, Feature } from "../../saanvi/src/index.ts";
 import { run as runVanya, type DesignBrief } from "../../vanya/src/index.ts";
 import { mkdirSync } from "fs";
@@ -174,7 +175,7 @@ export async function run(
     : JSON.stringify(spec, null, 2);
 
   const messages = [
-    { role: "system" as const, content: systemPrompt },
+    { role: "system" as const, content: [systemPrompt, skillPromptSection("arjun", userContent)].filter(Boolean).join("\n\n") },
     { role: "user" as const, content: userContent },
   ];
 

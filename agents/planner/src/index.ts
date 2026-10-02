@@ -8,6 +8,7 @@
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { skillPromptSection } from "../../../packages/agent-runtime/src/skill-library.ts";
 import { AGENT_MODELS, MODEL_RPM_LIMITS, NIM_CONTEXT_LIMITS, waitForToken, routeToolsWithFallback, translateNimToolToGeminiTool } from "@nexsidi/llm-client";
 import type { GeminiMessage, GeminiPart, NimToolDef } from "@nexsidi/llm-client";
 import type { PlannerState, StreamChunk, BuildPlan, ProposedPlan, ElicitationQuestion } from "./types.ts";
@@ -391,7 +392,7 @@ export async function* streamReply(
   // Build the running message list (mutable — tool results are appended each round)
   type Msg = { role: string; content: string | null; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
   const rawMessages: Msg[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: [SYSTEM_PROMPT, skillPromptSection("planner", state.messages.filter((m) => m.role === "user").map((m) => m.content ?? "").join("\n"))].filter(Boolean).join("\n\n") },
     ...state.messages.map(m => {
       // Preserve tool_calls on assistant messages (ask_user / propose_plan calls from prior turns)
       if (m.tool_calls?.length) {
