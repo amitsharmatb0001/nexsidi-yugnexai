@@ -10,7 +10,7 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { loadSession, saveSession, newSession } from "../../../../agents/planner/src/session.ts";
-import { streamReply } from "../../../../agents/planner/src/index.ts";
+import { streamReply, planToUserRequest } from "../../../../agents/planner/src/index.ts";
 import { startProjectBuild } from "../utils/temporal.ts";
 import { db, projects } from "@nexsidi/db";
 import { eq } from "drizzle-orm";
@@ -152,12 +152,10 @@ chatRouter.post("/", async (c) => {
         });
 
         // Start the Temporal pipeline — workflow will detect build-plan.json and skip spec/decompose
-        const userRequest = [
-          triggeredBuildPlan.appName,
-          triggeredBuildPlan.appDescription,
-          ...triggeredBuildPlan.pages.map(p => `Page: ${p.name} (${p.path}) — ${p.description}`),
-          ...(triggeredBuildPlan.designNotes ? [`\nDesign direction: ${triggeredBuildPlan.designNotes}`] : []),
-        ].join("\n");
+        // The whole approved plan: rules word for word, pages, endpoints,
+        // tables and design (2026-10-02 — endpoints, tables and rules used
+        // to be dropped here).
+        const userRequest = planToUserRequest(triggeredBuildPlan);
 
         await startProjectBuild(triggeredProjectId, userRequest);
         console.log(`[chat] pipeline started for project ${triggeredProjectId}`);

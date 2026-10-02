@@ -78,9 +78,20 @@ export const PROPOSE_PLAN_TOOL = {
       "Do NOT call trigger_build until the user explicitly accepts the plan.",
     parameters: {
       type: "object",
-      required: ["appName", "context", "publicPages", "protectedPages", "dbTables", "apiEndpoints", "designDirection", "techStack"],
+      required: ["appName", "context", "rules", "publicPages", "protectedPages", "dbTables", "apiEndpoints", "designDirection", "techStack"],
       properties: {
         appName:    { type: "string" },
+        // 2026-10-02 (Ledgerly benchmark): without this field the plan had
+        // nowhere to keep "INV-2026-0001", "18%" or "Draft, Sent or Paid",
+        // so the build never saw them.
+        rules: {
+          type: "array",
+          description:
+            "Every rule, exact format, example, rate, status name, unit and limit the user gave, copied word for word from their messages — " +
+            "one item each, never paraphrased (e.g. \"Invoice numbers run in order per account: INV-2026-0001, INV-2026-0002, and so on.\"). " +
+            "Include answers the user gave to your questions. Empty only if the user gave none.",
+          items: { type: "string" },
+        },
         context:    { type: "string", description: "2-3 sentences: what this app does and who it is for" },
         publicPages: {
           type: "array",
@@ -309,7 +320,7 @@ export function sanitizePlan(plan: BuildPlan): BuildPlan {
 // ─── ProposedPlan → BuildPlan direct conversion (Bug 2 fix) ─────────────────
 // When the user accepts the plan, we convert the saved ProposedPlan directly
 // instead of asking the LLM to reconstruct it from a thin text summary.
-function proposedPlanToBuildPlan(proposed: ProposedPlan): BuildPlan {
+export function proposedPlanToBuildPlan(proposed: ProposedPlan): BuildPlan {
   const allPages = [...proposed.publicPages, ...proposed.protectedPages];
   return {
     schemaVersion: "1",
@@ -318,7 +329,31 @@ function proposedPlanToBuildPlan(proposed: ProposedPlan): BuildPlan {
     pages:         allPages,
     authType:      proposed.protectedPages.length > 0 ? "jwt" : "none",
     designNotes:   proposed.designDirection,
+    rules:         Array.isArray(proposed.rules) ? proposed.rules : [],
+    apiEndpoints:  Array.isArray(proposed.apiEndpoints) ? proposed.apiEndpoints : [],
+    dbTables:      Array.isArray(proposed.dbTables) ? proposed.dbTables : [],
   };
+}
+
+/**
+ * The build request for the plan the user approved — every part of it, the
+ * rules word for word. This text is what the spec and every later stage
+ * build from (written to user-request.txt by the pipeline).
+ */
+export function planToUserRequest(plan: BuildPlan): string {
+  const lines = [plan.appName, plan.appDescription];
+  if (plan.rules?.length) {
+    lines.push("", "Rules (the user's own words — follow exactly):", ...plan.rules.map((r) => `- ${r}`));
+  }
+  lines.push("", ...plan.pages.map((p) => `Page: ${p.name} (${p.path}) — ${p.description}`));
+  if (plan.apiEndpoints?.length) {
+    lines.push("", "API endpoints:", ...plan.apiEndpoints.map((e) => `- ${e.method} ${e.path} — ${e.description}`));
+  }
+  if (plan.dbTables?.length) {
+    lines.push("", "Data:", ...plan.dbTables.map((t) => `- ${t.name}: ${(Array.isArray(t.keyColumns) ? t.keyColumns : [String(t.keyColumns)]).join(", ")}`));
+  }
+  if (plan.designNotes) lines.push("", `Design direction: ${plan.designNotes}`);
+  return lines.join("\n");
 }
 
 // Convert OpenAI-format planner messages → Gemini multi-turn format

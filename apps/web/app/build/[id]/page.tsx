@@ -89,6 +89,7 @@ interface ProposedPlan {
   apiEndpoints: Array<{ method: string; path: string; description: string }>;
   designDirection: string;
   techStack: { frontend: string; backend: string; database: string; auth: string };
+  rules?: string[];
 }
 
 interface ElicitationQuestion {
@@ -593,6 +594,17 @@ function ProposedPlanPanel({ plan }: { plan: ProposedPlan }) {
                   <span style={{ fontFamily: "var(--nx-ff-mono)", fontSize: "11px", color: "var(--nx-green)", background: "rgba(63,185,80,0.1)", padding: "2px 7px", borderRadius: "4px", flexShrink: 0 }}>{p.path}</span>
                   <span style={{ fontSize: "12px", color: "var(--nx-text2)", paddingTop: "1px" }}>{p.description}</span>
                 </div>
+              ))}
+            </div>
+          </Section>
+        )}
+
+        {/* Rules — the user's own words, shown so they approve them too */}
+        {Array.isArray(plan.rules) && plan.rules.length > 0 && (
+          <Section title="Rules">
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              {plan.rules.map((r, i) => (
+                <div key={i} style={{ fontSize: "12px", color: "var(--nx-text2)", lineHeight: 1.6 }}>{r}</div>
               ))}
             </div>
           </Section>

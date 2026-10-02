@@ -32,6 +32,12 @@ export interface BuildPlan {
   }>;
   authType: "none" | "jwt";
   designNotes?: string;  // visual direction: colors, tone, references — passed verbatim to Saanvi
+  // 2026-10-02: the rest of the plan the user approved. Before this only the
+  // pages reached the build; the approved endpoints, tables and the brief's
+  // exact rules (INV-2026-0001, 18%, Draft/Sent/Paid) were dropped.
+  rules?: string[];
+  apiEndpoints?: Array<{ method: string; path: string; description: string }>;
+  dbTables?: Array<{ name: string; keyColumns: string[] }>;
 }
 
 export interface PlannerState {
@@ -54,6 +60,7 @@ export interface ProposedPlan {
   apiEndpoints: Array<{ method: string; path: string; description: string }>;
   designDirection: string;
   techStack: { frontend: string; backend: string; database: string; auth: string };
+  rules: string[];  // every exact rule, format and example from the brief, word for word
 }
 
 // Structured clarifying question shown via the ElicitationWidget before propose_plan
