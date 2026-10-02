@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { buildFontOverrideCss, buildThemeOverrideTokens, googleFontStylesheets, parseFontSpec, themeColorMode } from "./theme.ts";
+import { buildFontOverrideCss, buildThemeOverrideTokens, themeColorMode, usedInHouseFonts } from "./theme.ts";
 import type { DesignBrief } from "../../../vanya/src/index.ts";
 import { FALLBACK_BRIEF } from "../../../vanya/src/index.ts";
 
@@ -158,131 +158,28 @@ test("themeColorMode picks 'dark' when the resolved background is genuinely dark
   expect(themeColorMode(darkBrief)).toBe("dark");
 });
 
-// ── buildFontOverrideCss (typography-only; colors moved to createTheme()) ──
+// ── buildFontOverrideCss: in-house fonts only (approved 2 Oct 2026) ──────
 
-test("buildFontOverrideCss sets html/body and heading font-family from the brief's real typefaces", () => {
-  const css = buildFontOverrideCss(BRIEF_A);
-  expect(css).toContain("Fraunces");
-  expect(css).toContain("IBM Plex Sans");
-  expect(css).toMatch(/html,\s*body\s*\{[^}]*font-family/);
+test("buildFontOverrideCss maps the brief's typefaces to in-house fonts and exposes them as CSS variables", () => {
+  const css = buildFontOverrideCss(BRIEF_A); // Fraunces / IBM Plex Sans — not in-house
+  expect(css).toContain("--font-display: 'NexuiSans'");
+  expect(css).toContain("--font-body: 'Inter'");
+  expect(css).toContain("--font-mono: 'JetBrains Mono'");
+  expect(css).toMatch(/html,\s*body\s*\{[^}]*font-family: var\(--font-body\)/);
+  expect(css).toMatch(/h1, h2, h3, h4, h5, h6 \{[^}]*font-family: var\(--font-display\)/);
+  expect(css).not.toContain("Fraunces");
 });
 
-test("buildFontOverrideCss does NOT touch any --nx-* CSS custom property (avoids re-fighting NexUI's own theme cascade)", () => {
-  // The old cascade-order bug (2026-08-06, index.ts's own header comment)
-  // came from two different writers targeting the SAME --nx-font-sans
-  // variable. This file no longer writes to any --nx-* variable at all —
-  // it sets the literal `font-family` property directly, a target NexUI's
-  // own runtime theme CSS never declares, so there is nothing to race.
-  const css = buildFontOverrideCss(BRIEF_A);
-  expect(css).not.toContain("--nx-");
-  expect(css).not.toContain(":root");
+test("buildFontOverrideCss never touches NexUI's own --nx-* variables", () => {
+  expect(buildFontOverrideCss(BRIEF_A)).not.toContain("--nx-");
 });
 
-test("buildFontOverrideCss produces visibly different output for two different designBriefs", () => {
-  const cssA = buildFontOverrideCss(BRIEF_A);
-  const cssB = buildFontOverrideCss(BRIEF_B);
-  expect(cssA).not.toBe(cssB);
-  expect(cssA).toContain("IBM Plex Sans");
-  expect(cssB).toContain("Source Serif 4");
-});
-
-// ── real bug: "(fallback: ...)" annotation embedded verbatim ───────────────
-// Found live by an independent adversarial review — a real `npm install &&
-// npx next build && npx next start` against a scaffold generated with the
-// REAL FALLBACK_BRIEF (agents/vanya/src/index.ts), then reading the actual
-// rendered page's computed `font-family`, showed the literal string
-// "Charter (fallback: Georgia, serif)" landing whole inside a single CSS
-// font name — a font no browser will ever match, silently collapsing to the
-// generic tail. BRIEF_A/BRIEF_B above use clean synthetic names
-// ("Fraunces", "IBM Plex Sans") that never exercise this path — that's
-// exactly why the bug shipped uncaught the first time. This test uses
-// FALLBACK_BRIEF itself, unmodified, so it can't drift from the real data.
-
-test("buildFontOverrideCss extracts a clean font name from FALLBACK_BRIEF's real '(fallback: ...)' typography — does not embed the annotation verbatim", () => {
-  // Real values, not a synthetic stand-in: FALLBACK_BRIEF.typography is
-  // { display: "Söhne (fallback: system-ui)", body: "Charter (fallback: Georgia, serif)" }.
+test("FALLBACK_BRIEF produces clean in-house font CSS (no '(fallback: ...)' text)", () => {
   const css = buildFontOverrideCss(FALLBACK_BRIEF);
-
-  // The literal parenthetical annotation must never reach the generated CSS.
   expect(css).not.toContain("(fallback:");
-  expect(css).not.toContain(")");
-
-  // The real typeface names must still be present, as clean CSS tokens.
-  expect(css).toContain("'Charter'");
-  expect(css).toContain("'Söhne'");
-
-  // The body rule's font-family value must be valid, comma-separated CSS —
-  // sanity-check by extracting it and confirming it parses into tokens with
-  // no stray unbalanced quote or paren.
-  const bodyMatch = css.match(/html,\s*body\s*\{\s*font-family:\s*([^;]+);/);
-  expect(bodyMatch).not.toBeNull();
-  const bodyValue = bodyMatch?.[1] ?? "";
-  expect(bodyValue).not.toContain("(");
-  // Even quote count (each quoted token opens+closes) confirms nothing was
-  // left mid-token by the parenthetical stripping.
-  expect((bodyValue.match(/'/g) ?? []).length % 2).toBe(0);
+  expect(css).toContain("'NexuiSans'");
 });
 
-test("buildFontOverrideCss uses the annotation's own fallback chain as real CSS fallback fonts, not just discarding it", () => {
-  // "Charter (fallback: Georgia, serif)" is read as "prefer Charter, then
-  // Georgia, then the generic serif family" — that's real fallback-chain
-  // information, not just a human-readable note, so it should survive into
-  // the generated font-family stack in order.
-  const css = buildFontOverrideCss(FALLBACK_BRIEF);
-  const bodyMatch = css.match(/html,\s*body\s*\{\s*font-family:\s*([^;]+);/);
-  const bodyValue = bodyMatch?.[1] ?? "";
-  const charterIndex = bodyValue.indexOf("Charter");
-  const georgiaIndex = bodyValue.indexOf("Georgia");
-  const serifIndex = bodyValue.indexOf("serif");
-  expect(charterIndex).toBeGreaterThanOrEqual(0);
-  expect(georgiaIndex).toBeGreaterThan(charterIndex);
-  expect(serifIndex).toBeGreaterThan(georgiaIndex);
-});
-
-test("parseFontSpec splits a '(fallback: ...)' annotation into a clean name and an explicit fallback chain", () => {
-  expect(parseFontSpec("Charter (fallback: Georgia, serif)")).toEqual({
-    name: "Charter",
-    fallbacks: ["Georgia", "serif"],
-  });
-  expect(parseFontSpec("Söhne (fallback: system-ui)")).toEqual({
-    name: "Söhne",
-    fallbacks: ["system-ui"],
-  });
-});
-
-test("parseFontSpec returns the name unchanged with no fallbacks when there is no annotation", () => {
-  expect(parseFontSpec("Fraunces")).toEqual({ name: "Fraunces", fallbacks: [] });
-  expect(parseFontSpec("IBM Plex Sans")).toEqual({ name: "IBM Plex Sans", fallbacks: [] });
-});
-
-// 2026-09-28: real finding (project a61968de2ecf, Cardwise). The brief's
-// fonts (Lexend Deca / Plus Jakarta Sans) were named in theme-overrides.css
-// but never LOADED — every visitor saw system fallbacks. The scaffold now
-// links each family from Google Fonts, checked once at generation time so an
-// unknown family (or unsupported weights) can never break the stylesheet.
-const okFor = (urls: string[]) => async (url: string) => ({ ok: urls.includes(url) });
-const W = ":wght@400;500;600;700";
-
-test("googleFontStylesheets links each brief family with its weights when Google serves them", async () => {
-  const a = `https://fonts.googleapis.com/css2?family=Lexend+Deca${W}&display=swap`;
-  const b = `https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans${W}&display=swap`;
-  expect(await googleFontStylesheets(["Lexend Deca", "Plus Jakarta Sans"], okFor([a, b]))).toEqual([a, b]);
-});
-
-test("googleFontStylesheets falls back to the plain family URL when the weighted one is rejected", async () => {
-  const plain = "https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap";
-  expect(await googleFontStylesheets(["Bebas Neue"], okFor([plain]))).toEqual([plain]);
-});
-
-test("googleFontStylesheets skips a family Google does not have, and unsafe names without fetching", async () => {
-  const seen: string[] = [];
-  const fetchFn = async (url: string) => { seen.push(url); return { ok: false }; };
-  expect(await googleFontStylesheets(["Satoshi", 'Inter"><script>'], fetchFn)).toEqual([]);
-  expect(seen.every((u) => u.includes("Satoshi"))).toBe(true);
-});
-
-test("googleFontStylesheets de-duplicates, reads the name out of a '(fallback: ...)' spec, and survives a network error", async () => {
-  const a = `https://fonts.googleapis.com/css2?family=Inter${W}&display=swap`;
-  expect(await googleFontStylesheets(["Inter (fallback: Arial, sans-serif)", "Inter"], okFor([a]))).toEqual([a]);
-  expect(await googleFontStylesheets(["Inter"], async () => { throw new Error("offline"); })).toEqual([]);
+test("usedInHouseFonts lists the display, body and mono families once each", () => {
+  expect(usedInHouseFonts(BRIEF_A)).toEqual(["NexuiSans", "Inter", "JetBrains Mono"]);
 });

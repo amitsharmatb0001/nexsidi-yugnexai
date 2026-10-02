@@ -11,7 +11,8 @@ import { join } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
 import { formatDesignBriefForPrompt } from "../../../vanya/src/index.ts";
-import { buildFontOverrideCss, buildThemeOverrideTokens, googleFontStylesheets, themeColorMode } from "./theme.ts";
+import { buildFontOverrideCss, buildThemeOverrideTokens, themeColorMode, usedInHouseFonts } from "./theme.ts";
+import { inHouseFontFaceCss, vendorInHouseFonts } from "./fonts.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
 
@@ -78,13 +79,8 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
   // on this path (see Task 4 of the migration plan).
   await vendorNexui(outputDir);
 
-  // 2. Write static scaffold. The brief's fonts are checked against Google
-  // Fonts first (see theme.ts googleFontStylesheets) so the layout only links
-  // families that really load.
-  const fontStylesheets = plan.designBrief
-    ? await googleFontStylesheets([plan.designBrief.typography.display, plan.designBrief.typography.body])
-    : [];
-  writeStaticScaffold(plan, outputDir, fontStylesheets);
+  // 2. Write static scaffold (includes the in-house fonts — see fonts.ts).
+  writeStaticScaffold(plan, outputDir);
 
   // 3. Run real agent loop
   // Primary history: kimi-k2.6 (failed, F7) -> z-ai/glm-5.2 (2026-07-03) ->
@@ -879,18 +875,7 @@ export function hasRoleColumn(plan: BuildPlan): boolean {
   return plan.dbSchema.tables.some((t) => t.columns.some((c) => c.name === "role"));
 }
 
-// <head> tags for the verified Google Fonts stylesheets (empty when none).
-function fontLinkTags(hrefs: string[]): string {
-  if (hrefs.length === 0) return "";
-  const tags = [
-    '<link rel="preconnect" href="https://fonts.googleapis.com" />',
-    '<link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />',
-    ...hrefs.map((h) => `<link rel="stylesheet" href="${h}" />`),
-  ];
-  return tags.map((t) => `\n        ${t}`).join("");
-}
-
-export function writeStaticScaffold(plan: BuildPlan, outputDir: string, fontStylesheets: string[] = []): void {
+export function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
   const backendPort = plan.apiContract.baseUrl?.match(/:(\d+)/)?.[1] ?? "3001";
   const roleGated = hasRoleColumn(plan);
 
@@ -968,6 +953,12 @@ export function writeStaticScaffold(plan: BuildPlan, outputDir: string, fontStyl
       content: buildFontOverrideCss(plan.designBrief),
     },
     {
+      // 2026-10-02: in-house NexUI fonts only, served from the app's own
+      // /fonts folder (files copied below) — never Google Fonts.
+      path: "app/fonts.css",
+      content: inHouseFontFaceCss(usedInHouseFonts(plan.designBrief)),
+    },
+    {
       // 2026-08-16 (aanya-nexui-migration Task 2): @yugnex/core ships ZERO
       // CSS files (confirmed: a real `npm install` of @yugnex/core@0.1.0 —
       // node_modules/@yugnex/core/dist/ contains only .js/.d.ts/.map, no
@@ -980,7 +971,8 @@ export function writeStaticScaffold(plan: BuildPlan, outputDir: string, fontStyl
       // convention: `--nx-${kebab(path)}`), not the old --nx-bg-base/--nx-text
       // names, which no longer exist in this system.
       path: "app/globals.css",
-      content: `@import "./theme-overrides.css";
+      content: `@import "./fonts.css";
+@import "./theme-overrides.css";
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -1072,7 +1064,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <head>
-        <NoFoucScript />${fontLinkTags(fontStylesheets)}
+        <NoFoucScript />
       </head>
       <body>
         <StyleRegistry>
@@ -1184,4 +1176,6 @@ export const config = {
     }
     writeFileSync(join(outputDir, relPath), content, "utf-8");
   }
+
+  vendorInHouseFonts(outputDir, usedInHouseFonts(plan.designBrief));
 }

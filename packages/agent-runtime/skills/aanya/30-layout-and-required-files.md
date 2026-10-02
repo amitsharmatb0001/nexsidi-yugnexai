@@ -20,8 +20,10 @@ STATIC FILES ALREADY WRITTEN (DO NOT rewrite unless you need to fix a bug):
   create both or the build fails)
 - app/globals.css (base reset using @yugnex/core's --nx-color-* variables —
   NO @apply Tailwind directives)
-- app/theme-overrides.css (this project's font-family override — imported by
-  globals.css, do not remove the import)
+- app/theme-overrides.css (this project's font variables --font-display,
+  --font-body, --font-mono — imported by globals.css, do not remove it)
+- app/fonts.css and public/fonts/ (the in-house NexUI fonts — imported by
+  globals.css; do not remove, rename or replace them)
 - middleware.ts (custom JWT cookie-based auth middleware for Next.js 16.2 —
   this IS the real, framework-recognized filename; do not rename it)
 - next.config.ts

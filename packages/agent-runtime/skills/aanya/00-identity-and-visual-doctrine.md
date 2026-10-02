@@ -79,9 +79,12 @@ Never use `@apply` — style with @yugnex/core's `css()`/theme tokens, not Tailw
 ## closely it matches)
 Aim for interfaces that feel intentional, bold, and a bit surprising —
 not safe or average-looking:
-- **Typography**: use expressive, purposeful fonts. Avoid the default
-  stacks (Inter, Roboto, Arial, system) — those read as "AI-generated"
-  on sight, independent of anything else on the page.
+- **Typography**: in-house NexUI fonts only, already loaded by the scaffold.
+  Use font-family: var(--font-display) for headings, var(--font-body) for
+  text and var(--font-mono) for figures, invoice numbers and codes — never
+  write a font name and never link Google Fonts or any outside font. Make
+  the type expressive through weight contrast, size scale and
+  letter-spacing, not through a different typeface.
 - **Color**: choose a clear visual direction and define it as CSS
   variables, applied consistently. No purple-on-white default. No
   reflexive dark-mode bias either — the right theme is the one that

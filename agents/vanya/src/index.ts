@@ -43,6 +43,7 @@ import { join } from "node:path";
 import { runAgentEscalated } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import type { ProjectSpec } from "../../saanvi/src/index.ts";
+import { resolveInHouseFont } from "../../generators/aanya/src/fonts.ts";
 
 export interface DesignBrief {
   mood: string;
@@ -112,7 +113,20 @@ export async function run(
     return FALLBACK_BRIEF;
   }
 
-  return validateDesignBrief(rawResult) ? rawResult : FALLBACK_BRIEF;
+  return validateDesignBrief(rawResult) ? withInHouseFonts(rawResult) : FALLBACK_BRIEF;
+}
+
+// Approved 2 Oct 2026: in-house NexUI fonts only. Any other typeface the
+// brief names (the first Ledgerly run asked for Cabinet Grotesk, which never
+// loaded) is mapped to the closest in-house font before anyone builds from it.
+export function withInHouseFonts(brief: DesignBrief): DesignBrief {
+  return {
+    ...brief,
+    typography: {
+      display: resolveInHouseFont(brief.typography.display, "display"),
+      body: resolveInHouseFont(brief.typography.body, "body"),
+    },
+  };
 }
 
 export function buildVanyaTask(spec: ProjectSpec): string {
@@ -155,20 +169,21 @@ export const FALLBACK_BRIEF: DesignBrief = {
     { name: "accent-muted", hex: "#8FB5A0" },
     { name: "border", hex: "#D8D5CC" },
   ],
-  typography: { display: "Söhne (fallback: system-ui)", body: "Charter (fallback: Georgia, serif)" },
+  typography: { display: "NexuiSans", body: "Inter" },
   layoutConcept: "Dense, grid-aligned sections with generous internal padding and a single consistent card treatment — no floating decorative shapes.",
 };
 
 // Pure formatter — the text block injected into Aanya's generation prompt.
 // Exported and unit-tested directly (same convention as tier3-review's
 // buildEvidenceCollectorTask / live-eval's buildLiveEvalTask).
-export function formatDesignBriefForPrompt(brief: DesignBrief): string {
+export function formatDesignBriefForPrompt(rawBrief: DesignBrief): string {
+  const brief = withInHouseFonts(rawBrief);
   const paletteLines = brief.palette.map((c) => `  - ${c.name}: ${c.hex}`).join("\n");
   return `DESIGN IDENTITY (locked by Vanya — implement exactly, do not substitute generic defaults):
 Mood: ${brief.mood}
 Palette:
 ${paletteLines}
-Typography: display face "${brief.typography.display}", body face "${brief.typography.body}"
+Typography: display face "${brief.typography.display}", body face "${brief.typography.body}" (in-house NexUI fonts, already loaded). In code use font-family: var(--font-display) for headings, var(--font-body) for text and var(--font-mono) for figures and codes — never write a font name.
 Layout concept: ${brief.layoutConcept}
 Every primary Button/accent element uses the "accent" color above. Every surface uses "paper"/"ink" per theme. Do not introduce colors outside this palette.`;
 }

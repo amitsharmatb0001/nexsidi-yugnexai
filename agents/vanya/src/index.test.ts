@@ -148,18 +148,39 @@ test("FALLBACK_BRIEF itself is a valid brief (never ships something that would f
   expect(validateDesignBrief(FALLBACK_BRIEF)).toBe(true);
 });
 
-test("formatDesignBriefForPrompt includes every palette entry, both typefaces, and the layout concept", () => {
-  const formatted = formatDesignBriefForPrompt(VALID_BRIEF);
+test("formatDesignBriefForPrompt includes every palette entry, the in-house typefaces, and the layout concept", () => {
+  const formatted = formatDesignBriefForPrompt(VALID_BRIEF); // asks for Fraunces / IBM Plex Sans
   expect(formatted).toContain("ink: #101418");
   expect(formatted).toContain("accent: #3A6EA5");
-  expect(formatted).toContain("Fraunces");
-  expect(formatted).toContain("IBM Plex Sans");
+  expect(formatted).toContain('display face "NexuiSans"');
+  expect(formatted).toContain('body face "Inter"');
+  expect(formatted).toContain("var(--font-display)");
+  expect(formatted).not.toContain("Fraunces");
   expect(formatted).toContain("Dense grid with generous padding.");
+});
+
+// Approved 2 Oct 2026: in-house NexUI fonts only. A brief naming any other
+// font (the first Ledgerly run asked for Cabinet Grotesk) is mapped to the
+// closest in-house font before anyone builds from it.
+test("run() maps the brief's typefaces to in-house fonts", async () => {
+  const deps: VanyaDeps = {
+    runAgent: async () => agentResult(JSON.stringify({ ...VALID_BRIEF, typography: { display: "Cabinet Grotesk", body: "Plus Jakarta Sans" } })),
+  };
+  const brief = await run(TEST_SPEC, deps);
+  expect(brief.typography).toEqual({ display: "NexuiSans", body: "Inter" });
+});
+
+test("FALLBACK_BRIEF uses in-house fonts", () => {
+  expect(FALLBACK_BRIEF.typography).toEqual({ display: "NexuiSans", body: "Inter" });
 });
 
 test("VANYA_SYSTEM_PROMPT explicitly warns against the well-known AI-generated defaults", () => {
   expect(VANYA_SYSTEM_PROMPT).toContain("Purple-to-blue gradient");
-  expect(VANYA_SYSTEM_PROMPT).toMatch(/Inter or Space Grotesk/i);
+});
+
+test("VANYA_SYSTEM_PROMPT limits typefaces to the in-house NexUI fonts", () => {
+  for (const font of ["NexuiSans", "Inter", "JetBrains Mono", "NexuiMono"]) expect(VANYA_SYSTEM_PROMPT).toContain(font);
+  expect(VANYA_SYSTEM_PROMPT).not.toMatch(/Fraunces|IBM Plex|Google Fonts/);
 });
 
 // 2026-08-06 (live, project 88d7b375eaef): real bug found live — given a

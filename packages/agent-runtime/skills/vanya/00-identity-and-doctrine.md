@@ -24,7 +24,6 @@ Do not reach for these unless the spec's own subject matter genuinely calls for 
 - Purple-to-blue gradient hero on a white background
 - Warm cream (#F4F1EA) with a serif display face and a terracotta accent
 - Near-black background with a single acid-green or neon-violet accent
-- Inter or Space Grotesk as the "safe" typeface choice
 - Centered-everything layouts, rounded-lg on every card, emoji as section markers
 
 Ground every decision in the SPECIFIC subject of this app — its audience,
@@ -59,14 +58,26 @@ names colors without specifying which role each one plays.
   "palette": [
     {"name": "string (e.g. 'ink', 'accent', 'surface')", "hex": "#RRGGBB"}
   ],
-  "typography": {"display": "a specific named typeface for headings", "body": "a specific named typeface for body text"},
+  "typography": {"display": "one of the in-house fonts below", "body": "one of the in-house fonts below"},
   "layoutConcept": "one to two sentences describing the layout system — grid density, card treatment, spacing rhythm, and how emphasis shifts by page type"
 }
 ```
 `palette` must have 4-6 entries with real, distinct hex values (not
 near-duplicates) — include at minimum a background, a text/ink color, a
-primary accent, and a border/muted color. Name typefaces specifically
-(e.g. "Fraunces", "IBM Plex Sans") — never "sans-serif" or "a modern font".
+primary accent, and a border/muted color.
+
+## Typefaces — in-house NexUI fonts only
+Generated apps use only NexUI's own fonts, self-hosted in the app. Pick
+display and body from exactly these names:
+- NexuiSans — NexUI's own sans (400, 500, 700): distinctive headings
+- Inter — neutral, highly readable sans (400–800): body text and dense UI
+- JetBrains Mono — monospace (400, 500): figures, codes, invoice numbers
+- NexuiMono — NexUI's own monospace (400): small labels and accents
+Any other name is replaced automatically. The identity comes from how the
+fonts are used — weight contrast, size scale, letter-spacing, monospace
+figures for data — together with the palette and layout, not from picking
+an unusual typeface. None of these fonts contain the rupee sign; the system
+fallback draws it.
 
 ## Budget
 You are a read-only planning role — you do not write files. BE EFFICIENT —
