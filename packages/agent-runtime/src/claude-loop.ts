@@ -32,7 +32,7 @@ import {
 // task — see claude.ts) makes the real per-call token counts available here.
 import { recordSpend } from "./cost-budget.ts";
 import { isClaudeEnabled, usesClaude } from "./claude-flag.ts";
-import { runAgent, buildToolList, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult, sanitizeModelChain, toolChatProviderFor } from "./loop.ts";
+import { runAgent, buildToolList, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult, sanitizeModelChain, toolChatProviderFor, conversationKeyFor } from "./loop.ts";
 import { isNimEnabled } from "@nexsidi/llm-client";
 import { join } from "path";
 import { readFileSync } from "node:fs";
@@ -51,7 +51,7 @@ import { runMissingRequiredChecks } from "./enforce/auto-checks.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { resumesSavedHistory } from "./history-format.ts";
-import { stepBudgetNotice } from "./step-budget.ts";
+import { stepBudgetNotice, StepBudget, isProgressStep } from "./step-budget.ts";
 import { BlockedActionTracker } from "./blocked-actions.ts";
 import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { nimTimeBudgetMs } from "./nim-time-budget.ts";
@@ -175,7 +175,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         .where(
           and(
             eq(agentConversations.projectId, config.projectId),
-            eq(agentConversations.agentName, config.agentName)
+            eq(agentConversations.agentName, conversationKeyFor(config))
           )
         )
         .limit(1);
@@ -215,7 +215,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           .where(
             and(
               eq(agentConversations.projectId, config.projectId),
-              eq(agentConversations.agentName, config.agentName)
+              eq(agentConversations.agentName, conversationKeyFor(config))
             )
           )
           .limit(1);
@@ -231,7 +231,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         } else {
           await db.insert(agentConversations).values({
             projectId: config.projectId,
-            agentName: config.agentName,
+            agentName: conversationKeyFor(config),
             messages,
           });
         }
@@ -246,6 +246,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   const errors: string[] = [];
   let iterations = 0;
   const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
+  const stepBudget = new StepBudget(effectiveMaxIterations, config.extendStepsWhileProgressing === true);
   let abortedOnUnrecoverableError = false;
   const blockedTracker = new BlockedActionTracker();
   const recentCallSignatures: string[] = [];
@@ -256,7 +257,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   // loop.ts: lazily spawned, closed in the finally on every exit path.
   const browserToolset = config.enableBrowser ? new BrowserToolset(config.sandboxDir) : null;
   try {
-  while (iterations < effectiveMaxIterations) {
+  while (stepBudget.canContinue(iterations)) {
     // Ledgerly benchmark: stop at the next step once the activity was
     // cancelled or timed out (see run-abort.ts).
     const stopReason = runStopReason(config);
@@ -485,6 +486,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
       // tool_result whose `content` is an array of blocks (text + image),
       // not a bare string — see ToolResultBlockParam.content in the SDK.
       blockedTracker.observe(result);
+      if (isProgressStep(toolName, result, args, config.requiredVerificationCommands)) stepBudget.noteProgress(iterations);
       const imagePath = screenshotImagePathFor(toolName, result);
       if (imagePath) {
         try {
@@ -506,7 +508,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
       }
     }
 
-    const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
+    const budgetNotice = stepBudgetNotice(iterations, stepBudget.max);
     if (budgetNotice) toolResultBlocks.push({ type: "text", text: budgetNotice });
     const blockedNotice = blockedTracker.takeNotice();
     if (blockedNotice) toolResultBlocks.push({ type: "text", text: blockedNotice });
@@ -533,7 +535,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
     success: false,
     summary: abortedOnUnrecoverableError
       ? "Aborted early: hit an unrecoverable error (quota exhaustion, auth failure, or permission denied)"
-      : `Max iterations (${effectiveMaxIterations}) reached without task_complete`,
+      : `Max iterations (${stepBudget.max}) reached without task_complete`,
     filesWritten,
     iterations,
     errors: abortedOnUnrecoverableError ? errors : [...errors, "Max iterations exceeded"],

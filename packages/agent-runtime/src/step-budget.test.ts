@@ -26,7 +26,7 @@ test("a budget no bigger than the wrap-up window only gets the last-step warning
 test("every agent loop appends the step-budget notice after each step's tool results", () => {
   for (const file of ["loop.ts", "gemini-loop.ts", "claude-loop.ts"]) {
     const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf-8");
-    expect(source).toContain("stepBudgetNotice(iterations, effectiveMaxIterations)");
+    expect(source).toContain("stepBudgetNotice(iterations, stepBudget.max)");
   }
 });
 

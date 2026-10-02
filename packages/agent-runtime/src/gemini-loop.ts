@@ -18,7 +18,7 @@ import {
   type GeminiPart,
   type GeminiTier,
 } from "@nexsidi/llm-client";
-import { runAgent, buildToolList, evaluateCommandStrike, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
+import { runAgent, buildToolList, evaluateCommandStrike, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOnlyToolBlockedResult, type AgentRunConfig, type AgentRunResult, conversationKeyFor } from "./loop.ts";
 import { createHash } from "node:crypto";
 import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts";
 
@@ -56,7 +56,7 @@ import { checkCompletion } from "./enforce/completion-gate.ts";
 import { runMissingRequiredChecks } from "./enforce/auto-checks.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { isGeminiHistory, resumesSavedHistory } from "./history-format.ts";
-import { stepBudgetNotice } from "./step-budget.ts";
+import { stepBudgetNotice, StepBudget, isProgressStep } from "./step-budget.ts";
 import { BlockedActionTracker } from "./blocked-actions.ts";
 import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { runStopReason } from "./run-abort.ts";
@@ -428,7 +428,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         .where(
           and(
             eq(agentConversations.projectId, config.projectId),
-            eq(agentConversations.agentName, config.agentName)
+            eq(agentConversations.agentName, conversationKeyFor(config))
           )
         )
         .limit(1);
@@ -489,7 +489,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           .where(
             and(
               eq(agentConversations.projectId, config.projectId),
-              eq(agentConversations.agentName, config.agentName)
+              eq(agentConversations.agentName, conversationKeyFor(config))
             )
           )
           .limit(1);
@@ -509,7 +509,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         } else {
           await db.insert(agentConversations).values({
             projectId: config.projectId,
-            agentName: config.agentName,
+            agentName: conversationKeyFor(config),
             messages,
             factLedger,
           });
@@ -540,6 +540,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   const seenFileReads = new Map<string, { hash: string; iteration: number }>();
   let iterations = 0;
   const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
+  const stepBudget = new StepBudget(effectiveMaxIterations, config.extendStepsWhileProgressing === true);
   let abortedOnUnrecoverableError = false;
   // 2026-07-11: real bug found live (stress-userupd run) — Shubham burned all
   // 40 iterations without task_complete, and separately without this counter
@@ -627,7 +628,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   // loop.ts: lazily spawned, closed in the finally on every exit path.
   const browserToolset = config.enableBrowser ? new BrowserToolset(config.sandboxDir) : null;
   try {
-  while (iterations < effectiveMaxIterations) {
+  while (stepBudget.canContinue(iterations)) {
     // Ledgerly benchmark: stop at the next step once the activity was
     // cancelled or timed out (see run-abort.ts) — never keep running beside
     // a retry.
@@ -1087,6 +1088,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       }
 
       blockedTracker.observe(result);
+      if (isProgressStep(toolName, result, args, config.requiredVerificationCommands)) stepBudget.noteProgress(iterations);
       turnActivity.push({ toolName, args, result });
       emitEvent({
         type: "tool_result",
@@ -1113,7 +1115,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       }
     }
 
-    const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
+    const budgetNotice = stepBudgetNotice(iterations, stepBudget.max);
     if (budgetNotice) responseParts.push({ text: budgetNotice });
     const blockedNotice = blockedTracker.takeNotice();
     if (blockedNotice) responseParts.push({ text: blockedNotice });
@@ -1151,7 +1153,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       ? `Three-strikes exhausted (${iterations} real model turns completed)`
       : abortedOnUnrecoverableError
         ? "Aborted early: hit an unrecoverable error (auth failure or permission denied)"
-        : `Max iterations (${effectiveMaxIterations}) reached without task_complete`,
+        : `Max iterations (${stepBudget.max}) reached without task_complete`,
     filesWritten,
     iterations,
     errors: exhaustedThreeStrikes || abortedOnUnrecoverableError ? errors : [...errors, "Max iterations exceeded"],

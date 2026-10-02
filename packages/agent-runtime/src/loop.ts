@@ -44,7 +44,7 @@ import type { FactLedgerEntry } from "./context-selection.ts";
 import type { ToolResult } from "./tools/file.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 import { isNimHistory, resumesSavedHistory } from "./history-format.ts";
-import { stepBudgetNotice } from "./step-budget.ts";
+import { stepBudgetNotice, StepBudget, isProgressStep } from "./step-budget.ts";
 import { BlockedActionTracker } from "./blocked-actions.ts";
 import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { timeBudgetExceeded } from "./nim-time-budget.ts";
@@ -85,6 +85,13 @@ export interface AgentRunConfig {
   // to the agent that actually owns the layer where the fix belongs,
   // instead of forcing a workaround in its own domain. See tools/escalate.ts.
   enableEscalation?: boolean;
+  // 2026-10-02 (Part C.3): phased builders save each phase's conversation
+  // under its own key (e.g. "aanya-phase-2") so every phase starts fresh,
+  // while agentName keeps the agent's rules and skills.
+  conversationKey?: string;
+  // Part C.3: no fixed step count — when the budget is reached the run is
+  // extended while it is still making progress (see StepBudget).
+  extendStepsWhileProgressing?: boolean;
   enableScreenshot?: boolean;  // visual QA
   enableBrowser?: boolean;     // interactive live-app QA (navigate/click/fill/console-errors/computed-style) — Tilotma Tier 3
   enableDbQuery?: boolean;     // read-only DB verification (data-round-trip checks) — Tilotma Tier 3
@@ -352,6 +359,11 @@ export async function evaluateCommandStrike(
   };
 }
 
+/** Where a run's conversation is saved: per phase for phased builders, else the agent's name. */
+export function conversationKeyFor(config: { agentName: string; conversationKey?: string }): string {
+  return config.conversationKey ?? config.agentName;
+}
+
 export function buildToolList(config: AgentRunConfig): NimToolDef[] {
   const fileTools = config.readOnly
     ? FILE_TOOL_DEFS.filter((t) => !READONLY_BLOCKED_TOOLS.has(t.function.name))
@@ -538,7 +550,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         .where(
           and(
             eq(agentConversations.projectId, config.projectId),
-            eq(agentConversations.agentName, config.agentName)
+            eq(agentConversations.agentName, conversationKeyFor(config))
           )
         )
         .limit(1);
@@ -606,7 +618,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           .where(
             and(
               eq(agentConversations.projectId, config.projectId),
-              eq(agentConversations.agentName, config.agentName)
+              eq(agentConversations.agentName, conversationKeyFor(config))
             )
           )
           .limit(1);
@@ -622,7 +634,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         } else {
           await db.insert(agentConversations).values({
             projectId: config.projectId,
-            agentName: config.agentName,
+            agentName: conversationKeyFor(config),
             messages,
           });
         }
@@ -637,6 +649,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   const escalations: Escalation[] = [];
   const errors: string[] = [];
   const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
+  const stepBudget = new StepBudget(effectiveMaxIterations, config.extendStepsWhileProgressing === true);
   let iterations = 0;
   // Phase 5 Task 4: mechanical 3-strike escalation — see enforce/strikes.ts.
   const strikeCounter = createStrikeCounter();
@@ -723,7 +736,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   const browserToolset = config.enableBrowser ? new BrowserToolset(config.sandboxDir) : null;
   try {
   const startedAt = Date.now();
-  while (iterations < effectiveMaxIterations) {
+  while (stepBudget.canContinue(iterations)) {
     // Ledgerly benchmark: stop at the next step once the activity was
     // cancelled or timed out (see run-abort.ts) — never keep running beside
     // a retry.
@@ -1167,11 +1180,12 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
       }
 
       blockedTracker.observe(result);
+      if (isProgressStep(toolName, result, args, config.requiredVerificationCommands)) stepBudget.noteProgress(iterations);
       toolResults.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
     }
 
     messages.push(...toolResults);
-    const budgetNotice = stepBudgetNotice(iterations, effectiveMaxIterations);
+    const budgetNotice = stepBudgetNotice(iterations, stepBudget.max);
     if (budgetNotice) messages.push({ role: "user", content: budgetNotice });
     const blockedNotice = blockedTracker.takeNotice();
     if (blockedNotice) messages.push({ role: "user", content: blockedNotice });
@@ -1206,7 +1220,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
       ? `Three-strikes exhausted (${iterations} real model turns completed)`
       : abortedOnTransportFailures
         ? `Aborted after ${transportAbortReason} (${iterations} real model turns completed)`
-        : `Max iterations (${effectiveMaxIterations}) reached without task_complete`,
+        : `Max iterations (${stepBudget.max}) reached without task_complete`,
     filesWritten,
     iterations,
     errors: exhaustedThreeStrikes ? errors : [...errors, "Max iterations exceeded"],
