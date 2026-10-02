@@ -67,12 +67,10 @@ near-duplicates) — include at minimum a background, a text/ink color, a
 primary accent, and a border/muted color.
 
 ## Typefaces — in-house NexUI fonts only
-Generated apps use only NexUI's own fonts, self-hosted in the app. Pick
+Generated apps use only the in-house fonts, self-hosted in the app. Pick
 display and body from exactly these names:
-- NexuiSans — NexUI's own sans (400, 500, 700): distinctive headings
-- Inter — neutral, highly readable sans (400–800): body text and dense UI
+- Inter — highly readable sans (400–800): headings (600–800) and body text
 - JetBrains Mono — monospace (400, 500): figures, codes, invoice numbers
-- NexuiMono — NexUI's own monospace (400): small labels and accents
 Any other name is replaced automatically. The identity comes from how the
 fonts are used — weight contrast, size scale, letter-spacing, monospace
 figures for data — together with the palette and layout, not from picking

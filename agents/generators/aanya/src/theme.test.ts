@@ -162,7 +162,7 @@ test("themeColorMode picks 'dark' when the resolved background is genuinely dark
 
 test("buildFontOverrideCss maps the brief's typefaces to in-house fonts and exposes them as CSS variables", () => {
   const css = buildFontOverrideCss(BRIEF_A); // Fraunces / IBM Plex Sans — not in-house
-  expect(css).toContain("--font-display: 'NexuiSans'");
+  expect(css).toContain("--font-display: 'Inter'");
   expect(css).toContain("--font-body: 'Inter'");
   expect(css).toContain("--font-mono: 'JetBrains Mono'");
   expect(css).toMatch(/html,\s*body\s*\{[^}]*font-family: var\(--font-body\)/);
@@ -177,9 +177,10 @@ test("buildFontOverrideCss never touches NexUI's own --nx-* variables", () => {
 test("FALLBACK_BRIEF produces clean in-house font CSS (no '(fallback: ...)' text)", () => {
   const css = buildFontOverrideCss(FALLBACK_BRIEF);
   expect(css).not.toContain("(fallback:");
-  expect(css).toContain("'NexuiSans'");
+  expect(css).not.toContain("NexuiSans");
+  expect(css).toContain("'Inter'");
 });
 
 test("usedInHouseFonts lists the display, body and mono families once each", () => {
-  expect(usedInHouseFonts(BRIEF_A)).toEqual(["NexuiSans", "Inter", "JetBrains Mono"]);
+  expect(usedInHouseFonts(BRIEF_A)).toEqual(["Inter", "JetBrains Mono"]);
 });

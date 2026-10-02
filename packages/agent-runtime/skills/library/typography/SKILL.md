@@ -7,9 +7,9 @@ keywords: [font, fonts, typography, typeface, heading, headings, text, look and 
 
 # Typography with the in-house fonts
 
-- Fonts are NexUI's own, loaded by the scaffold from /fonts: NexuiSans,
-  Inter, JetBrains Mono, NexuiMono. Never link Google Fonts or any outside
-  font, and never write a font name in a component.
+- Fonts are in-house, loaded by the scaffold from /fonts: Inter (headings
+  and text) and JetBrains Mono (figures and codes). Never link Google Fonts
+  or any outside font, and never write a font name in a component.
 - Use the variables: var(--font-display) for headings, var(--font-body) for
   text, var(--font-mono) for figures, codes and invoice numbers.
 - One type scale for the whole app, for example 12 / 14 / 16 / 20 / 24 /

@@ -169,7 +169,7 @@ export const FALLBACK_BRIEF: DesignBrief = {
     { name: "accent-muted", hex: "#8FB5A0" },
     { name: "border", hex: "#D8D5CC" },
   ],
-  typography: { display: "NexuiSans", body: "Inter" },
+  typography: { display: "Inter", body: "Inter" },
   layoutConcept: "Dense, grid-aligned sections with generous internal padding and a single consistent card treatment — no floating decorative shapes.",
 };
 

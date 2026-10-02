@@ -152,7 +152,7 @@ test("formatDesignBriefForPrompt includes every palette entry, the in-house type
   const formatted = formatDesignBriefForPrompt(VALID_BRIEF); // asks for Fraunces / IBM Plex Sans
   expect(formatted).toContain("ink: #101418");
   expect(formatted).toContain("accent: #3A6EA5");
-  expect(formatted).toContain('display face "NexuiSans"');
+  expect(formatted).toContain('display face "Inter"');
   expect(formatted).toContain('body face "Inter"');
   expect(formatted).toContain("var(--font-display)");
   expect(formatted).not.toContain("Fraunces");
@@ -167,11 +167,11 @@ test("run() maps the brief's typefaces to in-house fonts", async () => {
     runAgent: async () => agentResult(JSON.stringify({ ...VALID_BRIEF, typography: { display: "Cabinet Grotesk", body: "Plus Jakarta Sans" } })),
   };
   const brief = await run(TEST_SPEC, deps);
-  expect(brief.typography).toEqual({ display: "NexuiSans", body: "Inter" });
+  expect(brief.typography).toEqual({ display: "Inter", body: "Inter" });
 });
 
 test("FALLBACK_BRIEF uses in-house fonts", () => {
-  expect(FALLBACK_BRIEF.typography).toEqual({ display: "NexuiSans", body: "Inter" });
+  expect(FALLBACK_BRIEF.typography).toEqual({ display: "Inter", body: "Inter" });
 });
 
 test("VANYA_SYSTEM_PROMPT explicitly warns against the well-known AI-generated defaults", () => {
@@ -179,7 +179,8 @@ test("VANYA_SYSTEM_PROMPT explicitly warns against the well-known AI-generated d
 });
 
 test("VANYA_SYSTEM_PROMPT limits typefaces to the in-house NexUI fonts", () => {
-  for (const font of ["NexuiSans", "Inter", "JetBrains Mono", "NexuiMono"]) expect(VANYA_SYSTEM_PROMPT).toContain(font);
+  for (const font of ["Inter", "JetBrains Mono"]) expect(VANYA_SYSTEM_PROMPT).toContain(font);
+  expect(VANYA_SYSTEM_PROMPT).not.toMatch(/NexuiSans|NexuiMono/);
   expect(VANYA_SYSTEM_PROMPT).not.toMatch(/Fraunces|IBM Plex|Google Fonts/);
 });
 

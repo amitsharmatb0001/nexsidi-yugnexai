@@ -5,6 +5,11 @@
 // else maps to the closest one, and the font files are copied into the app
 // (public/fonts) with their @font-face rules.
 //
+// 2026-10-02 (Ledgerly benchmark run 3): NexuiSans and NexuiMono were
+// removed. They are 4 KB placeholder files (96 rough glyphs, no font name)
+// and every heading drawn in NexuiSans came out garbled. Only real typefaces
+// are offered; fonts.test.ts checks each file has a name and 200+ glyphs.
+//
 // None of these fonts contain the rupee sign (they are basic Latin subsets),
 // so every stack ends in system fonts; browsers draw the missing glyph from
 // those automatically.
@@ -18,11 +23,6 @@ interface InHouseFont {
 }
 
 const IN_HOUSE_FONTS: InHouseFont[] = [
-  { family: "NexuiSans", kind: "sans", files: [
-    { weight: 400, file: "NexuiSans-Regular.woff2" },
-    { weight: 500, file: "NexuiSans-Medium.woff2" },
-    { weight: 700, file: "NexuiSans-Bold.woff2" },
-  ] },
   { family: "Inter", kind: "sans", files: [
     { weight: 400, file: "Inter-Regular.woff2" },
     { weight: 500, file: "Inter-Medium.woff2" },
@@ -34,12 +34,14 @@ const IN_HOUSE_FONTS: InHouseFont[] = [
     { weight: 400, file: "JetBrainsMono-Regular.woff2" },
     { weight: 500, file: "JetBrainsMono-Medium.woff2" },
   ] },
-  { family: "NexuiMono", kind: "mono", files: [
-    { weight: 400, file: "NexuiMono-Regular.woff2" },
-  ] },
 ];
 
 export const IN_HOUSE_FONT_NAMES = IN_HOUSE_FONTS.map((f) => f.family);
+
+/** Every font file the catalogue ships. */
+export function inHouseFontFiles(): string[] {
+  return IN_HOUSE_FONTS.flatMap((f) => f.files.map((x) => x.file));
+}
 
 // Repo copy of NexUI's fonts (nexui-publish/nexui/fonts, tracked in git).
 export const IN_HOUSE_FONT_DIR = join(import.meta.dir, "..", "..", "..", "..", "nexui-publish", "nexui", "fonts");
@@ -56,7 +58,7 @@ export function resolveInHouseFont(requested: string, slot: "display" | "body"):
   const exact = IN_HOUSE_FONTS.find((f) => normalise(f.family) === normalise(name));
   if (exact) return exact.family;
   if (/mono|code|courier/i.test(name)) return "JetBrains Mono";
-  return slot === "display" ? "NexuiSans" : "Inter";
+  return "Inter"; // headings get their identity from weight and size, not another face
 }
 
 function fontFor(family: string): InHouseFont {
