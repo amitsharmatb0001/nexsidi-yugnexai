@@ -319,9 +319,9 @@ test("vendorNexui throws naming the missing component(s) when the CLI subprocess
       return ""; // real CLI exits 0 even though "card" was never fetched
     };
 
-    await expect(vendorNexui(outputDir, ["button", "card"], fakeExec)).rejects.toThrow(/card/);
+    await expect(vendorNexui(outputDir, ["button", "card"], fakeExec, 0)).rejects.toThrow(/card/);
     try {
-      await vendorNexui(outputDir, ["button", "card"], fakeExec);
+      await vendorNexui(outputDir, ["button", "card"], fakeExec, 0);
     } catch (err) {
       expect(String(err)).not.toContain("button"); // only the ACTUALLY-missing one is named
     }
@@ -893,4 +893,43 @@ test("execVendorCommand gives up after its retries if the instant ETIMEDOUT keep
     sleep: async () => {},
   })).rejects.toThrow(/ETIMEDOUT/);
   expect(calls).toBe(3);
+});
+
+// 2026-10-02 (Ledgerly benchmark run 2): generation runs Aanya in integrate
+// mode IN PARALLEL with the backend builder, yet the prompt told her to
+// check every form against the live backend and to edit
+// ../backend/docker-compose.yml. The backend was not running and ../ is
+// outside her sandbox, so she spent ~40 of her 90 steps writing helper
+// scripts to read sibling folders, rewrote her own compose file and never
+// finished. The live end-to-end check belongs after deployment (Stage 6
+// review and the auth smoke test), not here.
+test("integrate mode keeps Aanya in her own folder: no live-backend form check, no editing the backend's compose file", () => {
+  const prompt = effectivePrompt("integrate");
+  expect(prompt).not.toContain("../backend/docker-compose.yml");
+  expect(prompt).not.toContain("UI-BASED CRUD SELF-CHECK");
+  expect(prompt).toContain("STAY IN YOUR FOLDER");
+});
+
+test("vendorNexui retries the components the CLI silently failed to fetch, then succeeds", async () => {
+  const outputDir = mkdtempSync(join(tmpdir(), "aanya-vendor-retry-"));
+  try {
+    const addCommands: string[] = [];
+    const fakeExec = (command: string, options: { cwd: string }) => {
+      if (command.includes(" add ")) {
+        addCommands.push(command);
+        const dir = join(options.cwd, "components", "nexui");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "button.tsx"), "export function Button() { return null; }\n");
+        // "card" fails on the first add (registry blip), lands on the retry.
+        if (addCommands.length > 1) writeFileSync(join(dir, "card.tsx"), "export function Card() { return null; }\n");
+      }
+      return "";
+    };
+    await expect(vendorNexui(outputDir, ["button", "card"], fakeExec, 0)).resolves.toBeUndefined();
+    expect(addCommands.length).toBe(2);
+    expect(addCommands[1]).toContain('"card"');
+    expect(addCommands[1]).not.toContain('"button"'); // only the missing one is fetched again
+  } finally {
+    rmSync(outputDir, { recursive: true, force: true });
+  }
 });

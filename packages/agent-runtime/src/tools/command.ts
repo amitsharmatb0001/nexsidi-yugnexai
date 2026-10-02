@@ -18,6 +18,38 @@ const ALLOWED_COMMANDS = new Set([
 
 const PKILL_ALLOWED_TARGETS = new Set(["node", "npm", "npx", "bun", "next", "vite"]);
 
+/**
+ * Split a command line into arguments the way a shell would for simple
+ * cases: whitespace separates arguments, and '…' or "…" keeps spaces
+ * together (the quotes themselves are removed). Splitting on spaces alone
+ * handed node the literal "console.log('x')" for node -e "console.log('x')",
+ * which prints nothing (Ledgerly benchmark run 2, 2 Oct 2026).
+ */
+export function splitCommandLine(command: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let inArg = false;
+  for (const ch of command.trim()) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      inArg = true;
+    } else if (/\s/.test(ch)) {
+      if (inArg) args.push(current);
+      current = "";
+      inArg = false;
+    } else {
+      current += ch;
+      inArg = true;
+    }
+  }
+  if (inArg) args.push(current);
+  return args;
+}
+
 function validateCommand(command: string): string | null {
   if (!command.trim()) return "Empty command";
   // Block compound operators that bypass allowlist
@@ -85,7 +117,7 @@ export function execRunCommand(
   args: { command: string; timeout_ms?: number },
   ledger?: EvidenceLedger,
 ): Promise<ToolResult> {
-  const parts = args.command.trim().split(/\s+/);
+  const parts = splitCommandLine(args.command);
   const cmd = parts[0];
   if (!cmd) {
     return Promise.resolve({ status: "error", summary: "Empty command" });

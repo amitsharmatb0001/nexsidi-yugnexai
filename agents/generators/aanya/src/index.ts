@@ -147,12 +147,9 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate"): Promi
     // not Aanya verifying its own work before handing it off. See CLICK-
     // THROUGH NAVIGATION VERIFICATION below for what this now requires.
     enableDockerTools: true,
-    // 2026-08-10: for the UI-BASED CRUD SELF-CHECK (integrate mode only —
-    // harmless to enable unconditionally in preview mode too, since there's
-    // no reason for her to call it there and the prompt never tells her
-    // to). Lets her confirm a form submission actually changed the
-    // database, not just that the UI re-rendered optimistically.
-    enableDbQuery: true,
+    // 2026-10-02: no db_query here. The form-to-database self-check was
+    // removed (see STAY IN YOUR FOLDER in the integrate prompt): the
+    // database is built at the same time and is not hers to inspect.
     // 2026-08-24 (Workstream 4): not-found.tsx/error.tsx/global-error.tsx/
     // icon.svg are Next.js App Router FILE CONVENTIONS — auto-discovered by
     // exact filename, never imported anywhere, so (unlike Header/Footer
@@ -470,6 +467,7 @@ export async function vendorNexui(
   outputDir: string,
   components: readonly string[] = NEXUI_CONFIRMED_COMPONENTS,
   execFn: VendorExecFn = defaultVendorExecFn,
+  retryDelayMs = 3000,
 ): Promise<void> {
   const registryUrl = process.env.NEXUI_REGISTRY_URL ?? DEFAULT_NEXUI_REGISTRY_URL;
   const cli = `npx --yes @yugnex/cli@${NEXUI_CLI_VERSION}`;
@@ -477,10 +475,20 @@ export async function vendorNexui(
   await execFn(`${cli} init --yes --registry "${registryUrl}"`, { cwd: outputDir });
 
   if (components.length > 0) {
-    const names = components.map((name) => `"${name}"`).join(" ");
-    await execFn(`${cli} add ${names} --yes --registry "${registryUrl}"`, { cwd: outputDir });
-
-    const missing = missingVendoredComponents(outputDir, components);
+    // 2026-10-02 (Ledgerly benchmark run 2): "button" and "card" silently
+    // failed to fetch once and the whole generation attempt was lost. A
+    // registry blip is transient, so fetch only the missing ones again
+    // (up to 2 more times) before giving up.
+    let missing = [...components];
+    for (let attempt = 0; attempt < 3 && missing.length > 0; attempt++) {
+      if (attempt > 0) {
+        console.warn(`[aanya] NexUI components missing after add (${missing.join(", ")}) — fetching them again`);
+        await new Promise((r) => setTimeout(r, retryDelayMs));
+      }
+      const names = missing.map((name) => `"${name}"`).join(" ");
+      await execFn(`${cli} add ${names} --yes --registry "${registryUrl}"`, { cwd: outputDir });
+      missing = missingVendoredComponents(outputDir, components);
+    }
     if (missing.length > 0) {
       throw new Error(
         `vendorNexui: the CLI reported success but ${missing.length} component(s) never ` +
@@ -616,69 +624,17 @@ MODE: INTEGRATE (post-approval — wire the locked preview to the real backend)
 - Do NOT change layout or visual design from the locked preview — only replace
   mock data with real fetch calls (plus the loading/error states around them).
 
-UI-BASED CRUD SELF-CHECK (required whenever you wired a create/edit/delete
-form to a real endpoint — this is DIFFERENT from Shubham's own API-level
-CRUD check: he proves the ENDPOINT works via raw http_request; you must
-prove the FORM actually calls it correctly, with the right payload shape,
-and the UI actually reflects what really happened — a form that "looks
-right" can still send the wrong field names or silently swallow an error):
-  a) Boot the same throwaway Docker environment pattern Shubham/Riya use
-     (or reuse a running one from your CLICK-THROUGH NAVIGATION
-     VERIFICATION above if it's still up) with the real backend + Postgres.
-     The backend service lives in Shubham's OWN docker-compose.yml at
-     ../backend/docker-compose.yml relative to your project directory (his
-     project is a SIBLING directory, not part of your compose file) — it is
-     very likely ALREADY RUNNING, left up from his own self-check, and you
-     will typically be reusing that exact container, not booting a new one.
-     Before your FIRST request through the browser, read that file and
-     confirm the backend service has CORS_ORIGIN=http://localhost:<the
-     exact host port you mapped your OWN frontend container to> set under
-     its environment: key — if it is missing or set to a different value,
-     add or edit it yourself in that same file, then run docker_compose
-     "down" and docker_compose "up" FROM THAT DIRECTORY to apply it.
-     Shubham's static
-     backend scaffold defaults CORS_ORIGIN to http://localhost:3000 when
-     unset, and his own self-check never sets it (he calls the API directly
-     via http_request, which never triggers browser CORS at all) — so an
-     already-running backend you reuse will almost always still have the
-     stale default. This is a REAL browser CORS rejection (preflight
-     blocked), not a frontend bug: do NOT "fix" it by changing YOUR OWN
-     frontend's port or by editing frontend code (middleware, rewrites,
-     etc.) — none of that touches the actual cause, and doing it anyway
-     burns your entire iteration budget on code that was never broken.
-  b) For EVERY create/edit/delete form you built, actually USE it through
-     the browser tools — browser_navigate to the page, browser_fill each
-     real input, browser_click the real submit button. Do NOT call
-     http_request directly to simulate this — that only proves the API
-     works (Shubham's job), not that your form is wired to it correctly.
-  c) After submit, verify BOTH sides, not just "the button click didn't
-     error":
-       - UI side: browser_get_text (or browser_element_exists) confirms the
-         new/changed data actually appears where a user would expect to see
-         it (a list, a detail view, a success toast) — not just that no
-         error was thrown.
-       - DATA side: db_query the real table to confirm the row genuinely
-         exists with the field values you actually typed into the form —
-         not just that the UI shows a success state. A form that shows
-         "Saved!" while the fetch() call actually failed silently (wrong
-         endpoint, wrong payload shape, an uncaught promise rejection) is a
-         real, serious bug this step exists to catch.
-  d) If you built an edit form: fill it with a real change, submit, then
-     db_query to confirm the DATABASE ROW changed — not just that the UI
-     re-rendered with the new value (a form can update its own local state
-     optimistically without the API call actually succeeding).
-  e) If you built a delete action AND no other resource in the api-contract
-     references this resource via an "_id" field, use it, then db_query to
-     confirm the row is gone. Skip the delete check for a resource other
-     resources reference — deleting your own seed data would falsely break
-     a LATER create step that needed to reference it (this exact mistake
-     was found and fixed live in Riya's own post-deploy checker; the same
-     caution applies here).
-  Budget: roughly 4-5 tool calls per form (navigate, fill fields, submit,
-  UI check, db_query check). This closes a real gap: Shubham proving the
-  API works and you proving the UI compiles/renders are each necessary but
-  NEITHER alone proves a real user can actually create/edit/delete data
-  through your interface — this step is the only place that does.
+STAY IN YOUR FOLDER: your work is the frontend in this directory only.
+- Never read, edit, start or stop the backend or the database, and never
+  edit another folder's docker-compose.yml. They are built at the same time
+  as you, so the backend is usually NOT running yet — that is expected,
+  not a bug for you to fix.
+- Never write helper scripts to look outside this folder. Everything you
+  need about the backend is in the API contract above.
+- Prove your forms are wired right by reading your own code against the
+  API contract (field names, method, path, Bearer header) and by the
+  build. The running app — frontend, backend and database together — is
+  tested end to end after deployment.
 `;
 
 export function buildAgentPrompt(mode: "preview" | "integrate"): string {

@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { truncateOutput, execRunCommand, resolveCommandExecutable } from "./command.ts";
+import { truncateOutput, execRunCommand, resolveCommandExecutable, splitCommandLine } from "./command.ts";
 
 // Full-system audit TO1: execRunCommand used to keep the HEAD of long
 // command output (stdout.slice(0, 6000)). Real build tool errors (npm
@@ -124,4 +124,24 @@ test("uses Windows command shims without changing the recorded command", () => {
   expect(resolveCommandExecutable("npm", "win32")).toBe("npm.cmd");
   expect(resolveCommandExecutable("npx", "win32")).toBe("npx.cmd");
   expect(resolveCommandExecutable("npm", "linux")).toBe("npm");
+});
+
+// 2026-10-02 (Ledgerly benchmark run 2): the command was split on spaces
+// with quotes kept, so `node -e "console.log('x')"` handed node the string
+// literal "console.log('x')" — it evaluated to nothing and printed nothing.
+// The frontend builder then wrote throwaway .js files to work around it.
+test("splitCommandLine keeps quoted arguments together and removes the quotes", () => {
+  expect(splitCommandLine(`node -e "console.log('a b')" 'x y' z`)).toEqual(["node", "-e", "console.log('a b')", "x y", "z"]);
+  expect(splitCommandLine("npx   tsc --noEmit")).toEqual(["npx", "tsc", "--noEmit"]);
+});
+
+test("execRunCommand runs a quoted node -e script and returns its output", async () => {
+  const sandboxDir = mkdtempSync(join(tmpdir(), "nexsidi-command-quote-"));
+  try {
+    const result = await execRunCommand(sandboxDir, { command: `node -e "console.log('quoted ok')"` });
+    expect(result.status).toBe("success");
+    expect(String((result as { output?: string }).output)).toContain("quoted ok");
+  } finally {
+    rmSync(sandboxDir, { recursive: true, force: true });
+  }
 });

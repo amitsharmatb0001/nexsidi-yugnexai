@@ -52,3 +52,12 @@ test("the spec, plan and planning agents include their skill section in their pr
     expect({ agent, wired: source.includes(`skillPromptSection("${agent}"`) }).toEqual({ agent, wired: true });
   }
 });
+
+// 2026-10-02 (Ledgerly benchmark run 2): the brief said "INV-2026-0001,
+// INV-2026-0002"; the plan said only "sequential invoices", so the backend
+// built INV-0001. Exact formats and examples must be copied, not paraphrased.
+test("requirements-coverage tells planners to copy the user's exact formats and examples", () => {
+  const skill = loadSkillLibrary().find((s) => s.name === "requirements-coverage")!;
+  expect(skill.body).toContain("INV-2026-0001");
+  expect(skill.body.toLowerCase()).toContain("word for word");
+});
