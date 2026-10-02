@@ -47,6 +47,7 @@ import { BrowserToolset, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
 import { execDbQuery } from "./tools/db.ts";
 import { createEvidenceLedger } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
+import { runMissingRequiredChecks } from "./enforce/auto-checks.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { resumesSavedHistory } from "./history-format.ts";
@@ -431,6 +432,10 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           // Phase 5 Task 3: same default-FAIL completion gate as loop.ts —
           // rejection falls through to the normal tool-result path (no
           // early return) so it counts toward MAX_ITERATIONS.
+          // Required checks the agent skipped are run by the system first
+          // (enforce/auto-checks.ts) — a finished job is not thrown away
+          // for a check nobody ran.
+          const autoCheckFailures = await runMissingRequiredChecks(config.sandboxDir, ledger, config.requiredVerificationCommands);
           const check = checkCompletion(
             ledger,
             { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed },
@@ -441,7 +446,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           );
           if (!check.allowed) {
             console.log(`[${config.agentName}:claude-agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);
-            result = { status: "error", summary: check.reason };
+            result = { status: "error", summary: autoCheckFailures.length > 0 ? [check.reason, ...autoCheckFailures].join("\n") : check.reason };
             break;
           }
           ledger.consume();

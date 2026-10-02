@@ -36,6 +36,7 @@ import { BrowserToolset, BROWSER_TOOL_DEFS, BROWSER_TOOL_NAMES } from "./tools/b
 import { execDbQuery, DB_QUERY_TOOL_DEF } from "./tools/db.ts";
 import { createEvidenceLedger, type EvidenceKind } from "./enforce/evidence.ts";
 import { checkCompletion } from "./enforce/completion-gate.ts";
+import { runMissingRequiredChecks } from "./enforce/auto-checks.ts";
 import { createStrikeCounter, buildFailureSignature, type StrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
@@ -1111,6 +1112,10 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           // Rejection falls through to the normal tool-result path below
           // (result assigned, no early return) so it counts toward
           // MAX_ITERATIONS — a model spamming task_complete still terminates.
+          // Required checks the agent skipped are run by the system first
+          // (enforce/auto-checks.ts) — a finished job is not thrown away
+          // for a check nobody ran.
+          const autoCheckFailures = await runMissingRequiredChecks(config.sandboxDir, ledger, config.requiredVerificationCommands);
           const check = checkCompletion(
             ledger,
             { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed },
@@ -1121,7 +1126,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           );
           if (!check.allowed) {
             console.log(`[${config.agentName}:agent] task_complete REJECTED on iteration ${iterations}: ${check.reason}`);
-            result = { status: "error", summary: check.reason };
+            result = { status: "error", summary: autoCheckFailures.length > 0 ? [check.reason, ...autoCheckFailures].join("\n") : check.reason };
             break;
           }
           ledger.consume();
