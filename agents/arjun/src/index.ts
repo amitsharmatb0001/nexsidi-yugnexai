@@ -10,6 +10,7 @@ import type { ProjectSpec, Feature } from "../../saanvi/src/index.ts";
 import { run as runVanya, type DesignBrief } from "../../vanya/src/index.ts";
 import { mkdirSync } from "fs";
 import { join } from "path";
+import { assignTaskPhases, type PlanPhase } from "./phases.ts";
 
 // ── Output types ──────────────────────────────────────────────────────────────
 export interface RestEndpoint {
@@ -38,6 +39,8 @@ export interface DrizzleTable {
 export interface GeneratorTask {
   description: string;
   outputFiles: string[];  // relative paths the agent must produce
+  phase?: number;         // build phase (1-based), assigned in code from the plan's phases (Part C.2)
+  size?: number;          // sizes the phase's step budget
 }
 
 export interface BuildPlan {
@@ -70,6 +73,7 @@ export interface BuildPlan {
   aanyaTasks: GeneratorTask[];
   pranavTasks: GeneratorTask[];
   independenceVerified: boolean;
+  buildPhases?: PlanPhase[];   // from the approved plan; builders work phase by phase (Part C)
   buildPlanHash: string;        // SHA-256 — verified by each generator before starting
 }
 
@@ -165,6 +169,7 @@ export async function run(
   authType?: string,
   priorDesignBrief?: DesignBrief,
   rejectionFeedback?: string,
+  buildPhases?: PlanPhase[],
 ): Promise<BuildPlan> {
   const apiKey = process.env.NIM_API_KEY ?? "";
 
@@ -258,6 +263,13 @@ export async function run(
       );
       plan.aanyaTasks = [...plan.aanyaTasks, ...missing.map(synthesizeTaskForPage)];
     }
+  }
+
+  // Part C.2: every task gets its build phase before the plan is hashed, so
+  // the builders' hash check covers the phases too.
+  if (buildPhases?.length) {
+    plan.buildPhases = buildPhases;
+    assignTaskPhases(plan, buildPhases);
   }
 
   // Write sprint contracts to disk (D23) — generators read these before starting

@@ -85,6 +85,8 @@ const DrizzleTableSchema = z.object({
 const GeneratorTaskSchema = z.object({
   description: z.string(),
   outputFiles: z.array(z.string()),
+  phase: z.number().int().positive().optional(), // build phase (Part C)
+  size: z.number().positive().optional(),
 });
 
 export const BuildPlanSchema = z.object({
@@ -101,6 +103,13 @@ export const BuildPlanSchema = z.object({
   aanyaTasks: z.array(GeneratorTaskSchema),
   pranavTasks: z.array(GeneratorTaskSchema),
   independenceVerified: z.boolean(),
+  buildPhases: z.array(z.object({
+    name: z.string(),
+    goal: z.string(),
+    pages: z.array(z.string()),
+    endpoints: z.array(z.string()),
+    tables: z.array(z.string()),
+  })).optional(), // the approved plan's build phases (Part C)
   buildPlanHash: z.string(),
 });
 

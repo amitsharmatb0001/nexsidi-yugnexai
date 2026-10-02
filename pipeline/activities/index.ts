@@ -219,7 +219,7 @@ export async function runArjun(projectId: string, rejectionFeedback?: string): P
       // No prior build-plan.json — first attempt at this project, nothing to reuse.
     }
     // 2026-09-28: normalised before it's written and hashed (see withNormalizedDbSchema).
-    const plan = withNormalizedDbSchema(await runArjunAgent(spec, { chat: agentChat }, lockedPages, plannerPlan?.authType, priorDesignBrief, rejectionFeedback));
+    const plan = withNormalizedDbSchema(await runArjunAgent(spec, { chat: agentChat }, lockedPages, plannerPlan?.authType, priorDesignBrief, rejectionFeedback, plannerPlan?.buildPhases));
 
     planCache.set(projectId, plan);
     writeCacheFile(projectId, "build-plan.json", JSON.stringify(plan, null, 2));
@@ -253,6 +253,7 @@ export async function getDesignBrief(projectId: string): Promise<DesignBrief> {
 interface PlannerSimplePlan {
   pages: Array<{ name: string; path: string; description: string }>;
   authType: "none" | "jwt";
+  buildPhases?: Array<{ name: string; goal: string; pages: string[]; endpoints: string[]; tables: string[] }>;
 }
 
 // 2026-08-27: real bug found live (project 852be5aeaef4). build-plan.json is
@@ -286,6 +287,7 @@ function parsePlannerSimplePlan(raw: string): PlannerSimplePlan | null {
     return {
       pages: data.pages as PlannerSimplePlan["pages"],
       authType: (data.authType === "jwt" ? "jwt" : "none") as "none" | "jwt",
+      ...(Array.isArray(data.buildPhases) && data.buildPhases.length ? { buildPhases: data.buildPhases as PlannerSimplePlan["buildPhases"] } : {}),
     };
   }
   return null;
