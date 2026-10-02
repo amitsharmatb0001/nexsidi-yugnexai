@@ -46,6 +46,7 @@ import { isNimHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice } from "./step-budget.ts";
 import { timeBudgetExceeded } from "./nim-time-budget.ts";
 import { runStopReason } from "./run-abort.ts";
+import { LOAD_SKILL_TOOL_DEF, loadSkillText, skillsForAgent } from "./skill-library.ts";
 
 // Exported so claude-loop.ts's runAgentWithClaude() can reuse the exact same
 // iteration cap instead of redefining it (per Task 15 spec — "same
@@ -363,6 +364,7 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
     ...(config.enableScreenshot ? [SCREENSHOT_TOOL_DEF] : []),
     ...(config.enableBrowser ? BROWSER_TOOL_DEFS : []),
     ...(config.enableDbQuery ? [DB_QUERY_TOOL_DEF] : []),
+    ...(skillsForAgent(config.agentName).length > 0 ? [LOAD_SKILL_TOOL_DEF] : []),
     TASK_COMPLETE_TOOL,
     SPAWN_SUBAGENT_TOOL,
   ];
@@ -510,7 +512,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
   // Phase 5 Task 6: skills injected at runtime — core-reasoning doctrine +
   // this agent's own doctrine (if any) layered ahead of its basePrompt.
-  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt });
+  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt, taskText: config.initialMessage });
 
   let messages: NimMessage[] = [];
   let loadedFromDb = false;
@@ -1012,6 +1014,11 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           emitEvent({ type: "tool_call", tool: "docker_compose", input: dockerArgs });
           result = await execDockerCompose(config.sandboxDir, dockerArgs);
           emitEvent({ type: "tool_result", tool: "docker_compose", status: result.status, summary: result.summary });
+          break;
+        }
+        case "load_skill": {
+          const skillArgs = args as { name: string; file?: string };
+          result = loadSkillText(skillArgs.name, skillArgs.file);
           break;
         }
         case "web_search": {

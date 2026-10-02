@@ -22,6 +22,7 @@ import {
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
+import { LOAD_SKILL_TOOL_DEF, loadSkillText, skillsForAgent } from "./skill-library.ts";
 import { checkFindingsEvidence, checkReviewCoverage, checkChangedFilesCoverage } from "./enforce/finding-evidence.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts";
@@ -506,8 +507,8 @@ export function mergeCarriedForwardFindings(
 }
 
 export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> {
-  const tools: GeminiToolDef[] = QA_TOOL_DEFS.map(translateNimToolToGeminiTool);
-  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt });
+  const qaToolDefs = [...QA_TOOL_DEFS, ...(skillsForAgent(config.agentName).length > 0 ? [LOAD_SKILL_TOOL_DEF] : [])];
+  const tools: GeminiToolDef[] = qaToolDefs.map(translateNimToolToGeminiTool);
 
   // Token-waste-reduction plan, Task 1: round-scoped re-review. Empty array
   // and undefined are treated identically (both fall through to round-1's
@@ -518,12 +519,11 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
     ? config.changedFilesSinceLastRound
     : undefined;
 
+  const initialMessage = buildQaInitialMessage(config.reviewFocus, config.systemContext, changedFiles);
+  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt, taskText: initialMessage });
   let messages: GeminiMessage[] = [
     { role: "system", content: systemPrompt },
-    {
-      role: "user",
-      content: buildQaInitialMessage(config.reviewFocus, config.systemContext, changedFiles),
-    },
+    { role: "user", content: initialMessage },
   ];
 
   const readFiles = new Set<string>();
@@ -630,6 +630,11 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
       let result: Record<string, unknown>;
 
       switch (call.name) {
+        case "load_skill": {
+          const skillArgs = call.input as { name: string; file?: string };
+          result = { ...loadSkillText(skillArgs.name, skillArgs.file) };
+          break;
+        }
         case "list_files": {
           const files = listLabeledFiles(config.dirs);
           totalFilesListed = files.length;

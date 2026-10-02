@@ -53,6 +53,7 @@ import { resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice } from "./step-budget.ts";
 import { nimTimeBudgetMs } from "./nim-time-budget.ts";
 import { runStopReason } from "./run-abort.ts";
+import { loadSkillText } from "./skill-library.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -154,7 +155,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   const ledger = createEvidenceLedger();
 
   // Phase 5 Task 6: same skills-at-runtime injection as loop.ts.
-  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt });
+  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt, taskText: config.initialMessage });
 
   let messages: ClaudeMessage[] = [];
   let loadedFromDb = false;
@@ -397,6 +398,11 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           emitEvent({ type: "tool_call", tool: "docker_compose", input: dockerArgs });
           result = await execDockerCompose(config.sandboxDir, dockerArgs);
           emitEvent({ type: "tool_result", tool: "docker_compose", status: result.status, summary: result.summary });
+          break;
+        }
+        case "load_skill": {
+          const skillArgs = args as { name: string; file?: string };
+          result = loadSkillText(skillArgs.name, skillArgs.file);
           break;
         }
         case "web_search": {

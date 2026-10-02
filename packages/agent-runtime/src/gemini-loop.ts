@@ -57,6 +57,7 @@ import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { isGeminiHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice } from "./step-budget.ts";
 import { runStopReason } from "./run-abort.ts";
+import { loadSkillText } from "./skill-library.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -398,7 +399,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   };
 
   // Phase 5 Task 6: same skills-at-runtime injection as loop.ts.
-  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt });
+  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt, taskText: config.initialMessage });
 
   let messages: GeminiMessage[] = [];
   let loadedFromDb = false;
@@ -937,6 +938,11 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
         case "docker_compose": {
           result = await execDockerCompose(config.sandboxDir, args as { action: "up" | "down" | "logs" | "ps"; service?: string; timeout_ms?: number });
+          break;
+        }
+        case "load_skill": {
+          const skillArgs = args as { name: string; file?: string };
+          result = loadSkillText(skillArgs.name, skillArgs.file);
           break;
         }
         case "web_search": {

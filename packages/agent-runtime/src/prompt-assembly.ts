@@ -7,6 +7,7 @@
 // doctrine file just gets core-reasoning + base, never a throw.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { skillPromptSection } from "./skill-library.ts";
 
 const SKILLS_DIR = join(import.meta.dir, "..", "skills");
 
@@ -53,11 +54,18 @@ export interface AssembleSystemPromptArgs {
   basePrompt: string;
   taskContext?: string;
   contextBudgetTokens?: number;
+  // The task the agent is about to do — used only to pick which library
+  // skills to load in full (see skill-library.ts).
+  taskText?: string;
 }
 
 export function assembleSystemPrompt(args: AssembleSystemPromptArgs): string {
   const coreReasoning = loadDoctrine("core-reasoning");
-  const agentDoctrine = loadDoctrine(args.agentName);
+  // The agent's own doctrine, then its skill-library index and the skills
+  // matching this task (skill-library.ts) — trimmed together under a budget.
+  const agentDoctrine = [loadDoctrine(args.agentName), skillPromptSection(args.agentName, args.taskText ?? "")]
+    .filter(Boolean)
+    .join("\n\n");
   const basePrompt = args.basePrompt;
   let taskContext = args.taskContext ?? "";
 
