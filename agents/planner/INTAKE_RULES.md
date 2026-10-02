@@ -94,7 +94,21 @@ the build is still unknown, call `propose_plan`:
 - `dbTables` — table names with their key columns
 - `apiEndpoints` — REST endpoints (e.g. POST /api/v1/auth/sign-in — Authenticate user)
 - `suggestedFeatures` — the extras described above
+- `buildPhases` — the build order, described below
 - `techStack.auth` = "Custom JWT"
+
+### Build phases
+Our builders work phase by phase so each one stays focused on a small piece and never
+burns out. Divide the work in `buildPhases`:
+- Phase 1 is the foundation everything else needs: accounts, layout, settings.
+- Each later phase is one usable piece of the product (for an invoicing app: clients; then
+  invoices; then the dashboard and search), small enough for one agent to build in
+  one focused session.
+- Use as many phases as the app needs — a small app needs few, a big one more.
+- Every page, endpoint and table of the plan belongs to exactly one phase, written exactly as
+  in the plan (pages by path, endpoints as "METHOD /path", tables by name). The plan is
+  checked before the customer sees it; if anything is missing or doubled you will be asked
+  to fix it.
 
 Two steps, always: `propose_plan` shows the plan with Accept / Revise / Reject. Only when the
 customer accepts ("build it", "accept") call `trigger_build`. If they ask for changes,

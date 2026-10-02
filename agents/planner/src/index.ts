@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { skillPromptSection } from "../../../packages/agent-runtime/src/skill-library.ts";
 import { AGENT_MODELS, MODEL_RPM_LIMITS, NIM_CONTEXT_LIMITS, waitForToken, routeToolsWithFallback, translateNimToolToGeminiTool } from "@nexsidi/llm-client";
 import type { GeminiMessage, GeminiPart, NimToolDef } from "@nexsidi/llm-client";
-import type { PlannerState, StreamChunk, BuildPlan, ProposedPlan, ElicitationQuestion } from "./types.ts";
+import type { PlannerState, StreamChunk, BuildPlan, ProposedPlan, ElicitationQuestion, BuildPhase } from "./types.ts";
 import { researchBrief, type ResearchNotes } from "./research.ts";
 // Phase 5 (full agentic upgrade): the same shared primitives every other
 // agent's research capability is built on — see the "web_search /
@@ -80,9 +80,31 @@ export const PROPOSE_PLAN_TOOL = {
       "Do NOT call trigger_build until the user explicitly accepts the plan.",
     parameters: {
       type: "object",
-      required: ["appName", "context", "rules", "publicPages", "protectedPages", "dbTables", "apiEndpoints", "designDirection", "techStack"],
+      required: ["appName", "context", "rules", "publicPages", "protectedPages", "dbTables", "apiEndpoints", "designDirection", "techStack", "buildPhases"],
       properties: {
         appName:    { type: "string" },
+        // 2026-10-02 (Part C.1, approved by Amit): agents work in phases so
+        // they do not burn out and stay relevant. The planner decides how
+        // many from the app's size; every page, endpoint and table belongs to
+        // exactly one phase (validatePlanPhases checks before the plan is shown).
+        buildPhases: {
+          type: "array",
+          description:
+            "The work divided into phases, in build order — as many as the app needs. Phase 1 is the foundation the rest needs " +
+            "(accounts, layout, settings); each later phase is one usable piece of the product, small enough for one agent to build " +
+            "in one focused session. Every page, endpoint and table of this plan appears in exactly one phase.",
+          items: {
+            type: "object",
+            required: ["name", "goal", "pages", "endpoints", "tables"],
+            properties: {
+              name:      { type: "string", description: "Short phase name, e.g. \"Clients\"" },
+              goal:      { type: "string", description: "What works for the user when this phase is done" },
+              pages:     { type: "array", items: { type: "string" }, description: "Page paths, exactly as in publicPages/protectedPages (e.g. \"/clients/:id\")" },
+              endpoints: { type: "array", items: { type: "string" }, description: "\"METHOD /path\", exactly as in apiEndpoints (e.g. \"GET /api/v1/clients\")" },
+              tables:    { type: "array", items: { type: "string" }, description: "Table names, exactly as in dbTables" },
+            },
+          },
+        },
         // 2026-10-02 (Part B.3): extras a senior team would add, from the
         // research. The customer ticks the ones they want; only those are
         // built. How many is the planner's call — no fixed count.
@@ -358,8 +380,46 @@ export function proposedPlanToBuildPlan(proposed: ProposedPlan, acceptedSuggesti
     rules:         [...(Array.isArray(proposed.rules) ? proposed.rules : []), ...approvedExtras],
     apiEndpoints:  Array.isArray(proposed.apiEndpoints) ? proposed.apiEndpoints : [],
     dbTables:      Array.isArray(proposed.dbTables) ? proposed.dbTables : [],
+    ...(Array.isArray(proposed.buildPhases) && proposed.buildPhases.length ? { buildPhases: proposed.buildPhases } : {}),
     ...(brief?.trim() ? { brief: brief.trim() } : {}),
   };
+}
+
+const endpointKey = (e: string) => {
+  const [method = "", ...rest] = e.trim().split(/\s+/);
+  return `${method.toUpperCase()} ${rest.join(" ")}`;
+};
+
+/**
+ * Problems with a plan's build phases, or [] when every page, endpoint and
+ * table is in exactly one phase and every phase names only real items.
+ * The planner fixes the plan before the customer ever sees it.
+ */
+export function validatePlanPhases(plan: ProposedPlan): string[] {
+  const phases = Array.isArray(plan.buildPhases) ? plan.buildPhases : [];
+  if (phases.length === 0) return ["buildPhases is empty — divide the work into phases (as many as the app needs)."];
+  const kinds = [
+    { label: "page", all: [...(plan.publicPages ?? []), ...(plan.protectedPages ?? [])].map((p) => p.path.trim()), of: (ph: BuildPhase) => ph.pages ?? [], key: (s: string) => s.trim() },
+    { label: "endpoint", all: (plan.apiEndpoints ?? []).map((e) => endpointKey(`${e.method} ${e.path}`)), of: (ph: BuildPhase) => ph.endpoints ?? [], key: endpointKey },
+    { label: "table", all: (plan.dbTables ?? []).map((t) => t.name.trim().toLowerCase()), of: (ph: BuildPhase) => ph.tables ?? [], key: (s: string) => s.trim().toLowerCase() },
+  ];
+  const problems: string[] = [];
+  for (const k of kinds) {
+    const where = new Map<string, string[]>();
+    for (const ph of phases) for (const item of k.of(ph)) {
+      const key = k.key(item);
+      where.set(key, [...(where.get(key) ?? []), ph.name]);
+    }
+    for (const item of k.all) {
+      const in_ = where.get(item) ?? [];
+      if (in_.length === 0) problems.push(`${k.label} ${item} is in no phase`);
+      if (in_.length > 1) problems.push(`${k.label} ${item} is in more than one phase (${in_.join(", ")})`);
+    }
+    for (const [item, in_] of where) {
+      if (!k.all.includes(item)) problems.push(`phase ${in_.join(", ")} names ${k.label} ${item}, which is not in the plan`);
+    }
+  }
+  return problems;
 }
 
 /**
@@ -383,6 +443,15 @@ export function planToUserRequest(plan: BuildPlan): string {
   }
   if (plan.dbTables?.length) {
     lines.push("", "Data:", ...plan.dbTables.map((t) => `- ${t.name}: ${(Array.isArray(t.keyColumns) ? t.keyColumns : [String(t.keyColumns)]).join(", ")}`));
+  }
+  if (plan.buildPhases?.length) {
+    lines.push("", "Build phases (every agent works phase by phase, in this order):");
+    plan.buildPhases.forEach((ph, i) => {
+      lines.push(`- Phase ${i + 1} — ${ph.name}: ${ph.goal}`);
+      if (ph.pages?.length) lines.push(`  Pages: ${ph.pages.join(", ")}`);
+      if (ph.endpoints?.length) lines.push(`  Endpoints: ${ph.endpoints.join(", ")}`);
+      if (ph.tables?.length) lines.push(`  Tables: ${ph.tables.join(", ")}`);
+    });
   }
   if (plan.designNotes) lines.push("", `Design direction: ${plan.designNotes}`);
   return lines.join("\n");
@@ -592,6 +661,27 @@ export async function* streamReply(
     if (toolCallName === "propose_plan" && toolCallArgs.trim()) {
       try {
         const plan = JSON.parse(toolCallArgs) as ProposedPlan;
+        // Part C.1: the phases must cover every page, endpoint and table
+        // exactly once. If not, the planner fixes the plan before the
+        // customer sees it.
+        const phaseProblems = validatePlanPhases(plan);
+        if (phaseProblems.length > 0) {
+          if (plannerTurnShouldStop(seenCalls, `propose_plan ${toolCallArgs}`, turnStarted, Date.now(), PLANNER_TURN_SAFETY_MS)) {
+            yield { type: "error", content: "I could not finish dividing the plan into build phases. Please ask me to try again." };
+            return;
+          }
+          const callId = toolCallId || `call_propose_${round}`;
+          messages.push({
+            role: "assistant", content: textContent || null,
+            tool_calls: [{ id: callId, type: "function", function: { name: "propose_plan", arguments: toolCallArgs }, thoughtSignature: toolCallThoughtSignature }],
+          });
+          messages.push({
+            role: "tool" as const,
+            content: `Plan not shown — fix the build phases and call propose_plan again:\n- ${phaseProblems.join("\n- ")}`,
+            tool_call_id: callId, name: "propose_plan",
+          });
+          continue;
+        }
         state.proposedPlan = plan;  // Bug 2 fix: save so trigger_build fast-path can use it
         yield { type: "plan_proposed", proposedPlan: plan };
         // Append the tool call + a synthetic tool result so the model knows

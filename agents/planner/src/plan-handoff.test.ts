@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { PROPOSE_PLAN_TOOL, proposedPlanToBuildPlan, planToUserRequest } from "./index.ts";
+import { PROPOSE_PLAN_TOOL, proposedPlanToBuildPlan, planToUserRequest, validatePlanPhases } from "./index.ts";
 import type { ProposedPlan } from "./types.ts";
 
 // 2026-10-02 (Ledgerly benchmark runs 2 and 3, approved by Amit): the plan
@@ -114,4 +114,66 @@ test("the build request carries the customer's whole brief word for word, then t
 test("the planner keeps the customer's brief from the start of the conversation", () => {
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf-8");
   expect(src).toContain("state.brief");
+});
+
+// 2026-10-02 (Part C.1, approved by Amit): agents work in phases so they do
+// not burn out and stay relevant. The planner divides the work into phases
+// — as many as the app needs — and writes them in the plan so every agent
+// refers to the same ones.
+const PHASED: ProposedPlan = {
+  ...PLAN,
+  publicPages: [{ name: "Home", path: "/", description: "Landing" }],
+  protectedPages: [{ name: "Clients", path: "/clients", description: "Clients" }, { name: "Invoices", path: "/invoices", description: "Invoices" }],
+  apiEndpoints: [
+    { method: "POST", path: "/api/v1/auth/sign-in", description: "Sign in" },
+    { method: "GET", path: "/api/v1/clients", description: "List clients" },
+    { method: "POST", path: "/api/v1/invoices", description: "Create invoice" },
+  ],
+  dbTables: [{ name: "users", keyColumns: ["email"] }, { name: "clients", keyColumns: ["name"] }, { name: "invoices", keyColumns: ["total"] }],
+  buildPhases: [
+    { name: "Foundation", goal: "Accounts and layout", pages: ["/"], endpoints: ["POST /api/v1/auth/sign-in"], tables: ["users"] },
+    { name: "Clients", goal: "Manage clients", pages: ["/clients"], endpoints: ["GET /api/v1/clients"], tables: ["clients"] },
+    { name: "Invoices", goal: "Create invoices", pages: ["/invoices"], endpoints: ["POST /api/v1/invoices"], tables: ["invoices"] },
+  ],
+};
+
+test("the plan has build phases with their pages, endpoints and tables — no fixed number of phases", () => {
+  const params = PROPOSE_PLAN_TOOL.function.parameters as { required: string[]; properties: Record<string, { maxItems?: number; minItems?: number; items?: { required?: string[] } }> };
+  expect(params.required).toContain("buildPhases");
+  expect(params.properties.buildPhases!.items!.required).toEqual(["name", "goal", "pages", "endpoints", "tables"]);
+  expect(params.properties.buildPhases!.maxItems).toBeUndefined();
+});
+
+test("a plan whose phases cover every page, endpoint and table exactly once is accepted", () => {
+  expect(validatePlanPhases(PHASED)).toEqual([]);
+});
+
+test("a plan with something in no phase, in two phases, or a phase naming something unknown is sent back", () => {
+  const missing = { ...PHASED, buildPhases: PHASED.buildPhases!.slice(0, 2) };
+  expect(validatePlanPhases(missing).join(" ")).toContain("/invoices");
+  const twice = { ...PHASED, buildPhases: [...PHASED.buildPhases!, { name: "Extra", goal: "x", pages: ["/clients"], endpoints: [], tables: [] }] };
+  expect(validatePlanPhases(twice).join(" ")).toContain("/clients");
+  const unknown = { ...PHASED, buildPhases: [{ ...PHASED.buildPhases![0]!, pages: ["/", "/nowhere"] }, ...PHASED.buildPhases!.slice(1)] };
+  expect(validatePlanPhases(unknown).join(" ")).toContain("/nowhere");
+  expect(validatePlanPhases({ ...PHASED, buildPhases: [] }).length).toBeGreaterThan(0);
+});
+
+test("the build request lists the phases word for word, and the plan carries them for the pipeline", () => {
+  const built = proposedPlanToBuildPlan(PHASED);
+  expect(built.buildPhases).toEqual(PHASED.buildPhases);
+  const request = planToUserRequest(built);
+  expect(request).toContain("Build phases");
+  expect(request).toContain("Phase 2 — Clients: Manage clients");
+  expect(request).toContain("GET /api/v1/clients");
+});
+
+test("the planner checks the phases before showing a plan, the panel shows them, and the rules explain how to divide", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf-8");
+  expect(src).toContain("validatePlanPhases(plan)");
+  const page = readFileSync(new URL("../../../apps/web/app/build/[id]/page.tsx", import.meta.url), "utf-8");
+  expect(page).toContain("plan.buildPhases");
+  const rules = readFileSync(new URL("../INTAKE_RULES.md", import.meta.url), "utf-8");
+  expect(rules).toContain("buildPhases");
+  expect(rules.toLowerCase()).toContain("one focused session");
+  expect(rules.toLowerCase()).toContain("as many phases as");
 });

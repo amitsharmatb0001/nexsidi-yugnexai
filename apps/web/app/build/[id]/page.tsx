@@ -91,6 +91,7 @@ interface ProposedPlan {
   techStack: { frontend: string; backend: string; database: string; auth: string };
   rules?: string[];
   suggestedFeatures?: Array<{ name: string; why: string; size: string }>;
+  buildPhases?: Array<{ name: string; goal: string; pages: string[]; endpoints: string[]; tables: string[] }>;
 }
 
 interface ElicitationQuestion {
@@ -635,6 +636,23 @@ function ProposedPlanPanel({ plan, ticked, onToggle }: { plan: ProposedPlan; tic
                     <span style={{ color: "var(--nx-text2)", display: "block" }}>{f.why}</span>
                   </span>
                 </label>
+              ))}
+            </div>
+          </Section>
+        )}
+
+        {/* Build phases — the order the work is built in */}
+        {Array.isArray(plan.buildPhases) && plan.buildPhases.length > 0 && (
+          <Section title="Build phases">
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {plan.buildPhases.map((ph, i) => (
+                <div key={i} style={{ fontSize: "12px", lineHeight: 1.6 }}>
+                  <span style={{ color: "var(--nx-text)", fontWeight: 600 }}>{i + 1}. {ph.name}</span>
+                  <span style={{ color: "var(--nx-text2)" }}> — {ph.goal}</span>
+                  {Array.isArray(ph.pages) && ph.pages.length > 0 && (
+                    <div style={{ color: "var(--nx-text3)", fontFamily: "var(--nx-ff-mono)", fontSize: "11px" }}>{ph.pages.join("  ")}</div>
+                  )}
+                </div>
               ))}
             </div>
           </Section>

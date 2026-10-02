@@ -39,6 +39,18 @@ export interface BuildPlan {
   apiEndpoints?: Array<{ method: string; path: string; description: string }>;
   dbTables?: Array<{ name: string; keyColumns: string[] }>;
   brief?: string;  // the customer's whole brief, word for word
+  buildPhases?: BuildPhase[];  // agents work phase by phase, in this order (Part C)
+}
+
+// One build phase: agents work on a small, focused piece at a time so they do
+// not burn out and stay relevant (Part C, 2 Oct 2026). Pages are paths,
+// endpoints are "METHOD /path", tables are names — exactly as in the plan.
+export interface BuildPhase {
+  name: string;
+  goal: string;
+  pages: string[];
+  endpoints: string[];
+  tables: string[];
 }
 
 import type { ResearchNotes } from "./research.ts";
@@ -68,6 +80,7 @@ export interface ProposedPlan {
   techStack: { frontend: string; backend: string; database: string; auth: string };
   rules: string[];  // every exact rule, format and example from the brief, word for word
   suggestedFeatures?: Array<{ name: string; why: string; size: string }>;  // extras the customer can tick
+  buildPhases?: BuildPhase[];  // the work divided into phases, decided by the planner
 }
 
 // Structured clarifying question shown via the ElicitationWidget before propose_plan
