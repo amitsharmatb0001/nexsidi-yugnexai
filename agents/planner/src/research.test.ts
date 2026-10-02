@@ -111,3 +111,12 @@ test("the API returns the research with the chat, and the build page shows it as
   expect(page).toContain("research_done");
   expect(page).toContain("What I found");
 });
+
+// Live check 2 Oct 2026: on the Ledgerly brief the model answered "done" on
+// its first turn and ran 0 searches — notes from memory, not research.
+test("research always searches at least once, even if the model first says it is done", async () => {
+  const { deps, searched } = fakeDeps([DONE, JSON.stringify({ queries: ["GST invoice rules"] }), DONE]);
+  const r = await researchBrief("brief", deps);
+  expect(searched).toEqual(["GST invoice rules"]);
+  expect(r.queries.length).toBe(1);
+});

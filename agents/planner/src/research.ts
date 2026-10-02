@@ -38,7 +38,19 @@ interface Finding {
   sources: ResearchSource[];
 }
 
-function researchPrompt(brief: string, findings: Finding[], mustFinish: boolean): string {
+function researchPrompt(brief: string, findings: Finding[], mustFinish: boolean, mustSearch = false): string {
+  if (mustSearch) {
+    return `You are the research lead of a senior product team. A customer wants this built:
+
+${brief}
+
+You have not searched anything yet, and your memory may be out of date or miss what real
+users of similar products expect today. List the web searches you need now: the domain's
+current rules and regulations, well-known similar products and their features, and common
+failure points.
+
+Reply with JSON only: {"queries": ["search 1", "search 2", ...]}`;
+  }
   const found = findings.length
     ? findings.map((f) => `### ${f.query}\n${f.content.slice(0, 2500)}`).join("\n\n")
     : "(nothing searched yet)";
@@ -86,7 +98,13 @@ export async function researchBrief(
 
   for (;;) {
     const outOfTime = now() - started > safetyMs;
-    const reply = parseReply(await deps.think(researchPrompt(brief, findings, outOfTime)));
+    let reply = parseReply(await deps.think(researchPrompt(brief, findings, outOfTime)));
+    // Live check 2 Oct 2026: the model sometimes says "done" before searching
+    // anything — notes from memory, not research. Research searches at least
+    // once; how many searches after that is still the model's call.
+    if (!outOfTime && asked.size === 0 && !(reply.queries ?? []).some((q) => q.trim())) {
+      reply = parseReply(await deps.think(researchPrompt(brief, findings, false, true)));
+    }
     const fresh = (reply.queries ?? []).map((q) => q.trim()).filter((q) => q && !asked.has(q.toLowerCase()));
 
     if (reply.done || outOfTime || fresh.length === 0) {

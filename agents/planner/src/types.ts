@@ -38,6 +38,7 @@ export interface BuildPlan {
   rules?: string[];
   apiEndpoints?: Array<{ method: string; path: string; description: string }>;
   dbTables?: Array<{ name: string; keyColumns: string[] }>;
+  brief?: string;  // the customer's whole brief, word for word
 }
 
 import type { ResearchNotes } from "./research.ts";
@@ -51,6 +52,8 @@ export interface PlannerState {
   buildPlan:    BuildPlan | null;
   proposedPlan: ProposedPlan | null;  // saved after propose_plan fires; used for direct trigger_build conversion
   research?: ResearchNotes;  // done once, before the first question (Part B, 2 Oct 2026)
+  acceptedSuggestions?: string[];  // suggested features the customer ticked when accepting the plan
+  brief?: string;  // the customer's brief as first sent, kept word for word for the build
 }
 
 // Structured plan shown to the user before the build starts (the "plan panel")
@@ -64,6 +67,7 @@ export interface ProposedPlan {
   designDirection: string;
   techStack: { frontend: string; backend: string; database: string; auth: string };
   rules: string[];  // every exact rule, format and example from the brief, word for word
+  suggestedFeatures?: Array<{ name: string; why: string; size: string }>;  // extras the customer can tick
 }
 
 // Structured clarifying question shown via the ElicitationWidget before propose_plan

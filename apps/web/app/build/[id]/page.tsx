@@ -90,6 +90,7 @@ interface ProposedPlan {
   designDirection: string;
   techStack: { frontend: string; backend: string; database: string; auth: string };
   rules?: string[];
+  suggestedFeatures?: Array<{ name: string; why: string; size: string }>;
 }
 
 interface ElicitationQuestion {
@@ -559,7 +560,7 @@ function FileTreeNode({ node, depth, selected, onSelect }: {
  * for changes is the ReviewGate's job (rendered in IdeWorkspace's Plan drawer),
  * so this panel no longer carries a second, competing set of controls.
  */
-function ProposedPlanPanel({ plan }: { plan: ProposedPlan }) {
+function ProposedPlanPanel({ plan, ticked, onToggle }: { plan: ProposedPlan; ticked: string[]; onToggle: (name: string) => void }) {
 
   const dbTables = Array.isArray(plan.dbTables) ? plan.dbTables : [];
   const publicPages = Array.isArray(plan.publicPages) ? plan.publicPages : [];
@@ -616,6 +617,24 @@ function ProposedPlanPanel({ plan }: { plan: ProposedPlan }) {
                   <span style={{ fontFamily: "var(--nx-ff-mono)", fontSize: "11px", color: "var(--nx-green)", background: "rgba(63,185,80,0.1)", padding: "2px 7px", borderRadius: "4px", flexShrink: 0 }}>{p.path}</span>
                   <span style={{ fontSize: "12px", color: "var(--nx-text2)", paddingTop: "1px" }}>{p.description}</span>
                 </div>
+              ))}
+            </div>
+          </Section>
+        )}
+
+        {/* Suggested features — extras from the research; only ticked ones are built */}
+        {Array.isArray(plan.suggestedFeatures) && plan.suggestedFeatures.length > 0 && (
+          <Section title="Suggested features — tick the ones you want">
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {plan.suggestedFeatures.map((f) => (
+                <label key={f.name} style={{ display: "flex", alignItems: "flex-start", gap: "8px", cursor: "pointer" }}>
+                  <input type="checkbox" checked={ticked.includes(f.name)} onChange={() => onToggle(f.name)} style={{ marginTop: "3px" }} />
+                  <span style={{ fontSize: "12px", lineHeight: 1.6 }}>
+                    <span style={{ color: "var(--nx-text)", fontWeight: 600 }}>{f.name}</span>
+                    <span style={{ color: "var(--nx-text3)" }}> ({f.size})</span>
+                    <span style={{ color: "var(--nx-text2)", display: "block" }}>{f.why}</span>
+                  </span>
+                </label>
               ))}
             </div>
           </Section>
@@ -877,6 +896,8 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   ]);
   const [buildPlanModal, setBuildPlanModal] = useState<BuildPlan | null>(null);
   const [proposedPlan,      setProposedPlan]      = useState<ProposedPlan | null>(null);
+  // Suggested features the customer ticked on the current plan (all unticked by default).
+  const [tickedSuggestions, setTickedSuggestions] = useState<string[]>([]);
   const [elicitationQuestion, setElicitationQuestion] = useState<ElicitationQuestion | null>(null);
   const planReview = useReviewState();
   const [reviseInput,    setReviseInput]    = useState("");
@@ -956,7 +977,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   }, []);
 
   // ── Chat: send a message ──────────────────────────────────────────────────
-  const sendChatMessage = useCallback(async (msg: string, attachments?: Array<{ name: string }>) => {
+  const sendChatMessage = useCallback(async (msg: string, attachments?: Array<{ name: string }>, acceptedSuggestions?: string[]) => {
     // Use ref for the guard so stale closures (strict-mode first mount) see
     // the real current value, not the one captured when the callback was made.
     if (!msg.trim() || chatLoadingRef.current) return;
@@ -974,7 +995,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
         method:      "POST",
         credentials: "include",
         headers:     { "Content-Type": "application/json" },
-        body:        JSON.stringify({ message: msg.trim(), sessionId: id }),
+        body:        JSON.stringify({ message: msg.trim(), sessionId: id, ...(acceptedSuggestions ? { acceptedSuggestions } : {}) }),
       });
 
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -1029,6 +1050,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
 
             if (chunk.type === "plan_proposed" && chunk.proposedPlan) {
               setProposedPlan(chunk.proposedPlan);
+              setTickedSuggestions([]);
               setElicitationQuestion(null); // close any open widget
               setReviseInput("");
             }
@@ -1474,7 +1496,11 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
               // rather than off partial plan data that does not exist yet.
               planStreaming: chatLoading || Boolean(streamingMsg),
               plan: proposedPlan ? (
-                <ProposedPlanPanel plan={proposedPlan} />
+                <ProposedPlanPanel
+                  plan={proposedPlan}
+                  ticked={tickedSuggestions}
+                  onToggle={(name) => setTickedSuggestions(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name])}
+                />
               ) : buildPlan ? (
                 <PlanPreview plan={buildPlan} />
               ) : undefined,
@@ -1488,7 +1514,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
                       // planner expects.
                       if (decision.verdict === "accepted") {
                         setProposedPlan(null);
-                        sendChatMessage("build it");
+                        sendChatMessage("build it", undefined, tickedSuggestions);
                       } else if (decision.verdict === "changes-requested") {
                         setProposedPlan(null);
                         sendChatMessage(decision.note ?? "Please revise the plan.");

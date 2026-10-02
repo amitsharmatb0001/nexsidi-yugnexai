@@ -46,4 +46,5 @@ for rates (18%), status names (Draft, Sent, Paid), units and limits.
 ## Before you finish
 Re-read the brief once more and tick every sentence. If an item has no
 endpoint, field, page or criterion, add it — do not drop it to keep the
-spec short. Never add features the brief did not ask for.
+spec short. Never build what the user did not approve — propose extras as
+suggested features instead, for the user to tick.

@@ -83,15 +83,33 @@ export const PROPOSE_PLAN_TOOL = {
       required: ["appName", "context", "rules", "publicPages", "protectedPages", "dbTables", "apiEndpoints", "designDirection", "techStack"],
       properties: {
         appName:    { type: "string" },
+        // 2026-10-02 (Part B.3): extras a senior team would add, from the
+        // research. The customer ticks the ones they want; only those are
+        // built. How many is the planner's call — no fixed count.
+        suggestedFeatures: {
+          type: "array",
+          description:
+            "Extras that would make this product genuinely better, found in your research (not asked for by the customer). " +
+            "Each says why it matters. The customer ticks the ones they want; only ticked ones are built. Empty if nothing is worth suggesting.",
+          items: {
+            type: "object",
+            required: ["name", "why", "size"],
+            properties: {
+              name: { type: "string", description: "Short feature name in the customer's language" },
+              why:  { type: "string", description: "One line: why it matters for this product's users" },
+              size: { type: "string", enum: ["small", "medium", "large"] },
+            },
+          },
+        },
         // 2026-10-02 (Ledgerly benchmark): without this field the plan had
         // nowhere to keep "INV-2026-0001", "18%" or "Draft, Sent or Paid",
         // so the build never saw them.
         rules: {
           type: "array",
           description:
-            "Every rule, exact format, example, rate, status name, unit and limit the user gave, copied word for word from their messages — " +
-            "one item each, never paraphrased (e.g. \"Invoice numbers run in order per account: INV-2026-0001, INV-2026-0002, and so on.\"). " +
-            "Include answers the user gave to your questions. Empty only if the user gave none.",
+            "Every decision the customer made answering your questions, and every rule, exact format, example, rate, status name, unit and limit they gave, " +
+            "copied word for word — one item each, never paraphrased (e.g. \"Invoice numbers run in order per account: INV-2026-0001, INV-2026-0002, and so on.\"). " +
+            "The customer's whole brief also goes to the build word for word; these rules sit on top of it and override it where the customer decided differently.",
           items: { type: "string" },
         },
         context:    { type: "string", description: "2-3 sentences: what this app does and who it is for" },
@@ -322,8 +340,14 @@ export function sanitizePlan(plan: BuildPlan): BuildPlan {
 // ─── ProposedPlan → BuildPlan direct conversion (Bug 2 fix) ─────────────────
 // When the user accepts the plan, we convert the saved ProposedPlan directly
 // instead of asking the LLM to reconstruct it from a thin text summary.
-export function proposedPlanToBuildPlan(proposed: ProposedPlan): BuildPlan {
+export function proposedPlanToBuildPlan(proposed: ProposedPlan, acceptedSuggestions: string[] = [], brief?: string): BuildPlan {
   const allPages = [...proposed.publicPages, ...proposed.protectedPages];
+  // Only suggestions the planner actually made and the customer ticked —
+  // a name that was never suggested cannot be added this way.
+  const ticked = new Set(acceptedSuggestions.map((n) => n.trim().toLowerCase()));
+  const approvedExtras = (Array.isArray(proposed.suggestedFeatures) ? proposed.suggestedFeatures : [])
+    .filter((s) => ticked.has(s.name.trim().toLowerCase()))
+    .map((s) => `Also build (suggested and approved): ${s.name} — ${s.why}`);
   return {
     schemaVersion: "1",
     appName:       proposed.appName,
@@ -331,9 +355,10 @@ export function proposedPlanToBuildPlan(proposed: ProposedPlan): BuildPlan {
     pages:         allPages,
     authType:      proposed.protectedPages.length > 0 ? "jwt" : "none",
     designNotes:   proposed.designDirection,
-    rules:         Array.isArray(proposed.rules) ? proposed.rules : [],
+    rules:         [...(Array.isArray(proposed.rules) ? proposed.rules : []), ...approvedExtras],
     apiEndpoints:  Array.isArray(proposed.apiEndpoints) ? proposed.apiEndpoints : [],
     dbTables:      Array.isArray(proposed.dbTables) ? proposed.dbTables : [],
+    ...(brief?.trim() ? { brief: brief.trim() } : {}),
   };
 }
 
@@ -344,8 +369,13 @@ export function proposedPlanToBuildPlan(proposed: ProposedPlan): BuildPlan {
  */
 export function planToUserRequest(plan: BuildPlan): string {
   const lines = [plan.appName, plan.appDescription];
+  // The customer's whole brief, word for word — guaranteed by code, not left
+  // to the model copying lines (a live check dropped 7 of 14 brief lines).
+  if (plan.brief) {
+    lines.push("", "The customer's brief (word for word):", plan.brief);
+  }
   if (plan.rules?.length) {
-    lines.push("", "Rules (the user's own words — follow exactly):", ...plan.rules.map((r) => `- ${r}`));
+    lines.push("", "Rules and decisions from the conversation (the customer's own words — follow exactly; where they differ from the brief, these override the brief):", ...plan.rules.map((r) => `- ${r}`));
   }
   lines.push("", ...plan.pages.map((p) => `Page: ${p.name} (${p.path}) — ${p.description}`));
   if (plan.apiEndpoints?.length) {
@@ -417,7 +447,7 @@ export async function* streamReply(
   const lastUserMsgNorm = lastUserMsgRaw.toLowerCase().trim();
   const BUILD_TRIGGER_PHRASES = ["build it", "accept", "yes build it", "start building", "build now", "go build"];
   if (BUILD_TRIGGER_PHRASES.includes(lastUserMsgNorm) && state.proposedPlan) {
-    const raw = proposedPlanToBuildPlan(state.proposedPlan);
+    const raw = proposedPlanToBuildPlan(state.proposedPlan, state.acceptedSuggestions ?? [], state.brief);
     const plan = sanitizePlan(raw);
     const projectId = state.sessionId;
     state.projectId = projectId;
@@ -432,6 +462,7 @@ export async function* streamReply(
   if (needsResearch(state)) {
     yield { type: "research_status", content: "Researching your product…" };
     const brief = state.messages.filter((m) => m.role === "user").map((m) => m.content ?? "").join("\n\n");
+    state.brief = brief; // kept word for word for the build (planToUserRequest)
     try {
       state.research = await (deps.research ?? ((b: string) => researchBrief(b)))(brief);
     } catch (err) {
@@ -587,6 +618,7 @@ export async function* streamReply(
       try {
         const raw = JSON.parse(toolCallArgs) as BuildPlan;
         raw.schemaVersion = "1";
+        if (state.brief) raw.brief = state.brief;
         const plan = sanitizePlan(raw);
         const projectId = state.sessionId;
         state.projectId = projectId;

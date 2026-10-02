@@ -53,3 +53,65 @@ test("the API starts the build from planToUserRequest, and the plan panel shows 
   const page = readFileSync(new URL("../../../apps/web/app/build/[id]/page.tsx", import.meta.url), "utf-8");
   expect(page).toContain("plan.rules");
 });
+
+// 2026-10-02 (Part B.3, approved by Amit): the planner suggests what a senior
+// team would add; the customer ticks what they want; only ticked ones are built.
+const WITH_SUGGESTIONS: ProposedPlan = {
+  ...PLAN,
+  suggestedFeatures: [
+    { name: "PDF invoices", why: "Clients expect a PDF they can forward to accounts", size: "medium" },
+    { name: "CSV export for your accountant", why: "CAs file GST returns from a spreadsheet", size: "small" },
+  ],
+};
+
+test("the plan can carry suggested features with why they matter, no fixed count", () => {
+  const params = PROPOSE_PLAN_TOOL.function.parameters as { properties: Record<string, { items?: { required?: string[] }; maxItems?: number }> };
+  const s = params.properties.suggestedFeatures!;
+  expect(s.items!.required).toEqual(["name", "why", "size"]);
+  expect(s.maxItems).toBeUndefined();
+});
+
+test("only the suggestions the customer ticked reach the build, word for word", () => {
+  const request = planToUserRequest(proposedPlanToBuildPlan(WITH_SUGGESTIONS, ["PDF invoices"]));
+  expect(request).toContain("PDF invoices — Clients expect a PDF they can forward to accounts");
+  expect(request).not.toContain("CSV export for your accountant");
+  // a name that was never suggested cannot be smuggled in
+  expect(planToUserRequest(proposedPlanToBuildPlan(WITH_SUGGESTIONS, ["Admin panel"]))).not.toContain("Admin panel");
+});
+
+test("the plan panel shows suggestions as checkboxes and Accept sends the ticked ones", () => {
+  const page = readFileSync(new URL("../../../apps/web/app/build/[id]/page.tsx", import.meta.url), "utf-8");
+  expect(page).toContain("plan.suggestedFeatures");
+  expect(page).toContain('type="checkbox"');
+  expect(page).toContain("acceptedSuggestions");
+  const chat = readFileSync(new URL("../../../apps/api/src/routes/chat.ts", import.meta.url), "utf-8");
+  expect(chat).toContain("acceptedSuggestions");
+});
+
+test("the requirements skill says: never build what the user did not approve — propose extras instead", () => {
+  const skill = readFileSync(new URL("../../../packages/agent-runtime/skills/library/requirements-coverage/SKILL.md", import.meta.url), "utf-8");
+  expect(skill).not.toContain("Never add features the brief did not ask for");
+  expect(skill).toContain("Never build what the user did not approve");
+});
+
+// Live check 2 Oct 2026: the planner's rules list kept only 11 lines and
+// dropped about 7 of the brief's (sign-up, settings fields, client page, line
+// items, dates, search, dashboard totals). The customer's whole brief now
+// goes to the build word for word, guaranteed by code; the decisions made in
+// the questions follow it and override it where they differ.
+test("the build request carries the customer's whole brief word for word, then the decisions that override it", () => {
+  const brief = "Build Ledgerly.\n- Each invoice has an issue date and a due date.\n- GST is 18% of the subtotal.";
+  const request = planToUserRequest(proposedPlanToBuildPlan({ ...PLAN, rules: ["Auto-split CGST/SGST/IGST by client state"] }, [], brief));
+  expect(request).toContain("Each invoice has an issue date and a due date.");
+  expect(request).toContain("GST is 18% of the subtotal.");
+  const b = request.indexOf("Each invoice has an issue date");
+  const d = request.indexOf("Auto-split CGST/SGST/IGST");
+  expect(b).toBeGreaterThan(-1);
+  expect(d).toBeGreaterThan(b);
+  expect(request.toLowerCase()).toContain("override the brief");
+});
+
+test("the planner keeps the customer's brief from the start of the conversation", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf-8");
+  expect(src).toContain("state.brief");
+});

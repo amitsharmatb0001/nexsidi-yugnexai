@@ -38,7 +38,7 @@ chatRouter.post("/", async (c) => {
   const userId = await resolveOptionalUserId(c.req.raw, ANON_UUID);
   const apiKey = process.env.NIM_API_KEY ?? "";
 
-  const body = await c.req.json<{ message: string; sessionId: string }>();
+  const body = await c.req.json<{ message: string; sessionId: string; acceptedSuggestions?: unknown }>();
   const { message, sessionId } = body;
 
   if (!message?.trim())   return c.json({ error: "message required" }, 400);
@@ -46,6 +46,11 @@ chatRouter.post("/", async (c) => {
 
   const state = (await loadSession(sessionId)) ?? newSession(userId, sessionId);
   state.messages.push({ role: "user", content: message.trim(), ts: Date.now() });
+  // Suggested features the customer ticked when accepting the plan — only
+  // names the planner actually suggested are kept (proposedPlanToBuildPlan).
+  if (Array.isArray(body.acceptedSuggestions)) {
+    state.acceptedSuggestions = body.acceptedSuggestions.filter((n): n is string => typeof n === "string").slice(0, 100);
+  }
 
   return streamSSE(c, async (stream) => {
     let assistantContent    = "";
