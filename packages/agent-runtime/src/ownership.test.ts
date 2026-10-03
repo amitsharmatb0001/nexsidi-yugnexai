@@ -110,3 +110,26 @@ test("docker_compose up refuses a compose file that runs another agent's folder,
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// 2026-10-03 (Ledgerly benchmark run 4): the frontend builder ran
+// `node --allow-fs-read=* --allow-fs-write=* -e "…copyFileSync('C:\Windows\System32…"`.
+// Node adds repeated allow flags together, so its own `*` cancelled the lock
+// that keeps scripts in the agent's folder. Only the system sets these flags.
+test("node refuses permission flags passed by the agent", () => {
+  for (const flag of ["--allow-fs-read=*", "--allow-fs-write=*", "--allow-child-process", "--permission", "--experimental-permission", "--allow-addons", "--allow-wasi", "--allow-worker"]) {
+    const g = guardCommand("node", [flag, "-e", "1"], "/b/frontend");
+    expect({ flag, refused: Boolean(g.error) }).toEqual({ flag, refused: true });
+  }
+  expect(guardCommand("node", ["--version"], "/b/frontend").error).toBeUndefined();
+});
+
+test("an agent's own allow-all flag cannot read another folder (real run)", async () => {
+  const { root, frontend } = build();
+  try {
+    const r = await execRunCommand(frontend, { command: `node --allow-fs-read=* -e "console.log(require('fs').readFileSync('../backend/secret.txt','utf8'))"` });
+    expect(String(r.output ?? "")).not.toContain("backend work");
+    expect(r.status).toBe("error");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -56,6 +56,13 @@ export function guardCommand(cmd: string, args: string[], cwd: string): { error?
     return { error: `npx ${args[0]} is not allowed — run scripts with node.`, args };
   }
   if (cmd === "node") {
+    // Ledgerly run 4: an agent passed `--allow-fs-read=*`; Node adds repeated
+    // allow flags together, so its own flag cancelled the folder lock. Only
+    // the system sets permission flags.
+    const permissionFlag = args.find((a) => /^--(allow-|permission|experimental-permission|experimental-policy|policy)/.test(a));
+    if (permissionFlag) {
+      return { error: `${permissionFlag} is not allowed — node's permissions are set by the system and keep scripts inside your folder.`, args };
+    }
     const own = resolve(cwd);
     return { args: ["--permission", `--allow-fs-read=${own}`, `--allow-fs-write=${own}`, "--allow-addons", ...args] };
   }
