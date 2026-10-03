@@ -555,6 +555,33 @@ function splitLiveFindings(findings: unknown): { shubham: string[]; aanya: strin
   return groups;
 }
 
+// 2026-10-03 (Ledgerly benchmark run 4): the deploy's own live checks found
+// a real app bug — every invoice save returned 500 (the backend used
+// ON CONFLICT on a unique constraint the migrations never created). The
+// deploy loop only re-ran the identical deploy and stopped as stuck; no
+// builder saw the error. Errors that come from the running app itself go to
+// the builder that owns that layer. Everything else (a port clash, a docker
+// build problem, a test value the app rightly rejected) is the deploy's own
+// business and is retried as before.
+const SERVER_ERROR = /returned 5\d\d\b/;
+const DATABASE_ERROR = /no unique or exclusion constraint|violates (?:foreign key|unique|not-null|check) constraint|(?:relation|column) "?[\w.]+"? does not exist|syntax error at or near|invalid input syntax for type/i;
+
+export function deployErrorsToFindings(errors: string[]): { shubham: string[]; aanya: string[]; pranav: string[] } {
+  const groups = { shubham: [] as string[], aanya: [] as string[], pranav: [] as string[] };
+  for (const error of errors) {
+    if (/migrations did not apply|database has no tables/i.test(error)) {
+      groups.pranav.push(`The deployed database has no tables — the migrations did not apply. ${error}`);
+    } else if (SERVER_ERROR.test(error) || DATABASE_ERROR.test(error) || error.startsWith("Backend log")) {
+      groups.shubham.push(
+        `The deployed app failed a live check: ${error}\n` +
+        `Reproduce it against your code and the real migrations in ../db/migrations, find the cause and fix it. ` +
+        `If the schema itself is wrong, escalate it to the database builder.`,
+      );
+    }
+  }
+  return groups;
+}
+
 export async function runStage6(
   projectId: string,
   stage4Result: Stage4Result,
@@ -598,13 +625,77 @@ export async function runStage6(
     };
   }
 
+  const fixShubhamReal = deps.fixShubham ?? (async (p, f) => {
+    const { runFix } = await import("../../../agents/generators/shubham/src/index.ts");
+    return runFix(p, f);
+  });
+  const fixAanyaReal = deps.fixAanya ?? (async (p, f) => {
+    const { runFix } = await import("../../../agents/generators/aanya/src/index.ts");
+    return runFix(p, f);
+  });
+  const fixPranavReal = deps.fixPranav ?? (async (p, f) => {
+    const { runFix } = await import("../../../agents/generators/pranav/src/index.ts");
+    return runFix(p, f);
+  });
+
+  type FixFn = (p: BuildPlan, f: string[]) => Promise<{ success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>;
+  const fixerFor: Record<"shubham" | "aanya" | "pranav", FixFn> = { shubham: fixShubhamReal, aanya: fixAanyaReal, pranav: fixPranavReal };
+
+  // One fix round: every owner with findings fixes in parallel, then any
+  // finding a fixer escalated to another owner is fixed in the same round.
+  // "nothing_changed" means every fix failed without touching a file, so a
+  // redeploy could only reproduce the same result.
+  const runOwnerFixes = async (
+    fixPlan: BuildPlan,
+    routed: { shubham: string[]; aanya: string[]; pranav: string[] },
+  ): Promise<"nothing_to_fix" | "nothing_changed" | "changed"> => {
+    const owners = (["shubham", "aanya", "pranav"] as const).filter((o) => routed[o].length > 0);
+    if (owners.length === 0) return "nothing_to_fix";
+    const fixResults = await Promise.all(owners.map((owner) => {
+      console.log(`[stage6] Routing ${routed[owner].length} findings to ${owner[0]!.toUpperCase()}${owner.slice(1)}`);
+      return fixerFor[owner](fixPlan, routed[owner]).then((r) => ({ agent: owner, ...r }));
+    }));
+    // 2026-07-26 (autonomy/throughput pass): a fix agent that genuinely
+    // failed to complete still triggered a full docker redeploy + retest
+    // that could only reproduce the same findings. 2026-09-29: a failed fix
+    // that wrote files changed the code (see fixChangedCode) — only skip
+    // when nothing was touched.
+    if (fixResults.every((r) => !fixChangedCode(r))) {
+      console.error(`[stage6] every implicated fix this round failed outright and changed nothing — skipping redeploy, a retest would be wasted`);
+      return "nothing_changed";
+    }
+    if (fixResults.some((r) => !r.success)) {
+      console.error(`[stage6] one or more fixes did not finish this round — redeploying anyway since code was changed`);
+    }
+    // 2026-07-28 / 2026-08-16 (live, complex1, fulfillio1): a fix agent may
+    // decide the real fix belongs in another agent's domain
+    // (escalate_finding) — routed in this same round, so it lands before
+    // the redeploy instead of a whole wasted round later.
+    const escalationsByTarget: Record<"shubham" | "aanya" | "pranav", Escalation[]> = { shubham: [], aanya: [], pranav: [] };
+    for (const e of fixResults.flatMap((r) => r.escalations ?? [])) escalationsByTarget[e.targetAgent].push(e);
+    for (const target of ["shubham", "aanya", "pranav"] as const) {
+      const targeted = escalationsByTarget[target];
+      if (targeted.length === 0) continue;
+      const formatted = targeted.map((e) => `${e.finding} — ${e.reason}`);
+      console.log(`[stage6] routing ${formatted.length} escalated finding(s) to ${target} this round`);
+      const escalationResult = await fixerFor[target](fixPlan, formatted);
+      if (!escalationResult.success) {
+        console.error(`[stage6] ${target} escalation fix FAILED to complete`);
+      }
+    }
+    return "changed";
+  };
+
   let deployResult!: DeployResult;
   let prevErrorSignature = "";
   let stuck = false;
+  let plainRetries = 0;
+  let deployFixRounds = 0;
+  let afterFix = false;
 
-  for (let attempt = 1; attempt <= MAX_DEPLOY_ATTEMPTS; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     deployResult = await deployWithQuotaRetry(
-      () => deps.deployFn(projectId, flags.deployTarget),
+      () => deps.deployFn(projectId, flags.deployTarget, afterFix ? REDEPLOY_MAX_ITERATIONS : undefined),
       deps.sleepFn,
     );
 
@@ -620,11 +711,25 @@ export async function runStage6(
     }
     prevErrorSignature = errorSignature;
 
-    if (attempt < MAX_DEPLOY_ATTEMPTS) {
-      console.log(
-        `[stage6] Deploy attempt ${attempt} failed — retrying (${MAX_DEPLOY_ATTEMPTS - attempt} left): ${deployResult.errors.join("; ").slice(0, 200)}`,
-      );
+    const routed = deployErrorsToFindings(deployResult.errors);
+    if (plan && deployFixRounds < MAX_LIVE_FIX_ATTEMPTS && (routed.shubham.length + routed.aanya.length + routed.pranav.length) > 0) {
+      deployFixRounds++;
+      console.log(`[stage6] Deploy attempt ${attempt} found real app errors — sending them to the builders (fix round ${deployFixRounds} of ${MAX_LIVE_FIX_ATTEMPTS})`);
+      const outcome = await runOwnerFixes(plan, routed);
+      if (outcome === "changed") {
+        afterFix = true;
+        console.log(`[stage6] Fixes for the deploy errors are in — deploying again`);
+        continue;
+      }
+      break;
     }
+
+    if (plainRetries + 1 >= MAX_DEPLOY_ATTEMPTS) break;
+    plainRetries++;
+    afterFix = false;
+    console.log(
+      `[stage6] Deploy attempt ${attempt} failed — retrying (${MAX_DEPLOY_ATTEMPTS - plainRetries} left): ${deployResult.errors.join("; ").slice(0, 200)}`,
+    );
   }
 
   if (!deployResult.success) {
@@ -636,19 +741,6 @@ export async function runStage6(
       ...(stuck ? { stuck: true } : {}),
     };
   }
-
-  const fixShubhamReal = deps.fixShubham ?? (async (p, f) => {
-    const { runFix } = await import("../../../agents/generators/shubham/src/index.ts");
-    return runFix(p, f);
-  });
-  const fixAanyaReal = deps.fixAanya ?? (async (p, f) => {
-    const { runFix } = await import("../../../agents/generators/aanya/src/index.ts");
-    return runFix(p, f);
-  });
-  const fixPranavReal = deps.fixPranav ?? (async (p, f) => {
-    const { runFix } = await import("../../../agents/generators/pranav/src/index.ts");
-    return runFix(p, f);
-  });
 
   let retest = guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl));
   let prevFindingsSig = "";
@@ -691,88 +783,28 @@ export async function runStage6(
       console.error(`[stage6] Failed to record instinct observations: ${String(obsErr)}`);
     }
 
-    const { shubham: shubhamFindings, aanya: aanyaFindings, pranav: pranavFindings } = splitLiveFindings(retest.findings);
-
     if (plan) {
-      const fixCalls: Promise<{ agent: string; success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>[] = [];
-      if (shubhamFindings.length > 0) {
-        console.log(`[stage6] Routing ${shubhamFindings.length} findings to Shubham`);
-        fixCalls.push(fixShubhamReal(plan, shubhamFindings).then((r) => ({ agent: "shubham", ...r })));
-      }
-      if (aanyaFindings.length > 0) {
-        console.log(`[stage6] Routing ${aanyaFindings.length} findings to Aanya`);
-        fixCalls.push(fixAanyaReal(plan, aanyaFindings).then((r) => ({ agent: "aanya", ...r })));
-      }
-      // 2026-07-28 (live, complex1): db-owned findings (e.g. "backend/init.sql:
-      // missing index") now get a real fix path instead of being misrouted to
-      // shubham or silently dropped — see splitLiveFindings' header comment.
-      if (pranavFindings.length > 0) {
-        console.log(`[stage6] Routing ${pranavFindings.length} findings to Pranav`);
-        fixCalls.push(fixPranavReal(plan, pranavFindings).then((r) => ({ agent: "pranav", ...r })));
-      }
-
-      if (fixCalls.length > 0) {
-        // 2026-07-26 (autonomy/throughput pass): same root cause fixed in
-        // stage5-qa-fix-loop.ts, at this second boundary — the {success}
-        // result was discarded, so a fix agent that genuinely failed to
-        // complete (rather than completing but not fully resolving the
-        // issue) still triggered a full docker redeploy + live-retest
-        // cycle that could only reproduce the exact same findings.
-        const fixResults = await Promise.all(fixCalls);
-        // 2026-09-29: a failed fix that wrote files changed the code (see
-        // fixChangedCode) — only skip when nothing was touched.
-        const anyFixFailed = fixResults.some((r) => !r.success);
-        if (fixResults.every((r) => !fixChangedCode(r))) {
-          console.error(`[stage6] every implicated fix this round failed outright and changed nothing — skipping redeploy, a retest would be wasted`);
-          break;
-        }
-        if (anyFixFailed) {
-          console.error(`[stage6] one or more fixes did not finish this round — redeploying anyway since code was changed`);
-        }
-
-        // 2026-07-28 (live, complex1): mirrors stage5-qa-fix-loop.ts's same
-        // escalation routing — a fix agent may decide the real fix belongs
-        // in another agent's domain (escalate_finding) instead of forcing a
-        // workaround in its own. Dispatched in THIS SAME round so the real
-        // fix lands before the redeploy below, not a full wasted round later.
-        // 2026-08-16: like stage5-qa-fix-loop.ts, this only ever routed
-        // targetAgent === "pranav" — shubham/aanya escalations were captured
-        // in fixResults but silently dropped here too, the same root cause
-        // found live on fulfillio1 (Aanya's escalate_finding("shubham", ...)
-        // for a missing GET /api/v1/orders/:id looked successful but never
-        // reached Shubham). Fixed the same way in both places.
-        const escalationsByTarget: Record<"shubham" | "aanya" | "pranav", Escalation[]> = { shubham: [], aanya: [], pranav: [] };
-        for (const e of fixResults.flatMap((r) => r.escalations ?? [])) escalationsByTarget[e.targetAgent].push(e);
-        for (const target of ["shubham", "aanya", "pranav"] as const) {
-          const targeted = escalationsByTarget[target];
-          if (targeted.length === 0) continue;
-          const formatted = targeted.map((e) => `${e.finding} — ${e.reason}`);
-          console.log(`[stage6] routing ${formatted.length} escalated finding(s) to ${target} this round`);
-          const fixFn = target === "pranav" ? fixPranavReal : target === "shubham" ? fixShubhamReal : fixAanyaReal;
-          const escalationResult = await fixFn(plan, formatted);
-          if (!escalationResult.success) {
-            console.error(`[stage6] ${target} escalation fix FAILED to complete`);
-          }
-        }
-
-        console.log(`[stage6] Agent fixes completed — redeploying app via Riya`);
-
-        let redeployResult = await deployWithQuotaRetry(
-          () => deps.deployFn(projectId, flags.deployTarget, REDEPLOY_MAX_ITERATIONS),
-          deps.sleepFn,
-        );
-        if (!redeployResult.success) {
-          console.error(`[stage6] Redeployment failed: ${redeployResult.errors.join("; ")}`);
-          deployResult = redeployResult;
-          break;
-        }
-        deployResult = redeployResult;
-
-        retest = guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl));
-      } else {
+      const outcome = await runOwnerFixes(plan, splitLiveFindings(retest.findings));
+      if (outcome === "nothing_to_fix") {
         console.log(`[stage6] No specific findings to route — exiting fix loop`);
         break;
       }
+      if (outcome === "nothing_changed") break;
+
+      console.log(`[stage6] Agent fixes completed — redeploying app via Riya`);
+
+      let redeployResult = await deployWithQuotaRetry(
+        () => deps.deployFn(projectId, flags.deployTarget, REDEPLOY_MAX_ITERATIONS),
+        deps.sleepFn,
+      );
+      if (!redeployResult.success) {
+        console.error(`[stage6] Redeployment failed: ${redeployResult.errors.join("; ")}`);
+        deployResult = redeployResult;
+        break;
+      }
+      deployResult = redeployResult;
+
+      retest = guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl));
     } else {
       console.warn(`[stage6] No BuildPlan provided — cannot invoke agent fixes. Exiting fix loop.`);
       break;

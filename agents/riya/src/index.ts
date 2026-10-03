@@ -96,11 +96,39 @@ export function sanitizeGeneratedPackageJsons(buildDir: string): void {
 // this file created; a real user could not hold that address. Best-effort by
 // design: a cleanup failure must never fail an otherwise-good deploy, so
 // every branch warns and continues rather than throwing.
+// 2026-10-03 (Ledgerly run 4): the delete failed on a foreign key — the test
+// client the check created points at the test user — so the accounts and
+// their data stayed. Rows pointing at a test user are now deleted first.
+export interface ForeignKey { child: string; childColumn: string; parent: string; parentColumn: string }
+
+/** DELETE statements that remove the rows matching `where` in `table` and every row that points at them, deepest first. */
+export function buildPurgeStatements(table: string, where: string, fks: ForeignKey[]): string[] {
+  const out: string[] = [];
+  const visit = (tbl: string, cond: string, path: string[]) => {
+    for (const fk of fks) {
+      // a table pointing at itself is handled by the one DELETE below; a
+      // cycle stops at the first table already on the path
+      if (fk.parent !== tbl || fk.child === tbl || path.includes(fk.child) || path.length > 6) continue;
+      visit(fk.child, `"${fk.childColumn}" IN (SELECT "${fk.parentColumn}" FROM "${tbl}" WHERE ${cond})`, [...path, fk.child]);
+    }
+    out.push(`DELETE FROM "${tbl}" WHERE ${cond}`);
+  };
+  visit(table, where, [table]);
+  return out;
+}
+
+const FOREIGN_KEYS_SQL =
+  "SELECT c.conrelid::regclass::text, a.attname, c.confrelid::regclass::text, af.attname " +
+  "FROM pg_constraint c " +
+  "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1] " +
+  "JOIN pg_attribute af ON af.attrelid = c.confrelid AND af.attnum = c.confkey[1] " +
+  "WHERE c.contype = 'f' AND array_length(c.conkey, 1) = 1;";
+
 export function purgeVerificationArtifacts(buildDir: string): void {
   try {
     const composePath = join(buildDir, "docker-compose.yml");
     if (!existsSync(composePath)) return;
-    const sh = (cmd: string) => execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    const sh = (cmd: string, input?: string) => execSync(cmd, { input, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 
     let cid = "";
     try { cid = sh(`docker compose -f "${composePath}" ps -q postgres`); } catch { /* nothing to clean */ }
@@ -117,14 +145,22 @@ export function purgeVerificationArtifacts(buildDir: string): void {
       `"SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='email'"`,
     ).split("\n").map((t) => t.trim()).filter(Boolean);
 
+    const psql = (sqlText: string) => sh(`docker exec -i ${cid} psql -U ${user} -d ${dbName} -tA -F , -v ON_ERROR_STOP=1 -1 -f -`, sqlText);
+    const unquote = (n: string) => n.trim().replace(/^"|"$/g, "");
+    const fks: ForeignKey[] = psql(FOREIGN_KEYS_SQL).split("\n").filter(Boolean).map((line) => {
+      const [child = "", childColumn = "", parent = "", parentColumn = ""] = line.split(",").map(unquote);
+      return { child, childColumn, parent, parentColumn };
+    });
+
+    const where = "email LIKE 'verify+%@example.com'";
     let removed = 0;
     for (const table of tables) {
       try {
-        const out = sh(
-          `docker exec ${cid} psql -U ${user} -d ${dbName} -tAc ` +
-          `"WITH d AS (DELETE FROM \\"${table}\\" WHERE email LIKE 'verify+%@example.com' RETURNING 1) SELECT count(*) FROM d"`,
-        );
-        removed += parseInt(out, 10) || 0;
+        const count = parseInt(psql(`SELECT count(*) FROM "${table}" WHERE ${where};`), 10) || 0;
+        if (count === 0) continue;
+        // one transaction (-1): either every dependent row and the account go, or nothing does
+        psql(buildPurgeStatements(table, where, fks).map((s) => s + ";").join("\n"));
+        removed += count;
       } catch (e) {
         console.warn(`[riya] could not purge verification rows from "${table}" (non-fatal): ${String(e).split("\n")[0]}`);
       }
@@ -1391,7 +1427,10 @@ export async function verifyAllResourceCrud(
       }
 
       if (!createRes.ok) {
-        findings.push(`${resource}: POST ${createEp.path} returned ${createRes.status}: ${(await createRes.text()).slice(0, 150)}`);
+        // A server error says only "Internal Server Error" — the request that
+        // caused it lets the backend builder reproduce it (Ledgerly run 4).
+        const sent = createRes.status >= 500 ? ` — request body: ${JSON.stringify(createPayload).slice(0, 400)}` : "";
+        findings.push(`${resource}: POST ${createEp.path} returned ${createRes.status}: ${(await createRes.text()).slice(0, 150)}${sent}`);
         continue;
       }
       const createBody = (await createRes.json()) as Record<string, unknown>;
@@ -1696,6 +1735,10 @@ export async function run(
   if (!migrationOk) errors.push("Deployed database has no tables (migrations did not apply) — app cannot persist data");
   if (!roundTrip.ok) errors.push(`Live authenticated round-trip failed: ${roundTrip.reason}`);
   if (!crudCheck.ok) errors.push(...crudCheck.findings.map((f) => `CRUD verification: ${f}`));
+  if (errors.some((e) => /returned 5\d\d\b/.test(e))) {
+    const log = backendErrorLog(buildDir);
+    if (log) errors.push(`Backend log (errors): ${log.slice(0, 1500)}`);
+  }
 
   await db
     .update(projects)
@@ -1713,6 +1756,27 @@ export async function run(
 // (markProjectDone after Stage 6 passes, escalateTilotma on failure); this
 // step records only where the app is running, so "open app" works during
 // the review.
+/** The error lines of a backend log, newest last — what a builder needs to see behind a 500. */
+export function backendErrorLines(logText: string, max = 15): string[] {
+  return logText
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^[\w.-]+\s*\|\s*/, "").trim())
+    .filter((l) => /\berror\b|exception|unhandled|constraint|ON CONFLICT|ECONNREFUSED/i.test(l))
+    .slice(-max);
+}
+
+function backendErrorLog(buildDir: string): string {
+  try {
+    const out = execSync(`docker compose -f "${join(buildDir, "docker-compose.yml")}" logs --no-color --tail 300 backend`, {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return backendErrorLines(out).join(" | ");
+  } catch {
+    return "";
+  }
+}
+
 export function projectFieldsAfterDeploy(appUrl: string): { appUrl: string; updatedAt: Date } {
   return { appUrl, updatedAt: new Date() };
 }

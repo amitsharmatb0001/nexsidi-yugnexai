@@ -6,6 +6,7 @@ import {
   INTERNAL_AGENT_NAMES,
   isQuotaExhaustionError,
   deployWithQuotaRetry,
+  deployErrorsToFindings,
   normalizeForStuckComparison,
   runStage6,
   shouldSkipExpensiveReview,
@@ -632,4 +633,82 @@ test("the live retest hands the review TIER3_DB_URL and restores it afterwards",
   const body = fn.slice(0, fn.indexOf("\n}\n"));
   expect(body).toContain("process.env.TIER3_DB_URL = ");
   expect(body).toContain("delete process.env.TIER3_DB_URL");
+});
+
+// 2026-10-03 (Ledgerly benchmark run 4): the deploy's own checks found a real
+// app bug — every invoice save returned 500 because the backend used
+// ON CONFLICT on a unique constraint the migrations never created. Stage 6
+// only re-ran the identical deploy, got the identical error, and stopped as
+// stuck; no builder ever saw it. Real app errors found at deploy now go to
+// the owning builder's fix run, and the deploy runs again after the fix.
+const SERVER_ERROR = 'CRUD verification: invoices: POST /api/v1/invoices returned 500: {"success":false,"error":"Internal Server Error"}';
+
+test("deployErrorsToFindings sends server errors to the backend builder and missing tables to the database builder", () => {
+  const r = deployErrorsToFindings([
+    SERVER_ERROR,
+    "Live authenticated round-trip failed: create /api/v1/clients returned 503: down",
+    "Backend log (errors): error: there is no unique or exclusion constraint matching the ON CONFLICT specification",
+    "Deployed database has no tables (migrations did not apply) — app cannot persist data",
+    "CRUD verification: invoices: POST /api/v1/invoices returned 400: {\"error\":\"items: Expected array\"}",
+    "docker compose up failed: port conflict",
+  ]);
+  expect(r.shubham.length).toBe(3);
+  expect(r.shubham[0]).toContain("returned 500");
+  expect(r.shubham[0]).toContain("../db/migrations");
+  expect(r.pranav.length).toBe(1);
+  expect(r.aanya).toEqual([]);
+});
+
+test("a real app error at deploy goes to the backend builder, then the app is deployed again", async () => {
+  let deployCalls = 0;
+  const fixed: string[][] = [];
+  const deps: Stage6Deps = {
+    deployFn: async () => {
+      deployCalls++;
+      return deployCalls === 1
+        ? { success: false, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [SERVER_ERROR] }
+        : { success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] };
+    },
+    liveRetestFn: async () => ({ pass: true, findings: [] }),
+    fixShubham: async (_plan, findings) => {
+      fixed.push(findings);
+      return { success: true, filesWritten: ["src/services/sequenceGenerator.ts"] };
+    },
+  };
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(fixed.length).toBe(1);
+  expect(fixed[0]![0]).toContain("POST /api/v1/invoices returned 500");
+  expect(deployCalls).toBe(2);
+  expect(result.success).toBe(true);
+});
+
+test("when the fix for a deploy error changes nothing, the deploy is not repeated", async () => {
+  let deployCalls = 0;
+  const deps: Stage6Deps = {
+    deployFn: async () => {
+      deployCalls++;
+      return { success: false, appUrl: "", backendUrl: "", githubRepo: null, errors: [SERVER_ERROR] };
+    },
+    liveRetestFn: async () => ({ pass: true, findings: [] }),
+    fixShubham: async () => ({ success: false }),
+  };
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(deployCalls).toBe(1);
+  expect(result.success).toBe(false);
+});
+
+test("deploy errors that are not app bugs are still retried plainly, without a fix run", async () => {
+  let deployCalls = 0;
+  let fixCalled = false;
+  const deps: Stage6Deps = {
+    deployFn: async () => {
+      deployCalls++;
+      return { success: false, appUrl: "", backendUrl: "", githubRepo: null, errors: [`docker compose up failed: port conflict ${deployCalls}`] };
+    },
+    liveRetestFn: async () => ({ pass: true, findings: [] }),
+    fixShubham: async () => { fixCalled = true; return { success: true, filesWritten: ["x"] }; },
+  };
+  await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(fixCalled).toBe(false);
+  expect(deployCalls).toBe(2);
 });
