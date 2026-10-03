@@ -442,7 +442,39 @@ function repairLengthErrors(payload: Record<string, unknown>, errorText: string)
   return changed ? fixed : null;
 }
 
-function fieldsToPayload(body: string, marker: string): Record<string, unknown> | null {
+// 2026-10-03 (Ledgerly run 4): the full CRUD check sent an invoice's line
+// items as text ("items: Expected array, received string"). A list field
+// gets a one-element list whose element is built from its own type.
+function listElementType(type: string): string | null {
+  const t = type.trim();
+  const brackets = t.match(/^(.+)\[\]$/);
+  if (brackets) return brackets[1]!.trim().replace(/^\((.*)\)$/, "$1");
+  const generic = t.match(/^(?:Array|ReadonlyArray)<(.+)>$/);
+  return generic ? generic[1]!.trim() : null;
+}
+
+/** An object for a type expression: a named interface, an inline literal, or Omit/Pick/Partial of a named one. */
+function objectForType(sharedTypesSource: string, typeExpr: string, marker: string, depth: number): Record<string, unknown> | null {
+  if (depth > 3) return null;
+  const t = typeExpr.trim();
+  if (t.startsWith("{") && t.endsWith("}")) {
+    let body = t.slice(1, -1).trim();
+    if (body && !body.endsWith(";")) body += ";";
+    return fieldsToPayload(body, marker, sharedTypesSource, depth + 1);
+  }
+  const keyed = t.match(/^(Omit|Pick)<\s*(\w+)\s*,\s*(.+)>$/);
+  const wrapped = t.match(/^(?:Partial|Required|Readonly)<\s*(\w+)\s*>$/);
+  const name = keyed ? keyed[2]! : wrapped ? wrapped[1]! : /^\w+$/.test(t) ? t : null;
+  if (!name) return null;
+  const typeMatch = sharedTypesSource.match(new RegExp(`interface\\s+${name}\\s*\\{([^}]*)\\}`));
+  if (!typeMatch) return null;
+  const obj = fieldsToPayload(typeMatch[1] ?? "", marker, sharedTypesSource, depth + 1);
+  if (!obj || !keyed) return obj;
+  const keys = [...keyed[3]!.matchAll(/'([^']+)'/g)].map((m) => m[1]!);
+  return Object.fromEntries(Object.entries(obj).filter(([k]) => (keyed[1] === "Omit" ? !keys.includes(k) : keys.includes(k))));
+}
+
+function fieldsToPayload(body: string, marker: string, sharedTypesSource = "", depth = 0): Record<string, unknown> | null {
   const fieldRegex = /(\w+)\??\s*:\s*([^;]+);/g;
   const payload: Record<string, unknown> = {};
   let match: RegExpExecArray | null;
@@ -458,7 +490,17 @@ function fieldsToPayload(body: string, marker: string): Record<string, unknown> 
     // name-based date heuristic below. Otherwise a field like
     // "runtime_minutes: number" (contains "time" as a substring but is
     // genuinely numeric) would incorrectly get a date string instead of 1.
-    if (lowerName.includes("email")) payload[fieldName] = `verify+${marker}@example.com`;
+    const elementType = listElementType(type);
+    if (elementType !== null) {
+      if (elementType === "string") payload[fieldName] = [realisticValueFor(fieldName) ?? marker];
+      else if (elementType === "number") payload[fieldName] = [1];
+      else if (elementType === "boolean") payload[fieldName] = [true];
+      else {
+        const element = objectForType(sharedTypesSource, elementType, marker, depth);
+        payload[fieldName] = element ? [element] : [];
+      }
+    }
+    else if (lowerName.includes("email")) payload[fieldName] = `verify+${marker}@example.com`;
     else if (type.includes("number")) payload[fieldName] = 1;
     else if (type.includes("boolean")) payload[fieldName] = true;
     // 2026-08-23: real bug found live (project a355bbb5fa35, nexyug web) —
@@ -536,11 +578,11 @@ export function buildPayloadForRequestType(
     // callers). Append one so the last field isn't silently dropped.
     let body = trimmed.slice(1, -1).trim();
     if (body && !body.endsWith(";")) body += ";";
-    return fieldsToPayload(body, marker);
+    return fieldsToPayload(body, marker, sharedTypesSource);
   }
   const typeMatch = sharedTypesSource.match(new RegExp(`interface\\s+${trimmed}\\s*\\{([^}]*)\\}`));
   if (!typeMatch) return null;
-  return fieldsToPayload(typeMatch[1] ?? "", marker);
+  return fieldsToPayload(typeMatch[1] ?? "", marker, sharedTypesSource);
 }
 
 // 2026-08-09: real bug found live (project meridianbk4, direct follow-on to

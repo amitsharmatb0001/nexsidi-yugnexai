@@ -73,3 +73,35 @@ test("the live round-trip check repairs a rejected test value once, like the ful
   const end = src.indexOf("\nexport ", start + 10);
   expect(src.slice(start, end)).toContain("repairPayloadFromValidationError(");
 });
+
+// 2026-10-03 (Ledgerly run 4, right after the GSTIN fix): the full CRUD
+// check posted an invoice with "items" as text — the app answered "items:
+// Expected array, received string". List fields now get a one-element list,
+// with the element built from its own type (Omit/Pick of a named type
+// included). Types below are this run's real shared-types and contract.
+const LEDGERLY_TYPES = "export interface InvoiceItem { id: string; description: string; quantity: number; rate: number; amount: number; } export interface Invoice { id: string; items?: InvoiceItem[]; }";
+const CREATE_INVOICE = "{ client_id: string; sac_code?: string; issue_date: string; due_date: string; items: Omit<InvoiceItem, 'id' | 'amount'>[]; notes?: string }";
+
+test("a list of line items is sent as a list, each item built from its own type", () => {
+  const p = buildPayloadForRequestType(LEDGERLY_TYPES, CREATE_INVOICE, "nexsidi-e2e-verify-1")!;
+  expect(Array.isArray(p.items)).toBe(true);
+  const item = (p.items as Array<Record<string, unknown>>)[0]!;
+  expect(item.quantity).toBe(1);
+  expect(typeof item.rate).toBe("number");
+  expect(String(item.description)).toContain("nexsidi-e2e-verify-1");
+  expect(item).not.toHaveProperty("id");
+  expect(item).not.toHaveProperty("amount");
+  expect(String(p.sac_code)).toMatch(/^\d{4,6}$/);
+});
+
+test("lists of plain values and Pick<> elements work too", () => {
+  const p = buildPayloadForRequestType(
+    LEDGERLY_TYPES,
+    "{ tags: string[]; scores: number[]; flags: Array<boolean>; lines: Pick<InvoiceItem, 'description' | 'quantity'>[] }",
+    "m-1",
+  )!;
+  expect(p.tags).toEqual(["m-1"]);
+  expect(p.scores).toEqual([1]);
+  expect(p.flags).toEqual([true]);
+  expect(Object.keys((p.lines as Array<Record<string, unknown>>)[0]!).sort()).toEqual(["description", "quantity"]);
+});
