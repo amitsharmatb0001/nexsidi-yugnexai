@@ -22,6 +22,16 @@ function guardPath(sandboxDir: string, relPath: string): string {
   return abs;
 }
 
+// Reading may also reach folders the agent was given read-only (the backend
+// builder reads the database builder's migrations — Ledgerly run 4, where it
+// guessed a unique constraint that did not exist). Writing never does: the
+// write/edit/delete tools keep using guardPath above.
+function guardReadPath(sandboxDir: string, relPath: string, readOnlyDirs: string[] = []): string {
+  const abs = resolve(join(sandboxDir, relPath));
+  if (readOnlyDirs.some((d) => isInsideDir(d, abs))) return abs;
+  return guardPath(sandboxDir, relPath);
+}
+
 export function cleanComposeContent(filePath: string, content: string): string {
   const filename = filePath.split(/[/\\]/).pop();
   if (filename === "docker-compose.yml" || filename === "docker-compose.yaml") {
@@ -160,9 +170,9 @@ export function execRollbackWorkspace(sandboxDir: string): ToolResult {
   }
 }
 
-export function execQuerySymbol(sandboxDir: string, args: { path: string; symbol: string }): ToolResult {
+export function execQuerySymbol(sandboxDir: string, args: { path: string; symbol: string }, readOnlyDirs?: string[]): ToolResult {
   try {
-    const abs = guardPath(sandboxDir, args.path);
+    const abs = guardReadPath(sandboxDir, args.path, readOnlyDirs);
     const output = findSymbolInFile(abs, args.symbol);
     return {
       status: "success",
@@ -178,9 +188,9 @@ export function execQuerySymbol(sandboxDir: string, args: { path: string; symbol
 }
 
 // Phase 5 Task 2: ledger is optional — see execRunCommand's identical note.
-export function execReadFile(sandboxDir: string, args: { path: string; offset?: number; limit?: number }, ledger?: EvidenceLedger): ToolResult {
+export function execReadFile(sandboxDir: string, args: { path: string; offset?: number; limit?: number }, ledger?: EvidenceLedger, readOnlyDirs?: string[]): ToolResult {
   try {
-    const abs = guardPath(sandboxDir, args.path);
+    const abs = guardReadPath(sandboxDir, args.path, readOnlyDirs);
     if (!existsSync(abs)) {
       return { status: "error", summary: `File not found: ${args.path}`, next_actions: ["use list_files to see what exists"] };
     }
@@ -196,10 +206,10 @@ export function execReadFile(sandboxDir: string, args: { path: string; offset?: 
   }
 }
 
-export function execListFiles(sandboxDir: string, args: { dir?: string; recursive?: boolean }): ToolResult {
+export function execListFiles(sandboxDir: string, args: { dir?: string; recursive?: boolean }, readOnlyDirs?: string[]): ToolResult {
   try {
     const relDir = args.dir ?? ".";
-    const abs = guardPath(sandboxDir, relDir);
+    const abs = guardReadPath(sandboxDir, relDir, readOnlyDirs);
     if (!existsSync(abs)) {
       return { status: "error", summary: `Directory not found: ${relDir}`, next_actions: ["create directory with write_file"] };
     }

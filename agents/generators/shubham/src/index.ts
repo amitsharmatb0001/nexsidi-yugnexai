@@ -5,7 +5,7 @@
 import { resolveGeneratorRunner, type Escalation } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import type { BuildPlan, GeneratorTask } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
 
@@ -24,6 +24,19 @@ export interface GeneratorResult {
 export function getOutputDir(projectId: string): string {
   return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, "backend");
 }
+
+// 2026-10-03 (Ledgerly run 4): the backend used ON CONFLICT on a unique
+// constraint the migrations never created, so every invoice save failed.
+// It may read (never write) the database builder's migrations.
+export function shubhamReadOnlyDirs(outputDir: string): string[] {
+  return [resolve(outputDir, "..", "db", "migrations")];
+}
+
+const MIGRATIONS_NOTE = `THE REAL DATABASE: the database builder's migrations are in ../db/migrations.
+You can read them with read_file and list_files (you cannot change them). Read
+them before writing or fixing any query, and match them exactly — e.g. an
+ON CONFLICT (a, b) needs a real UNIQUE (a, b) there. If the schema itself is
+wrong, call escalate_finding(target_agent: "pranav", ...) or report_blocked.`;
 
 // 2026-08-10: real gap found live (user request) — Shubham's self-check
 // mechanical gate ("requiredEvidenceKinds: ['http_check']") is satisfied by
@@ -218,6 +231,7 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
     systemPrompt: knownMistakesPrefix,
     initialMessage: (phase ? phase.header + "\n\n" : "") + buildAgentTask(plan),
     sandboxDir: outputDir,
+    readOnlyDirs: shubhamReadOnlyDirs(outputDir),
     projectId: plan.projectId,
     conversationKey: phase?.conversationKey,
     extendStepsWhileProgressing: Boolean(phase),
@@ -336,6 +350,8 @@ export function buildFixTask(findings: string[], plan: BuildPlan): string {
 
 ${buildSystemContext(plan)}
 
+${MIGRATIONS_NOTE}
+
 ISSUES TO FIX:
 ${findings.map((f, i) => `${i + 1}. ${f}`).join("\n")}
 
@@ -382,6 +398,7 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     systemPrompt: knownMistakesPrefix,
     initialMessage: buildFixTask(findings, plan),
     sandboxDir: outputDir,
+    readOnlyDirs: shubhamReadOnlyDirs(outputDir),
     projectId: plan.projectId,
     // 2026-07-25 (Phase 1, full MVP upgrade): was `geminiModel:
     // process.env.GEMINI_GENERATION_MODEL`. Verified live (audit-2026-07-25.md,
@@ -512,6 +529,8 @@ ${JSON.stringify(plan.dbSchema, null, 2)}
 
 SHARED TYPES (frontend and backend must agree on these):
 ${plan.sharedTypes ?? ""}
+
+${MIGRATIONS_NOTE}
 
 PLANNED BACKEND FILES (you MUST implement every file listed here — this is
 the complete, exhaustive manifest; nothing outside this workflow's plan is

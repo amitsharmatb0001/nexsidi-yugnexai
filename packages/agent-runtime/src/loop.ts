@@ -72,6 +72,9 @@ export interface AgentRunConfig {
   systemPrompt: string;
   initialMessage: string;
   sandboxDir: string;         // all file ops scoped here
+  // Folders outside sandboxDir this agent may read and list but never write
+  // (the backend builder reads the database builder's migrations).
+  readOnlyDirs?: string[];
   projectId?: string;          // optional, for database history persistence
   enableDockerTools?: boolean; // Riya only
   enableHttpTools?: boolean;   // Shubham verification
@@ -969,11 +972,11 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         case "read_file": {
           const readArgs = args as { path: string; offset?: number; limit?: number };
           emitEvent({ type: "tool_call", tool: "read_file", input: { path: readArgs.path } });
-          result = execReadFile(config.sandboxDir, readArgs, ledger);
+          result = execReadFile(config.sandboxDir, readArgs, ledger, config.readOnlyDirs);
           break;
         }
         case "list_files": {
-          result = execListFiles(config.sandboxDir, args as { dir?: string; recursive?: boolean });
+          result = execListFiles(config.sandboxDir, args as { dir?: string; recursive?: boolean }, config.readOnlyDirs);
           break;
         }
         case "edit_file": {
@@ -1073,7 +1076,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           break;
         }
         case "query_symbol": {
-          result = execQuerySymbol(config.sandboxDir, args as { path: string; symbol: string });
+          result = execQuerySymbol(config.sandboxDir, args as { path: string; symbol: string }, config.readOnlyDirs);
           break;
         }
         case "spawn_subagent": {

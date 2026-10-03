@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isInsideDir, outsidePathArgs, guardCommand, composePathsOutside } from "./ownership.ts";
 import { execRunCommand } from "./tools/command.ts";
-import { execReadFile } from "./tools/file.ts";
+import { execReadFile, execListFiles, execWriteFile, execEditFile } from "./tools/file.ts";
 import { execDockerCompose } from "./tools/docker.ts";
 
 // 2026-10-02 (Ledgerly benchmark run 2, approved by Amit): every agent does
@@ -129,6 +129,34 @@ test("an agent's own allow-all flag cannot read another folder (real run)", asyn
     const r = await execRunCommand(frontend, { command: `node --allow-fs-read=* -e "console.log(require('fs').readFileSync('../backend/secret.txt','utf8'))"` });
     expect(String(r.output ?? "")).not.toContain("backend work");
     expect(r.status).toBe("error");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 2026-10-03 (Ledgerly benchmark run 4): the backend builder wrote
+// `ON CONFLICT (user_id, financial_year)` while the database builder's
+// migration had no such unique constraint — every invoice save failed with a
+// 500. The backend builder could not read the migrations, so it tested
+// against a schema it guessed. It may now read them; it still cannot change them.
+test("an agent can read and list a folder it was given read-only, but not write it", () => {
+  const { root, backend } = build();
+  try {
+    const migrations = join(root, "db", "migrations");
+    mkdirSync(migrations, { recursive: true });
+    writeFileSync(join(migrations, "0000_initial.sql"), "CREATE TABLE invoice_sequences (user_id uuid);");
+    const ro = [migrations];
+    const read = execReadFile(backend, { path: "../db/migrations/0000_initial.sql" }, undefined, ro);
+    expect(read.status).toBe("success");
+    expect(String(read.output)).toContain("invoice_sequences");
+    const list = execListFiles(backend, { dir: "../db/migrations" }, ro);
+    expect(String(list.output)).toContain("0000_initial.sql");
+    expect(execWriteFile(backend, { path: "../db/migrations/0000_initial.sql", content: "x" }).status).toBe("error");
+    expect(execEditFile(backend, { path: "../db/migrations/0000_initial.sql", old_str: "uuid", new_str: "text" }).status).toBe("error");
+    // only that folder: the rest of db/ stays closed
+    writeFileSync(join(root, "db", "secret.ts"), "not yours");
+    expect(execReadFile(backend, { path: "../db/secret.ts" }, undefined, ro).status).toBe("error");
+    expect(execReadFile(backend, { path: "../frontend/x" }, undefined, ro).status).toBe("error");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

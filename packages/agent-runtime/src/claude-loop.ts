@@ -356,11 +356,11 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         }
         case "read_file": {
           emitEvent({ type: "tool_call", tool: "read_file", input: { path: (args as { path: string }).path } });
-          result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number }, ledger);
+          result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number }, ledger, config.readOnlyDirs);
           break;
         }
         case "list_files": {
-          result = execListFiles(config.sandboxDir, args as { dir?: string; recursive?: boolean });
+          result = execListFiles(config.sandboxDir, args as { dir?: string; recursive?: boolean }, config.readOnlyDirs);
           break;
         }
         case "edit_file": {

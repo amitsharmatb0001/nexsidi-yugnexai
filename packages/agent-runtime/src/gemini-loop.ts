@@ -896,7 +896,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "read_file": {
-          result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number }, ledger);
+          result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number }, ledger, config.readOnlyDirs);
           // See seenFileReads' declaration for the measured waste this closes.
           // Only dedups a whole-file read (no offset/limit window) that came
           // back successfully — a paginated read is a different view of the
@@ -922,7 +922,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "list_files": {
-          result = execListFiles(config.sandboxDir, args as { dir?: string; recursive?: boolean });
+          result = execListFiles(config.sandboxDir, args as { dir?: string; recursive?: boolean }, config.readOnlyDirs);
           break;
         }
         case "edit_file": {
@@ -1028,7 +1028,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "query_symbol": {
-          result = execQuerySymbol(config.sandboxDir, args as { path: string; symbol: string });
+          result = execQuerySymbol(config.sandboxDir, args as { path: string; symbol: string }, config.readOnlyDirs);
           break;
         }
         // 2026-07-25 (Phase 2.2, full MVP upgrade): was advertised to every
