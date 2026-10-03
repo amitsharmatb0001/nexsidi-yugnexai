@@ -105,6 +105,9 @@ export function shouldSkipStage2(stage1Findings: string[]): boolean {
 export interface Tier3ReviewResult {
   pass: boolean;
   findings: string[];
+  // 2026-10-03 (evidence-only plan, T3): set when the review did not finish —
+  // "not checked", which is neither a pass nor a list of findings.
+  incomplete?: string;
 }
 
 // packages/agent-runtime's execScreenshot resolves outputPath relative to
@@ -191,6 +194,14 @@ export async function runTier3Review(
   );
 
   const stage1Findings = parseFindings(stage1.summary);
+
+  // 2026-10-03 (evidence-only plan, T3): a first pass that did not finish and
+  // reported nothing has not shown the app is fine — before, that read as
+  // "zero claims" and the review passed without the second check.
+  if (!stage1.success && stage1Findings.length === 0) {
+    const why = (stage1.errors ?? []).join("; ") || stage1.summary || "no reason given";
+    return { pass: false, findings: [], incomplete: `the live review did not finish: ${why.slice(0, 300)}` };
+  }
 
   // 2026-08-31: optimization, live-observed (project 05b590e98102) — Stage 2
   // exists to independently re-verify Stage 1's CLAIMS before trusting them;

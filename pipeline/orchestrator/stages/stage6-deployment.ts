@@ -85,8 +85,11 @@ export function guardLiveRetest(projectId: string, retest: LiveRetestResult): Li
   if (code.dropped.length + settled.dropped.length === 0) return retest;
   // The spec check's own verdict stands only while one of its findings remains.
   const specOpen = kept.some((f) => String(f.issue ?? f.detail ?? "").includes("[spec-compliance]"));
-  const othersPass = retest.liveEval?.pass !== false && (retest.specCompliance?.pass !== false || !specOpen);
-  return { ...retest, findings: kept, pass: kept.length === 0 && othersPass };
+  const specCompliance = retest.specCompliance && !retest.specCompliance.pass && !specOpen
+    ? { ...retest.specCompliance, pass: true, violations: [] }
+    : retest.specCompliance;
+  const othersPass = retest.liveEval?.pass !== false && specCompliance?.pass !== false;
+  return { ...retest, findings: kept, specCompliance, pass: kept.length === 0 && othersPass };
 }
 
 export interface LiveRetestResult {
@@ -100,6 +103,9 @@ export interface LiveRetestResult {
   // 2026-08-05: literal spec-compliance result, when it ran. Same optionality
   // convention as liveEval above — independent of it, not derived from it.
   specCompliance?: SpecComplianceResult;
+  // 2026-10-03 (evidence-only plan, T3): required checks that could not run,
+  // with why. Never routed to a builder; the delivery is not verified.
+  notChecked?: string[];
 }
 
 // 2026-09-29: real bug (project a034f90ba50e). A failed live design review
@@ -133,7 +139,9 @@ export interface Stage6Result {
 }
 
 export interface DeliverySummary {
-  status: "delivered" | "failed";
+  // "not_verified": a required check could not run (evidence-only plan, T3)
+  status: "delivered" | "failed" | "not_verified";
+  notChecked?: string[];
   appUrl: string;
   githubRepo: string | null;
 }
@@ -156,8 +164,11 @@ export function buildDeliverySummary(
   // missing form field). Independent of liveEvalOk: neither gate rescues
   // the other.
   const specComplianceOk = retest.specCompliance ? retest.specCompliance.pass : true;
+  const passed = deployResult.success && retest.pass && liveEvalOk && specComplianceOk;
+  const notChecked = retest.notChecked ?? [];
   return {
-    status: deployResult.success && retest.pass && liveEvalOk && specComplianceOk ? "delivered" : "failed",
+    status: !passed ? "failed" : notChecked.length > 0 ? "not_verified" : "delivered",
+    ...(notChecked.length > 0 ? { notChecked } : {}),
     appUrl: deployResult.appUrl,
     githubRepo: deployResult.githubRepo,
   };
@@ -230,11 +241,27 @@ async function runRealLiveRetest(
   appUrl: string,
   backendUrl: string,
   stage4Result: Stage4Result,
+  plan?: BuildPlan,
+): Promise<LiveRetestResult> {
+  const notChecked: string[] = [];
+  const result = await liveRetestChecks(projectId, appUrl, backendUrl, stage4Result, plan, notChecked);
+  const all = [...notChecked, ...(result.specCompliance?.notChecked ?? [])];
+  if (all.length === 0) return result;
+  console.error(`[stage6] not checked:\n${all.join("\n")}`);
+  return { ...result, notChecked: all };
+}
+
+async function liveRetestChecks(
+  projectId: string,
+  appUrl: string,
+  backendUrl: string,
+  stage4Result: Stage4Result,
   // F5 (agent-autonomy-assessment): same systemContext fan-out as the
   // pre-deployment gate (stage5-qa-fix-loop.ts) — the live retest re-runs
   // the SAME Navya/Karan/Deepika and deserves the same spec/contract/schema
   // context, not just the pre-deploy pass.
-  plan?: BuildPlan,
+  plan: BuildPlan | undefined,
+  notChecked: string[],
 ): Promise<LiveRetestResult> {
   const { runStage5 } = await import("./stage5-adversarial-qa.ts");
 
@@ -276,7 +303,7 @@ async function runRealLiveRetest(
         console.error(`[stage6] Spec-compliance check FAILED:\n${specCompliance.violations.join("\n")}`);
       }
     } catch (err) {
-      console.error(`[stage6] Spec-compliance check could not run — skipping (fail-open): ${String(err)}`);
+      notChecked.push(`spec check could not run: ${String(err).slice(0, 300)}`);
     }
 
     // Cheapest of all — pure file read, no live URL needed at all.
@@ -287,7 +314,7 @@ async function runRealLiveRetest(
         console.error(`[stage6] Stack-conformance check FAILED:\n${stackConformance.violations.join("\n")}`);
       }
     } catch (err) {
-      console.error(`[stage6] Stack-conformance check could not run — skipping (fail-open): ${String(err)}`);
+      notChecked.push(`stack check could not run: ${String(err).slice(0, 300)}`);
     }
 
     // 2026-08-05: BOTH checks above previously blocked `pass` correctly but
@@ -332,6 +359,11 @@ async function runRealLiveRetest(
       try {
         const smoke = await runAuthSmokeTest({ appUrl, backendUrl, endpoints: plan.apiContract.endpoints, browser });
         console.log(`[stage6] Auth smoke test: ${smoke.ran ? (smoke.pass ? "passed" : "FAILED") : `skipped (${smoke.skippedReason})`}`);
+        // An app with no sign-up/sign-in has nothing to check; any other skip
+        // means the check could not look.
+        if (!smoke.ran && !/has no sign-up and sign-in endpoints/.test(smoke.skippedReason ?? "")) {
+          notChecked.push(`sign-up/sign-in check: ${smoke.skippedReason}`);
+        }
         if (smoke.ran && !smoke.pass) {
           return { pass: false, findings: smoke.findings.map((issue) => ({ file: "frontend/app", issue: `[auth-smoke] ${issue}` })), specCompliance };
         }
@@ -345,6 +377,12 @@ async function runRealLiveRetest(
     // runStage5's own comment for why the pre-deployment gate defaults to
     // false instead.
     const result: Stage5Result = await runStage5(projectId, stage4Result, true, plan);
+    // A review that could not finish is "not checked", not a failed app:
+    // nothing to route, and the delivery is not verified (see runRealLiveRetest).
+    if (result.notChecked?.length) {
+      notChecked.push(...result.notChecked);
+      if (result.findings.length === 0) return { pass: true, findings: [], specCompliance };
+    }
     if (!result.pass) {
       // Don't spend a live browser evaluation judging the design of an app
       // that's about to loop back for objective bug fixes anyway — System B
@@ -861,11 +899,14 @@ export async function runStage6(
     }
   }
 
+  const deliverySummary = buildDeliverySummary(deployResult, retest);
   return {
-    success: retest.pass,
+    // "not_verified" is not success: the workflow retries it and then asks a
+    // human, with the reasons in deliverySummary.notChecked.
+    success: retest.pass && deliverySummary.status === "delivered",
     appUrl: deployResult.appUrl,
     findings: retest.findings,
-    deliverySummary: buildDeliverySummary(deployResult, retest),
+    deliverySummary,
   };
 }
 

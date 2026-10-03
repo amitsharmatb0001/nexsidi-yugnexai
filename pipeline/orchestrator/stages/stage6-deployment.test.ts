@@ -629,7 +629,8 @@ test("reviewDbUrlForBuild reads the build's compose file next to the frontend di
 
 test("the live retest hands the review TIER3_DB_URL and restores it afterwards", () => {
   const source = require("node:fs").readFileSync(new URL("./stage6-deployment.ts", import.meta.url), "utf-8");
-  const fn = source.slice(source.indexOf("async function runRealLiveRetest"));
+  // the checks moved into liveRetestChecks (runRealLiveRetest wraps it to collect "not checked")
+  const fn = source.slice(source.indexOf("async function liveRetestChecks"));
   const body = fn.slice(0, fn.indexOf("\n}\n"));
   expect(body).toContain("process.env.TIER3_DB_URL = ");
   expect(body).toContain("delete process.env.TIER3_DB_URL");
@@ -750,4 +751,23 @@ test("a live finding the builder disputes and Tilotma rules not true is dropped,
     process.env.BUILD_DIR = prev;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// 2026-10-03 (evidence-only plan, T3): a required check that could not run is
+// "not checked" — the delivery is not verified, so it is never "delivered",
+// and nothing is sent to a builder for it.
+test("a delivery with a check that could not run is not verified, and nothing is routed to a builder", async () => {
+  let fixCalled = false;
+  const deps: Stage6Deps = {
+    deployFn: async () => ({ success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] }),
+    liveRetestFn: async () => ({ pass: true, findings: [], notChecked: ["spec check: could not read the live theme"] }),
+    fixAanya: async () => { fixCalled = true; return { success: true }; },
+    fixShubham: async () => { fixCalled = true; return { success: true }; },
+  };
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(fixCalled).toBe(false);
+  expect(result.success).toBe(false);
+  expect(result.stuck).toBeFalsy();
+  expect(result.deliverySummary.status).toBe("not_verified");
+  expect(result.deliverySummary.notChecked).toEqual(["spec check: could not read the live theme"]);
 });

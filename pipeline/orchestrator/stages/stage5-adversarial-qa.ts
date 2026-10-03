@@ -60,6 +60,9 @@ export interface Stage5Result {
   // it, since navyaResult/karanResult/deepikaResult are always available by
   // the time any of them returns.
   perAgentFindings?: Stage5RawFindings;
+  // 2026-10-03 (evidence-only plan, T3): reviews that could not finish, with
+  // why — not findings, so nothing is routed to a builder for them.
+  notChecked?: string[];
 }
 
 // Injectable seam for testing — runStage5() below wraps this with the real
@@ -271,6 +274,9 @@ export async function runStage5WithAgents(
   }
 
   const tier3 = await agents.runTier3Review(projectId, stage4Result);
+  if (tier3.incomplete) {
+    return { pass: false, findings: [], perAgentFindings, notChecked: [tier3.incomplete] };
+  }
   return {
     pass: tier3.pass,
     // 2026-09-29 (project a034f90ba50e): on READY the FINDINGS list holds the

@@ -345,3 +345,12 @@ test("the live theme read collects every --nx-* variable, whatever its name", as
   expect(vars.color).toBeUndefined();
   expect(checkColorCompliance(["#059669", "#0F172A"], vars).pass).toBe(true);
 });
+
+// 2026-10-03 (evidence-only plan, T3): reading no theme colours at all is not
+// evidence the colours are missing — it means the check could not look. That
+// is "not checked", never a failure sent to a builder, and never a pass.
+test("a colour check that reads no theme values reports not checked, with no violation", () => {
+  const r = checkColorCompliance(["#059669"], {});
+  expect(r.violations).toEqual([]);
+  expect(r.notChecked?.[0]).toContain("could not read");
+});

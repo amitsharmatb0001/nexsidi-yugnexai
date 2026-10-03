@@ -32,6 +32,10 @@ export interface LiveSnapshot {
 export interface SpecComplianceResult {
   pass: boolean;
   violations: string[];
+  // 2026-10-03 (evidence-only plan, T3): what this check could not look at,
+  // and why. Not a pass and not a violation — the delivery is not verified
+  // until it is checked.
+  notChecked?: string[];
 }
 
 // Pure — deterministic, no live calls. Saanvi's spec-generation prompt folds
@@ -69,6 +73,11 @@ export function checkColorCompliance(
       .map((v) => v.trim().toUpperCase())
       .filter(Boolean),
   );
+  // Reading nothing is not evidence the colours are missing (Ledgerly run 4:
+  // "found: none" on a site that showed them) — the check could not look.
+  if (liveValues.size === 0) {
+    return { pass: true, violations: [], notChecked: [`spec colours ${specColors.join(", ")}: could not read any theme colours from the live page`] };
+  }
   const missing = specColors.filter((c) => !liveValues.has(c));
   if (missing.length === 0) return { pass: true, violations: [] };
   const found = [...liveValues].join(", ") || "none";
@@ -111,9 +120,11 @@ export function checkSpecCompliance(
 ): SpecComplianceResult {
   const colorResult = checkColorCompliance(extractSpecColors(spec), live.cssVars);
   const formResult = checkFormFieldCompliance(extractRequiredFormFields(spec), live.formFieldsByPath);
+  const notChecked = [...(colorResult.notChecked ?? []), ...(formResult.notChecked ?? [])];
   return {
     pass: colorResult.pass && formResult.pass,
     violations: [...colorResult.violations, ...formResult.violations],
+    ...(notChecked.length > 0 ? { notChecked } : {}),
   };
 }
 

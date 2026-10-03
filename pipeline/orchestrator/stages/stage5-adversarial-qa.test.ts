@@ -736,3 +736,19 @@ test("a failed Tier 3 review still reports its findings", async () => {
   expect(result.pass).toBe(false);
   expect(result.findings.map((f) => f.issue)).toEqual(["Sign-up form posts to the wrong port"]);
 });
+
+// 2026-10-03 (evidence-only plan, T3): Tilotma's live review that did not
+// finish used to read as "nothing found" and pass. It is now "not checked" —
+// not a pass, and nothing is sent to a builder for it.
+test("a live review that did not finish is not checked, not a pass, and routes nothing", async () => {
+  const agents = makeAgents({ runTier3Review: async () => ({ pass: false, findings: [], incomplete: "the live review did not finish: out of steps" }) });
+  const result = await runStage5WithAgents("test-proj", STAGE4_RESULT, agents);
+  expect(result.pass).toBe(false);
+  expect(result.findings).toEqual([]);
+  expect(result.notChecked).toEqual(["the live review did not finish: out of steps"]);
+});
+
+test("Tilotma's review: a first pass that did not finish and found nothing is incomplete, not clean", async () => {
+  const src = (await import("node:fs")).readFileSync(new URL("../../../agents/tilotma/src/tier3-review.ts", import.meta.url), "utf-8");
+  expect(src).toContain("if (!stage1.success && stage1Findings.length === 0)");
+});
