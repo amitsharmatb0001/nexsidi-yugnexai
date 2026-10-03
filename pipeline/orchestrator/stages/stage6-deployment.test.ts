@@ -771,3 +771,28 @@ test("a delivery with a check that could not run is not verified, and nothing is
   expect(result.deliverySummary.status).toBe("not_verified");
   expect(result.deliverySummary.notChecked).toEqual(["spec check: could not read the live theme"]);
 });
+
+// 2026-10-04 (Ledgerly run 4, overnight): the fix loop saw the same finding
+// twice and stopped as stuck, but Stage 6 returned stuck=false — the workflow
+// read that as progress and re-ran the whole stage, again and again. A loop
+// that is stuck, or a round where nothing could change, now says so.
+test("a stuck live fix loop reports stuck, so the workflow asks a human instead of re-running the stage", async () => {
+  const deps: Stage6Deps = {
+    deployFn: async () => ({ success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] }),
+    liveRetestFn: async () => ({ pass: false, findings: [{ file: "frontend/app", issue: "[auth-smoke] same finding every time" }] }),
+    fixAanya: async () => ({ success: true, filesWritten: ["app/x.tsx"] }),
+  };
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(result.success).toBe(false);
+  expect(result.stuck).toBe(true);
+});
+
+test("a live fix round that changed nothing reports stuck", async () => {
+  const deps: Stage6Deps = {
+    deployFn: async () => ({ success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] }),
+    liveRetestFn: async () => ({ pass: false, findings: [{ file: "frontend/app", issue: "[auth-smoke] x" }] }),
+    fixAanya: async () => ({ success: false }),
+  };
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(result.stuck).toBe(true);
+});

@@ -808,6 +808,10 @@ export async function runStage6(
   let retest = guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl));
   let prevFindingsSig = "";
   let fixAttempt = 0;
+  // 2026-10-04 (Ledgerly run 4): a stuck loop, or a round where nothing could
+  // change, must be reported as stuck — otherwise the workflow reads the
+  // failure as progress and re-runs the whole stage.
+  let liveStuck = false;
 
   while (!retest.pass && fixAttempt < MAX_LIVE_FIX_ATTEMPTS) {
     fixAttempt++;
@@ -819,6 +823,7 @@ export async function runStage6(
 
     if (fixAttempt > 1 && findingsSig === prevFindingsSig) {
       console.log(`[stage6] Stuck loop detected: findings signature did not change on attempt ${fixAttempt}`);
+      liveStuck = true;
       break;
     }
     prevFindingsSig = findingsSig;
@@ -852,7 +857,10 @@ export async function runStage6(
         console.log(`[stage6] No specific findings to route — exiting fix loop`);
         break;
       }
-      if (outcome === "nothing_changed") break;
+      if (outcome === "nothing_changed") {
+        liveStuck = true;
+        break;
+      }
 
       console.log(`[stage6] Agent fixes completed — redeploying app via Riya`);
 
@@ -911,6 +919,7 @@ export async function runStage6(
     appUrl: deployResult.appUrl,
     findings: retest.findings,
     deliverySummary,
+    ...(liveStuck && !retest.pass ? { stuck: true } : {}),
   };
 }
 
