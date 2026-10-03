@@ -51,16 +51,17 @@ locked spec, or research with sources. Where no fact exists, the system says
 
 ## Tasks (each: failing test first, then code, then live check)
 
-- [ ] **T1 — Evidence on every finding.** `submit_findings` (qa-loop.ts) refuses findings without file+lines or reproduction and without severity; remove the MEDIUM default in Karan/Deepika parsers.
-- [ ] **T2 — "Review incomplete" is not a pass.** Karan/Deepika/Navya: steps exhausted, no submit, or model failures with zero findings → incomplete (blocks, reason shown). A clean pass carries a coverage record.
-- [ ] **T3 — "Not checked" result.** New third state for automatic checks; fail-open branches and zero-read checks return it; delivery summary and Tilotma see it; a required check that is "not checked" blocks "delivered".
-- [ ] **T4 — Evidence check replaces the text-only debate.** Read the cited lines; match → builder; mismatch → Tilotma.
-- [ ] **T5 — Builders confirm before fixing; `dispute_finding` tool.** All three builders' fix tasks and loops; disputes returned in the fix result.
-- [ ] **T6 — Tilotma settles disputes.** Stage 5 and Stage 6 send disputes to Tilotma's tool-using review; outcome recorded (instinct memory for checker/reviewer mistakes).
-- [ ] **T7 — Test data from the contract.** Arjun's contract carries field formats from the spec; Riya builds payloads from them; name table removed.
-- [ ] **T8 — Deploy error owner from the contract.**
-- [ ] **T9 — Instructions: missing input → ask or report blocked.** Sweep every skill file for "default"/"sensible"/"assume"-style permissions and replace them.
-- [ ] **T10 — Benchmark harness answers from the brief.** Gatekeeper reads a written answer sheet; anything else waits for Amit.
+- [x] **T1 — Evidence on every finding.** `submit_findings` (qa-loop.ts) refuses findings without file+lines or reproduction and without severity; remove the MEDIUM default in Karan/Deepika parsers.
+- [x] **T2 — "Review incomplete" is not a pass.** Karan/Deepika/Navya: steps exhausted, no submit, or model failures with zero findings → incomplete (blocks, reason shown). A clean pass carries a coverage record.
+- [x] **T3 — "Not checked" result.** New third state for automatic checks; fail-open branches and zero-read checks return it; delivery summary and Tilotma see it; a required check that is "not checked" blocks "delivered".
+- [x] **T4 — Evidence check replaces the text-only debate.** Read the cited lines; match → builder; mismatch → Tilotma.
+- [x] **T5 — Builders confirm before fixing; `dispute_finding` tool.** All three builders' fix tasks and loops; disputes returned in the fix result.
+- [x] **T6 — Tilotma settles disputes.** Stage 5 and Stage 6 send disputes to Tilotma's tool-using review; outcome recorded (instinct memory for checker/reviewer mistakes).
+- [x] **T7 — Test data: verdicts only from the app's answer.** (Changed during build: a test value the app rejects and that cannot be repaired from the app's own message is "not checked" — the input table only chooses inputs; every verdict comes from the app's response.)
+  - Original wording: Arjun's contract carries field formats from the spec; Riya builds payloads from them; name table removed.
+- [x] **T8 — Deploy error owner from the contract.** (No change needed: every API endpoint in the contract belongs to the backend builder, which owns the request that failed and can escalate a schema cause with the migrations it can now read.)
+- [x] **T9 — Instructions: missing input → ask or report blocked.** Sweep every skill file for "default"/"sensible"/"assume"-style permissions and replace them.
+- [x] **T10 — Benchmark harness answers from the brief.** Gatekeeper reads a written answer sheet; anything else waits for Amit.
 
 ## Proof (live, not just tests)
 
@@ -70,3 +71,20 @@ locked spec, or research with sources. Where no fact exists, the system says
 - The colour check with an unreadable theme reports "not checked".
 - A new Ledgerly run: every finding in the log has evidence attached; no
   "best judgement" answers in the planner transcript.
+
+## Status (3 Oct 2026)
+
+Done and committed: T1–T10 as marked above. Also found and fixed during the
+build: reviewers saw only the first 8,000 characters of a file; the database
+builder's fix always wrote a migration and read the wrong file; escalations
+defaulted to the database builder; Tilotma's live review passed when its first
+pass did not finish.
+
+Open — needs Amit's decision:
+- Admin account for apps without registration: the backend builder is told to
+  fall back to admin@localhost and a random password printed to the log when
+  ADMIN_EMAIL / ADMIN_PASSWORD are missing. Fact-based options: the system
+  writes them (owner's account email + a generated password in the delivered
+  .env), or the user gives them at spec approval.
+
+Open — needs a paid run: the live proof above.
