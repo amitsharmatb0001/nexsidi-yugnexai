@@ -370,6 +370,12 @@ export function repairPayloadFromValidationError(
   payload: Record<string, unknown>,
   errorText: string,
 ): Record<string, unknown> | null {
+  // 2026-10-03 (Ledgerly run 4): a length rule ("gstin: String must contain
+  // at most 15 character(s)") is just as much the backend validating
+  // correctly — fit the value to the rule it named and resend.
+  const lengthFixed = repairLengthErrors(payload, errorText);
+  if (lengthFixed) return lengthFixed;
+
   // Collect every quoted value the validator listed as acceptable.
   const expected = errorText.match(/Expected\s+((?:'[^']*'\s*\|\s*)*'[^']*')/i);
   if (!expected?.[1]) return null;
@@ -387,6 +393,53 @@ export function repairPayloadFromValidationError(
   if (!target) return null;
 
   return { ...payload, [target]: allowed[0] };
+}
+
+// 2026-10-03 (Ledgerly benchmark run 4): a GSTIN filled with the long marker
+// string was (correctly) rejected by the app — "at most 15 characters" — and
+// the deploy was marked failed twice on a working app. Fields whose name says
+// what they hold get a value of the real shape. Exported for tests.
+export function realisticValueFor(fieldName: string): string | null {
+  const n = fieldName.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (n.includes("gstin") || n === "gst" || n.endsWith("gstnumber")) return "27AAPFU0939F1ZV";
+  if (n === "pan" || n.endsWith("pannumber") || n === "panno") return "AAPFU0939F";
+  if (n.includes("ifsc")) return "SBIN0001234";
+  if (n.includes("upi")) return "verify.test@okaxis";
+  if (n.includes("sac") || n.includes("hsn")) return "998314";
+  if (n.includes("pincode") || (n.includes("pin") && n.includes("code")) || n.includes("zip") || n.includes("postal")) return "400001";
+  if (n.includes("phone") || n.includes("mobile") || n.includes("contactnumber") || n.includes("whatsapp")) return "9876543210";
+  if (n === "state" || (n.endsWith("state") && !n.includes("status"))) return "Maharashtra";
+  if (n === "city") return "Mumbai";
+  if (n === "country") return "India";
+  if (n.includes("website") || n.endsWith("url")) return "https://example.com";
+  if (n.includes("password")) return "Verify-Test-Passw0rd!";
+  return null;
+}
+
+/**
+ * Fits every field the validator named in a length error ("<field>: String
+ * must contain at most|least N character(s)", or "<field> must be at most N
+ * characters") — a realistic value of the right length when one fits, else
+ * the sent value cut or padded. Null when the error names no length rule.
+ */
+function repairLengthErrors(payload: Record<string, unknown>, errorText: string): Record<string, unknown> | null {
+  const rules = [...errorText.matchAll(/["\s,{]?(\w+)["']?\s*:?\s*(?:String )?must (?:contain|be) at (most|least) (\d+) char/gi)];
+  if (rules.length === 0) return null;
+  const fixed = { ...payload };
+  let changed = false;
+  for (const [, field, kind, nText] of rules) {
+    if (!field || !(field in fixed)) continue;
+    const n = Number(nText);
+    const current = String(fixed[field] ?? "");
+    const real = realisticValueFor(field);
+    const fits = (v: string) => (kind!.toLowerCase() === "most" ? v.length <= n : v.length >= n);
+    const next = real && fits(real) ? real : kind!.toLowerCase() === "most" ? current.slice(0, n) : current.padEnd(n, "x");
+    if (next !== current) {
+      fixed[field] = next;
+      changed = true;
+    }
+  }
+  return changed ? fixed : null;
 }
 
 function fieldsToPayload(body: string, marker: string): Record<string, unknown> | null {
@@ -445,7 +498,7 @@ function fieldsToPayload(body: string, marker: string): Record<string, unknown> 
       const isEndish = /^end(_|$)|_end(_|$)/i.test(lowerName);
       payload[fieldName] = new Date(Date.now() + 86_400_000 + (isEndish ? 3_600_000 : 0)).toISOString();
     }
-    else payload[fieldName] = marker;
+    else payload[fieldName] = realisticValueFor(fieldName) ?? marker;
   }
   return foundAny ? payload : null;
 }
@@ -824,7 +877,7 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
     const dynamicPayload = requestType && requestType !== "null"
       ? buildPayloadForRequestType(sharedTypesSource, requestType, marker)
       : null;
-    const createPayload = dynamicPayload ?? { title: marker };
+    let createPayload: Record<string, unknown> = dynamicPayload ?? { title: marker };
 
     // 2026-08-09: real bug found live (project meridianbk4, direct follow-on
     // to the inline-literal fix above) — once a "_id"-suffixed field was
@@ -840,11 +893,27 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
       if (resolved) (createPayload as Record<string, unknown>)[fieldName] = resolved;
     }
 
-    const createRes = await fetch(`${backendUrl}${createEp.path}`, {
+    let createRes = await fetch(`${backendUrl}${createEp.path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify(createPayload),
     });
+    // 2026-10-03 (Ledgerly run 4): a 400 that names the rule a test value
+    // broke (an allowed list, a length) means the app validated correctly
+    // and the test data was wrong — fit the value and resend once, same as
+    // verifyAllResourceCrud. A second failure is a real finding.
+    if (createRes.status === 400) {
+      const repaired = repairPayloadFromValidationError(createPayload, await createRes.clone().text());
+      if (repaired) {
+        console.log(`[riya] create ${createEp.path} rejected a test value — resending once with a value that fits the app's own rule`);
+        createPayload = repaired;
+        createRes = await fetch(`${backendUrl}${createEp.path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(createPayload),
+        });
+      }
+    }
     // 2026-07-27 (live, complex1): this test user registers with no role
     // (defaults to whatever the app's safest default is) and createEp is
     // just the FIRST auth:true POST endpoint — on a role-gated app (e.g.

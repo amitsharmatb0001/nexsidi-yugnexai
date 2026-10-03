@@ -193,7 +193,9 @@ test("buildPayloadForRequestType gives email-looking fields an email-shaped valu
   const payload = buildPayloadForRequestType(source, "RegisterRequest", "marker123");
   expect(payload!.name).toBe("marker123");
   expect(payload!.email).toContain("@");
-  expect(payload!.password).toBe("marker123");
+  // 2026-10-03: a realistic password, not the marker — the marker can be
+  // shorter than a real app's minimum length (Ledgerly needs 12).
+  expect(String(payload!.password).length).toBeGreaterThanOrEqual(12);
 });
 
 test("buildPayloadForRequestType returns null when the named type isn't found", () => {
