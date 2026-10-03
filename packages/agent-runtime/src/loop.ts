@@ -42,6 +42,7 @@ import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import type { FactLedgerEntry } from "./context-selection.ts";
 import type { ToolResult } from "./tools/file.ts";
+import type { WritableFile } from "./ownership.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 import { isNimHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice, StepBudget, isProgressStep } from "./step-budget.ts";
@@ -75,6 +76,10 @@ export interface AgentRunConfig {
   // Folders outside sandboxDir this agent may read and list but never write
   // (the backend builder reads the database builder's migrations).
   readOnlyDirs?: string[];
+  // Files inside sandboxDir this agent may change; unset means all of them.
+  // The deploy agent changes only deployment files (Ledgerly run 4: it
+  // edited the database builder's migration).
+  writableFile?: WritableFile;
   projectId?: string;          // optional, for database history persistence
   enableDockerTools?: boolean; // Riya only
   enableHttpTools?: boolean;   // Shubham verification
@@ -943,7 +948,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         case "write_file": {
           const writeArgs = args as { path: string; content: string };
           emitEvent({ type: "tool_call", tool: "write_file", input: { path: writeArgs.path, bytes: writeArgs.content.length } });
-          const r = execWriteFile(config.sandboxDir, writeArgs);
+          const r = execWriteFile(config.sandboxDir, writeArgs, config.writableFile);
           if (r.status === "success") {
             filesWritten.push(writeArgs.path);
             commitWorkspaceTransaction(config.sandboxDir, `Wrote ${writeArgs.path}`);
@@ -958,7 +963,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         case "write_files": {
           const writeArgs = args as { files: Array<{ path: string; content: string }> };
           emitEvent({ type: "tool_call", tool: "write_files", input: { count: writeArgs.files?.length ?? 0 } });
-          const r = execWriteFiles(config.sandboxDir, writeArgs);
+          const r = execWriteFiles(config.sandboxDir, writeArgs, config.writableFile);
           if (r.status === "success" && Array.isArray(writeArgs.files)) {
             for (const f of writeArgs.files) {
               filesWritten.push(f.path);
@@ -982,7 +987,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         case "edit_file": {
           const editArgs = args as { path: string; old_str: string; new_str: string };
           emitEvent({ type: "tool_call", tool: "edit_file", input: { path: editArgs.path } });
-          const r = execEditFile(config.sandboxDir, editArgs);
+          const r = execEditFile(config.sandboxDir, editArgs, config.writableFile);
           if (r.status === "success") {
             commitWorkspaceTransaction(config.sandboxDir, `Edited ${editArgs.path}`);
             emitEvent({ type: "tool_result", tool: "edit_file", status: "success", path: editArgs.path });
@@ -993,7 +998,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         case "delete_file": {
           const delArgs = args as { path: string };
           emitEvent({ type: "tool_call", tool: "delete_file", input: { path: delArgs.path } });
-          const r = execDeleteFile(config.sandboxDir, delArgs);
+          const r = execDeleteFile(config.sandboxDir, delArgs, config.writableFile);
           if (r.status === "success") {
             commitWorkspaceTransaction(config.sandboxDir, `Deleted ${delArgs.path}`);
           }
@@ -1003,7 +1008,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         case "run_command": {
           const commandArgs = args as { command: string; timeout_ms?: number };
           emitEvent({ type: "tool_call", tool: "run_command", input: commandArgs });
-          const r = await execRunCommand(config.sandboxDir, commandArgs, ledger);
+          const r = await execRunCommand(config.sandboxDir, commandArgs, ledger, config.writableFile);
           emitEvent({ type: "tool_result", tool: "run_command", status: r.status, summary: r.summary, output: (r.output ?? "").slice(0, 500) });
 
           // Self-repair harness: when a command fails and web_search is enabled,

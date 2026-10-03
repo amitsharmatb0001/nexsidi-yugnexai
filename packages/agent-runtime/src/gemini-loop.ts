@@ -877,7 +877,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         result = readOnlyToolBlockedResult(toolName);
       } else switch (toolName) {
         case "write_file": {
-          const r = execWriteFile(config.sandboxDir, args as { path: string; content: string });
+          const r = execWriteFile(config.sandboxDir, args as { path: string; content: string }, config.writableFile);
           if (r.status === "success") filesWritten.push((args as { path: string }).path);
           result = r;
           break;
@@ -888,7 +888,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         // execWriteFiles's comment in tools/file.ts for the root cause.
         case "write_files": {
           const writeArgs = args as { files: Array<{ path: string; content: string }> };
-          const r = execWriteFiles(config.sandboxDir, writeArgs);
+          const r = execWriteFiles(config.sandboxDir, writeArgs, config.writableFile);
           if (r.status === "success" && Array.isArray(writeArgs.files)) {
             for (const f of writeArgs.files) filesWritten.push(f.path);
           }
@@ -926,16 +926,16 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "edit_file": {
-          result = execEditFile(config.sandboxDir, args as { path: string; old_str: string; new_str: string });
+          result = execEditFile(config.sandboxDir, args as { path: string; old_str: string; new_str: string }, config.writableFile);
           break;
         }
         case "delete_file": {
-          result = execDeleteFile(config.sandboxDir, args as { path: string });
+          result = execDeleteFile(config.sandboxDir, args as { path: string }, config.writableFile);
           break;
         }
         case "run_command": {
           const commandArgs = args as { command: string; timeout_ms?: number };
-          const r = await execRunCommand(config.sandboxDir, commandArgs, ledger);
+          const r = await execRunCommand(config.sandboxDir, commandArgs, ledger, config.writableFile);
           const strike = await evaluateCommandStrike(strikeCounter, commandArgs.command, r);
           result = strike.toolResult;
           if (strike.exhausted) exhaustedThreeStrikes = true;

@@ -7,6 +7,16 @@
 // Prompts alone did not stop it, so the boundary is enforced here.
 import { isAbsolute, resolve, sep } from "node:path";
 
+/** Which files inside its folder an agent may change, by path relative to the folder ("/" separators). */
+export type WritableFile = (relPath: string) => boolean;
+
+export const NOT_YOUR_FILE_HINT =
+  "You may only change your own files here. If the app itself is broken (a server error, a query or schema problem, a page that fails), it belongs to the builder that made it: call report_blocked with the owner (backend, frontend or database builder), the exact error and how to reproduce it, then finish your own job and say what failed.";
+
+export function relativeInside(root: string, abs: string): string {
+  return resolve(abs).slice(resolve(root).length).replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
 export const OUTSIDE_FOLDER_HINT =
   "That is another agent's work. Do not work around it — call report_blocked with the owner, what you need and what you checked, then continue with your own task.";
 
@@ -44,10 +54,18 @@ const NPX_SCRIPT_RUNNERS = new Set(["tsx", "ts-node", "node", "bun", "esno", "vi
  * permission mode: reads and writes elsewhere and child processes are
  * refused (ERR_ACCESS_DENIED) — checked on Node 22.17.1, Windows.
  */
-export function guardCommand(cmd: string, args: string[], cwd: string): { error?: string; args: string[] } {
+export function guardCommand(cmd: string, args: string[], cwd: string, writableFile?: WritableFile): { error?: string; args: string[] } {
   const outside = outsidePathArgs(cwd, args);
   if (outside.length > 0) {
     return { error: `${outside.join(", ")} is outside your folder. ${OUTSIDE_FOLDER_HINT}`, args };
+  }
+  // An agent limited to some files (the deploy agent) cannot use cp or mkdir
+  // to reach the others.
+  if (writableFile && (cmd === "cp" || cmd === "mkdir")) {
+    const target = [...args].reverse().find((a) => !a.startsWith("-"));
+    if (cmd === "mkdir" || !target || !writableFile(relativeInside(cwd, resolve(cwd, target)))) {
+      return { error: `${cmd} ${target ?? ""} is not one of your files. ${NOT_YOUR_FILE_HINT}`, args };
+    }
   }
   if (cmd === "bun" && !(args[0] && BUN_ALLOWED.has(args[0]))) {
     return { error: "bun is only for installing packages here — run scripts with node.", args };
@@ -64,7 +82,9 @@ export function guardCommand(cmd: string, args: string[], cwd: string): { error?
       return { error: `${permissionFlag} is not allowed — node's permissions are set by the system and keep scripts inside your folder.`, args };
     }
     const own = resolve(cwd);
-    return { args: ["--permission", `--allow-fs-read=${own}`, `--allow-fs-write=${own}`, "--allow-addons", ...args] };
+    // a file-limited agent's scripts may read its folder but write nothing
+    const write = writableFile ? [] : [`--allow-fs-write=${own}`];
+    return { args: ["--permission", `--allow-fs-read=${own}`, ...write, "--allow-addons", ...args] };
   }
   return { args };
 }

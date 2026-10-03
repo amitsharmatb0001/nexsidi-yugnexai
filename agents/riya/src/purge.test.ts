@@ -51,3 +51,18 @@ test("backendErrorLines keeps the error lines of a compose log, without the serv
   ].join("\n");
   expect(backendErrorLines(log)).toEqual(["error: there is no unique or exclusion constraint matching the ON CONFLICT specification"]);
 });
+
+// Ledgerly run 4: the deploy agent edited db/migrations/0000_initial.sql and
+// left check-db.js / fix-db.js scripts in the delivered project. It changes
+// only deployment files now; an app bug goes to its builder.
+test("the deploy agent may change deployment files only", async () => {
+  const { isDeployFile } = await import("./index.ts");
+  for (const p of ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "backend/Dockerfile", "frontend/Dockerfile", "frontend/.dockerignore", ".env", "backend/.env.production"]) {
+    expect({ p, ok: isDeployFile(p) }).toEqual({ p, ok: true });
+  }
+  for (const p of ["db/migrations/0000_initial.sql", "backend/src/index.ts", "check-db.js", "frontend/app/page.tsx", "frontend/package.json", "backend/src/docker/Dockerfile"]) {
+    expect({ p, ok: isDeployFile(p) }).toEqual({ p, ok: false });
+  }
+  const src = (await import("node:fs")).readFileSync(new URL("./index.ts", import.meta.url), "utf-8");
+  expect(src).toContain("writableFile: isDeployFile");
+});

@@ -1653,6 +1653,7 @@ export async function run(
     systemPrompt: "",
     initialMessage: buildAgentTask(projectId, buildDir, frontendPort, backendPort, dbPort, jwtSecret),
     sandboxDir: buildDir,
+    writableFile: isDeployFile,
     projectId,
     enableDockerTools: true,
     enableHttpTools: true,
@@ -1775,6 +1776,22 @@ function backendErrorLog(buildDir: string): string {
   } catch {
     return "";
   }
+}
+
+// 2026-10-03 (Ledgerly run 4): the deploy agent found a missing unique index
+// and edited the database builder's migration itself, then ran out of steps —
+// the deploy failed anyway and the builder never learned of its bug. It also
+// left check-db.js / fix-db.js scripts in the delivered project. It changes
+// deployment files only (in the project root or one service folder); an app
+// bug it finds is reported, and Stage 6 sends it to the owning builder.
+export function isDeployFile(relPath: string): boolean {
+  const parts = relPath.replace(/\\/g, "/").replace(/^\.?\/+/, "").split("/");
+  if (parts.length > 2) return false;
+  const name = parts[parts.length - 1] ?? "";
+  return /^(docker-)?compose(\.[\w-]+)?\.ya?ml$/.test(name)
+    || /^Dockerfile(\.[\w-]+)?$/.test(name)
+    || name === ".dockerignore"
+    || /^\.env(\.[\w-]+)?$/.test(name);
 }
 
 export function projectFieldsAfterDeploy(appUrl: string): { appUrl: string; updatedAt: Date } {

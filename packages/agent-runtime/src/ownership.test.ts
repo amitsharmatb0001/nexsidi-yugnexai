@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isInsideDir, outsidePathArgs, guardCommand, composePathsOutside } from "./ownership.ts";
 import { execRunCommand } from "./tools/command.ts";
-import { execReadFile, execListFiles, execWriteFile, execEditFile } from "./tools/file.ts";
+import { execReadFile, execListFiles, execWriteFile, execWriteFiles, execEditFile, execDeleteFile } from "./tools/file.ts";
 import { execDockerCompose } from "./tools/docker.ts";
 
 // 2026-10-02 (Ledgerly benchmark run 2, approved by Amit): every agent does
@@ -160,4 +160,40 @@ test("an agent can read and list a folder it was given read-only, but not write 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// 2026-10-03 (Ledgerly benchmark run 4): the deploy agent found an app bug
+// (a missing unique index) and edited the database builder's migration
+// itself — then ran out of steps, so the deploy failed anyway, and the
+// builder never learned of its own bug. An agent can now be limited to the
+// files it owns inside its folder; anything else is refused with the way to
+// report it.
+test("an agent limited to some files cannot write, edit or delete others in its folder", () => {
+  const { root } = build();
+  try {
+    mkdirSync(join(root, "db", "migrations"), { recursive: true });
+    writeFileSync(join(root, "db", "migrations", "0000.sql"), "CREATE TABLE t (a int);");
+    const deployFiles = (p: string) => /(^|\/)(docker-compose\.yml|Dockerfile)$/.test(p);
+    expect(execWriteFile(root, { path: "docker-compose.yml", content: "services: {}" }, deployFiles).status).toBe("success");
+    expect(execWriteFile(root, { path: "backend/Dockerfile", content: "FROM node:22" }, deployFiles).status).toBe("success");
+    const edit = execEditFile(root, { path: "db/migrations/0000.sql", old_str: "a int", new_str: "a text" }, deployFiles);
+    expect(edit.status).toBe("error");
+    expect(edit.summary).toContain("report_blocked");
+    expect(execWriteFile(root, { path: "check-db.js", content: "x" }, deployFiles).status).toBe("error");
+    expect(execDeleteFile(root, { path: "db/migrations/0000.sql" }, deployFiles).status).toBe("error");
+    expect(execWriteFiles(root, { files: [{ path: "backend/src/x.ts", content: "x" }] }, deployFiles).status).toBe("error");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a file-limited agent's node scripts cannot write, and cp or mkdir cannot reach other files", () => {
+  const deployFiles = (p: string) => p === "docker-compose.yml";
+  const g = guardCommand("node", ["check.js"], "/b/p", deployFiles);
+  expect(g.error).toBeUndefined();
+  expect(g.args.some((a) => a.startsWith("--allow-fs-write"))).toBe(false);
+  expect(g.args.some((a) => a.startsWith("--allow-fs-read"))).toBe(true);
+  expect(guardCommand("cp", ["x.sql", "db/migrations/0000.sql"], "/b/p", deployFiles).error).toContain("report_blocked");
+  expect(guardCommand("mkdir", ["scripts"], "/b/p", deployFiles).error).toBeDefined();
+  expect(guardCommand("cp", ["a.yml", "docker-compose.yml"], "/b/p", deployFiles).error).toBeUndefined();
 });

@@ -4,7 +4,7 @@ import type { NimToolDef } from "@nexsidi/llm-client";
 import type { EvidenceLedger } from "../enforce/evidence.ts";
 import { rollbackWorkspaceTransaction } from "./git.ts";
 import { findSymbolInFile } from "../compaction.ts";
-import { isInsideDir, OUTSIDE_FOLDER_HINT } from "../ownership.ts";
+import { isInsideDir, OUTSIDE_FOLDER_HINT, NOT_YOUR_FILE_HINT, relativeInside, type WritableFile } from "../ownership.ts";
 
 export interface ToolResult {
   status: "success" | "error";
@@ -18,6 +18,16 @@ function guardPath(sandboxDir: string, relPath: string): string {
   const abs = resolve(join(sandboxDir, relPath));
   if (!isInsideDir(sandboxDir, abs)) {
     throw new Error(`Path traversal blocked: "${relPath}" escapes sandbox — it is outside your folder. ${OUTSIDE_FOLDER_HINT}`);
+  }
+  return abs;
+}
+
+// Writing, editing and deleting: inside the folder, and — for an agent
+// limited to some files (the deploy agent, Ledgerly run 4) — only those.
+function guardWritePath(sandboxDir: string, relPath: string, writableFile?: WritableFile): string {
+  const abs = guardPath(sandboxDir, relPath);
+  if (writableFile && !writableFile(relativeInside(sandboxDir, abs))) {
+    throw new Error(`"${relPath}" is not one of your files. ${NOT_YOUR_FILE_HINT}`);
   }
   return abs;
 }
@@ -47,9 +57,9 @@ export function cleanComposeContent(filePath: string, content: string): string {
   return content;
 }
 
-export function execWriteFile(sandboxDir: string, args: { path: string; content: string }): ToolResult {
+export function execWriteFile(sandboxDir: string, args: { path: string; content: string }, writableFile?: WritableFile): ToolResult {
   try {
-    const abs = guardPath(sandboxDir, args.path);
+    const abs = guardWritePath(sandboxDir, args.path, writableFile);
     mkdirSync(dirname(abs), { recursive: true });
     // Full-system audit L2: some models send `content` as a JSON object
     // instead of a string (observed in stress-test run 7 — the same wrong
@@ -85,11 +95,11 @@ export function execWriteFile(sandboxDir: string, args: { path: string; content:
 // tool shape itself. Each file is written independently via execWriteFile —
 // a failure on file N does not roll back files 1..N-1 (they already exist on
 // disk); the per-file result array tells the caller exactly which failed.
-export function execWriteFiles(sandboxDir: string, args: { files: Array<{ path: string; content: string }> }): ToolResult {
+export function execWriteFiles(sandboxDir: string, args: { files: Array<{ path: string; content: string }> }, writableFile?: WritableFile): ToolResult {
   if (!Array.isArray(args.files) || args.files.length === 0) {
     return { status: "error", summary: "write_files requires a non-empty files array", next_actions: ["pass at least one {path, content} entry"] };
   }
-  const results = args.files.map((f) => ({ path: f.path, ...execWriteFile(sandboxDir, f) }));
+  const results = args.files.map((f) => ({ path: f.path, ...execWriteFile(sandboxDir, f, writableFile) }));
   const failed = results.filter((r) => r.status === "error");
   if (failed.length > 0) {
     return {
@@ -111,9 +121,9 @@ export function execWriteFiles(sandboxDir: string, args: { files: Array<{ path: 
 // content. Mirrors Anthropic's own text-editor str_replace command — exactly
 // one match required, otherwise it's an error the model can act on (add more
 // surrounding context, or confirm it meant to touch every occurrence).
-export function execEditFile(sandboxDir: string, args: { path: string; old_str: string; new_str: string }): ToolResult {
+export function execEditFile(sandboxDir: string, args: { path: string; old_str: string; new_str: string }, writableFile?: WritableFile): ToolResult {
   try {
-    const abs = guardPath(sandboxDir, args.path);
+    const abs = guardWritePath(sandboxDir, args.path, writableFile);
     if (!existsSync(abs)) {
       return { status: "error", summary: `File not found: ${args.path}`, next_actions: ["use list_files to see what exists", "use write_file to create a new file"] };
     }
@@ -142,9 +152,9 @@ export function execEditFile(sandboxDir: string, args: { path: string; old_str: 
 // (blocked — not in command.ts's ALLOWED_COMMANDS), then burned ~15
 // iterations on workarounds (node -e "fs.unlinkSync(...)", checking
 // existence, writing placeholder content) instead of a direct tool call.
-export function execDeleteFile(sandboxDir: string, args: { path: string }): ToolResult {
+export function execDeleteFile(sandboxDir: string, args: { path: string }, writableFile?: WritableFile): ToolResult {
   try {
-    const abs = guardPath(sandboxDir, args.path);
+    const abs = guardWritePath(sandboxDir, args.path, writableFile);
     if (!existsSync(abs)) {
       return { status: "error", summary: `File not found: ${args.path}`, next_actions: ["use list_files to see what exists"] };
     }

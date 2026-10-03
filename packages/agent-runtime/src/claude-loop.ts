@@ -348,7 +348,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         case "write_file": {
           const writeArgs = args as { path: string; content: string };
           emitEvent({ type: "tool_call", tool: "write_file", input: { path: writeArgs.path, bytes: writeArgs.content.length } });
-          const r = execWriteFile(config.sandboxDir, writeArgs);
+          const r = execWriteFile(config.sandboxDir, writeArgs, config.writableFile);
           if (r.status === "success") filesWritten.push(writeArgs.path);
           emitEvent({ type: "tool_result", tool: "write_file", status: r.status, path: writeArgs.path });
           result = r;
@@ -366,20 +366,20 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         case "edit_file": {
           const editArgs = args as { path: string; old_str: string; new_str: string };
           emitEvent({ type: "tool_call", tool: "edit_file", input: { path: editArgs.path } });
-          result = execEditFile(config.sandboxDir, editArgs);
+          result = execEditFile(config.sandboxDir, editArgs, config.writableFile);
           emitEvent({ type: "tool_result", tool: "edit_file", status: result.status, path: editArgs.path });
           break;
         }
         case "delete_file": {
           const delArgs = args as { path: string };
           emitEvent({ type: "tool_call", tool: "delete_file", input: { path: delArgs.path } });
-          result = execDeleteFile(config.sandboxDir, delArgs);
+          result = execDeleteFile(config.sandboxDir, delArgs, config.writableFile);
           break;
         }
         case "run_command": {
           const commandArgs = args as { command: string; timeout_ms?: number };
           emitEvent({ type: "tool_call", tool: "run_command", input: commandArgs });
-          result = await execRunCommand(config.sandboxDir, commandArgs, ledger);
+          result = await execRunCommand(config.sandboxDir, commandArgs, ledger, config.writableFile);
           emitEvent({ type: "tool_result", tool: "run_command", status: result.status, summary: result.summary, output: (result.output ?? "").slice(0, 500) });
           if (result.status === "error" && config.enableWebSearch) {
             const errorSnippet = (result.output ?? result.summary ?? "").slice(0, 150);
