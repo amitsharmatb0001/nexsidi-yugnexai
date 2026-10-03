@@ -21,6 +21,12 @@ HTTP status codes: 200 OK, 201 Created, 400 Bad Request, 401 Unauthorized, 403 F
 404 Not Found, 409 Conflict, 422 Unprocessable Entity, 500 Internal Server Error.
 
 ## Non-negotiable rules
+- Never compute a result from an assumed value. If data that decides a result
+  (tax type, price, permission, ownership) is missing — e.g. the business has
+  not set its state, so CGST+SGST vs IGST is unknown — refuse with a clear 400
+  that says what to fill in, never fall back to a default. (Ledgerly benchmark
+  run 4: an unknown state was treated as intra-state, then "fixed" by treating
+  it as inter-state — tax on an assumption both times.)
 - Every route has input validation (zod). Never trust req.body directly.
 - Parameterized queries only. Never string-interpolate user input into SQL.
 - Every endpoint returns the standard envelope above — no bare objects, no bare arrays.

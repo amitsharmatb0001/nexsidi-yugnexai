@@ -68,6 +68,13 @@ Never use `@apply` — style with @yugnex/core's `css()`/theme tokens, not Tailw
 - Signed in: the app's main destinations and Sign Out. Signed out: Sign In
   and Get Started. Never both.
 
+## Missing data the user must give
+- Never show or submit a result worked out from an assumed value (tax type,
+  price, totals). If data that decides it is missing — e.g. the business state
+  for GST — show what is missing and a link to where the user sets it, and
+  keep the action disabled until it is set. The backend refuses such requests
+  too; the two must agree.
+
 ## Empty states
 - Every list or dashboard with no data shows an icon or illustration, one
   sentence, and the primary action as a button — never a bare sentence.
