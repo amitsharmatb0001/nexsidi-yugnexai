@@ -4,6 +4,7 @@ import type { ToolResult } from "./file.ts";
 import type { EvidenceLedger } from "../enforce/evidence.ts";
 import { buildSandboxEnv } from "./sandbox-env.ts";
 import { guardCommand } from "../ownership.ts";
+import { runBuiltinCommand } from "./builtin-commands.ts";
 
 // Command allowlist — from nexsidi-sandbox skill (Anthropic autonomous-coding baseline)
 const ALLOWED_COMMANDS = new Set([
@@ -143,6 +144,15 @@ export function execRunCommand(
       summary: `Command refused: ${guarded.error}`,
       next_actions: ["Stay in your own folder", "Call report_blocked if you need another agent's work"],
     });
+  }
+
+  // cat/ls/head/tail/wc/pwd run in-process so they work the same on every
+  // machine (Git's usr\bin is not on PATH when the worker runs from
+  // PowerShell — see builtin-commands.ts).
+  const builtin = runBuiltinCommand(args.command, cmd, guarded.args, cwd);
+  if (builtin) {
+    if (builtin.status === "success") ledger?.record("command_output", `${args.command} -> exited 0`);
+    return Promise.resolve(builtin);
   }
 
   const timeout = Math.min(args.timeout_ms ?? 120_000, 300_000);
