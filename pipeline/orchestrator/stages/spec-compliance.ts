@@ -287,6 +287,16 @@ export function toFindings(result: SpecComplianceResult, defaultFile: string): A
 // entry points — see stage5-adversarial-qa.ts's runStage5 vs
 // runStage5WithAgents split); checkSpecCompliance and its pure helpers above
 // carry the real test coverage.
+// 2026-10-03 (Ledgerly benchmark run 4): this used to ask for seven fixed
+// names (--nx-accent, --nx-bg-base, ...). The current NexUI theme sets
+// --nx-color-primary, --nx-color-foreground and so on, so the check saw
+// nothing ("found: none") on a site that rendered the spec's colours exactly,
+// and sent the frontend builder to "fix" a correct theme. It now reads every
+// --nx-* variable on the root and body, whatever the theme calls them.
+export const ROOT_THEME_VARS_EXPRESSION =
+  "(() => { const out = {}; for (const el of [document.documentElement, document.body]) { const cs = getComputedStyle(el); " +
+  "for (let i = 0; i < cs.length; i++) { const p = cs[i]; if (p.startsWith('--nx')) { const v = cs.getPropertyValue(p).trim(); if (v) out[p] = v; } } } return out; })()";
+
 export async function runSpecComplianceCheck(
   spec: ProjectSpec,
   appUrl: string,
@@ -295,28 +305,11 @@ export async function runSpecComplianceCheck(
   const session = new BrowserSession();
   try {
     await session.send("navigate", { url: appUrl });
-    const cssResult = (await session.send("getComputedStyle", {
-      selector: ":root",
-      props: [
-        "--nx-accent",
-        "--nx-accent-text",
-        "--nx-bg-base",
-        "--nx-bg-surface",
-        "--nx-bg-elevated",
-        "--nx-text",
-        "--nx-border",
-      ],
-    })) as { styles: (Record<string, string> & { __rect?: unknown }) | null };
-    // 2026-08-06: real bug found live (project 88d7b375eaef) — the browser
-    // worker's getComputedStyle handler (worker.mjs) always adds a __rect:
-    // {x,y,width,height} object alongside the requested string props, for
-    // callers that need bounding-box info too. checkColorCompliance assumes
-    // every value in cssVars is a string (Object.values(...).map(v =>
-    // v.trim())) — __rect's object value has no .trim, so this crashed with
-    // "TypeError: v.trim is not a function" on EVERY run, and stage6's
-    // fail-open catch silently skipped the whole spec-compliance check
-    // instead of surfacing a real code bug as a real code bug.
-    const { __rect: _rect, ...cssVars } = cssResult.styles ?? {};
+    const themeResult = (await session.send("evaluate", { expression: ROOT_THEME_VARS_EXPRESSION })) as { value: unknown };
+    const cssVars: Record<string, string> = {};
+    if (themeResult.value && typeof themeResult.value === "object") {
+      for (const [k, v] of Object.entries(themeResult.value as Record<string, unknown>)) if (typeof v === "string") cssVars[k] = v;
+    }
 
     const formFieldsByPath: Record<string, string[]> = {};
     const contactEndpoint = spec.apiEndpoints.find((e) => /contact/i.test(e.path));

@@ -92,16 +92,19 @@ test("checkColorCompliance is case-insensitive when comparing live values agains
 // __rect's object value has no .trim, so this threw "TypeError: v.trim is
 // not a function" on every single run, and stage6's fail-open catch
 // silently skipped the check entirely instead of surfacing the real bug.
-test("runSpecComplianceCheck strips the browser worker's __rect bounding-box field before color-checking, instead of crashing on it", async () => {
+// 2026-10-03: the theme is now read with one evaluate call that returns only
+// string --nx-* values, so there is no __rect to strip; non-string values are
+// still dropped before checking.
+test("runSpecComplianceCheck reads the live theme through the browser and ignores non-string values", async () => {
   mock.module("../../../packages/agent-runtime/src/browser/client.ts", () => ({
     BrowserSession: class {
-      async send(action: string) {
+      async send(action: string, args?: { expression?: string }) {
         if (action === "navigate") return {};
-        if (action === "getComputedStyle") {
+        if (action === "evaluate" && args?.expression?.includes("--nx")) {
           return {
-            styles: {
-              "--nx-bg-base": "#0A0E1A",
-              "--nx-accent": "#3B82F6",
+            value: {
+              "--nx-color-background": "#0A0E1A",
+              "--nx-color-primary": "#3B82F6",
               __rect: { x: 0, y: 0, width: 100, height: 50 },
             },
           };
@@ -317,4 +320,28 @@ test("checkAuthNavigation passes full navigation, and router use in files that d
   const login = `document.cookie = \`token=\${t}; path=/\`;\nwindow.location.assign("/dashboard");`;
   const list = `router.push(\`/plants/\${id}\`);`;
   expect(checkAuthNavigation([{ path: "a.tsx", source: login }, { path: "b.tsx", source: list }]).pass).toBe(true);
+});
+
+// 2026-10-03 (Ledgerly benchmark run 4): the live page set
+// --nx-color-primary: #059669 and --nx-color-foreground: #0F172A exactly as
+// the spec asked, but the check only read seven older variable names
+// (--nx-accent, --nx-bg-base, ...) that this NexUI version no longer uses,
+// found nothing ("found: none") and sent the frontend builder to "fix" a
+// correct theme. It now reads every --nx-* variable the page defines.
+test("the live theme read collects every --nx-* variable, whatever its name", async () => {
+  const { ROOT_THEME_VARS_EXPRESSION } = await import("./spec-compliance.ts");
+  const props: Record<string, string> = {
+    "--nx-color-primary": " #059669",
+    "--nx-color-foreground": "#0F172A",
+    "--nx-space-1": "0.25rem",
+    "color": "rgb(0, 0, 0)",
+  };
+  const names = Object.keys(props);
+  const style = Object.assign([...names], { getPropertyValue: (p: string) => props[p] ?? "" });
+  const fn = new Function("document", "getComputedStyle", `return (${ROOT_THEME_VARS_EXPRESSION});`);
+  const vars = fn({ documentElement: {}, body: {} }, () => style) as Record<string, string>;
+  expect(vars["--nx-color-primary"]).toBe("#059669");
+  expect(vars["--nx-color-foreground"]).toBe("#0F172A");
+  expect(vars.color).toBeUndefined();
+  expect(checkColorCompliance(["#059669", "#0F172A"], vars).pass).toBe(true);
 });
