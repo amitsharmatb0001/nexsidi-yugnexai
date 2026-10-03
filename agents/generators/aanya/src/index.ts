@@ -240,14 +240,23 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?
 // the API contract/DB schema it needed to tell whether a fix belonged in
 // its own layer at all.
 export function buildFixTask(findings: string[], plan: BuildPlan): string {
-  return `An adversarial QA review found the following issues in the frontend code you already wrote.
+  return `A review reported the following findings about the frontend code you already wrote.
 
 ${buildSystemContext(plan)}
 
-ISSUES TO FIX:
+FINDINGS TO CHECK:
 ${findings.map((f, i) => `${i + 1}. ${f}`).join("\n")}
 
-Each finding is a SYMPTOM, not necessarily the whole problem. Before editing:
+STEP 0 — CONFIRM EACH FINDING BEFORE YOU CHANGE ANYTHING. A finding is a
+claim, not a fact. For each one, check it against what is real: read the code
+it names, request the page or endpoint on the running app, or run the build.
+- If the facts show it is true, fix it (below).
+- If the facts show it is not true, change nothing for it and call
+  dispute_finding with the finding, what you checked and what you saw (quote
+  the code, response or output). Tilotma checks it herself.
+- Never change code only to make a finding go away.
+
+For each finding you confirmed, it is a SYMPTOM, not necessarily the whole problem. Before editing:
 1. Diagnose the root cause — read the full component/file the finding points
    at, not just the cited line. Check the API contract above: an "API
    contract mismatch" or "over-fetching" finding is often really the

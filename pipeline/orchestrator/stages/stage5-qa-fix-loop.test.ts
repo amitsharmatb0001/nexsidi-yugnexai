@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import {
   runQAFixLoopWithDeps,
   inferInstinctDomain,
-  parseDebateDecision,
   computeChangedFiles,
   extractPreviousFindings,
   type QAFixDeps,
@@ -140,7 +139,10 @@ test("passes on the first QA run -> no fix is ever called, iterations is 1", asy
 // MEDIUM/LOW finding does NOT override pass — that tolerance is what the
 // >=85 threshold is actually for; only findings serious enough to be
 // tagged HIGH/CRITICAL by the QA agent itself force a fix cycle.
-test("a debate-CONFIRMED HIGH finding overrides an aggregate score that already passed", async () => {
+// 2026-10-03 (evidence-only plan): the text-only debate is gone; a HIGH or
+// CRITICAL finding still forces a fix over a passing score — by rule, not by
+// a model's opinion of the finding's wording.
+test("a HIGH finding overrides an aggregate score that already passed", async () => {
   let fixCalled = false;
   const alreadyPassingWithHighFinding: Stage5Result = {
     pass: true, // aggregate severity-weighted score already cleared 85
@@ -153,7 +155,6 @@ test("a debate-CONFIRMED HIGH finding overrides an aggregate score that already 
       return { success: true };
     },
     fixAanya: async () => ({ success: true }),
-    conductPeerDebate: async (findings) => findings, // debate confirms every finding as-is (VALID)
   };
 
   const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
@@ -162,7 +163,7 @@ test("a debate-CONFIRMED HIGH finding overrides an aggregate score that already 
   expect(result.pass).toBe(true); // and the retest genuinely passes afterward
 });
 
-test("a debate-CONFIRMED MEDIUM/LOW finding does NOT override an aggregate score that already passed (tolerated noise)", async () => {
+test("a MEDIUM/LOW finding does NOT override an aggregate score that already passed (tolerated noise)", async () => {
   let fixCalled = false;
   const deps: QAFixDeps = {
     runStage5: async () => ({
@@ -174,7 +175,6 @@ test("a debate-CONFIRMED MEDIUM/LOW finding does NOT override an aggregate score
       return { success: true };
     },
     fixAanya: async () => ({ success: true }),
-    conductPeerDebate: async (findings) => findings, // debate confirms the finding, but it's only LOW
   };
 
   const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
@@ -183,18 +183,73 @@ test("a debate-CONFIRMED MEDIUM/LOW finding does NOT override an aggregate score
   expect(result.pass).toBe(true);
 });
 
-test("debate REFUTING every finding still flips pass to true even when the aggregate had already failed", async () => {
-  const deps: QAFixDeps = {
-    runStage5: async () => failResult(1, "shubham"),
-    fixShubham: async () => ({ success: true }),
-    fixAanya: async () => ({ success: true }),
-    conductPeerDebate: async () => [], // debate drops every finding as a false positive
-  };
+// 2026-10-03 (evidence-only plan, T5/T6; Ledgerly run 4): a builder that
+// checks a finding and finds it not true disputes it; Tilotma checks it
+// herself. A finding she rules not true is dropped and the stage can pass; one
+// she confirms goes back to the builder with her evidence.
+test("a finding the builder disputes and Tilotma rules not true is dropped, and the stage passes", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { recordDispute } = await import("../../../packages/agent-runtime/src/tools/dispute.ts");
+  const prev = process.env.BUILD_DIR;
+  const dir = mkdtempSync(join(tmpdir(), "stage5-dispute-"));
+  process.env.BUILD_DIR = dir;
+  try {
+    const finding = { file: "frontend/app/layout.tsx", issue: "[design/HIGH] colour #059669 missing" };
+    let settled = 0;
+    const deps: QAFixDeps = {
+      runStage5: async () => ({ pass: false, findings: [finding] }),
+      fixShubham: async () => ({ success: true }),
+      fixAanya: async (_p, findings) => {
+        recordDispute("test-proj", "aanya", { finding: findings[0]!, checked: "read layout.tsx", observed: "primary: #059669" });
+        return { success: true };
+      },
+      settleDisputes: async (_pid, disputes) => {
+        settled += disputes.length;
+        return disputes.map((d) => ({ dispute: d, verdict: "not_true" as const, evidence: "layout.tsx line 27: primary #059669" }));
+      },
+    };
+    const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+    expect(settled).toBe(1);
+    expect(result.pass).toBe(true);
+    expect(result.findings).toEqual([]);
+  } finally {
+    process.env.BUILD_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
-  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
-
-  expect(result.pass).toBe(true);
-  expect(result.iterations).toBe(1); // never entered the fix loop — debate ran on the initial result
+test("a disputed finding Tilotma confirms goes back to the builder with her evidence", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { recordDispute } = await import("../../../packages/agent-runtime/src/tools/dispute.ts");
+  const prev = process.env.BUILD_DIR;
+  const dir = mkdtempSync(join(tmpdir(), "stage5-dispute-"));
+  process.env.BUILD_DIR = dir;
+  try {
+    const sent: string[][] = [];
+    let fixed = false;
+    const deps: QAFixDeps = {
+      runStage5: async () => (fixed ? passResult() : { pass: false, findings: [{ file: "backend/src/a.ts", issue: "[logic/HIGH] 500 on POST /x" }] }),
+      fixShubham: async (_p, findings) => {
+        sent.push(findings);
+        if (sent.length === 1) recordDispute("test-proj", "shubham", { finding: findings[0]!, checked: "curl", observed: "201" });
+        else fixed = true;
+        return { success: true, filesWritten: sent.length > 1 ? ["src/a.ts"] : [] };
+      },
+      fixAanya: async () => ({ success: true }),
+      settleDisputes: async (_pid, disputes) => disputes.map((d) => ({ dispute: d, verdict: "true" as const, evidence: "POST /x returned 500" })),
+    };
+    const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+    expect(sent.length).toBe(2);
+    expect(sent[1]![0]).toContain("POST /x returned 500");
+    expect(result.pass).toBe(true);
+  } finally {
+    process.env.BUILD_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("fails once, faultAgent is shubham -> fixShubham is called, then re-passes on retest", async () => {
@@ -760,38 +815,6 @@ test("omitting recordInstincts entirely does not throw — existing callers with
   expect(result.pass).toBe(true);
 });
 
-// ── parseDebateDecision (pure) ───────────────────────────────────────────────
-// 2026-08-04 (live, final838491): real bug found live — Navya precisely
-// identified backend/src/routes/index.ts mounting the inquiry router at
-// "/inquiry" instead of "/inquiries" (matching neither the contract nor the
-// frontend's own fetch calls) — a HIGH severity, fully-evidenced, verifiably
-// TRUE finding (confirmed live: it caused an actual 404 on every inquiry
-// submission). Peer-debate dismissed it as a false positive and it shipped
-// unfixed. Tracing the actual decision-parsing logic surfaced a second, real,
-// independent bug in the SAME function: `decisionLine.endsWith("VALID")` was
-// meant to reject "DECISION: INVALID" (the comment says so explicitly) but
-// "INVALID" itself ends with the substring "VALID" (I-N-VALID), so a model
-// responding INVALID would be WRONGLY parsed as isValid=true — the exact
-// inverse of the stated intent. Extracted into a pure function so this
-// class of parsing bug is caught by a fast unit test, not only discoverable
-// by manually walking a live deployed app.
-test("parseDebateDecision treats DECISION: VALID as valid", () => {
-  expect(parseDebateDecision("Reasoning: looks fine\nDECISION: VALID")).toBe(true);
-});
-
-test("parseDebateDecision treats DECISION: FALSE_POSITIVE as not valid", () => {
-  expect(parseDebateDecision("Reasoning: just a style nit\nDECISION: FALSE_POSITIVE")).toBe(false);
-});
-
-// The exact bug: "INVALID" ends with the substring "VALID" — a naive
-// .endsWith("VALID") check treats it as approved, which is backwards.
-test("parseDebateDecision treats DECISION: INVALID as NOT valid (not a VALID-suffix match)", () => {
-  expect(parseDebateDecision("Reasoning: this claim is incorrect\nDECISION: INVALID")).toBe(false);
-});
-
-test("parseDebateDecision defaults to valid (safe direction) when no DECISION line is present", () => {
-  expect(parseDebateDecision("The model just rambled with no clear verdict.")).toBe(true);
-});
 
 // 2026-08-10: real bug found live (project freshtst1) — a "review-incomplete"
 // finding (Deepika's own reviewer tooling crashed: "fallback findings

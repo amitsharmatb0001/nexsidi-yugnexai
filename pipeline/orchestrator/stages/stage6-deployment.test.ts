@@ -712,3 +712,42 @@ test("deploy errors that are not app bugs are still retried plainly, without a f
   expect(fixCalled).toBe(false);
   expect(deployCalls).toBe(2);
 });
+
+// 2026-10-03 (evidence-only plan, T5/T6) — Ledgerly run 4 replayed: the live
+// spec check said the spec's colours were missing; the site showed them. The
+// frontend builder checks, disputes it with what it saw, Tilotma checks it
+// herself and rules it not true — the finding is dropped and the review
+// passes, with no code changed to satisfy a false finding.
+test("a live finding the builder disputes and Tilotma rules not true is dropped, and delivery passes", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { recordDispute } = await import("../../../packages/agent-runtime/src/tools/dispute.ts");
+  const prev = process.env.BUILD_DIR;
+  const dir = mkdtempSync(join(tmpdir(), "stage6-dispute-"));
+  process.env.BUILD_DIR = dir;
+  try {
+    const colour = { file: "frontend/app/theme-overrides.css", issue: "[spec-compliance] Spec explicitly specifies color #059669 but it does not appear anywhere in the live site's rendered theme (found: none)" };
+    let aanyaWrote = false;
+    let settled = 0;
+    const deps: Stage6Deps = {
+      deployFn: async () => ({ success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] }),
+      liveRetestFn: async () => ({ pass: false, findings: [colour], specCompliance: { pass: false, violations: [colour.issue] } }),
+      fixAanya: async (_p, findings) => {
+        recordDispute("test-proj", "aanya", { finding: findings[0]!, checked: "read app/layout.tsx; read --nx-color-primary on the live page", observed: "--nx-color-primary: #059669" });
+        return { success: true, filesWritten: [] };
+      },
+      settleDisputes: async (_pid, disputes) => {
+        settled += disputes.length;
+        return disputes.map((d) => ({ dispute: d, verdict: "not_true" as const, evidence: "live page --nx-color-primary: #059669" }));
+      },
+    };
+    const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+    expect(settled).toBe(1);
+    expect(aanyaWrote).toBe(false);
+    expect(result.success).toBe(true);
+  } finally {
+    process.env.BUILD_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

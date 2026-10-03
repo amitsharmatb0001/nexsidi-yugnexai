@@ -59,6 +59,8 @@ import { isGeminiHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice, StepBudget, isProgressStep } from "./step-budget.ts";
 import { BlockedActionTracker } from "./blocked-actions.ts";
 import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
+import { recordDispute } from "./tools/dispute.ts";
+import { recordVerdict } from "./tools/settle.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
 
@@ -346,6 +348,8 @@ export function summarizeToolInput(toolName: string, args: unknown): Record<stri
       // it must never be copied into the event payload here (CLAUDE.md
       // CONFIDENTIALITY RULE). Reason/finding text is user-safe.
       return { reason: str(a.reason)?.slice(0, 300) };
+    case "dispute_finding":
+      return { observed: str(a.observed)?.slice(0, 300) };
     case "report_blocked":
       // owner is an internal roster name — never copied into the user feed
       // (CLAUDE.md CONFIDENTIALITY RULE), same as escalate_finding above.
@@ -973,9 +977,19 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         case "escalate_finding": {
           const a = args as { target_agent: string; finding: string; reason: string };
           const { escalation, result: escalationResult } = recordEscalation(a);
-          escalations.push(escalation);
-          console.log(`[${config.agentName}:gemini-agent] Escalated finding to ${escalation.targetAgent}: ${escalation.reason.slice(0, 100)}`);
+          if (escalation) {
+            escalations.push(escalation);
+            console.log(`[${config.agentName}:gemini-agent] Escalated finding to ${escalation.targetAgent}: ${escalation.reason.slice(0, 100)}`);
+          }
           result = escalationResult;
+          break;
+        }
+        case "settle_dispute": {
+          result = recordVerdict(config.projectId, args as { number?: number; verdict?: string; evidence?: string });
+          break;
+        }
+        case "dispute_finding": {
+          result = recordDispute(config.projectId, config.agentName, args as { finding?: string; checked?: string; observed?: string });
           break;
         }
         case "task_complete": {

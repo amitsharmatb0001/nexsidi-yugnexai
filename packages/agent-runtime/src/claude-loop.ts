@@ -54,6 +54,8 @@ import { resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice, StepBudget, isProgressStep } from "./step-budget.ts";
 import { BlockedActionTracker } from "./blocked-actions.ts";
 import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
+import { recordDispute } from "./tools/dispute.ts";
+import { recordVerdict } from "./tools/settle.ts";
 import { nimTimeBudgetMs } from "./nim-time-budget.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
@@ -412,6 +414,14 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         }
         case "report_blocked": {
           result = recordBlocked(config.projectId, config.agentName, args as { owner?: string; what?: string; checked?: string });
+          break;
+        }
+        case "settle_dispute": {
+          result = recordVerdict(config.projectId, args as { number?: number; verdict?: string; evidence?: string });
+          break;
+        }
+        case "dispute_finding": {
+          result = recordDispute(config.projectId, config.agentName, args as { finding?: string; checked?: string; observed?: string });
           break;
         }
         case "web_search": {

@@ -34,6 +34,7 @@ import type { InstinctDomain } from "@nexsidi/db";
 import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
 import { runGeneratorWithQuotaRetry } from "../../activities/quota-retry.ts";
 import { dropCodeContradictedFindings } from "../finding-evidence.ts";
+import { dropSettledNotTrue, resolveDisputes, type SettleFn } from "../disputes.ts";
 import { join as joinPath } from "node:path";
 
 export interface QAFixLoopResult extends Stage5Result {
@@ -98,7 +99,10 @@ export interface QAFixDeps {
   // actual DB-backed recorder. Called BEFORE the fix, recording "this
   // mistake happened" for the next run's generation prompt to see.
   recordInstincts?: (agentName: string, findings: string[]) => Promise<void>;
-  conductPeerDebate?: (findings: Finding[]) => Promise<Finding[]>;
+  // 2026-10-03 (evidence-only plan): Tilotma settles findings a builder
+  // disputed with evidence (see ../disputes.ts). Optional so DI tests that
+  // never dispute keep working; the real entry point wires her real run.
+  settleDisputes?: SettleFn;
 }
 
 function formatFinding(f: { file: string; issue: string }): string {
@@ -229,136 +233,36 @@ ACTION: <clean actionable rule>`;
   }
 }
 
-// 2026-08-04 (live, final838491): real bug found live — Navya precisely
-// identified a route-mounting mismatch (backend/src/routes/index.ts using
-// "/inquiry" instead of the contracted "/inquiries") that caused a genuine
-// 404 on every inquiry submission, confirmed by walking the deployed app.
-// Peer-debate dismissed it as a false positive and it shipped unfixed.
-// Tracing why surfaced a second, independent, purely mechanical bug in THIS
-// function: the old inline check `decisionLine.endsWith("VALID")` was meant
-// to reject "DECISION: INVALID" (per its own comment) but "INVALID" itself
-// ends with the substring "VALID" (I-N-VALID) — the exact opposite of the
-// stated intent. Extracted to a pure function so this class of bug is
-// caught by a fast unit test instead of only being discoverable by manually
-// walking a live deployed app.
-export function parseDebateDecision(responseContent: string): boolean {
-  const decisionLine = responseContent.split("\n").find((l) => l.toUpperCase().includes("DECISION:"));
-  if (!decisionLine) return true; // no parseable verdict — safe direction is to keep the finding
-
-  // Extract just the token(s) after "DECISION:" rather than substring-matching
-  // the whole line — "INVALID" contains "VALID" as a substring, so the old
-  // `line.endsWith("VALID")` check silently treated a rejection as an
-  // approval, the exact opposite of its own stated intent.
-  const verdict = decisionLine.toUpperCase().split("DECISION:")[1]?.trim() ?? "";
-  if (verdict.startsWith("FALSE_POSITIVE") || verdict.startsWith("INVALID")) return false;
-  if (verdict.startsWith("VALID")) return true;
-  return true; // unrecognized verdict text — safe direction is to keep the finding
+// 2026-10-03 (evidence-only plan): the text-only debate is gone — it judged a
+// finding from its wording alone and once dismissed a real, exactly cited
+// route bug. Findings now pass only fact checks: the reviewer's quote must be
+// in the file (qa-loop.ts), a claim the source disproves is dropped
+// (finding-evidence.ts), and a finding Tilotma ruled not true after a
+// builder's dispute is dropped (disputes.ts). A HIGH or CRITICAL finding still
+// forces a fix even over a passing score (2026-08-09, meridianbk4: a HIGH
+// route bug shipped because the score alone passed).
+const PENALTY: Record<string, number> = { CRITICAL: 20, HIGH: 10, MEDIUM: 5, LOW: 1 };
+function severityOf(f: Finding): string | undefined {
+  return f.issue.match(/\/(CRITICAL|HIGH|MEDIUM|LOW)\]/)?.[1];
 }
 
-export async function conductPeerDebateReal(findings: Finding[]): Promise<Finding[]> {
-  if (findings.length === 0) return [];
-
-  const { geminiChat } = await import("@nexsidi/llm-client");
-
-  const results = await Promise.all(
-    findings.map(async (f) => {
-      // CRITICAL findings bypass debate entirely. The QA agent already applied
-      // the evidence rule before marking something CRITICAL — debating confirmed
-      // critical defects defeats the purpose of the severity tier and risks
-      // silently dropping blocking issues. The debate filter exists to remove
-      // hypothetical/unsubstantiated findings (HIGH/MEDIUM/LOW), not to
-      // second-guess a confirmed CRITICAL verdict.
-      const isCritical = f.issue.includes("/CRITICAL]");
-      if (isCritical) {
-        console.log(`[debate] Auto-approved CRITICAL (no debate needed): "${f.issue.slice(0, 120)}" in ${f.file}`);
-        return f;
-      }
-
-      try {
-        const prompt = `\
-You are Tilotma, the senior QA Moderator for NexSidi.
-A QA agent reported this finding:
-File: ${f.file}
-Issue: ${f.issue}
-
-AUTOMATIC VALID — classify as VALID without further analysis if any of these match:
-- The issue mentions "NexSidi", "NexUI", or "@yugnex" appearing in user-facing text (footer, navbar, badge, etc.). This is a confidentiality defect, never a style preference.
-- The issue mentions a raw ISO date string (like "2026-07-13") rendered directly in the UI where a human-readable format is expected.
-- The issue mentions a status badge ("Connected", "Online") that never reflects actual runtime state.
-
-AUTOMATIC VALID — also classify as VALID without further analysis if the finding cites
-SPECIFIC, CHECKABLE facts you could verify by opening the named file yourself (an exact
-line number, an exact string/path/route being compared against another exact string/
-path/route, an exact field name). You cannot open the file from here — you are judging
-plausibility, not re-deriving the answer — so treat a finding this concrete as PROVEN
-unless the finding's OWN text is internally contradictory. Dismissing a specific,
-mechanically-verifiable claim as "hypothetical" is a real, confirmed failure mode: a QA
-agent once precisely identified a route mounted as "/inquiry" instead of the contracted
-"/inquiries" (exact file, exact line, exact mismatched strings) — debate dismissed it as
-a false positive, and it shipped, causing a genuine 404 on every real user's request.
-Reserve FALSE_POSITIVE for findings that are vague, purely hypothetical ("could
-theoretically cause issues at scale" with no concrete trigger), a style/lint preference,
-or contradicted by the finding's own description.
-
-Is this a genuine defect (compilation error, security flaw, broken functionality, or
-confidentiality/data-integrity violation per the automatic lists above) that MUST be
-fixed, or a false positive (lint warning, style preference, purely hypothetical risk with
-no concrete failing scenario, reviewer mistake)?
-
-Respond with exactly:
-Reasoning: <one sentence>
-DECISION: VALID   or   DECISION: FALSE_POSITIVE`;
-
-        const response = await geminiChat([{ role: "user", content: prompt }]);
-        const isValid = parseDebateDecision(response.content);
-
-        if (isValid) {
-          console.log(`[debate] Approved: "${f.issue}" in ${f.file}`);
-        } else {
-          console.log(`[debate] Dropped false positive: "${f.issue}" in ${f.file}`);
-        }
-        return isValid ? f : null;
-      } catch {
-        return f; // on error, keep the finding (safe direction)
-      }
-    }),
-  );
-
-  return results.filter((f): f is Finding => f !== null);
-}
-
-// 2026-08-09: real bug found live (project meridianbk4) — both debate call
-// sites used to gate on `!result.pass`. A single HIGH finding makes an
-// agent's own severity-weighted score pass (100-10=90 >= 85), so
-// result.pass was already true and debate never ran at all — even though
-// debate exists specifically to independently verify findings like this
-// (conductPeerDebateReal's own prompt has a hardcoded guardrail citing an
-// earlier near-identical route-mismatch dismissal). Confirmed live: Navya
-// precisely identified a route mount mismatch ("/appointment" instead of
-// the contracted "/appointments") that 404s every booking request — scored
-// HIGH, the aggregate technically "passed", and it shipped broken because
-// debate never got a look. Debate now runs whenever there ARE findings,
-// regardless of the aggregate verdict, and a debate-CONFIRMED
-// CRITICAL/HIGH finding forces pass=false even over an already-passing
-// score. A confirmed MEDIUM/LOW finding does NOT override pass — tolerating
-// that is the entire point of the >=85 threshold, not a gap to close.
-async function applyDebateVerdict(result: Stage5Result, deps: QAFixDeps, projectId?: string): Promise<Stage5Result> {
-  if (!deps.conductPeerDebate || result.findings.length === 0) return result;
-  // 2026-09-28: CRITICAL findings skip debate, so a claim the real source
-  // disproves (see finding-evidence.ts) is dropped first.
-  let candidates = result.findings;
+export function applyEvidenceGate(result: Stage5Result, projectId?: string): Stage5Result {
+  if (result.findings.length === 0) return result;
+  let findings = result.findings;
+  let droppedAny = false;
   if (projectId) {
-    const { kept, dropped } = dropCodeContradictedFindings(candidates, joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId));
-    for (const d of dropped) console.log(`[debate] Dropped finding contradicted by the code (${d.reason}): ${d.finding.file}`);
-    candidates = kept;
-    if (candidates.length === 0) return { ...result, findings: [], pass: true };
+    const code = dropCodeContradictedFindings(findings, joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId));
+    for (const d of code.dropped) console.log(`[qa-fix-loop] dropped finding contradicted by the code (${d.reason}): ${d.finding.file}`);
+    const settled = dropSettledNotTrue(projectId, code.kept);
+    for (const d of settled.dropped) console.log(`[qa-fix-loop] dropped finding Tilotma ruled not true: ${d.file}: ${d.issue.slice(0, 120)}`);
+    findings = settled.kept;
+    droppedAny = code.dropped.length + settled.dropped.length > 0;
   }
-  const debated = await deps.conductPeerDebate(candidates);
-  if (debated.length === 0) {
-    return { ...result, findings: debated, pass: true };
-  }
-  const hasBlockingFinding = debated.some((f) => f.issue.includes("/CRITICAL]") || f.issue.includes("/HIGH]"));
-  return { ...result, findings: debated, pass: hasBlockingFinding ? false : result.pass };
+  const blocking = findings.some((f) => severityOf(f) === "CRITICAL" || severityOf(f) === "HIGH" || f.issue.includes("review-incomplete") || f.issue.includes("review did not complete"));
+  if (blocking) return { ...result, findings, pass: false };
+  if (!droppedAny) return { ...result, findings };
+  const score = 100 - findings.reduce((sum, f) => sum + (PENALTY[severityOf(f) ?? ""] ?? 0), 0);
+  return { ...result, findings, pass: score >= 85 };
 }
 
 /**
@@ -372,7 +276,7 @@ export async function runQAFixLoopWithDeps(
   stage4Result: Stage4Result,
   deps: QAFixDeps,
 ): Promise<QAFixLoopResult> {
-  let result = await applyDebateVerdict(await deps.runStage5(projectId, stage4Result, plan), deps, projectId);
+  let result = applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan), projectId);
 
   let iterations = 1;
   let previousFindingCount = result.findings.length;
@@ -437,6 +341,7 @@ export async function runQAFixLoopWithDeps(
     // via Promise.all (they touch disjoint output directories, same as the
     // initial parallel generation stage) is real wall-clock savings on the
     // common case of findings spanning both backend and frontend.
+    const roundStart = new Date().toISOString();
     const fixCalls: Promise<{ agent: string; success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>[] = [];
 
     if (shubhamFindings) {
@@ -481,10 +386,9 @@ export async function runQAFixLoopWithDeps(
     // the code is provably unchanged, so a rescan can only reproduce the
     // exact same findings. Stop now rather than spend a full expensive QA
     // pass confirming what is already known.
-    if (fixOutcomes.length > 0 && fixOutcomes.every((o) => !fixChangedCode(o))) {
-      console.error(`[qa-fix-loop] stopping — every fix this round failed outright, a rescan would be wasted`);
-      return { ...result, iterations, stuck: true };
-    }
+    // Decided after disputes are settled (below): a round where the builders
+    // changed nothing because they disputed findings is not a dead round.
+    const mainFixChangedNothing = fixOutcomes.length > 0 && fixOutcomes.every((o) => !fixChangedCode(o));
 
     // Token-waste-reduction plan, Task 1: what this round ACTUALLY changed,
     // for the NEXT round's QA dispatch — computed from the main fix round's
@@ -530,6 +434,17 @@ export async function runQAFixLoopWithDeps(
       }
     }
 
+    // 2026-10-03 (evidence-only plan): findings disputed this round go to
+    // Tilotma; confirmed ones go back to their builder with her evidence.
+    const disputeOutcome = await resolveDisputes(projectId, roundStart, plan, {
+      settle: deps.settleDisputes,
+      fixers: { shubham: deps.fixShubham, aanya: deps.fixAanya, pranav: deps.fixPranav },
+    });
+    if (mainFixChangedNothing && disputeOutcome.settledNotTrue === 0 && !disputeOutcome.refixChanged && changedFilesThisRound.size === 0) {
+      console.error(`[qa-fix-loop] stopping — every fix this round failed outright and nothing was settled, a rescan would be wasted`);
+      return { ...result, iterations, stuck: true };
+    }
+
     // Token-waste-reduction plan, Task 1: an empty changed-files set (a fix
     // round that reported no filesWritten at all — every existing DI test
     // stub, or a genuinely no-op fix) is the deliberate safe default for
@@ -538,7 +453,7 @@ export async function runQAFixLoopWithDeps(
     const changedFiles = changedFilesThisRound.size > 0 ? [...changedFilesThisRound] : undefined;
     const previousFindings = changedFiles ? extractPreviousFindings(result) : undefined;
 
-    result = await applyDebateVerdict(await deps.runStage5(projectId, stage4Result, plan, changedFiles, previousFindings), deps, projectId);
+    result = applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan, changedFiles, previousFindings), projectId);
     iterations++;
 
     const currentFindingCount = result.findings.length;
@@ -597,7 +512,10 @@ export async function runQAFixLoop(
       const r = await runGeneratorWithQuotaRetry(() => fixPranavReal(p, findings));
       return { success: r.success, filesWritten: r.filesWritten };
     },
-    conductPeerDebate: conductPeerDebateReal,
+    settleDisputes: async (pid, disputes) => {
+      const { settleDisputes } = await import("../../../agents/tilotma/src/settle-disputes.ts");
+      return settleDisputes(pid, disputes, { reviewRoot: joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", pid) });
+    },
     // 2026-07-08: real instinct-memory write path (see packages/db/src/
     // instincts.ts's header comment for why this exists). Each finding
     // becomes its own instinct record — one QA round can surface several

@@ -25,11 +25,17 @@ export function recordEscalation(args: {
   target_agent: string;
   finding: string;
   reason: string;
-}): { escalation: Escalation; result: ToolResult } {
+}): { escalation: Escalation | null; result: ToolResult } {
   const validTargets = ["shubham", "aanya", "pranav"] as const;
-  const targetAgent = validTargets.includes(args.target_agent as any)
-    ? (args.target_agent as Escalation["targetAgent"])
-    : "pranav"; // most escalations are "this needs a schema change" — safe default over silently dropping
+  // 2026-10-03 (evidence-only plan): an unknown target used to become
+  // "pranav" — a guess about who owns the fix. The agent names the owner.
+  if (!validTargets.includes(args.target_agent as never)) {
+    return {
+      escalation: null,
+      result: { status: "error", summary: `Name the owner of the fix: shubham (backend), aanya (frontend) or pranav (database). "${args.target_agent}" is not one of them.` },
+    };
+  }
+  const targetAgent = args.target_agent as Escalation["targetAgent"];
 
   const escalation: Escalation = { targetAgent, finding: args.finding, reason: args.reason };
   return {

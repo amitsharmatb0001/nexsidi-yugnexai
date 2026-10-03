@@ -7,6 +7,8 @@ import { mkdirSync, writeFileSync, readdirSync, readFileSync, existsSync } from 
 import { join, dirname } from "path";
 import type { BuildPlan, DrizzleTable, DrizzleColumn } from "../../../arjun/src/index.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
+import { recordDispute } from "../../../../packages/agent-runtime/src/tools/dispute.ts";
+import { findQuoteLine } from "../../../../packages/agent-runtime/src/enforce/finding-evidence.ts";
 
 // ── Main entry ────────────────────────────────────────────────────────────────
 export async function run(plan: BuildPlan): Promise<GeneratorResult> {
@@ -76,18 +78,59 @@ export async function runFix(
   const errors: string[] = [];
 
   try {
-    const existingSchema = readExistingSchema(outputDir);
-    const fixSql = await generateFixMigrationSql(existingSchema, findings, deps);
-    const filename = nextMigrationFilename(migrationsDir, "fix");
-    const migrationPath = join(migrationsDir, filename);
-    mkdirSync(migrationsDir, { recursive: true });
-    writeFileSync(migrationPath, fixSql, "utf-8");
-    filesWritten.push(`migrations/${filename}`);
+    // 2026-10-03 (evidence-only plan): work from the migrations that really
+    // run, and let the model answer NOT TRUE with a quote from them. A quote
+    // that is really there becomes a dispute for Tilotma and gets no SQL; a
+    // quote that is not there is refused and the finding stays open.
+    const migrationsText = readMigrations(migrationsDir);
+    const existingSchema = migrationsText || readExistingSchema(outputDir);
+    const answer = await generateFixMigrationSql(existingSchema, findings, deps);
+    const { sql, notTrue } = splitNotTrue(answer);
+    for (const { index, quote } of notTrue) {
+      const finding = findings[index - 1] ?? `finding ${index}`;
+      if (migrationsText && findQuoteLine(migrationsText, quote) !== null) {
+        recordDispute(plan.projectId, "pranav", {
+          finding,
+          checked: "read every migration in db/migrations",
+          observed: `the migrations already contain: ${quote}`,
+        });
+      } else {
+        errors.push(`NOT TRUE for "${finding.slice(0, 120)}" quoted SQL that is not in the migrations — the finding stays open`);
+      }
+    }
+    if (sql) {
+      const filename = nextMigrationFilename(migrationsDir, "fix");
+      mkdirSync(migrationsDir, { recursive: true });
+      writeFileSync(join(migrationsDir, filename), sql, "utf-8");
+      filesWritten.push(`migrations/${filename}`);
+    }
   } catch (err) {
     errors.push(String(err));
   }
 
   return { success: errors.length === 0, projectId: plan.projectId, outputDir, filesWritten, errors };
+}
+
+/** Every migration's SQL, in order, each under its file name. */
+function readMigrations(migrationsDir: string): string {
+  if (!existsSync(migrationsDir)) return "";
+  return readdirSync(migrationsDir)
+    .filter((f) => f.endsWith(".sql"))
+    .sort()
+    .map((f) => `-- ${f}\n${readFileSync(join(migrationsDir, f), "utf-8")}`)
+    .join("\n");
+}
+
+/** Separates "NOT TRUE <n>: <quote>" lines from the SQL in the model's answer. */
+export function splitNotTrue(answer: string): { sql: string; notTrue: Array<{ index: number; quote: string }> } {
+  const notTrue: Array<{ index: number; quote: string }> = [];
+  const kept: string[] = [];
+  for (const line of answer.split(/\r?\n/)) {
+    const m = line.match(/^\s*NOT TRUE\s+(\d+)\s*:\s*(.+)$/i);
+    if (m) notTrue.push({ index: parseInt(m[1]!, 10), quote: m[2]!.trim() });
+    else kept.push(line);
+  }
+  return { sql: kept.join("\n").trim(), notTrue };
 }
 
 function readExistingSchema(outputDir: string): string {
@@ -119,7 +162,7 @@ async function generateFixMigrationSql(existingSchema: string, findings: string[
       { role: "system", content: PRANAV_FIX_PROMPT },
       {
         role: "user",
-        content: `EXISTING SCHEMA (already applied — do not recreate these tables):\n${existingSchema}\n\nQA FINDINGS TO FIX:\n${findings.map((f) => `- ${f}`).join("\n")}`,
+        content: `THE MIGRATIONS THAT RUN (already applied — do not recreate these tables):\n${existingSchema}\n\nQA FINDINGS (numbered):\n${findings.map((f, i) => `${i + 1}. ${f}`).join("\n")}`,
       },
     ],
     process.env.NIM_API_KEY ?? "",
@@ -145,6 +188,11 @@ CRITICAL RULES:
 4. If an index is missing, use CREATE INDEX IF NOT EXISTS.
 5. Address ONLY the findings listed — do not "improve" unrelated parts of the schema.
 6. Output ONLY the SQL — no markdown, no code fences, just raw ALTER/CREATE INDEX statements.
+7. CHECK EACH FINDING AGAINST THE MIGRATIONS FIRST. If the migrations already do
+   what a finding says is missing (the index, constraint or column is there),
+   write no SQL for it. Instead write one line:
+   NOT TRUE <finding number>: <the exact statement from the migrations that shows it>
+   Copy the statement exactly — it is checked against the files.
 `;
 
 function normalizeColumn(col: any): DrizzleColumn {

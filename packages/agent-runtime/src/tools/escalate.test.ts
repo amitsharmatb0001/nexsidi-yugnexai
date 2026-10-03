@@ -19,7 +19,12 @@ test("recordEscalation returns a success ToolResult so the agent loop can contin
   expect(result.status).toBe("success");
 });
 
-test("recordEscalation defaults an invalid target_agent to pranav rather than dropping the escalation", () => {
-  const { escalation } = recordEscalation({ target_agent: "not-a-real-agent", finding: "x", reason: "y" });
-  expect(escalation.targetAgent).toBe("pranav");
+// 2026-10-03 (evidence-only plan): an unknown target used to become
+// "pranav" — a guess about who owns the fix. The agent is now told to name
+// the owner, and nothing is recorded until it does.
+test("recordEscalation refuses an unknown target and asks the agent to name the owner", () => {
+  const { escalation, result } = recordEscalation({ target_agent: "not-a-real-agent", finding: "x", reason: "y" });
+  expect(escalation).toBeNull();
+  expect(result.status).toBe("error");
+  expect(result.summary).toContain("shubham");
 });

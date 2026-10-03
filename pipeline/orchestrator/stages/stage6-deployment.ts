@@ -42,6 +42,7 @@ import type { ProjectSpec } from "../../../agents/saanvi/src/index.ts";
 import { isQuotaExhaustionError } from "../../../packages/agent-runtime/src/gemini-loop.ts";
 import { dropCodeContradictedFindings } from "../finding-evidence.ts";
 import { fixChangedCode } from "./stage5-qa-fix-loop.ts";
+import { dropSettledNotTrue, resolveDisputes, type SettleFn } from "../disputes.ts";
 import { runAuthSmokeTest } from "./auth-smoke.ts";
 import { join as joinPath, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -74,10 +75,17 @@ const INTERNAL_AGENT_NAMES = [
 export function guardLiveRetest(projectId: string, retest: LiveRetestResult): LiveRetestResult {
   if (retest.pass || !Array.isArray(retest.findings) || retest.findings.length === 0) return retest;
   const projectDir = joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
-  const { kept, dropped } = dropCodeContradictedFindings(retest.findings as Array<{ file: string; issue?: string; detail?: string }>, projectDir);
-  for (const d of dropped) console.log(`[stage6] dropped finding contradicted by the code (${d.reason}): ${d.finding.file}`);
-  if (dropped.length === 0) return retest;
-  const othersPass = retest.liveEval?.pass !== false && retest.specCompliance?.pass !== false;
+  const code = dropCodeContradictedFindings(retest.findings as Array<{ file: string; issue?: string; detail?: string }>, projectDir);
+  for (const d of code.dropped) console.log(`[stage6] dropped finding contradicted by the code (${d.reason}): ${d.finding.file}`);
+  // 2026-10-03 (evidence-only plan): findings Tilotma ruled not true after a
+  // builder's dispute (../disputes.ts) are dropped too.
+  const settled = dropSettledNotTrue(projectId, code.kept);
+  for (const d of settled.dropped) console.log(`[stage6] dropped finding Tilotma ruled not true: ${d.file}: ${String(d.issue ?? d.detail ?? "").slice(0, 120)}`);
+  const kept = settled.kept;
+  if (code.dropped.length + settled.dropped.length === 0) return retest;
+  // The spec check's own verdict stands only while one of its findings remains.
+  const specOpen = kept.some((f) => String(f.issue ?? f.detail ?? "").includes("[spec-compliance]"));
+  const othersPass = retest.liveEval?.pass !== false && (retest.specCompliance?.pass !== false || !specOpen);
   return { ...retest, findings: kept, pass: kept.length === 0 && othersPass };
 }
 
@@ -410,6 +418,9 @@ export interface Stage6Deps {
   // real setTimeout-based sleep in production (deployWithQuotaRetry's own
   // default param), never set by the real entry point below.
   sleepFn?: (ms: number) => Promise<void>;
+  // 2026-10-03 (evidence-only plan): Tilotma settles findings a builder
+  // disputed. The real entry point checks them on the running app.
+  settleDisputes?: SettleFn;
 }
 
 // Pre-flight: verify NexSidi's own pipeline DB is reachable before spending
@@ -639,6 +650,14 @@ export async function runStage6(
   });
 
   type FixFn = (p: BuildPlan, f: string[]) => Promise<{ success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>;
+  const settleReal: SettleFn = deps.settleDisputes ?? (async (pid, disputes) => {
+    const { settleDisputes } = await import("../../../agents/tilotma/src/settle-disputes.ts");
+    return settleDisputes(pid, disputes, {
+      reviewRoot: joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", pid),
+      appUrl: deployResult?.appUrl || undefined,
+      backendUrl: deployResult?.backendUrl || undefined,
+    });
+  });
   const fixerFor: Record<"shubham" | "aanya" | "pranav", FixFn> = { shubham: fixShubhamReal, aanya: fixAanyaReal, pranav: fixPranavReal };
 
   // One fix round: every owner with findings fixes in parallel, then any
@@ -651,6 +670,7 @@ export async function runStage6(
   ): Promise<"nothing_to_fix" | "nothing_changed" | "changed"> => {
     const owners = (["shubham", "aanya", "pranav"] as const).filter((o) => routed[o].length > 0);
     if (owners.length === 0) return "nothing_to_fix";
+    const roundStart = new Date().toISOString();
     const fixResults = await Promise.all(owners.map((owner) => {
       console.log(`[stage6] Routing ${routed[owner].length} findings to ${owner[0]!.toUpperCase()}${owner.slice(1)}`);
       return fixerFor[owner](fixPlan, routed[owner]).then((r) => ({ agent: owner, ...r }));
@@ -660,10 +680,7 @@ export async function runStage6(
     // that could only reproduce the same findings. 2026-09-29: a failed fix
     // that wrote files changed the code (see fixChangedCode) — only skip
     // when nothing was touched.
-    if (fixResults.every((r) => !fixChangedCode(r))) {
-      console.error(`[stage6] every implicated fix this round failed outright and changed nothing — skipping redeploy, a retest would be wasted`);
-      return "nothing_changed";
-    }
+    const fixesChangedNothing = fixResults.every((r) => !fixChangedCode(r));
     if (fixResults.some((r) => !r.success)) {
       console.error(`[stage6] one or more fixes did not finish this round — redeploying anyway since code was changed`);
     }
@@ -682,6 +699,14 @@ export async function runStage6(
       if (!escalationResult.success) {
         console.error(`[stage6] ${target} escalation fix FAILED to complete`);
       }
+    }
+    // 2026-10-03 (evidence-only plan): findings the builders disputed this
+    // round go to Tilotma; confirmed ones go back with her evidence, ones she
+    // rules not true are dropped from the retest.
+    const disputes = await resolveDisputes(projectId, roundStart, fixPlan, { settle: settleReal, fixers: fixerFor });
+    if (fixesChangedNothing && disputes.settledNotTrue === 0 && !disputes.refixChanged) {
+      console.error(`[stage6] every implicated fix this round failed outright and changed nothing — skipping redeploy, a retest would be wasted`);
+      return "nothing_changed";
     }
     return "changed";
   };

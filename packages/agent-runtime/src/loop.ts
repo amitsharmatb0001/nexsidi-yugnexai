@@ -31,6 +31,8 @@ import { execDockerCompose, DOCKER_TOOL_DEF } from "./tools/docker.ts";
 import { execWebSearch, WEB_SEARCH_TOOL_DEF } from "./tools/websearch.ts";
 import { execFetchUrl, FETCH_URL_TOOL_DEF } from "./tools/research.ts";
 import { recordEscalation, ESCALATE_FINDING_TOOL_DEF, type Escalation } from "./tools/escalate.ts";
+import { recordDispute, DISPUTE_FINDING_TOOL_DEF } from "./tools/dispute.ts";
+import { recordVerdict, SETTLE_DISPUTE_TOOL_DEF } from "./tools/settle.ts";
 import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
 import { BrowserToolset, BROWSER_TOOL_DEFS, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
 import { execDbQuery, DB_QUERY_TOOL_DEF } from "./tools/db.ts";
@@ -80,6 +82,8 @@ export interface AgentRunConfig {
   // The deploy agent changes only deployment files (Ledgerly run 4: it
   // edited the database builder's migration).
   writableFile?: WritableFile;
+  // Tilotma settling disputed findings: offers settle_dispute (tools/settle.ts).
+  enableDisputeSettling?: boolean;
   projectId?: string;          // optional, for database history persistence
   enableDockerTools?: boolean; // Riya only
   enableHttpTools?: boolean;   // Shubham verification
@@ -383,7 +387,9 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
     ...(config.enableDockerTools && !config.readOnly ? [DOCKER_TOOL_DEF] : []),
     ...(config.enableWebSearch ? [WEB_SEARCH_TOOL_DEF] : []),
     ...(config.enableWebFetch ? [FETCH_URL_TOOL_DEF] : []),
-    ...(config.enableEscalation ? [ESCALATE_FINDING_TOOL_DEF] : []),
+    // fix runs: hand a finding to its owner, or dispute it with the facts
+    ...(config.enableEscalation ? [ESCALATE_FINDING_TOOL_DEF, DISPUTE_FINDING_TOOL_DEF] : []),
+    ...(config.enableDisputeSettling ? [SETTLE_DISPUTE_TOOL_DEF] : []),
     REPORT_BLOCKED_TOOL_DEF, // every agent, every stage (see tools/blocked.ts)
     ...(config.enableScreenshot ? [SCREENSHOT_TOOL_DEF] : []),
     ...(config.enableBrowser ? BROWSER_TOOL_DEFS : []),
@@ -1121,9 +1127,19 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         case "escalate_finding": {
           const a = args as { target_agent: string; finding: string; reason: string };
           const { escalation, result: escalationResult } = recordEscalation(a);
-          escalations.push(escalation);
-          console.log(`[${config.agentName}:agent] Escalated finding to ${escalation.targetAgent}: ${escalation.reason.slice(0, 100)}`);
+          if (escalation) {
+            escalations.push(escalation);
+            console.log(`[${config.agentName}:agent] Escalated finding to ${escalation.targetAgent}: ${escalation.reason.slice(0, 100)}`);
+          }
           result = escalationResult;
+          break;
+        }
+        case "settle_dispute": {
+          result = recordVerdict(config.projectId, args as { number?: number; verdict?: string; evidence?: string });
+          break;
+        }
+        case "dispute_finding": {
+          result = recordDispute(config.projectId, config.agentName, args as { finding?: string; checked?: string; observed?: string });
           break;
         }
         case "task_complete": {

@@ -346,16 +346,25 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
 // schema was never shown to it. Root-cause reasoning is now instructed
 // explicitly and the full system context is included.
 export function buildFixTask(findings: string[], plan: BuildPlan): string {
-  return `An adversarial QA review found the following issues in the backend code you already wrote.
+  return `A review reported the following findings about the backend code you already wrote.
 
 ${buildSystemContext(plan)}
 
 ${MIGRATIONS_NOTE}
 
-ISSUES TO FIX:
+FINDINGS TO CHECK:
 ${findings.map((f, i) => `${i + 1}. ${f}`).join("\n")}
 
-Each finding is a SYMPTOM, not necessarily the whole problem. Before editing:
+STEP 0 — CONFIRM EACH FINDING BEFORE YOU CHANGE ANYTHING. A finding is a
+claim, not a fact. For each one, check it against what is real: read the code
+it names, request the page or endpoint on the running app, or run the build.
+- If the facts show it is true, fix it (below).
+- If the facts show it is not true, change nothing for it and call
+  dispute_finding with the finding, what you checked and what you saw (quote
+  the code, response or output). Tilotma checks it herself.
+- Never change code only to make a finding go away.
+
+For each finding you confirmed, it is a SYMPTOM, not necessarily the whole problem. Before editing:
 1. Diagnose the root cause — read the full function/file the finding points
    at, not just the cited line. Check the DB schema above: a "race condition"
    or "invalid state" finding is very often really a missing UNIQUE/CHECK
