@@ -20,6 +20,8 @@ interface FakeOpts {
   hasSignOut?: boolean;
   cookieAfterSignOut?: boolean;
   links?: Array<{ text: string; href: string }>;
+  // what the browser's network log shows (2026-10-04)
+  requests?: Array<{ method: string; url: string; status: number }>;
 }
 
 // Answers each browser action from a tiny scripted state. evaluate()
@@ -36,6 +38,7 @@ function fakeBrowser(o: FakeOpts): BrowserLike & { calls: string[] } {
       if (action === "newSession") { signedIn = false; path = "/"; return { reset: true }; }
       if (action === "exists") return { exists: ["/sign-in", "/sign-up"].includes(path) };
       if (action === "currentUrl") return { url: `http://localhost:3207${path}` };
+      if (action === "requests") return { requests: o.requests ?? [] };
       if (action === "evaluate") {
         const expr = String(args.expression);
         if (expr.startsWith("/*links*/")) return { value: o.links ?? [{ text: "Sign In", href: "/sign-in" }, { text: "Get Started", href: "/sign-up" }] };
@@ -137,4 +140,30 @@ test("before signing in, it prefetches the app's links and /dashboard like a rea
   const signInSubmit = browser.calls.indexOf("evaluate:submit@/sign-in");
   expect(prefetch).toBeGreaterThan(-1);
   expect(prefetch).toBeLessThan(signInSubmit);
+});
+
+// 2026-10-04 (Ledgerly run 4, overnight): the check waited a fixed 4 seconds
+// and took a 401 as "the form is broken". During a redeploy the form's request
+// had simply not finished; the same check passed against the same app later,
+// and the builder was sent to fix a working form all night. It now waits for
+// the account (up to 30 s) and, if it never appears, says what the browser's
+// own request did — never a verdict from timing alone.
+test("waits for the account instead of judging after a fixed delay", async () => {
+  let calls = 0;
+  const slowThenOk = (async () => new Response("{}", { status: ++calls < 4 ? 401 : 200 })) as unknown as typeof fetch;
+  const r = await runAuthSmokeTest({ ...BASE, browser: fakeBrowser({}), fetchFn: slowThenOk });
+  expect(r).toEqual({ ran: true, pass: true, findings: [] });
+  expect(calls).toBeGreaterThanOrEqual(4);
+});
+
+test("a failure says what the form's own request did", async () => {
+  const sent = [{ method: "POST", url: "http://localhost:3308/api/v1/auth/sign-up", status: 500 }];
+  const r = await runAuthSmokeTest({ ...BASE, browser: fakeBrowser({ requests: sent }), fetchFn: loginRejected });
+  expect(r.pass).toBe(false);
+  expect(r.findings[0]).toContain("returned 500");
+});
+
+test("a form that sent no sign-up request says so", async () => {
+  const r = await runAuthSmokeTest({ ...BASE, browser: fakeBrowser({ requests: [] }), fetchFn: loginRejected });
+  expect(r.findings[0]).toContain("sent no request");
 });

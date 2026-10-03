@@ -47,12 +47,12 @@ const fail = (finding: string): AuthSmokeResult => ({ ran: true, pass: false, fi
 
 // Only endpoints the contract really has — no guessed defaults, so an app
 // without auth is skipped instead of tested against paths it never had.
-function contractAuthPaths(endpoints: AuthSmokeOptions["endpoints"]): { loginPath: string } | null {
+function contractAuthPaths(endpoints: AuthSmokeOptions["endpoints"]): { loginPath: string; registerPath: string } | null {
   const posts = endpoints.filter((e) => e.method.toUpperCase() === "POST").map((e) => e.path);
   const lastSeg = (p: string) => p.replace(/\/$/, "").split("/").pop()!.toLowerCase().replace(/[-_]/g, "");
   const register = posts.find((p) => ["register", "signup"].includes(lastSeg(p)));
   const login = posts.find((p) => ["login", "signin"].includes(lastSeg(p)));
-  return register && login ? { loginPath: login } : null;
+  return register && login ? { loginPath: login, registerPath: register } : null;
 }
 
 const trimSlash = (p: string) => (p.length > 1 ? p.replace(/\/+$/, "") : p);
@@ -149,6 +149,10 @@ async function fillAndSubmit(browser: BrowserLike, email: string, password: stri
   return null;
 }
 
+async function signIn(fetchFn: typeof fetch, url: string, email: string, password: string): Promise<Response> {
+  return fetchFn(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+}
+
 export async function runAuthSmokeTest(opts: AuthSmokeOptions): Promise<AuthSmokeResult> {
   const { appUrl, backendUrl, endpoints, browser } = opts;
   const fetchFn = opts.fetchFn ?? fetch;
@@ -172,14 +176,29 @@ export async function runAuthSmokeTest(opts: AuthSmokeOptions): Promise<AuthSmok
     await browser.send("navigate", { url: appUrl + signUpPath });
     const signUpProblem = await fillAndSubmit(browser, email, password);
     if (signUpProblem) return skip(`sign-up page: ${signUpProblem}`);
-    await sleep(4000);
-    const login = await fetchFn(backendUrl + auth.loginPath, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
+    // 2026-10-04 (Ledgerly run 4): a fixed 4-second wait then "401 = broken"
+    // judged a working form broken during a redeploy, all night. Wait for the
+    // account (up to 30 s); if it never appears, report what the browser's own
+    // request did — the verdict comes from that, not from timing.
+    let login = await signIn(fetchFn, backendUrl + auth.loginPath, email, password);
+    for (let waited = 0; [401, 403, 404].includes(login.status) && waited < 30_000; waited += 2000) {
+      await sleep(2000);
+      login = await signIn(fetchFn, backendUrl + auth.loginPath, email, password);
+    }
     if ([401, 403, 404].includes(login.status)) {
-      return fail(`The sign-up form at ${signUpPath} did not create the account: signing in with the details it was given returns HTTP ${login.status} from ${auth.loginPath}. Check that the form posts to the backend's sign-up endpoint and that the request succeeds in the browser.`);
+      const seen = ((await browser.send("requests")) as { requests?: Array<{ method: string; url: string; status: number }> } | undefined)?.requests;
+      if (!seen) return skip("could not read the browser's requests to see what the sign-up form did");
+      const sent = seen.filter((r) => r.method !== "GET" && trimSlash(new URL(r.url).pathname).endsWith(trimSlash(auth.registerPath)));
+      const signInSays = `signing in with the details it was given returns HTTP ${login.status} from ${auth.loginPath}`;
+      if (sent.length === 0) {
+        const others = seen.filter((r) => r.method !== "GET").map((r) => `${r.method} ${new URL(r.url).pathname} -> ${r.status}`);
+        return fail(`The sign-up form at ${signUpPath} sent no request to ${auth.registerPath} after it was submitted (requests seen: ${others.join(", ") || "none"}), and ${signInSays}.`);
+      }
+      const last = sent[sent.length - 1]!;
+      if (last.status >= 400 || last.status === 0) {
+        return fail(`The sign-up form at ${signUpPath} sent ${last.method} ${auth.registerPath} and it returned ${last.status || "no response"}; ${signInSays}.`);
+      }
+      return fail(`The sign-up form's request ${last.method} ${auth.registerPath} returned ${last.status}, but after 30 s ${signInSays} — the account it reported creating cannot sign in.`);
     }
     if (!login.ok) return skip(`the login API answered ${login.status} — cannot judge the sign-up form`);
 

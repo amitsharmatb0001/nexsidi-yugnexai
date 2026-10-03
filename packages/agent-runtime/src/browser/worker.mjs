@@ -23,6 +23,9 @@ let context = null;
 let page = null;
 const consoleErrors = [];
 const pageErrors = [];
+// 2026-10-04: every non-GET request and what it returned, so a check can say
+// what a form actually sent instead of inferring it from timing.
+const requests = [];
 
 async function ensurePage() {
   if (!browser) {
@@ -37,6 +40,13 @@ async function ensurePage() {
       if (msg.type() === "error") consoleErrors.push(msg.text());
     });
     page.on("pageerror", (err) => pageErrors.push(String(err)));
+    page.on("response", (res) => {
+      const r = res.request();
+      if (r.method() !== "GET") requests.push({ method: r.method(), url: r.url(), status: res.status() });
+    });
+    page.on("requestfailed", (r) => {
+      if (r.method() !== "GET") requests.push({ method: r.method(), url: r.url(), status: 0, failure: r.failure()?.errorText ?? "failed" });
+    });
   }
   return page;
 }
@@ -104,6 +114,9 @@ async function handle(req) {
       const p = await ensurePage();
       return { url: p.url() };
     }
+    case "requests": {
+      return { requests: [...requests] };
+    }
     case "consoleErrors": {
       return { consoleErrors: [...consoleErrors], pageErrors: [...pageErrors] };
     }
@@ -119,6 +132,7 @@ async function handle(req) {
       if (context) { await context.close().catch(() => {}); context = null; }
       consoleErrors.length = 0;
       pageErrors.length = 0;
+      requests.length = 0;
       await ensurePage();
       return { reset: true };
     }
