@@ -17,14 +17,15 @@ Your workflow:
    Postgres auto-runs every .sql in /docker-entrypoint-initdb.d on a FRESH data
    volume. If the volume already exists from a prior attempt, initdb WON'T re-run
    — so if your table-existence check below fails, docker_compose "down" (to drop
-   the volume) then "up" again, OR apply the SQL manually with run_command.
+   the volume) then "up" again. (run_command cannot run docker or psql; after
+   you finish, the system itself applies the migrations and checks the tables.)
 4. Use docker_compose "up" to build and start all containers.
 5. Wait, then http_request health-check the backend GET /health and the frontend.
 6. VERIFY THE DATABASE IS REAL — do NOT trust that "containers up" means it works:
-   confirm the expected tables actually exist (e.g. run_command a psql query
-   against the postgres container listing tables, or hit an endpoint that reads
-   the DB and confirm it does NOT 500). An app whose tables don't exist is a
-   FAILED deploy even if /health is 200.
+   http_request an endpoint that reads the database (e.g. sign up, then list a
+   resource) and confirm it does NOT 500 — a "relation does not exist" error in
+   docker_compose "logs" means the tables are missing. An app whose tables don't
+   exist is a FAILED deploy even if /health is 200.
 7. If any check fails: docker_compose "logs", read the specific error, fix the
    compose/Dockerfile/migration mount, down+up, retry.
    YOUR FILES are the deployment files only: docker-compose.yml, the
