@@ -33,6 +33,7 @@ import { execFetchUrl, FETCH_URL_TOOL_DEF } from "./tools/research.ts";
 import { recordEscalation, ESCALATE_FINDING_TOOL_DEF, type Escalation } from "./tools/escalate.ts";
 import { recordDispute, DISPUTE_FINDING_TOOL_DEF } from "./tools/dispute.ts";
 import { recordVerdict, SETTLE_DISPUTE_TOOL_DEF } from "./tools/settle.ts";
+import { fixRunUnaccounted } from "./enforce/fix-accounting.ts";
 import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
 import { BrowserToolset, BROWSER_TOOL_DEFS, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
 import { execDbQuery, DB_QUERY_TOOL_DEF } from "./tools/db.ts";
@@ -660,6 +661,8 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   };
 
   const filesWritten: string[] = [];
+
+  let disputesRecorded = 0; // fix runs: see enforce/fix-accounting.ts
   const escalations: Escalation[] = [];
   const errors: string[] = [];
   const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
@@ -1140,9 +1143,18 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         }
         case "dispute_finding": {
           result = recordDispute(config.projectId, config.agentName, args as { finding?: string; checked?: string; observed?: string });
+          if (result.status === "success") disputesRecorded++;
           break;
         }
         case "task_complete": {
+          // 2026-10-04: a fix run must fix, dispute or hand on — see enforce/fix-accounting.ts.
+          const unaccounted = config.enableEscalation
+            ? fixRunUnaccounted({ filesWritten: filesWritten.length, disputes: disputesRecorded, escalations: escalations.length })
+            : null;
+          if (unaccounted) {
+            result = { status: "error", summary: unaccounted };
+            break;
+          }
           const a = args as { summary: string; files_written: string[]; verification_passed: boolean };
           // Phase 5 Task 3: default-FAIL completion gate — rejected without
           // fresh evidence, even if the model claims verification_passed.

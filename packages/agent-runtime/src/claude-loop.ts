@@ -56,6 +56,7 @@ import { BlockedActionTracker } from "./blocked-actions.ts";
 import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { recordDispute } from "./tools/dispute.ts";
 import { recordVerdict } from "./tools/settle.ts";
+import { fixRunUnaccounted } from "./enforce/fix-accounting.ts";
 import { nimTimeBudgetMs } from "./nim-time-budget.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
@@ -245,6 +246,8 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   };
 
   const filesWritten: string[] = [];
+
+  let disputesRecorded = 0; // fix runs: see enforce/fix-accounting.ts
   const errors: string[] = [];
   let iterations = 0;
   const effectiveMaxIterations = config.maxIterations ?? MAX_ITERATIONS;
@@ -422,6 +425,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         }
         case "dispute_finding": {
           result = recordDispute(config.projectId, config.agentName, args as { finding?: string; checked?: string; observed?: string });
+          if (result.status === "success") disputesRecorded++;
           break;
         }
         case "web_search": {
@@ -439,6 +443,14 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "task_complete": {
+          // 2026-10-04: a fix run must fix, dispute or hand on — see enforce/fix-accounting.ts.
+          const unaccounted = config.enableEscalation
+            ? fixRunUnaccounted({ filesWritten: filesWritten.length, disputes: disputesRecorded, escalations: 0 })
+            : null;
+          if (unaccounted) {
+            result = { status: "error", summary: unaccounted };
+            break;
+          }
           const a = args as { summary: string; files_written: string[]; verification_passed: boolean };
           // Phase 5 Task 3: same default-FAIL completion gate as loop.ts —
           // rejection falls through to the normal tool-result path (no
