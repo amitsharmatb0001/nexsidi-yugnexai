@@ -29,6 +29,9 @@ export interface PlanningChatMessage {
   // instead. Plural — the real composer (IdeWorkspace.tsx) supports
   // attaching more than one file per message.
   attachments?: Array<{ name: string }>;
+  // 2026-10-03: the planner's research, shown as a collapsed card (see
+  // components/ide/ResearchCard.tsx) instead of a wall of text.
+  research?: { notes: string; sources: Array<{ title: string; url: string }>; queries: string[] };
 }
 
 export interface PlanningViewProps {

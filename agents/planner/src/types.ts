@@ -53,7 +53,7 @@ export interface BuildPhase {
   tables: string[];
 }
 
-import type { ResearchNotes } from "./research.ts";
+import type { ResearchNotes, ResearchProgress } from "./research.ts";
 
 export interface PlannerState {
   userId:       string;
@@ -111,8 +111,9 @@ export interface ElicitationQuestion {
 }
 
 export interface StreamChunk {
-  type: "token" | "plan_proposed" | "elicitation_question" | "build_triggered" | "error" | "done" | "research_status" | "research_done";
+  type: "token" | "plan_proposed" | "elicitation_question" | "build_triggered" | "error" | "done" | "research_status" | "research_progress" | "research_done";
   research?: ResearchNotes;
+  progress?: ResearchProgress;
   content?: string;
   phase?: PlannerState["phase"];
   projectId?: string;

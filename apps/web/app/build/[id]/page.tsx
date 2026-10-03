@@ -7,6 +7,7 @@ import IDE from "../../../components/ide/IdeWorkspace";
 import { ws as ideStyles } from "../../../components/ide/IdeWorkspace.styles";
 import PlanPreview, { type BuildPlan } from "../../../components/ide/PlanPreview";
 import { useReviewState } from "@/components/nexui/review-gate";
+import type { ResearchStep } from "../../../components/ide/ResearchCard";
 import { Button } from "@/components/nexui/button";
 import type { ApiNode } from "../../../lib/tree";
 import { statusForStageEvent, statusFromResult } from "../../../lib/build-status";
@@ -37,6 +38,7 @@ interface ChatMessage {
   // carries the full text — this is DISPLAY-only, so the bubble can show a
   // chip per file instead.
   attachments?: Array<{ name: string }>;
+  research?: { notes: string; sources: Array<{ title: string; url: string }>; queries: string[] };
 }
 
 interface StageEvent {
@@ -124,9 +126,8 @@ interface ResearchNotes {
 // The planner researches before its first question (2 Oct 2026); its notes
 // are shown once, right after the brief, as "What I found".
 function researchMessage(r: ResearchNotes, ts: number): ChatMessage {
-  const sources = r.sources.slice(0, 8).map((s) => `- [${s.title}](${s.url})`).join("\n");
-  const parts = [`**What I found** (${r.queries.length} searches)`, r.notes, sources ? `**Sources**\n${sources}` : ""];
-  return { role: "assistant", content: parts.filter(Boolean).join("\n\n"), ts };
+  // Shown as a collapsed card (ResearchCard), not as text.
+  return { role: "assistant", content: "", ts, research: r };
 }
 
 function withResearch(messages: ChatMessage[], r: ResearchNotes | null | undefined): ChatMessage[] {
@@ -137,8 +138,9 @@ function withResearch(messages: ChatMessage[], r: ResearchNotes | null | undefin
 }
 
 interface StreamChunk {
-  type: "token" | "plan_proposed" | "elicitation_question" | "build_triggered" | "error" | "done" | "phase_change" | "project_started" | "research_status" | "research_done";
+  type: "token" | "plan_proposed" | "elicitation_question" | "build_triggered" | "error" | "done" | "phase_change" | "project_started" | "research_status" | "research_progress" | "research_done";
   research?: ResearchNotes;
+  progress?: { type: "search_started"; query: string } | { type: "search_done"; query: string; ok: boolean; sources: number };
   content?: string;
   phase?: SessionPhase;
   projectId?: string;
@@ -914,6 +916,8 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   ]);
   const [buildPlanModal, setBuildPlanModal] = useState<BuildPlan | null>(null);
   const [proposedPlan,      setProposedPlan]      = useState<ProposedPlan | null>(null);
+  // The planner's research steps while it runs (live card); null otherwise.
+  const [researchLive, setResearchLive] = useState<ResearchStep[] | null>(null);
   // Suggested features the customer ticked on the current plan (all unticked by default).
   const [tickedSuggestions, setTickedSuggestions] = useState<string[]>([]);
   const [elicitationQuestion, setElicitationQuestion] = useState<ElicitationQuestion | null>(null);
@@ -1037,12 +1041,27 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
               setStreamingMsg(assistantText);
             }
 
-            if (chunk.type === "research_status" && chunk.content) {
-              setStreamingMsg(chunk.content);
+            if (chunk.type === "research_status") {
+              setStreamingMsg("");
+              setResearchLive([]);
+            }
+
+            if (chunk.type === "research_progress" && chunk.progress) {
+              const p = chunk.progress;
+              setResearchLive(prev => {
+                const steps = [...(prev ?? [])];
+                const at = steps.findIndex(s => s.query === p.query);
+                const step: ResearchStep = p.type === "search_started"
+                  ? { query: p.query, state: "running" }
+                  : { query: p.query, state: p.ok ? "done" : "failed", sources: p.sources };
+                if (at === -1) steps.push(step); else steps[at] = step;
+                return steps;
+              });
             }
 
             if (chunk.type === "research_done") {
               setStreamingMsg("");
+              setResearchLive(null);
               if (chunk.research?.notes) {
                 const r = chunk.research;
                 setChatMessages(prev => [...prev, researchMessage(r, Date.now())]);
@@ -1500,6 +1519,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
               onInputChange: setChatInput,
               onSend: (value, attachments) => { if (value.trim()) sendChatMessage(value, attachments); },
               composerDisabled: Boolean(elicitationQuestion),
+              researchLive,
               elicitation: elicitationQuestion ? (
                 <ElicitationWidget
                   question={elicitationQuestion}

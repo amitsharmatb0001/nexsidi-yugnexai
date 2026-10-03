@@ -13,6 +13,8 @@ import ProjectSwitcher from "./ProjectSwitcher";
 import { PromptInput } from "@/components/nexui/prompt-input";
 import { StreamingText } from "@/components/nexui/streaming-text";
 import { ThinkingIndicator } from "@/components/nexui/thinking-indicator";
+import { PlanDocument } from "@/components/nexui/plan-document";
+import { ResearchCard, ResearchLive, type ResearchStep } from "./ResearchCard";
 import { ReviewGate, type ReviewDecision, type ReviewState } from "@/components/nexui/review-gate";
 import type { PlanningChatMessage } from "../planning/PlanningView";
 import {
@@ -130,6 +132,8 @@ export interface IdeWorkspaceProps {
     // still carries the full text sent to the model. See PlanningChatMessage.
     onSend: (v: string, attachments?: Array<{ name: string }>) => void;
     elicitation?: ReactNode;
+    // The planner's research steps while it runs (null when not researching).
+    researchLive?: ResearchStep[] | null;
     composerDisabled?: boolean;
     plan?: ReactNode;
     planStreaming?: boolean;
@@ -915,7 +919,9 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                 ) : (
                   planning.messages.map((m, i) => (
                     <PlanRow key={i} role={m.role}>
-                      {m.attachments?.length ? (
+                      {m.research ? (
+                        <ResearchCard research={m.research} />
+                      ) : m.attachments?.length ? (
                         <span className={s.planAttachments}>
                           {m.attachments.map((a, j) => (
                             <span key={j} className={s.planAttachmentChip}>
@@ -924,13 +930,21 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                             </span>
                           ))}
                         </span>
+                      ) : m.role === "assistant" ? (
+                        // Planner messages are markdown — render it, never raw ### and **.
+                        <PlanDocument source={m.content} />
                       ) : (
                         m.content
                       )}
                     </PlanRow>
                   ))
                 )}
-                {(planning.streamingMessage || planning.loading) && (
+                {planning.researchLive && (
+                  <PlanRow role="assistant">
+                    <ResearchLive steps={planning.researchLive} />
+                  </PlanRow>
+                )}
+                {(planning.streamingMessage || planning.loading) && !planning.researchLive && (
                   <PlanRow role="assistant">
                     {planning.streamingMessage ? (
                       <StreamingText text={planning.streamingMessage} charsPerSecond={220} />

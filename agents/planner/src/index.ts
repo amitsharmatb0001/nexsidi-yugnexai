@@ -12,7 +12,7 @@ import { skillPromptSection } from "../../../packages/agent-runtime/src/skill-li
 import { AGENT_MODELS, MODEL_RPM_LIMITS, NIM_CONTEXT_LIMITS, waitForToken, routeToolsWithFallback, translateNimToolToGeminiTool } from "@nexsidi/llm-client";
 import type { GeminiMessage, GeminiPart, NimToolDef } from "@nexsidi/llm-client";
 import type { PlannerState, StreamChunk, BuildPlan, ProposedPlan, ElicitationQuestion, BuildPhase } from "./types.ts";
-import { researchBrief, type ResearchNotes } from "./research.ts";
+import { researchBrief, defaultResearchDeps, type ResearchNotes, type ResearchProgress } from "./research.ts";
 // Phase 5 (full agentic upgrade): the same shared primitives every other
 // agent's research capability is built on — see the "web_search /
 // fetch_url" call site below for why the planner's own Firecrawl-only
@@ -506,7 +506,7 @@ function nimToGemini(nimMsgs: NimMsg[]): GeminiMessage[] {
 export async function* streamReply(
   state: PlannerState,
   apiKey: string,
-  deps: { research?: (brief: string) => Promise<ResearchNotes> } = {},
+  deps: { research?: (brief: string, onProgress?: (e: ResearchProgress) => void) => Promise<ResearchNotes> } = {},
 ): AsyncGenerator<StreamChunk> {
   // ── Fast path: user accepted the plan — convert directly without LLM ────────
   // Bug 2 fix: proposedPlan is saved by the propose_plan handler. When "build it"
@@ -532,13 +532,30 @@ export async function* streamReply(
     yield { type: "research_status", content: "Researching your product…" };
     const brief = state.messages.filter((m) => m.role === "user").map((m) => m.content ?? "").join("\n\n");
     state.brief = brief; // kept word for word for the build (planToUserRequest)
-    try {
-      state.research = await (deps.research ?? ((b: string) => researchBrief(b)))(brief);
-    } catch (err) {
-      console.error("[planner] research failed:", err);
-      state.research = { notes: "", sources: [], queries: [] };
+    // Each search is streamed to the chat as it starts and finishes (Amit,
+    // run 4: the research used to appear as one wall of text at the end).
+    const progress: ResearchProgress[] = [];
+    let wake: (() => void) | null = null;
+    const onProgress = (e: ResearchProgress) => { progress.push(e); wake?.(); };
+    let finished = false;
+    const job = (deps.research ?? ((b: string, p?: (e: ResearchProgress) => void) => researchBrief(b, { ...defaultResearchDeps, onProgress: p })))(brief, onProgress)
+      .then((r) => { state.research = r; })
+      .catch((err) => {
+        console.error("[planner] research failed:", err);
+        state.research = { notes: "", sources: [], queries: [] };
+      })
+      .finally(() => { finished = true; wake?.(); });
+    while (!finished || progress.length > 0) {
+      const next = progress.shift();
+      if (next) {
+        yield { type: "research_progress", progress: next };
+        continue;
+      }
+      await new Promise<void>((resolve) => { wake = resolve; if (finished || progress.length) resolve(); });
+      wake = null;
     }
-    yield { type: "research_done", research: state.research };
+    await job;
+    yield { type: "research_done", research: state.research! };
   }
 
   // Build the running message list (mutable — tool results are appended each round)

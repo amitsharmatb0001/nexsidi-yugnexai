@@ -120,3 +120,42 @@ test("research always searches at least once, even if the model first says it is
   expect(searched).toEqual(["GST invoice rules"]);
   expect(r.queries.length).toBe(1);
 });
+
+// 2026-10-03 (Amit, run 4): the research appeared as one raw wall of text at
+// the end. Tools like Claude Code show each search live while it runs and a
+// short collapsed summary after. Research now reports each search as it
+// starts and finishes, and the planner streams those steps to the chat.
+test("research reports each search as it starts and finishes", async () => {
+  const { deps } = fakeDeps([JSON.stringify({ queries: ["GST invoice rules", "Zoho Books features"] }), DONE], ["Zoho Books features"]);
+  const events: Array<{ type: string; query: string }> = [];
+  deps.onProgress = (e) => events.push({ type: e.type, query: e.query });
+  await researchBrief("brief", deps);
+  expect(events).toEqual([
+    { type: "search_started", query: "GST invoice rules" },
+    { type: "search_started", query: "Zoho Books features" },
+    { type: "search_done", query: "GST invoice rules" },
+    { type: "search_done", query: "Zoho Books features" },
+  ]);
+});
+
+test("the planner streams each research step to the chat before the final notes", async () => {
+  const state = newSession("u1", "s1");
+  state.messages.push({ role: "user", content: "Build Ledgerly", ts: 1 });
+  const gen = streamReply(state, "", {
+    research: async (_brief, onProgress) => {
+      onProgress?.({ type: "search_started", query: "GST invoice rules" });
+      onProgress?.({ type: "search_done", query: "GST invoice rules", ok: true, sources: 4 });
+      return { notes: "notes", sources: [], queries: ["gst invoice rules"] };
+    },
+  });
+  const types: string[] = [];
+  for (let i = 0; i < 4; i++) types.push(String((await gen.next()).value?.type));
+  await gen.return(undefined);
+  expect(types).toEqual(["research_status", "research_progress", "research_progress", "research_done"]);
+});
+
+test("searches keep the wording the model gave them (shown in the chat)", async () => {
+  const { deps } = fakeDeps([JSON.stringify({ queries: ["Practo Ray vs Clinicia"] }), DONE]);
+  const r = await researchBrief("brief", deps);
+  expect(r.queries).toEqual(["Practo Ray vs Clinicia"]);
+});

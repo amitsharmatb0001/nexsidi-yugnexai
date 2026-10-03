@@ -19,10 +19,18 @@ export interface ResearchNotes {
   queries: string[];
 }
 
+// Each search as it starts and finishes, so the chat can show the research
+// live (like Claude Code's "Searched the web" steps) instead of one wall of
+// text at the end (Amit, run 4).
+export type ResearchProgress =
+  | { type: "search_started"; query: string }
+  | { type: "search_done"; query: string; ok: boolean; sources: number };
+
 export interface ResearchDeps {
   think: (prompt: string) => Promise<string>;
   search: (query: string) => Promise<{ content: string; sources: ResearchSource[] }>;
   now?: () => number;
+  onProgress?: (event: ResearchProgress) => void;
 }
 
 const DEFAULT_SAFETY_MS = Number(process.env.PLANNER_RESEARCH_SAFETY_MINUTES ?? 15) * 60_000;
@@ -94,7 +102,8 @@ export async function researchBrief(
   const started = now();
   const safetyMs = opts.safetyMs ?? DEFAULT_SAFETY_MS;
   const findings: Finding[] = [];
-  const asked = new Set<string>();
+  const asked = new Set<string>(); // lower-case, to spot repeats
+  const queries: string[] = [];    // as the model wrote them, for display
 
   for (;;) {
     const outOfTime = now() - started > safetyMs;
@@ -114,13 +123,15 @@ export async function researchBrief(
       return {
         notes,
         sources: findings.flatMap((f) => f.sources),
-        queries: [...asked],
+        queries,
       };
     }
 
-    for (const q of fresh) asked.add(q.toLowerCase());
+    for (const q of fresh) { asked.add(q.toLowerCase()); queries.push(q); }
+    for (const q of fresh) deps.onProgress?.({ type: "search_started", query: q });
     const results = await Promise.allSettled(fresh.map((q) => deps.search(q)));
     results.forEach((r, k) => {
+      deps.onProgress?.({ type: "search_done", query: fresh[k]!, ok: r.status === "fulfilled", sources: r.status === "fulfilled" ? r.value.sources.length : 0 });
       if (r.status === "fulfilled") findings.push({ query: fresh[k]!, content: r.value.content, sources: r.value.sources });
       else console.log(`[planner:research] search skipped (${fresh[k]}): ${String(r.reason).slice(0, 160)}`);
     });
