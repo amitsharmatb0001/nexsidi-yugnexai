@@ -426,9 +426,11 @@ owner. A marketing site, a lead-gen/contact-form site, a public informational
 site, or any request that never mentions accounts/login has NO auth — not
 even "for future use," not even if the request also asks for an admin-style
 management area (that still needs explicit request per SCOPE CONTROL, and
-even then does not imply public-facing accounts unless stated). When in
-doubt, default to no auth: every apiEndpoint gets auth: false, no "users"
-table, no login/signup pages, no JWT anywhere in the spec.
+even then does not imply public-facing accounts unless stated). If the
+request mentions accounts or sign-in but it is unclear who signs in (any
+visitor, or only the owner), do not decide it — ask with needsClarification
+(2026-10-03, evidence-only: a requirement is the user's to state, never a
+default).
 
 ADMIN-ONLY LOGIN IS NOT PUBLIC REGISTRATION — these are two different things
 and conflating them is a real security bug, not a scope nit.

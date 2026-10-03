@@ -249,7 +249,9 @@ test("SAANVI_SYSTEM_PROMPT's AUTH RULE no longer conditions on authType, a field
   const authRuleIdx = SAANVI_SYSTEM_PROMPT.indexOf("AUTH RULE:");
   const authRuleSection = SAANVI_SYSTEM_PROMPT.slice(authRuleIdx, authRuleIdx + 1500);
   expect(authRuleSection).not.toMatch(/authType is "jwt"/i);
-  expect(authRuleSection).toMatch(/default to no auth/i);
+  // auth only when asked for; an unclear mention is a question (2026-10-03)
+  expect(authRuleSection).toMatch(/never mentions accounts\/login has NO auth/i);
+  expect(authRuleSection).toMatch(/needsClarification/);
 });
 
 // 2026-08-29: real bug found live, TWICE on the same project across a full
@@ -365,4 +367,14 @@ test("end-to-end: run() no longer infers sign-up for an admin-only spec that raw
     expect(result.spec.auth).toEqual({ provider: "custom", features: ["sign-in"] });
     expect(result.spec.apiEndpoints.some((e) => /sign-?up/i.test(e.path ?? ""))).toBe(false);
   }
+});
+
+// 2026-10-03 (evidence-only plan, T9): "when in doubt, default to no auth"
+// decided a user requirement by default. A request that never mentions
+// accounts still gets none (nothing was asked for); one that mentions
+// accounts without saying who signs in is a question for the user.
+test("an unclear mention of accounts is asked about, not decided by default", async () => {
+  const { SAANVI_SYSTEM_PROMPT } = await import("./index.ts");
+  expect(SAANVI_SYSTEM_PROMPT).not.toContain("default to no auth");
+  expect(SAANVI_SYSTEM_PROMPT).toMatch(/unclear who signs in[\s\S]{0,200}needsClarification/);
 });
