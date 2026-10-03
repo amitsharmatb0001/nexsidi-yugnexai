@@ -1173,3 +1173,37 @@ test("buildPayloadForRequestType unwraps Partial<>/Required<>/Readonly<>/Pick<>/
     expect(Object.keys(payload!)).toContain("name");
   }
 });
+
+// 2026-10-03 (evidence-only plan, T7): when the app rejects the check's own
+// test value and the app's message gives nothing to repair it with, the app
+// has not been shown broken — the check could not test it. That is "not
+// checked", with the app's own message: not a deploy failure, not a pass.
+test("verifyAllResourceCrud: a test value the app rejects and that cannot be repaired is not checked, not a failure", async () => {
+  writeContract([
+    { method: "POST", path: "/api/v1/auth/register", auth: false },
+    { method: "POST", path: "/api/v1/auth/login", auth: false },
+    { method: "POST", path: "/api/v1/clients", auth: true, requestType: "{ name: string; gstin?: string }" },
+  ]);
+  const srv = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      if (req.url === "/api/v1/auth/register") { res.writeHead(201); res.end(JSON.stringify({ success: true })); return; }
+      if (req.url === "/api/v1/auth/login") { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify({ token: "t" })); return; }
+      if (req.url === "/api/v1/clients") { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "gstin: Invalid GSTIN for this state" })); return; }
+      res.writeHead(404); res.end();
+    });
+  });
+  server = srv;
+  const url = await new Promise<string>((resolve) => {
+    srv.listen(0, "127.0.0.1", () => {
+      const address = srv.address();
+      resolve(`http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`);
+    });
+  });
+
+  const result = await verifyAllResourceCrud(dir, url, () => null);
+
+  expect(result.ok).toBe(true);
+  expect(result.notChecked?.[0]).toContain("Invalid GSTIN for this state");
+});

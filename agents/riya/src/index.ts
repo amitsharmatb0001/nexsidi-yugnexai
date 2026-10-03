@@ -22,6 +22,11 @@ export interface DeployResult {
   backendUrl: string;
   githubRepo: string | null;
   errors: string[];
+  // 2026-10-03 (evidence-only plan): live checks that could not test
+  // something (e.g. the app rejected the check's own test value), with the
+  // app's message. Not a failure and not a pass — the delivery is not
+  // verified until it is checked.
+  notChecked?: string[];
 }
 
 // Stage 6's deployTarget gate (Task 13). "gcp" is explicitly not yet
@@ -895,7 +900,7 @@ async function registerAndLoginTestUser(
   return { token };
 }
 
-export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backendUrl: string): Promise<{ ok: boolean; reason: string }> {
+export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backendUrl: string): Promise<{ ok: boolean; reason: string; notChecked?: string }> {
   const contractPath = join(buildDir, "api-contract.json");
   if (!existsSync(contractPath)) return { ok: false, reason: "api-contract.json not found — cannot discover endpoints" };
   let endpoints: Array<{ method: string; path: string; auth?: boolean }>;
@@ -1005,6 +1010,12 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
         ok: true,
         reason: `create ${createEp.path} returned 403 Forbidden — the test account's default role lacks permission for this endpoint, which confirms authorization is enforced correctly rather than indicating a broken deploy`,
       };
+    }
+    // 2026-10-03 (evidence-only plan): the app rejected the check's own test
+    // value and gave nothing to repair it with — not checked, not a failure.
+    if (createRes.status === 400 || createRes.status === 422) {
+      const why = `create ${createEp.path} rejected the check's test values: ${(await createRes.text()).slice(0, 200)}`;
+      return { ok: true, reason: `not checked — ${why}`, notChecked: why };
     }
     if (!createRes.ok) return { ok: false, reason: `create ${createEp.path} returned ${createRes.status}: ${(await createRes.text()).slice(0, 200)}` };
     const createBody = (await createRes.json()) as Record<string, unknown>;
@@ -1234,7 +1245,7 @@ export async function verifyAllResourceCrud(
   buildDir: string,
   backendUrl: string,
   getDbRow?: (table: string, id: string) => Record<string, unknown> | null,
-): Promise<{ ok: boolean; findings: string[] }> {
+): Promise<{ ok: boolean; findings: string[]; notChecked?: string[] }> {
   const contractPath = join(buildDir, "api-contract.json");
   if (!existsSync(contractPath)) return { ok: false, findings: ["api-contract.json not found — cannot discover endpoints"] };
   let endpoints: Array<{ method: string; path: string; auth?: boolean; requestType?: string }>;
@@ -1426,6 +1437,13 @@ export async function verifyAllResourceCrud(
         }
       }
 
+      // 2026-10-03 (evidence-only plan): the app rejected the check's own
+      // test value and its message gave nothing to repair it with. The app
+      // has not been shown broken — this resource was not checked.
+      if (createRes.status === 400 || createRes.status === 422) {
+        findings.push(`NOT CHECKED — ${resource}: POST ${createEp.path} rejected the check's test values: ${(await createRes.text()).slice(0, 200)}`);
+        continue;
+      }
       if (!createRes.ok) {
         // A server error says only "Internal Server Error" — the request that
         // caused it lets the backend builder reproduce it (Ledgerly run 4).
@@ -1534,8 +1552,9 @@ export async function verifyAllResourceCrud(
   // The finding stays visible in the list either way — only `ok` treats them
   // differently — so a human reviewing findings can still see what was and
   // wasn't exercised.
-  const realFailures = findings.filter((f) => !f.startsWith("SKIPPED —"));
-  return { ok: realFailures.length === 0, findings };
+  const realFailures = findings.filter((f) => !f.startsWith("SKIPPED —") && !f.startsWith("NOT CHECKED —"));
+  const notChecked = findings.filter((f) => f.startsWith("NOT CHECKED —")).map((f) => f.replace(/^NOT CHECKED — /, ""));
+  return { ok: realFailures.length === 0, findings, ...(notChecked.length > 0 ? { notChecked } : {}) };
 }
 
 // 2026-07-28 (live, complex1): real gap found live — a POST-FIX redeploy
@@ -1704,7 +1723,7 @@ export async function run(
   // comment for the concrete instance this closes. Only attempted after the
   // single-resource roundTrip already passed (no point iterating every
   // resource against a backend already known to be broken).
-  const crudCheck = roundTrip.ok
+  const crudCheck: { ok: boolean; findings: string[]; notChecked?: string[] } = roundTrip.ok
     ? await verifyAllResourceCrud(buildDir, backendUrl)
     : { ok: true, findings: [] }; // not a separate failure — roundTrip.ok already covers this case
   if (!crudCheck.ok) {
@@ -1746,7 +1765,8 @@ export async function run(
     .set(projectFieldsAfterDeploy(appUrl))
     .where(eq(projects.id, projectId));
 
-  return { success: deploySucceeded, appUrl, backendUrl, githubRepo, errors };
+  const notChecked = [...("notChecked" in roundTrip && roundTrip.notChecked ? [roundTrip.notChecked] : []), ...(crudCheck.notChecked ?? [])];
+  return { success: deploySucceeded, appUrl, backendUrl, githubRepo, errors, ...(notChecked.length > 0 ? { notChecked } : {}) };
 }
 
 // 2026-09-29: real bug (project a034f90ba50e). This step used to write

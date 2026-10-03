@@ -899,7 +899,11 @@ export async function runStage6(
     }
   }
 
-  const deliverySummary = buildDeliverySummary(deployResult, retest);
+  // Checks the deploy itself could not run (see DeployResult.notChecked).
+  const finalRetest = deployResult.notChecked?.length
+    ? { ...retest, notChecked: [...deployResult.notChecked, ...(retest.notChecked ?? [])] }
+    : retest;
+  const deliverySummary = buildDeliverySummary(deployResult, finalRetest);
   return {
     // "not_verified" is not success: the workflow retries it and then asks a
     // human, with the reasons in deliverySummary.notChecked.
