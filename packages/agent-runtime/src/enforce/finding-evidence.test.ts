@@ -114,3 +114,43 @@ test("checkChangedFilesCoverage does not care about files read that AREN'T in th
   const result = checkChangedFilesCoverage(readFiles, ["backend/src/index.ts"]);
   expect(result.allowed).toBe(true);
 });
+
+// 2026-10-03 (evidence-only plan, T1): a finding must quote the code it is
+// about, and the quote must really be in the cited file. Before, a finding
+// needed only a file the reviewer had opened; the claim itself was never
+// checked against the code, so a wrong claim reached a builder as fact.
+import { checkFindingsQuoted } from "./finding-evidence.ts";
+
+const FILES: Record<string, string> = {
+  "backend/src/services/seq.ts": "export const next = async () => {\n  const q = `INSERT INTO s (a, b) VALUES ($1, $2)\n    ON CONFLICT (a, b) DO UPDATE SET n = s.n + 1`;\n  return q;\n};\n",
+};
+const read = (f: string) => FILES[f] ?? null;
+
+test("a finding whose quote is in the cited file is accepted, and its line is set from the quote", () => {
+  const r = checkFindingsQuoted(
+    [{ severity: "HIGH", file: "backend/src/services/seq.ts", line: 40, evidence: "ON CONFLICT (a, b)   DO UPDATE" }],
+    read,
+  );
+  expect(r.allowed).toBe(true);
+  expect(r.findings[0]!.line).toBe(3);
+});
+
+test("a finding whose quote is not in the file is refused, naming the finding", () => {
+  const r = checkFindingsQuoted([{ severity: "HIGH", file: "backend/src/services/seq.ts", evidence: "queryWhere.push(" }], read);
+  expect(r.allowed).toBe(false);
+  expect(r.reason).toContain("not in backend/src/services/seq.ts");
+});
+
+test("a finding without a file, without a quote, or without a valid severity is refused with what is missing", () => {
+  expect(checkFindingsQuoted([{ severity: "HIGH", evidence: "ON CONFLICT" }], read).reason).toContain("file");
+  expect(checkFindingsQuoted([{ severity: "HIGH", file: "backend/src/services/seq.ts" }], read).reason).toContain("evidence");
+  expect(checkFindingsQuoted([{ severity: "SEVERE", file: "backend/src/services/seq.ts", evidence: "ON CONFLICT (a, b)" }], read).reason).toContain("severity");
+});
+
+test("a quote too short to identify anything is refused", () => {
+  expect(checkFindingsQuoted([{ severity: "LOW", file: "backend/src/services/seq.ts", evidence: "q" }], read).allowed).toBe(false);
+});
+
+test("no findings is allowed", () => {
+  expect(checkFindingsQuoted([], read).allowed).toBe(true);
+});

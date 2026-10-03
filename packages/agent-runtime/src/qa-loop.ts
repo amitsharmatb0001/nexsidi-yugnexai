@@ -23,7 +23,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
 import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { LOAD_SKILL_TOOL_DEF, loadSkillText, skillsForAgent } from "./skill-library.ts";
-import { checkFindingsEvidence, checkReviewCoverage, checkChangedFilesCoverage } from "./enforce/finding-evidence.ts";
+import { checkFindingsEvidence, checkReviewCoverage, checkChangedFilesCoverage, checkFindingsQuoted } from "./enforce/finding-evidence.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts";
 // 2026-08-13 (cost-control Task 1): same CRITICAL gap as loop.ts/
@@ -83,6 +83,9 @@ export interface Finding {
   // missing-file or architecture-level issue), but required whenever the
   // model is citing something inside a file it already read.
   line?: number;
+  // 2026-10-03 (evidence-only plan): the exact code from `file` that shows
+  // the problem. Checked against the file; `line` is set from where it is.
+  evidence?: string;
 }
 
 export interface QAAgentConfig {
@@ -148,6 +151,49 @@ export interface QAAgentResult {
   findings: Finding[];
   iterations: number;
   errors: string[];
+  // 2026-10-03 (evidence-only plan, T2): false when the review ended without
+  // an accepted submit_findings (out of steps, stopped, stuck). Such a review
+  // did not finish — zero findings from it is not a clean result.
+  submitted?: boolean;
+}
+
+// 2026-10-03 (evidence-only plan, T2): why a review did not finish, or null
+// when it did. Ending without an accepted submit_findings (out of steps,
+// stopped, stuck) is not finishing — before, those errors were ignored and
+// zero findings counted as a clean 100. A failure with nothing found is too.
+export function reviewIncompleteReason(result: QAAgentResult): string | null {
+  const why = result.errors.join("; ");
+  if (result.submitted === false) return why || "it ended without submitting its findings";
+  const fatal = result.errors.some((e) => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings") && !e.includes("Stuck:"));
+  if (result.findings.length === 0 && fatal) return why;
+  return null;
+}
+
+// The rules submit_findings applies, as one pure function: coverage (every
+// listed file read, or every changed file on later rounds), every cited file
+// read, and every finding quoting real code from its file.
+export function acceptSubmittedFindings(
+  findings: Finding[],
+  ctx: { readFiles: ReadonlySet<string>; totalFilesListed: number; changedFiles?: string[]; readContent: (file: string) => string | null },
+): { accepted?: Finding[]; reason?: string } {
+  const coverage = ctx.changedFiles
+    ? checkChangedFilesCoverage(ctx.readFiles, ctx.changedFiles)
+    : checkReviewCoverage(ctx.readFiles.size, ctx.totalFilesListed);
+  if (!coverage.allowed) return { reason: coverage.reason };
+  const read = checkFindingsEvidence(findings, ctx.readFiles);
+  if (!read.allowed) return { reason: read.reason };
+  const quoted = checkFindingsQuoted(findings, ctx.readContent);
+  if (!quoted.allowed) return { reason: quoted.reason };
+  return { accepted: quoted.findings };
+}
+
+// A review that never submitted: only findings that quote real code are kept
+// (each one checked on its own); the rest were never shown to be true.
+export function findingsFromUnfinishedReview(findings: Finding[], readContent: (file: string) => string | null): Finding[] {
+  return findings.flatMap((f) => {
+    const r = checkFindingsQuoted([f], readContent);
+    return r.allowed ? r.findings : [];
+  });
 }
 
 const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".sql", ".prisma", ".json", ".yaml", ".yml", ".css", ".scss", ".html", ".md"]);
@@ -226,7 +272,7 @@ export function resolveLabeledFile(dirs: LabeledDir[], labeledPath: string): str
 // gap, so the round-scoped explicit clear is the actual correctness
 // mechanism, not a per-entry timestamp comparison.
 export interface CachedFileRead {
-  content: string; // exactly what a direct readFileSync + truncation call would produce
+  content: string; // the whole file — readLabeledFile hands it out in parts
   notFound?: boolean;
   error?: string;
 }
@@ -239,11 +285,7 @@ function performRead(absPath: string): CachedFileRead {
     return { content: "", notFound: true };
   }
   try {
-    let content = readFileSync(absPath, "utf-8");
-    if (content.length > READ_FILE_CHAR_LIMIT) {
-      content = content.slice(0, READ_FILE_CHAR_LIMIT) + `\n...[truncated, ${content.length - READ_FILE_CHAR_LIMIT} more chars]`;
-    }
-    return { content };
+    return { content: readFileSync(absPath, "utf-8") };
   } catch (err) {
     return { content: "", error: String(err) };
   }
@@ -336,15 +378,28 @@ export interface ReadLabeledFileResult {
   found: boolean;
   content: string;
   error?: string;
+  // 2026-10-03 (evidence-only plan): true when this part reaches the end of
+  // the file. A file counts as read only when its end was reached — before,
+  // reviewers saw the first 8,000 characters and the file counted as read.
+  complete?: boolean;
+  fullContent?: string;
 }
 
-export function readLabeledFile(dirs: LabeledDir[], path: string, cache?: FileReadCache): ReadLabeledFileResult {
+export function readLabeledFile(dirs: LabeledDir[], path: string, cache?: FileReadCache, offset = 0): ReadLabeledFileResult {
   const abs = path ? resolveLabeledFile(dirs, path) : null;
   if (!abs) return { found: false, content: "" };
   const read = cache ? cache.get(abs) : performRead(abs);
   if (read.notFound) return { found: false, content: "" };
   if (read.error) return { found: false, content: "", error: read.error };
-  return { found: true, content: read.content };
+  const full = read.content;
+  const start = Math.max(0, Math.min(offset, full.length));
+  const end = start + READ_FILE_CHAR_LIMIT;
+  const complete = end >= full.length;
+  const part = full.slice(start, end);
+  const content = complete
+    ? part
+    : `${part}\n...[file continues: ${full.length - end} more chars — call read_file with this path and offset ${end} to read the rest; the file counts as read only when you reach its end]`;
+  return { found: true, content, complete, fullContent: full };
 }
 
 export function readLabeledFiles(dirs: LabeledDir[], paths: string[], cache?: FileReadCache): ReadLabeledFilesResult {
@@ -357,7 +412,7 @@ export function readLabeledFiles(dirs: LabeledDir[], paths: string[], cache?: Fi
     } else if (!found) {
       chunks.push(`// FILE: ${path}\n[not found — use list_files to see valid paths]`);
     } else {
-      readPaths.push(path);
+      if (readLabeledFile(dirs, path, cache).complete) readPaths.push(path);
       chunks.push(`// FILE: ${path}\n${content}`);
     }
   }
@@ -380,7 +435,10 @@ const QA_TOOL_DEFS: NimToolDef[] = [
       description: "Read a file by its labeled path (from list_files' output, e.g. 'backend/src/controllers/tasks.ts'). You MUST read a file before citing it in a finding — findings citing an unread file are rejected. Prefer read_files when you need more than one file — it costs one iteration instead of several.",
       parameters: {
         type: "object",
-        properties: { path: { type: "string", description: "Labeled path from list_files" } },
+        properties: {
+          path: { type: "string", description: "Labeled path from list_files" },
+          offset: { type: "integer", description: "Character offset to continue a long file from (the read tells you the next offset)." },
+        },
         required: ["path"],
       },
     },
@@ -407,7 +465,7 @@ const QA_TOOL_DEFS: NimToolDef[] = [
     type: "function",
     function: {
       name: "submit_findings",
-      description: "Submit your final findings after reviewing the code. Every finding with a `file` field must be a file you already called read_file on. Whenever you cite a `file`, also cite the exact `line` number the issue is on (read_file's output — count from its start) so the fix can target that line directly instead of re-scanning the whole file. Call with an empty findings array if you found nothing.",
+      description: "Submit your final findings after reviewing the code. Every finding names the `file` it is in (a file you already called read_file on) and quotes, in `evidence`, the exact code from that file that shows the problem — copied from read_file, not paraphrased. The quote is checked against the file and the line is taken from where it is; a finding whose quote is not in the file is refused. Call with an empty findings array if you found nothing.",
       parameters: {
         type: "object",
         properties: {
@@ -420,9 +478,10 @@ const QA_TOOL_DEFS: NimToolDef[] = [
                 category: { type: "string" },
                 detail: { type: "string" },
                 file: { type: "string" },
-                line: { type: "integer", description: "1-indexed line number within `file` where the issue is — omit only if the finding isn't attributable to a single line." },
+                line: { type: "integer", description: "1-indexed line number within `file` where the issue is." },
+                evidence: { type: "string", description: "The exact code from `file` that shows the problem, copied from read_file. For something missing, quote the code where it should be (e.g. the router that never mounts a route)." },
               },
-              required: ["severity", "category", "detail"],
+              required: ["severity", "category", "detail", "file", "evidence"],
             },
           },
         },
@@ -476,7 +535,10 @@ export function buildQaInitialMessage(
     `call costs a full round-trip of resent history, so batching cuts cost and iterations substantially with ` +
     `no loss of coverage. A file you haven't opened may hold the most serious issue; reading most of the ` +
     `codebase and concluding "clean" is exactly how real bugs go unreported. You must read a file before you ` +
-    `can cite it in a finding. Call submit_findings when done (empty findings array if you found nothing).`
+    `can cite it in a finding. A long file comes in parts — continue it with read_file and the offset it gives ` +
+    `you; it counts as read only when you reach its end. Every finding quotes, in "evidence", the exact code ` +
+    `that shows the problem, copied from the file — it is checked against the file, and a finding whose quote ` +
+    `is not there is refused. Call submit_findings when done (empty findings array if you found nothing).`
   );
 }
 
@@ -546,6 +608,11 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
   // caller supplied a projectId AND the cache hasn't been disabled via
   // QA_READ_CACHE_ENABLED=false.
   const fileReadCache = config.projectId && isQaReadCacheEnabled() ? sharedFileReadCache(config.projectId) : undefined;
+  // the cited file's real content, for checking a finding's quoted evidence
+  const readContent = (file: string): string | null => {
+    const r = readLabeledFile(config.dirs, file, fileReadCache);
+    return r.found && !r.error ? (r.fullContent ?? r.content) : null;
+  };
 
   while (iterations < effectiveMaxIterations) {
     iterations++;
@@ -607,7 +674,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
         // Token-waste-reduction plan, Task 1: even on this fallback exit
         // path, a real previous-round finding on a file never read this
         // round must not silently vanish — see mergeCarriedForwardFindings.
-        return { findings: mergeCarriedForwardFindings(fallbackFindings, config.previousFindings, readFiles), iterations, errors };
+        return { findings: mergeCarriedForwardFindings(findingsFromUnfinishedReview(fallbackFindings, readContent), config.previousFindings, readFiles), iterations, errors, submitted: false };
       }
       continue;
     }
@@ -619,7 +686,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
       console.log(`[${config.agentName}:qa-loop] ${reason}`);
       errors.push(reason);
       const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles, errors);
-      return { findings: mergeCarriedForwardFindings(fallbackFindings, config.previousFindings, readFiles), iterations, errors };
+      return { findings: mergeCarriedForwardFindings(findingsFromUnfinishedReview(fallbackFindings, readContent), config.previousFindings, readFiles), iterations, errors, submitted: false };
     }
 
     const responseParts: GeminiPart[] = [];
@@ -642,18 +709,18 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
           break;
         }
         case "read_file": {
-          const path = (call.input as { path: string }).path;
+          const { path, offset } = call.input as { path: string; offset?: number };
           // Task 3: routes through fileReadCache when set — the second and
           // third reviewer's read_file call for a path already read this
           // round is served from the cache instead of hitting disk again.
-          const { found, content, error } = readLabeledFile(config.dirs, path, fileReadCache);
+          const { found, content, error, complete } = readLabeledFile(config.dirs, path, fileReadCache, offset ?? 0);
           if (error) {
             result = { status: "error", summary: `read_file failed: ${error}` };
           } else if (!found) {
             result = { status: "error", summary: `File not found: ${path} — use list_files to see valid paths` };
           } else {
-            readFiles.add(path);
-            result = { status: "success", summary: `Read ${path}`, output: content };
+            if (complete) readFiles.add(path);
+            result = { status: "success", summary: complete ? `Read ${path}` : `Read part of ${path} — read the rest before submitting`, output: content };
           }
           break;
         }
@@ -668,18 +735,11 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
         case "submit_findings": {
           const findings = ((call.input as { findings?: Finding[] }).findings ?? []);
           // Token-waste-reduction plan, Task 1: round 2+ only requires the
-          // known-changed files to have been read, not the whole project —
-          // checkReviewCoverage (round 1) is completely unchanged.
-          const coverage = changedFiles
-            ? checkChangedFilesCoverage(readFiles, changedFiles)
-            : checkReviewCoverage(readFiles.size, totalFilesListed);
-          if (!coverage.allowed) {
-            result = { status: "error", summary: coverage.reason };
-            break;
-          }
-          const check = checkFindingsEvidence(findings, readFiles);
-          if (!check.allowed) {
-            result = { status: "error", summary: check.reason };
+          // known-changed files to have been read, not the whole project.
+          // 2026-10-03: every finding must also quote real code (T1).
+          const verdict = acceptSubmittedFindings(findings, { readFiles, totalFilesListed, changedFiles, readContent });
+          if (!verdict.accepted) {
+            result = { status: "error", summary: verdict.reason };
             break;
           }
           result = { status: "success", summary: "Findings accepted" };
@@ -687,7 +747,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
           // findings — carried-forward entries are already-evidenced facts
           // from a prior round, not new claims that need a fresh read_file
           // call to back them up.
-          submitted = mergeCarriedForwardFindings(findings, config.previousFindings, readFiles);
+          submitted = mergeCarriedForwardFindings(verdict.accepted, config.previousFindings, readFiles);
           break;
         }
         default:
@@ -698,7 +758,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
     }
 
     if (submitted !== null) {
-      return { findings: submitted, iterations, errors };
+      return { findings: submitted, iterations, errors, submitted: true };
     }
 
     messages.push({ role: "user", content: responseParts });
@@ -706,7 +766,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
 
   console.log(`[${config.agentName}:qa-loop] Max iterations reached without submit_findings. Running fallback parser...`);
   const fallbackFindings = await extractFindingsFromHistory(messages, config.agentName, readFiles, errors);
-  return { findings: mergeCarriedForwardFindings(fallbackFindings, config.previousFindings, readFiles), iterations, errors };
+  return { findings: mergeCarriedForwardFindings(findingsFromUnfinishedReview(fallbackFindings, readContent), config.previousFindings, readFiles), iterations, errors, submitted: false };
 }
 
 export async function extractFindingsFromHistory(
@@ -796,7 +856,8 @@ async function attemptExtraction(
         `      "severity": "CRITICAL | HIGH | MEDIUM | LOW",\n` +
         `      "category": "string (e.g. security-owasp, performance-n+1, logic-null-ptr)",\n` +
         `      "detail": "precise description of the issue",\n` +
-        `      "file": "best-effort relative path prefix e.g. backend/src/controllers/tasks.ts"\n` +
+        `      "file": "the relative path the agent cited, e.g. backend/src/controllers/tasks.ts",\n` +
+        `      "evidence": "the exact code the agent quoted from that file — leave the finding out if it quoted none"\n` +
         `    }\n` +
         `  ]\n` +
         `}\n` +

@@ -91,3 +91,70 @@ export function checkChangedFilesCoverage(readFiles: ReadonlySet<string>, change
   }
   return { allowed: true };
 }
+
+// 2026-10-03 (evidence-only plan, T1): checkFindingsEvidence only proves the
+// reviewer opened the file. It never checked the claim against the code, so
+// a wrong claim (and a severity the model made up) reached a builder as fact.
+// Every finding now names a file, states a severity, and quotes the code it is
+// about; the quote must be in that file. The line is taken from where the
+// quote really is, not from the model.
+export interface QuotedFinding {
+  severity?: string;
+  file?: string;
+  line?: number;
+  evidence?: string;
+}
+
+const SEVERITIES = new Set(["CRITICAL", "HIGH", "MEDIUM", "LOW"]);
+const MIN_QUOTE_CHARS = 8;
+const squash = (s: string) => s.replace(/\s+/g, " ").trim();
+
+/** Line (1-based) where `quote` starts in `content`, comparing with whitespace collapsed; null when absent. */
+export function findQuoteLine(content: string, quote: string): number | null {
+  const want = squash(quote);
+  if (!want) return null;
+  const lines = content.split(/\r?\n/);
+  // collapse the whole file once, remembering where each line starts
+  let flat = "";
+  const starts: number[] = [];
+  for (const l of lines) {
+    starts.push(flat.length);
+    flat += `${squash(l)} `;
+  }
+  const at = flat.indexOf(want);
+  if (at < 0) return null;
+  let line = 0;
+  while (line + 1 < starts.length && starts[line + 1]! <= at) line++;
+  return line + 1;
+}
+
+export function checkFindingsQuoted<F extends QuotedFinding>(
+  findings: F[],
+  readContent: (file: string) => string | null,
+): { allowed: boolean; reason?: string; findings: F[] } {
+  const problems: string[] = [];
+  const out = findings.map((f, i) => {
+    const n = `Finding ${i + 1}`;
+    if (!f.severity || !SEVERITIES.has(f.severity)) {
+      problems.push(`${n}: state its severity (CRITICAL, HIGH, MEDIUM or LOW).`);
+      return f;
+    }
+    if (!f.file) {
+      problems.push(`${n}: name the file it is in.`);
+      return f;
+    }
+    if (!f.evidence || squash(f.evidence).length < MIN_QUOTE_CHARS) {
+      problems.push(`${n}: add "evidence" — the exact code from ${f.file} that shows the problem (copy it from read_file).`);
+      return f;
+    }
+    const content = readContent(f.file);
+    const line = content === null ? null : findQuoteLine(content, f.evidence);
+    if (line === null) {
+      problems.push(`${n}: the quoted evidence is not in ${f.file}. Read the file again and quote the code exactly, or drop the finding if the code does not say this.`);
+      return f;
+    }
+    return { ...f, line };
+  });
+  if (problems.length > 0) return { allowed: false, reason: problems.join(" "), findings };
+  return { allowed: true, findings: out };
+}

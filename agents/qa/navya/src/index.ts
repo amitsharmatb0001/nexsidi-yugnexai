@@ -1,5 +1,5 @@
 import { agentChat } from "@nexsidi/llm-client";
-import { runQAAgent, type LabeledDir } from "../../../../packages/agent-runtime/src/qa-loop.ts";
+import { runQAAgent, reviewIncompleteReason, type LabeledDir } from "../../../../packages/agent-runtime/src/qa-loop.ts";
 
 export interface QAResult {
   agent: string;
@@ -98,22 +98,20 @@ export async function runExploring(
     previousFindings,
   });
 
-  const hasFatalError = result.errors.some(
-    (error) =>
-      !error.includes("Max iterations") &&
-      !error.includes("stopped without calling submit_findings") &&
-      !error.includes("Stuck:"),
-  );
-  if (result.findings.length === 0 && hasFatalError) {
+  // A review that did not finish is never clean; findings it showed to be
+  // true are kept (see reviewIncompleteReason).
+  const incomplete = reviewIncompleteReason(result);
+  if (incomplete !== null) {
     return {
       agent: "navya",
       score: 0,
       passed: false,
       findings: [
+        ...result.findings,
         {
           severity: "CRITICAL",
           category: "review-incomplete",
-          detail: `Navya's review did not complete: ${result.errors.join("; ")}`,
+          detail: `Navya's review did not complete: ${incomplete}`,
         },
       ],
     };

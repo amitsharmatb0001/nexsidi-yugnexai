@@ -22,7 +22,7 @@
 // types locally in their own files — those are untouched by this change).
 // Retiring Karan's copy here is safe; nothing else depended on it.
 import { agentChat } from "@nexsidi/llm-client";
-import { runQAAgent, type LabeledDir, type Finding as QALoopFinding } from "../../../../packages/agent-runtime/src/qa-loop.ts";
+import { runQAAgent, reviewIncompleteReason, type LabeledDir, type Finding as QALoopFinding } from "../../../../packages/agent-runtime/src/qa-loop.ts";
 
 export interface SecurityFinding {
   severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
@@ -147,12 +147,15 @@ export async function runExploring(
     previousFindings: previousFindings?.map(securityFindingToQaLoopFinding),
   });
 
-  const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings") && !e.includes("Stuck:"));
-  if (result.findings.length === 0 && hasFatalError) {
+  // A review that did not finish is never clean; findings it showed to be
+  // true are kept (see reviewIncompleteReason).
+  const incomplete = reviewIncompleteReason(result);
+  if (incomplete !== null) {
     const findings: SecurityFinding[] = [
+      ...result.findings.map(qaLoopFindingToSecurityFinding),
       {
         severity: "CRITICAL",
-        description: `Karan's review did not complete: ${result.errors.join("; ")}`,
+        description: `Karan's review did not complete: ${incomplete}`,
       },
     ];
     return { agent: "karan", score: 0, passed: false, findings };

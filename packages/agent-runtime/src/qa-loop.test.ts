@@ -496,3 +496,66 @@ test("isQaReadCacheEnabled defaults to enabled and can be disabled via QA_READ_C
     else process.env.QA_READ_CACHE_ENABLED = original;
   }
 });
+
+// 2026-10-03 (evidence-only plan, T1/T2): a submitted finding must quote the
+// code it is about; a review that never submitted is incomplete, not clean.
+import { acceptSubmittedFindings, findingsFromUnfinishedReview } from "./qa-loop.ts";
+
+const CODE: Record<string, string> = { "backend/src/a.ts": "const id = req.params.id;\nawait db.query(`SELECT * FROM t WHERE id = ${id}`);\n" };
+const readCode = (f: string) => CODE[f] ?? null;
+
+test("submit_findings accepts a quoted finding and refuses one whose quote is not in the file", () => {
+  const ok = acceptSubmittedFindings(
+    [{ severity: "CRITICAL", category: "sql-injection", detail: "id interpolated into SQL", file: "backend/src/a.ts", evidence: "WHERE id = ${id}" }],
+    { readFiles: new Set(["backend/src/a.ts"]), totalFilesListed: 1, readContent: readCode },
+  );
+  expect(ok.accepted?.[0]!.line).toBe(2);
+  const bad = acceptSubmittedFindings(
+    [{ severity: "CRITICAL", category: "sql-injection", detail: "x", file: "backend/src/a.ts", evidence: "queryWhere.push(id)" }],
+    { readFiles: new Set(["backend/src/a.ts"]), totalFilesListed: 1, readContent: readCode },
+  );
+  expect(bad.accepted).toBeUndefined();
+  expect(bad.reason).toContain("not in backend/src/a.ts");
+});
+
+test("an unfinished review keeps only findings that quote real code, and is marked not submitted", () => {
+  const r = findingsFromUnfinishedReview(
+    [
+      { severity: "HIGH", category: "x", detail: "real", file: "backend/src/a.ts", evidence: "req.params.id" },
+      { severity: "HIGH", category: "x", detail: "guessed", file: "backend/src/a.ts" },
+      { severity: "HIGH", category: "x", detail: "wrong quote", file: "backend/src/a.ts", evidence: "eval(userInput)" },
+    ],
+    readCode,
+  );
+  expect(r.map((f) => f.detail)).toEqual(["real"]);
+});
+
+// 2026-10-03 (evidence-only plan): reviewers saw only the first 8,000
+// characters of a file, and the file still counted as read — six files in
+// Ledgerly run 4 were never reviewed past that point while the review was
+// reported complete. A long file is now read in parts with an offset, and
+// only counts as read once read to its end.
+test("a long file is read in parts and is complete only at its end", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "qa-long-"));
+  try {
+    mkdirSync(join(root, "src"));
+    const body = "a".repeat(8000) + "\nconst tail = 'END-OF-FILE';\n";
+    writeFileSync(join(root, "src", "big.ts"), body);
+    const dirs = [{ label: "backend", path: root }];
+    const first = readLabeledFile(dirs, "backend/src/big.ts");
+    expect(first.complete).toBe(false);
+    expect(first.content).toContain("offset 8000");
+    expect(first.content).not.toContain("END-OF-FILE");
+    const rest = readLabeledFile(dirs, "backend/src/big.ts", undefined, 8000);
+    expect(rest.complete).toBe(true);
+    expect(rest.content).toContain("END-OF-FILE");
+    const batch = readLabeledFiles(dirs, ["backend/src/big.ts"]);
+    expect(batch.readPaths).toEqual([]);
+    expect(batch.output).toContain("offset 8000");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

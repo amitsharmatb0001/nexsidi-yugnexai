@@ -16,7 +16,7 @@
 // fault-isolate Deepika findings to a specific agent instead of always
 // defaulting to "shubham" (see stage5-adversarial-qa.ts).
 import { agentChat } from "@nexsidi/llm-client";
-import { runQAAgent, type LabeledDir } from "../../../../packages/agent-runtime/src/qa-loop.ts";
+import { runQAAgent, reviewIncompleteReason, type LabeledDir } from "../../../../packages/agent-runtime/src/qa-loop.ts";
 
 export interface QAResult {
   agent:    string;
@@ -124,20 +124,21 @@ export async function runExploring(
     previousFindings,
   });
 
-  const hasFatalError = result.errors.some(e => !e.includes("Max iterations") && !e.includes("stopped without calling submit_findings") && !e.includes("Stuck:"));
-  if (result.findings.length === 0 && hasFatalError) {
-    // D25 default-FAIL: the agent never successfully called submit_findings
-    // (gave up, hit the iteration cap) — categorically worse than "zero
-    // findings", so this is NOT the same as a clean pass.
+  // D25 default-FAIL: a review that did not finish (out of steps, stopped,
+  // stuck, failed) is never a clean pass; findings it showed to be true are
+  // kept (see reviewIncompleteReason).
+  const incomplete = reviewIncompleteReason(result);
+  if (incomplete !== null) {
     return {
       agent: "deepika",
       score: 0,
       passed: false,
       findings: [
+        ...result.findings,
         {
           severity: "CRITICAL",
           category: "review-incomplete",
-          detail: `Deepika's review did not complete: ${result.errors.join("; ")}`,
+          detail: `Deepika's review did not complete: ${incomplete}`,
         },
       ],
     };
