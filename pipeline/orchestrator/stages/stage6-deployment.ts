@@ -247,9 +247,10 @@ async function runRealLiveRetest(
   backendUrl: string,
   stage4Result: Stage4Result,
   plan?: BuildPlan,
+  changedFiles?: string[],
 ): Promise<LiveRetestResult> {
   const notChecked: string[] = [];
-  const result = await liveRetestChecks(projectId, appUrl, backendUrl, stage4Result, plan, notChecked);
+  const result = await liveRetestChecks(projectId, appUrl, backendUrl, stage4Result, plan, notChecked, changedFiles);
   const all = [...notChecked, ...(result.specCompliance?.notChecked ?? [])];
   if (all.length === 0) return result;
   console.error(`[stage6] not checked:\n${all.join("\n")}`);
@@ -267,6 +268,7 @@ async function liveRetestChecks(
   // context, not just the pre-deploy pass.
   plan: BuildPlan | undefined,
   notChecked: string[],
+  changedFiles?: string[],
 ): Promise<LiveRetestResult> {
   const { runStage5 } = await import("./stage5-adversarial-qa.ts");
 
@@ -382,7 +384,9 @@ async function liveRetestChecks(
     // actual live URL — the one place Tier 3 can legitimately run. See
     // runStage5's own comment for why the pre-deployment gate defaults to
     // false instead.
-    const result: Stage5Result = await runStage5(projectId, stage4Result, true, plan);
+    // After a fix round the reviewers re-read only the files that changed; the
+    // live review of the running app (Tier 3) still covers the whole app.
+    const result: Stage5Result = await runStage5(projectId, stage4Result, true, plan, changedFiles && changedFiles.length > 0 ? changedFiles : undefined);
     // A review that could not finish is "not checked", not a failed app:
     // nothing to route, and the delivery is not verified (see runRealLiveRetest).
     if (result.notChecked?.length) {
@@ -446,7 +450,9 @@ export interface Stage6Deps {
   // redeploy calls below can request a larger iteration budget than the
   // FIRST deploy — see REDEPLOY_MAX_ITERATIONS' header comment.
   deployFn: (projectId: string, deployTarget: "local" | "gcp", maxIterations?: number) => Promise<DeployResult>;
-  liveRetestFn: (projectId: string, appUrl: string, backendUrl: string) => Promise<LiveRetestResult>;
+  // changedFiles (2026-10-04): the labeled files ("backend/src/x.ts") a fix round changed since the
+  // last review; absent on the first review, which reads everything.
+  liveRetestFn: (projectId: string, appUrl: string, backendUrl: string, changedFiles?: string[]) => Promise<LiveRetestResult>;
   dbCheckFn?: () => Promise<boolean>;
   // 2026-07-28 (live, complex1): escalations is optional on both — existing
   // DI test stubs (which return only {success}) keep compiling unchanged,
@@ -673,7 +679,7 @@ export async function runStage6(
     if (depsOrPlan) plan = depsOrPlan as BuildPlan;
     deps = {
       deployFn: runRiya,
-      liveRetestFn: (pid, appUrl, backendUrl) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result, plan),
+      liveRetestFn: (pid, appUrl, backendUrl, changed) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result, plan, changed),
       dbCheckFn: checkNexsidiDbReachable,
       roundGuard: (findings) => checkRoundGuard(projectId, "live", findings as never),
     };
@@ -712,6 +718,9 @@ export async function runStage6(
     return runFix(p, f);
   });
 
+  // Labeled files the builders changed since the last review (2026-10-04).
+  const changedSinceReview = new Set<string>();
+  const labelFor: Record<"shubham" | "aanya" | "pranav", string> = { shubham: "backend", aanya: "frontend", pranav: "db" };
   type FixFn = (p: BuildPlan, f: string[]) => Promise<{ success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>;
   const settleReal: SettleFn = deps.settleDisputes ?? (async (pid, disputes) => {
     const { settleDisputes } = await import("../../../agents/tilotma/src/settle-disputes.ts");
@@ -736,7 +745,10 @@ export async function runStage6(
     const roundStart = new Date().toISOString();
     const fixResults = await Promise.all(owners.map((owner) => {
       console.log(`[stage6] Routing ${routed[owner].length} findings to ${owner[0]!.toUpperCase()}${owner.slice(1)}`);
-      return fixerFor[owner](fixPlan, routed[owner]).then((r) => ({ agent: owner, ...r }));
+      return fixerFor[owner](fixPlan, routed[owner]).then((r) => {
+        for (const f of r.filesWritten ?? []) changedSinceReview.add(`${labelFor[owner]}/${f}`);
+        return { agent: owner, ...r };
+      });
     }));
     // 2026-07-26 (autonomy/throughput pass): a fix agent that genuinely
     // failed to complete still triggered a full docker redeploy + retest
@@ -762,6 +774,7 @@ export async function runStage6(
       const formatted = targeted.map((e) => `${e.finding} — ${e.reason}`);
       console.log(`[stage6] routing ${formatted.length} escalated finding(s) to ${target} this round`);
       const escalationResult = await fixerFor[target](fixPlan, formatted);
+      for (const f of escalationResult.filesWritten ?? []) changedSinceReview.add(`${labelFor[target]}/${f}`);
       if (fixChangedCode(escalationResult)) escalationChanged = true;
       if (!escalationResult.success) {
         console.error(`[stage6] ${target} escalation fix FAILED to complete`);
@@ -770,7 +783,14 @@ export async function runStage6(
     // 2026-10-03 (evidence-only plan): findings the builders disputed this
     // round go to Tilotma; confirmed ones go back with her evidence, ones she
     // rules not true are dropped from the retest.
-    const disputes = await resolveDisputes(projectId, roundStart, fixPlan, { settle: settleReal, fixers: fixerFor });
+    const disputes = await resolveDisputes(projectId, roundStart, fixPlan, {
+      settle: settleReal,
+      fixers: Object.fromEntries((["shubham", "aanya", "pranav"] as const).map((o) => [o, async (p: BuildPlan, f: string[]) => {
+        const r = await fixerFor[o](p, f);
+        for (const file of r.filesWritten ?? []) changedSinceReview.add(`${labelFor[o]}/${file}`);
+        return r;
+      }])),
+    });
     if (fixesChangedNothing && !escalationChanged && disputes.settledNotTrue === 0 && !disputes.refixChanged) {
       console.error(`[stage6] every implicated fix this round failed outright and changed nothing — skipping redeploy, a retest would be wasted`);
       return "nothing_changed";
@@ -835,6 +855,7 @@ export async function runStage6(
   }
 
   let retest = guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl));
+  changedSinceReview.clear(); // the first review reads everything, so earlier changes are already covered
   let prevFindingsSig = "";
   let fixAttempt = 0;
   // 2026-10-04 (Ledgerly run 4): a stuck loop, or a round where nothing could
@@ -916,7 +937,9 @@ export async function runStage6(
       }
       deployResult = redeployResult;
 
-      retest = guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl));
+      const changedForReview = [...changedSinceReview];
+      changedSinceReview.clear();
+      retest = guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl, changedForReview.length > 0 ? changedForReview : undefined));
     } else {
       console.warn(`[stage6] No BuildPlan provided — cannot invoke agent fixes. Exiting fix loop.`);
       break;

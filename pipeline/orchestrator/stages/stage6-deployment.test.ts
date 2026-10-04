@@ -872,3 +872,37 @@ test("a fix made on an escalated finding counts as a change, and the app is rede
   expect(result.success).toBe(true);
   expect(result.stuck).toBeFalsy();
 });
+
+// 2026-10-04: after a fix round the live review re-reads only the files that
+// changed (the first review of a stage reads everything). Ledgerly run 4: every
+// live round re-read the whole project — about $3 each — to check the few
+// files a builder had just touched.
+test("the first live review reads everything; after a fix round it is told which files changed", async () => {
+  const seen: Array<string[] | undefined> = [];
+  const deps: Stage6Deps = {
+    deployFn: async () => ({ success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] }),
+    liveRetestFn: async (_p, _a, _b, changed) => {
+      seen.push(changed);
+      return seen.length === 1 ? { pass: false, findings: [{ file: "frontend/app/x.tsx", issue: "[ux/HIGH] a" }] } : { pass: true, findings: [] };
+    },
+    fixAanya: async () => ({ success: true, filesWritten: ["app/x.tsx", "components/y.tsx"] }),
+  };
+  await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(seen[0]).toBeUndefined();
+  expect(seen[1]).toEqual(["frontend/app/x.tsx", "frontend/components/y.tsx"]);
+});
+
+test("a file a handed-over fix changed counts too, labelled by its owner", async () => {
+  const seen: Array<string[] | undefined> = [];
+  const deps: Stage6Deps = {
+    deployFn: async () => ({ success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] }),
+    liveRetestFn: async (_p, _a, _b, changed) => {
+      seen.push(changed);
+      return seen.length === 1 ? { pass: false, findings: [{ file: "frontend/app/x.tsx", issue: "[ux/HIGH] a" }] } : { pass: true, findings: [] };
+    },
+    fixAanya: async () => ({ success: false, escalations: [{ targetAgent: "shubham" as const, finding: "f", reason: "backend" }] }),
+    fixShubham: async () => ({ success: true, filesWritten: ["src/controllers/exportController.ts"] }),
+  };
+  await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(seen[1]).toEqual(["backend/src/controllers/exportController.ts"]);
+});
