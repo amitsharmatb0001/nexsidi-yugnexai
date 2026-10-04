@@ -35,6 +35,7 @@ import {
 import type { Finding as NavyaFinding, QAResult as NavyaResult } from "../../../agents/qa/navya/src/index.ts";
 import type { Finding as DeepikaFinding, QAResult as DeepikaResult } from "../../../agents/qa/deepika/src/index.ts";
 import type { Tier3ReviewResult } from "../../../agents/tilotma/src/tier3-review.ts";
+import { fingerprintCode, withReviewCache } from "../review-cache.ts";
 import { buildSystemContext, type BuildPlan } from "../../../agents/arjun/src/index.ts";
 
 // Token-waste-reduction plan, Task 1 (2026-08-16): round-scoped re-review.
@@ -423,10 +424,13 @@ export async function runStage5(
     { label: "db", path: getPranavOutputDir(projectId) },
   ];
 
+  // 2026-10-04: a reviewer that passed on this exact code is not run again
+  // (see ../review-cache.ts). The fingerprint is computed once and shared.
+  const fingerprint = fingerprintCode(labeledDirs(stage4Result));
   const agents: Stage5Agents = {
-    runNavya: (pid, s4, ctx, cf, pf) => runNavyaReal(pid, labeledDirs(s4), undefined, ctx, cf, pf),
-    runKaran: (pid, s4, ctx, cf, pf) => runKaranReal(pid, labeledDirs(s4), undefined, ctx, cf, pf),
-    runDeepika: (pid, s4, ctx, cf, pf) => runDeepikaReal(pid, labeledDirs(s4), undefined, ctx, cf, pf),
+    runNavya: (pid, s4, ctx, cf, pf) => withReviewCache(projectId, "navya", labeledDirs(s4), () => runNavyaReal(pid, labeledDirs(s4), undefined, ctx, cf, pf), fingerprint),
+    runKaran: (pid, s4, ctx, cf, pf) => withReviewCache(projectId, "karan", labeledDirs(s4), () => runKaranReal(pid, labeledDirs(s4), undefined, ctx, cf, pf), fingerprint),
+    runDeepika: (pid, s4, ctx, cf, pf) => withReviewCache(projectId, "deepika", labeledDirs(s4), () => runDeepikaReal(pid, labeledDirs(s4), undefined, ctx, cf, pf), fingerprint),
     runTier3Review: (pid, s4) => runTier3ReviewReal(pid, s4.frontendOutputDir),
   };
 
