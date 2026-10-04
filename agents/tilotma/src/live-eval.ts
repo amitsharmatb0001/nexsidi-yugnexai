@@ -42,6 +42,9 @@ export interface LiveEvalResult {
   score: number;
   scores: LiveEvalScores | null;
   summary: string;
+  // 2026-10-04: true when the evaluator never produced the score lines, even
+  // after one follow-up. That is "not scored" — not a failing design.
+  unscored?: boolean;
 }
 
 const SCREENSHOT_ROOT = "live-eval-screenshots";
@@ -185,18 +188,45 @@ export async function runLiveEval(
     }),
   );
 
-  const scores = parseLiveEvalScores(result.summary);
+  let summary = result.summary;
+  let scores = parseLiveEvalScores(summary);
   if (!scores) {
-    // Default-FAIL (D25, same contract as System A): an unparseable
-    // evaluation reads as "the review didn't produce a usable result," not
-    // as a passing score by omission.
+    // 2026-10-04 (Ledgerly run 4): the evaluator wrote a full review but left
+    // out the score lines, and "no scores" was read as 0.00/10 and sent to a
+    // builder as a design failure. Ask once for the scores, from its own
+    // evidence — no re-exploring — before concluding anything.
+    const followUp = await runWithQuotaWatchAndResume(() =>
+      deps.runAgent({
+        agentName: "tilotma-live-eval",
+        model: AGENT_MODELS.tilotma,
+        apiKey,
+        systemPrompt: LIVE_EVAL_SYSTEM_PROMPT,
+        initialMessage:
+          buildLiveEvalTask(projectId, appUrl, screenshotDir) +
+          `\n\nYOUR REVIEW BELOW HAD NO SCORES. Do not explore again. Using only what you observed, call task_complete now with a summary that begins with exactly these four lines (each a number from 1 to 10), then REASONING: and your reasoning:\n` +
+          `DESIGN_QUALITY: <n>\nORIGINALITY: <n>\nCRAFT: <n>\nFUNCTIONALITY: <n>\n\nYOUR REVIEW:\n${summary.slice(0, 3000)}`,
+        sandboxDir: frontendOutputDir,
+        projectId,
+        maxIterations: 12,
+        readOnly: true,
+        freshStart: true,
+      }),
+    );
+    summary = `${followUp.summary}\n${summary}`;
+    scores = parseLiveEvalScores(followUp.summary);
+  }
+  if (!scores) {
+    // Not scored: neither a pass nor a failing design. Nothing is routed to a
+    // builder for it, and the delivery stays "not verified" (see stage 6).
     return {
       pass: false,
       score: 0,
       scores: null,
-      summary: `Live evaluation did not produce a parseable score block. Raw summary: ${result.summary.slice(0, 300)}`,
+      unscored: true,
+      summary: `Live evaluation did not produce scores, even after being asked once. Its review: ${result.summary.slice(0, 600)}`,
     };
   }
+  result.summary = summary;
 
   const score = calculateLiveScore(scores);
 

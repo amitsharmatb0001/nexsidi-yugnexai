@@ -249,3 +249,38 @@ test("runLiveEval rejects an invalid projectId before calling the agent (assertV
   };
   await expect(runLiveEval("../../etc/passwd", "http://localhost:3200", "/tmp/frontend", deps)).rejects.toThrow();
 });
+
+// 2026-10-04 (Ledgerly run 4, final round): the design evaluator drove the app,
+// captured screenshots and wrote a good review — but left out the four score
+// lines. The system read "no score block" as 0.00/10 and sent a design failure
+// to the frontend builder, which would have spent money fixing a design nobody
+// had actually scored. An evaluation without scores is asked once for the
+// scores (from its own evidence, no re-exploring); if there are still none, it
+// is "not scored" — not a failure, and nothing is routed to a builder.
+const REVIEW_WITHOUT_SCORES = "Evaluated the deployed app. Design is a coherent dark-slate landing, distinct from generic AI slop. Primary actions are discoverable.";
+const mkResult = (summary: string) => ({ success: true, summary, filesWritten: [], iterations: 5, errors: [], escalated: false }) as never;
+
+test("an evaluation with no score block is asked once for the scores, from its own review", async () => {
+  const messages: string[] = [];
+  const deps: LiveEvalDeps = {
+    runAgent: async (config: any) => {
+      messages.push(String(config.initialMessage));
+      return messages.length === 1 ? mkResult(REVIEW_WITHOUT_SCORES) : mkResult("DESIGN_QUALITY: 8\nORIGINALITY: 7\nCRAFT: 8\nFUNCTIONALITY: 9\nREASONING: coherent");
+    },
+  };
+  const result = await runLiveEval("p1", "http://localhost:3200", "/tmp/frontend", deps);
+  expect(messages.length).toBe(2);
+  expect(messages[1]).toContain("coherent dark-slate landing");
+  expect(messages[1]).toContain("DESIGN_QUALITY:");
+  expect(result.scores).toEqual({ designQuality: 8, originality: 7, craft: 8, functionality: 9 });
+  expect(result.unscored).toBeUndefined();
+});
+
+test("still no scores after the follow-up means not scored: no failure, no 0/10", async () => {
+  const deps: LiveEvalDeps = { runAgent: async () => mkResult(REVIEW_WITHOUT_SCORES) };
+  const result = await runLiveEval("p1", "http://localhost:3200", "/tmp/frontend", deps);
+  expect(result.unscored).toBe(true);
+  expect(result.scores).toBeNull();
+  const { designFindings } = await import("../../../pipeline/orchestrator/stages/stage6-deployment.ts");
+  expect(designFindings(result)).toEqual([]);
+});

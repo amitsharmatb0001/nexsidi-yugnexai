@@ -118,6 +118,8 @@ export interface LiveRetestResult {
 // tool output, not critique.
 export function designFindings(liveEval: LiveEvalResult): Array<{ file: string; issue: string }> {
   if (liveEval.pass) return [];
+  // Not scored is not a failing design (2026-10-04): nothing to send a builder.
+  if (liveEval.unscored) return [];
   const s = liveEval.scores;
   const perCriterion = s
     ? ` (design ${s.designQuality}, originality ${s.originality}, craft ${s.craft}, functionality ${s.functionality})`
@@ -399,9 +401,12 @@ async function liveRetestChecks(
     // 2026-07-24 (P2): System B — the app is objectively correct; now judge
     // whether it's actually good, not generic AI-slop that happens to work.
     const liveEval = await runLiveEval(projectId, appUrl, stage4Result.frontendOutputDir);
+    // Unscored: the design could not be judged. Not a failure and not a pass —
+    // "not checked", so the delivery is "not verified" rather than "delivered".
+    if (liveEval.unscored) notChecked.push("design review: the evaluator did not produce scores, even when asked again");
 
     return {
-      pass: result.pass && liveEval.pass,
+      pass: result.pass && (liveEval.pass || liveEval.unscored === true),
       findings: [...result.findings, ...designFindings(liveEval)],
       liveEval,
       specCompliance,
