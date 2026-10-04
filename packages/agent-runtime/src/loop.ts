@@ -35,6 +35,7 @@ import { recordDispute, DISPUTE_FINDING_TOOL_DEF } from "./tools/dispute.ts";
 import { recordVerdict, SETTLE_DISPUTE_TOOL_DEF } from "./tools/settle.ts";
 import { fixRunUnaccounted } from "./enforce/fix-accounting.ts";
 import { trackWrittenFile } from "./enforce/files-written.ts";
+import { summaryRejection } from "./enforce/summary-format.ts";
 import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
 import { BrowserToolset, BROWSER_TOOL_DEFS, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
 import { execDbQuery, DB_QUERY_TOOL_DEF } from "./tools/db.ts";
@@ -47,6 +48,7 @@ import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import type { FactLedgerEntry } from "./context-selection.ts";
 import type { ToolResult } from "./tools/file.ts";
 import type { WritableFile } from "./ownership.ts";
+import type { SummaryRule } from "./enforce/summary-format.ts";
 import type { ModelId } from "@nexsidi/llm-client";
 import { isNimHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice, StepBudget, isProgressStep } from "./step-budget.ts";
@@ -86,6 +88,8 @@ export interface AgentRunConfig {
   writableFile?: WritableFile;
   // Tilotma settling disputed findings: offers settle_dispute (tools/settle.ts).
   enableDisputeSettling?: boolean;
+  // A format the final task_complete summary must match (a judge's score lines).
+  summaryMustMatch?: SummaryRule;
   projectId?: string;          // optional, for database history persistence
   enableDockerTools?: boolean; // Riya only
   enableHttpTools?: boolean;   // Shubham verification
@@ -1150,6 +1154,14 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           break;
         }
         case "task_complete": {
+          // 2026-10-04: a judge's summary must carry its verdict in the required format — see enforce/summary-format.ts.
+          {
+            const badSummary = summaryRejection(config.summaryMustMatch, String((args as { summary?: string }).summary ?? ""));
+            if (badSummary) {
+              result = { status: "error", summary: badSummary };
+              break;
+            }
+          }
           // 2026-10-04: a fix run must fix, dispute or hand on — see enforce/fix-accounting.ts.
           const unaccounted = config.enableEscalation
             ? fixRunUnaccounted({ filesWritten: filesWritten.length, disputes: disputesRecorded, escalations: escalations.length })

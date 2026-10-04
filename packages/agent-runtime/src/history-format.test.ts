@@ -59,5 +59,5 @@ test("every review judge is a fresh-start agent", () => {
   const tier3 = readFileSync(new URL("../../../agents/tilotma/src/tier3-review.ts", import.meta.url), "utf-8");
   const liveEval = readFileSync(new URL("../../../agents/tilotma/src/live-eval.ts", import.meta.url), "utf-8");
   expect((tier3.match(/freshStart: true/g) ?? []).length).toBe(2); // evidence collector + reality checker
-  expect((liveEval.match(/freshStart: true/g) ?? []).length).toBe(2); // the evaluation + its one follow-up for missing scores
+  expect((liveEval.match(/freshStart: true/g) ?? []).length).toBe(1);
 });

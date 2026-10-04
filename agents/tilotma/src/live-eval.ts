@@ -37,6 +37,16 @@ export interface LiveEvalScores {
   functionality: number;
 }
 
+// The evaluator finishes only with its four scores in the summary (see
+// packages/agent-runtime/src/enforce/summary-format.ts): a finish without them
+// is refused and the run keeps working, with its screenshots still in front of it.
+export const LIVE_EVAL_SUMMARY_RULE = {
+  pattern: /DESIGN_QUALITY:\s*\d[\s\S]*ORIGINALITY:\s*\d[\s\S]*CRAFT:\s*\d[\s\S]*FUNCTIONALITY:\s*\d/i,
+  message:
+    "Your summary has no scores. Judge what you saw — the screenshots and measurements you already took — and call task_complete again with a summary that begins with exactly these four lines (each a number from 1 to 10), then REASONING: and your reasoning:\n" +
+    "DESIGN_QUALITY: <n>\nORIGINALITY: <n>\nCRAFT: <n>\nFUNCTIONALITY: <n>",
+};
+
 export interface LiveEvalResult {
   pass: boolean;
   score: number;
@@ -185,36 +195,12 @@ export async function runLiveEval(
       // that cost the reality-checker its entire budget twice this session.
       readOnly: true,
       freshStart: true,
+      summaryMustMatch: LIVE_EVAL_SUMMARY_RULE,
     }),
   );
 
-  let summary = result.summary;
-  let scores = parseLiveEvalScores(summary);
-  if (!scores) {
-    // 2026-10-04 (Ledgerly run 4): the evaluator wrote a full review but left
-    // out the score lines, and "no scores" was read as 0.00/10 and sent to a
-    // builder as a design failure. Ask once for the scores, from its own
-    // evidence — no re-exploring — before concluding anything.
-    const followUp = await runWithQuotaWatchAndResume(() =>
-      deps.runAgent({
-        agentName: "tilotma-live-eval",
-        model: AGENT_MODELS.tilotma,
-        apiKey,
-        systemPrompt: LIVE_EVAL_SYSTEM_PROMPT,
-        initialMessage:
-          buildLiveEvalTask(projectId, appUrl, screenshotDir) +
-          `\n\nYOUR REVIEW BELOW HAD NO SCORES. Do not explore again. Using only what you observed, call task_complete now with a summary that begins with exactly these four lines (each a number from 1 to 10), then REASONING: and your reasoning:\n` +
-          `DESIGN_QUALITY: <n>\nORIGINALITY: <n>\nCRAFT: <n>\nFUNCTIONALITY: <n>\n\nYOUR REVIEW:\n${summary.slice(0, 3000)}`,
-        sandboxDir: frontendOutputDir,
-        projectId,
-        maxIterations: 12,
-        readOnly: true,
-        freshStart: true,
-      }),
-    );
-    summary = `${followUp.summary}\n${summary}`;
-    scores = parseLiveEvalScores(followUp.summary);
-  }
+  const summary = result.summary;
+  const scores = parseLiveEvalScores(summary);
   if (!scores) {
     // Not scored: neither a pass nor a failing design. Nothing is routed to a
     // builder for it, and the delivery stays "not verified" (see stage 6).
@@ -223,10 +209,9 @@ export async function runLiveEval(
       score: 0,
       scores: null,
       unscored: true,
-      summary: `Live evaluation did not produce scores, even after being asked once. Its review: ${result.summary.slice(0, 600)}`,
+      summary: `Live evaluation finished without scores. Its review: ${result.summary.slice(0, 600)}`,
     };
   }
-  result.summary = summary;
 
   const score = calculateLiveScore(scores);
 

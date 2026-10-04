@@ -58,6 +58,7 @@ import { recordDispute } from "./tools/dispute.ts";
 import { recordVerdict } from "./tools/settle.ts";
 import { fixRunUnaccounted } from "./enforce/fix-accounting.ts";
 import { trackWrittenFile } from "./enforce/files-written.ts";
+import { summaryRejection } from "./enforce/summary-format.ts";
 import { nimTimeBudgetMs } from "./nim-time-budget.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
@@ -446,6 +447,14 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           break;
         }
         case "task_complete": {
+          // 2026-10-04: a judge's summary must carry its verdict in the required format — see enforce/summary-format.ts.
+          {
+            const badSummary = summaryRejection(config.summaryMustMatch, String((args as { summary?: string }).summary ?? ""));
+            if (badSummary) {
+              result = { status: "error", summary: badSummary };
+              break;
+            }
+          }
           // 2026-10-04: a fix run must fix, dispute or hand on — see enforce/fix-accounting.ts.
           const unaccounted = config.enableEscalation
             ? fixRunUnaccounted({ filesWritten: filesWritten.length, disputes: disputesRecorded, escalations: 0 })
