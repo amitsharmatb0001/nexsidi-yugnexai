@@ -336,6 +336,22 @@ test("listLabeledFiles skips a vendored (vendor/) directory", () => {
   expect(files.some((f) => f.includes("vendor"))).toBe(false);
 });
 
+// 2026-10-04 (Ledgerly run 4): the exclusion above covers frontend/vendor, but
+// the generator now copies the component library into frontend/components/nexui.
+// The exclusion silently stopped matching: 14 library files (~21% of all code
+// read) were re-read to their end by all three reviewers every round.
+test("listLabeledFiles skips the vendored component library in components/nexui", () => {
+  mkdirSync(join(root, "frontend", "components", "nexui"), { recursive: true });
+  writeFileSync(join(root, "frontend", "components", "nexui", "select.tsx"), "export {};");
+  mkdirSync(join(root, "frontend", "components", "invoices"), { recursive: true });
+  writeFileSync(join(root, "frontend", "components", "invoices", "Form.tsx"), "export {};");
+
+  const files = listLabeledFiles(dirs);
+
+  expect(files.some((f) => f.includes("nexui"))).toBe(false);
+  expect(files).toContain("frontend/components/invoices/Form.tsx");
+});
+
 test("listLabeledFiles tolerates a directory that doesn't exist yet", () => {
   const files = listLabeledFiles([{ label: "ghost", path: join(root, "does-not-exist") }]);
   expect(files).toEqual([]);

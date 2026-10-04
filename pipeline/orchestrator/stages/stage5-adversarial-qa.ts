@@ -299,7 +299,8 @@ const CODE_EXTENSIONS = new Set([
 // library (e.g. frontend/vendor/nexui) is static, not project code, and was
 // dominating this function's MAX_CODE_CHARS budget. See qa-loop.ts's
 // matching SKIP_DIRS comment for the full root cause and live evidence.
-const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", "vendor"]);
+// "nexui": the component library the generator copies into components/nexui (2026-10-04)
+const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", "vendor", "nexui"]);
 const MAX_CODE_CHARS = 200_000; // bound the QA prompt payload
 
 export interface LabeledDir {

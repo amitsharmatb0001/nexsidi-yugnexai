@@ -201,7 +201,8 @@ const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", "
 // header comment. A vendored third-party library folder is static, not
 // project code, and re-reading it every round to satisfy full coverage was
 // the dominant cost behind a real 35+ minute live-retest wall-clock.
-const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", "vendor"]);
+// "nexui": the component library the generator copies into components/nexui (2026-10-04)
+const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", "vendor", "nexui"]);
 const READ_FILE_CHAR_LIMIT = 8000;
 
 // Exported for direct unit testing without touching the filesystem-walking
