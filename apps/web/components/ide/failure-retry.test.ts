@@ -16,7 +16,7 @@ import { isRetryableFailure, readableFailureReason } from "./IdeWorkspace.tsx";
 // 409s" or "button hidden, resumable build looks abandoned."
 
 test("resumable failures — escalateAndAwaitRetryDecision paused the workflow, retry can resume it", () => {
-  for (const reason of ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error"]) {
+  for (const reason of ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error", "guard_hold"]) {
     expect(isRetryableFailure(reason)).toBe(true);
   }
 });
@@ -51,11 +51,11 @@ test("a 'code: detail' shaped reason (Riya's failureReason convention) is matche
   expect(readableFailureReason("deploy_failed: container exited with code 1")).toContain("Deployment failed");
 });
 
-test("the backend's retryable set is kept in sync — same seven reasons, no more, no fewer", () => {
+test("the backend's retryable set is kept in sync — same eight reasons, no more, no fewer", () => {
   const src = require("node:fs").readFileSync(new URL("../../../api/src/routes/pipeline.ts", import.meta.url), "utf-8");
   const match = src.match(/RETRYABLE_FAILURE_REASONS = new Set\(\[([\s\S]*?)\]\)/);
   expect(match).not.toBeNull();
   const backendReasons = [...match![1]!.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
-  const frontendReasons = ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error"];
+  const frontendReasons = ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error", "guard_hold"];
   expect(new Set(backendReasons)).toEqual(new Set(frontendReasons));
 });

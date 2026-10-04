@@ -43,6 +43,7 @@ import { isQuotaExhaustionError } from "../../../packages/agent-runtime/src/gemi
 import { dropCodeContradictedFindings } from "../finding-evidence.ts";
 import { fixChangedCode } from "./stage5-qa-fix-loop.ts";
 import { dropSettledNotTrue, resolveDisputes, type SettleFn } from "../disputes.ts";
+import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { runAuthSmokeTest } from "./auth-smoke.ts";
 import { join as joinPath, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -136,6 +137,8 @@ export interface Stage6Result {
   // true when consecutive deploy attempts produced identical errors — the
   // pipeline is stuck and retrying won't help (same pattern as Stage 5).
   stuck?: boolean;
+  // 2026-10-04 (progress guard): set when the work was held — see ../progress-guard.ts
+  hold?: { reason: string; evidence: string[] };
 }
 
 export interface DeliverySummary {
@@ -208,7 +211,7 @@ export async function runLiveRetestStub(projectId: string, appUrl: string): Prom
 // Same BUILD_DIR/projectId/<file> + dynamic-import-of-node:fs convention this
 // file already uses for qa-submissions.json reads below (instinct-mismatch
 // observation blocks). Throws on a missing/unreadable/malformed file —
-// callers (runRealLiveRetest) catch and fail open, since a broken spec.json
+// callers (runRealLiveRetest) report "not checked", since a broken spec.json
 // read is this check's own plumbing failing, not a real spec violation.
 async function readProjectSpec(projectId: string): Promise<ProjectSpec> {
   const { readFileSync } = await import("node:fs");
@@ -291,10 +294,10 @@ async function liveRetestChecks(
     // comparison — no browser, no LLM call needed to detect it — so paying
     // for the two most expensive stages in this function first, only to
     // discover the build was going to fail a file-read check anyway, wastes
-    // the majority of a Stage 6 attempt's wall-clock time. Fails open on
-    // infra/read errors (missing spec.json, a browser worker crash) exactly
-    // as before — only a REAL comparison result blocks delivery or skips
-    // the expensive stages below.
+    // the majority of a Stage 6 attempt's wall-clock time. An infra/read error
+    // (missing spec.json, a browser worker crash) is "not checked" with the
+    // reason (2026-10-04) — only a REAL comparison result blocks delivery or
+    // skips the expensive stages below.
     let specCompliance: SpecComplianceResult | undefined;
     try {
       const spec = await readProjectSpec(projectId);
@@ -310,6 +313,7 @@ async function liveRetestChecks(
     let stackConformance: SpecComplianceResult | undefined;
     try {
       stackConformance = await runStackConformanceCheck(stage4Result.frontendOutputDir);
+      notChecked.push(...(stackConformance.notChecked ?? []));
       if (!stackConformance.pass) {
         console.error(`[stage6] Stack-conformance check FAILED:\n${stackConformance.violations.join("\n")}`);
       }
@@ -459,6 +463,10 @@ export interface Stage6Deps {
   // 2026-10-03 (evidence-only plan): Tilotma settles findings a builder
   // disputed. The real entry point checks them on the running app.
   settleDisputes?: SettleFn;
+  // 2026-10-04 (progress guard): judges each finished live review round; a
+  // hold stops the loop before any fix is paid for. Optional so DI tests keep
+  // working; the real entry point wires the real guard.
+  roundGuard?: (findings: unknown[]) => Promise<GuardVerdict>;
 }
 
 // Pre-flight: verify NexSidi's own pipeline DB is reachable before spending
@@ -651,6 +659,7 @@ export async function runStage6(
       deployFn: runRiya,
       liveRetestFn: (pid, appUrl, backendUrl) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result, plan),
       dbCheckFn: checkNexsidiDbReachable,
+      roundGuard: (findings) => checkRoundGuard(projectId, "live", findings as never),
     };
   }
 
@@ -812,10 +821,22 @@ export async function runStage6(
   // change, must be reported as stuck — otherwise the workflow reads the
   // failure as progress and re-runs the whole stage.
   let liveStuck = false;
+  let liveHold: { reason: string; evidence: string[] } | undefined;
 
   while (!retest.pass && fixAttempt < MAX_LIVE_FIX_ATTEMPTS) {
     fixAttempt++;
     console.log(`[stage6] Live retest failed (attempt ${fixAttempt} of ${MAX_LIVE_FIX_ATTEMPTS}) — starting agentic fix loop`);
+
+    // 2026-10-04 (progress guard): before any fix is paid for, judge this
+    // review round against the earlier ones.
+    if (deps.roundGuard && Array.isArray(retest.findings) && retest.findings.length > 0) {
+      const verdict = await deps.roundGuard(retest.findings);
+      if (verdict.hold) {
+        liveHold = { reason: verdict.reason, evidence: verdict.evidence };
+        liveStuck = true;
+        break;
+      }
+    }
 
     const findingsSig = Array.isArray(retest.findings)
       ? [...retest.findings].map(f => normalizeForStuckComparison(`${f.file}:${f.issue || f.detail}`)).sort().join("\0")
@@ -920,6 +941,7 @@ export async function runStage6(
     findings: retest.findings,
     deliverySummary,
     ...(liveStuck && !retest.pass ? { stuck: true } : {}),
+    ...(liveHold ? { hold: liveHold } : {}),
   };
 }
 

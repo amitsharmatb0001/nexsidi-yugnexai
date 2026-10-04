@@ -796,3 +796,20 @@ test("a live fix round that changed nothing reports stuck", async () => {
   const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
   expect(result.stuck).toBe(true);
 });
+
+// 2026-10-04 (progress guard, Ledgerly run 4): the live review's fix loop
+// asks the guard after every review round; a hold stops it before any fix is
+// paid for and is returned to the workflow with the reason.
+test("a live review round the guard holds stops before routing any fix, and the hold is returned", async () => {
+  let fixed = false;
+  const deps: Stage6Deps = {
+    deployFn: async () => ({ success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] }),
+    liveRetestFn: async () => ({ pass: false, findings: [{ file: "frontend/app", issue: "[auth-smoke] same finding" }] }),
+    fixAanya: async () => { fixed = true; return { success: true, filesWritten: ["x"] }; },
+    roundGuard: async () => ({ hold: true as const, reason: "the finding came back", evidence: ["frontend/app|[auth-smoke] same finding"] }),
+  };
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(fixed).toBe(false);
+  expect(result.success).toBe(false);
+  expect(result.hold?.reason).toBe("the finding came back");
+});

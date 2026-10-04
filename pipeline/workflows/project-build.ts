@@ -36,6 +36,16 @@ import type { QAFixLoopActivityResult, DeployActivityResult } from "../activitie
 // that flagged it as "exactly the kind of SDK-internals-dependent code that
 // silently breaks on a Temporal version bump with nothing to catch it" — see
 // pipeline/workflows/budget-escalation.test.ts.
+// 2026-10-04 (progress guard): the work was held because it stopped making
+// progress (see orchestrator/progress-guard.ts and the HOLD.md it writes).
+export function isGuardHoldFailure(err: unknown): boolean {
+  return (
+    err instanceof ActivityFailure &&
+    err.cause instanceof ApplicationFailure &&
+    err.cause.type === "GuardHold"
+  );
+}
+
 export function isBudgetExceededFailure(err: unknown): boolean {
   return (
     err instanceof ActivityFailure &&
@@ -346,6 +356,18 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
           console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (budget_exceeded)`);
           continue;
         }
+        if (isGuardHoldFailure(err)) {
+          state.stage = "error";
+          console.log(`[workflow] Stage 6 held by the progress guard — nothing paid runs until a human decides (see HOLD.md)`);
+          const retry = await escalateAndAwaitRetryDecision("guard_hold");
+          if (!retry) {
+            await act.markProjectFailed(projectId, "guard_hold");
+            return;
+          }
+          state.stage = "deliver";
+          console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (guard_hold)`);
+          continue;
+        }
         // 2026-08-30: real, live 4th occurrence of the exact uncaught-throw
         // class this file's own header comments above already document
         // three times over (fulfillio1 x2, the ContextChainViolation case).
@@ -405,10 +427,14 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       // unconditional-escalation behavior preserved exactly), while a fresh
       // decision point from now on gets the new auto-retry behavior.
       const autoRetryEnabled = patched("auto-retry-non-stuck-deploy-v1");
-      if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES) {
+      // 2026-10-04: one automatic retry, not three — every retry re-runs a paid
+      // deploy and review. Own patch marker so a history recorded with three
+      // allowed retries replays unchanged.
+      const maxAutoRetries = patched("auto-retry-cap-1-v1") ? 1 : MAX_AUTO_RETRIES;
+      if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < maxAutoRetries) {
         autoRetryCount++;
         state.stage = "deliver";
-        console.log(`[workflow] Stage 6 deploy failed but not stuck (error signature changed) — auto-retrying without human escalation (${autoRetryCount}/${MAX_AUTO_RETRIES})`);
+        console.log(`[workflow] Stage 6 deploy failed but not stuck (error signature changed) — auto-retrying without human escalation (${autoRetryCount}/${maxAutoRetries})`);
         continue;
       }
       const escalationReason = deployResult.stuck ? "deploy_stuck" : "deploy_failed";
@@ -679,6 +705,16 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       try {
         qaResult = await orchestratorAct.runQAFixLoopActivity(projectId);
       } catch (err) {
+        if (isGuardHoldFailure(err)) {
+          console.log(`[workflow] Stage 5 QA held by the progress guard — nothing paid runs until a human decides (see HOLD.md)`);
+          const retry = await escalateAndAwaitRetryDecision("guard_hold");
+          if (!retry) {
+            await act.markProjectFailed(projectId, "guard_hold");
+            return;
+          }
+          console.log(`[workflow] retrying Stage 5 QA after a human retry decision (guard_hold)`);
+          continue;
+        }
         if (!isBudgetExceededFailure(err)) throw err;
         console.log(`[workflow] Stage 5 QA halted — budget exceeded`);
         const retry = await escalateAndAwaitRetryDecision("budget_exceeded");

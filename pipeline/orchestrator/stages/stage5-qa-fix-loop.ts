@@ -35,11 +35,14 @@ import type { Escalation } from "../../../packages/agent-runtime/src/tools/escal
 import { runGeneratorWithQuotaRetry } from "../../activities/quota-retry.ts";
 import { dropCodeContradictedFindings } from "../finding-evidence.ts";
 import { dropSettledNotTrue, resolveDisputes, type SettleFn } from "../disputes.ts";
+import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { join as joinPath } from "node:path";
 
 export interface QAFixLoopResult extends Stage5Result {
   iterations: number; // total QA passes run (initial + retests)
   stuck: boolean;      // true if the loop exited via stuck-detection or an unfixable faultAgent, not a pass
+  // 2026-10-04 (progress guard): set when the work was held — see ../progress-guard.ts
+  hold?: { reason: string; evidence: string[] };
 }
 
 // History: 3 (original) -> 8 (2026-07-08, to survive a QA gate that was
@@ -103,6 +106,10 @@ export interface QAFixDeps {
   // disputed with evidence (see ../disputes.ts). Optional so DI tests that
   // never dispute keep working; the real entry point wires her real run.
   settleDisputes?: SettleFn;
+  // 2026-10-04 (progress guard): judges each finished review round; a hold
+  // stops the loop before the next round is paid for. Optional so DI tests
+  // that don't care keep working; the real entry point wires the real guard.
+  roundGuard?: (findings: Finding[]) => Promise<GuardVerdict>;
 }
 
 function formatFinding(f: { file: string; issue: string }): string {
@@ -281,6 +288,13 @@ export async function runQAFixLoopWithDeps(
   let iterations = 1;
   let previousFindingCount = result.findings.length;
   let noImprovementStreak = 0;
+  const holdIfNoProgress = async (): Promise<QAFixLoopResult | null> => {
+    if (result.pass || result.findings.length === 0 || !deps.roundGuard) return null;
+    const verdict = await deps.roundGuard(result.findings);
+    return verdict.hold ? { ...result, iterations, stuck: true, hold: { reason: verdict.reason, evidence: verdict.evidence } } : null;
+  };
+  const heldFirst = await holdIfNoProgress();
+  if (heldFirst) return heldFirst;
 
   while (!result.pass && iterations <= MAX_FIX_ITERATIONS) {
     // 2026-08-10: real bug found live (project freshtst1) — a
@@ -455,6 +469,8 @@ export async function runQAFixLoopWithDeps(
 
     result = applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan, changedFiles, previousFindings), projectId);
     iterations++;
+    const held = await holdIfNoProgress();
+    if (held) return held;
 
     const currentFindingCount = result.findings.length;
     if (currentFindingCount >= previousFindingCount) {
@@ -512,6 +528,7 @@ export async function runQAFixLoop(
       const r = await runGeneratorWithQuotaRetry(() => fixPranavReal(p, findings));
       return { success: r.success, filesWritten: r.filesWritten };
     },
+    roundGuard: (findings) => checkRoundGuard(projectId, "qa", findings),
     settleDisputes: async (pid, disputes) => {
       const { settleDisputes } = await import("../../../agents/tilotma/src/settle-disputes.ts");
       return settleDisputes(pid, disputes, { reviewRoot: joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", pid) });

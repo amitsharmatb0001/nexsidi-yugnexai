@@ -381,6 +381,19 @@ export function generatorFailure(agentName: string, errors: string[]): never {
 // isBudgetExceededFailure() and its Stage 3/Stage 5 catch blocks key off
 // them to route this into escalateAndAwaitRetryDecision("budget_exceeded")
 // instead of the generic "generation_failed"/uncaught-failure paths.
+// 2026-10-04 (progress guard): work the guard held (see
+// orchestrator/progress-guard.ts) leaves the activity as this non-retryable
+// failure, so Temporal never re-runs it by itself; the workflow holds and asks
+// the developer (guard_hold). HOLD.md in the build folder says why.
+export function guardHoldFailure(hold: { reason: string; evidence: string[] }): ApplicationFailure {
+  return ApplicationFailure.create({
+    message: `guard_hold: ${hold.reason}`,
+    type: "GuardHold",
+    nonRetryable: true,
+    details: [hold],
+  });
+}
+
 export async function assertWithinBudget(projectId: string, agentName: string): Promise<void> {
   const status = await checkBudget(projectId);
   if (!status.withinBudget) {
@@ -866,6 +879,7 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
     console.log(
       `[activity:qa-fix-loop] pass=${result.pass} stuck=${result.stuck ?? false} iterations=${result.iterations} findings=${result.findings.length}`,
     );
+    if (result.hold) throw guardHoldFailure(result.hold);
     // 2026-08-04 (live, final838491 — 2nd occurrence, root-caused): recording
     // the handoff HERE used to cause a real, reproducible false-positive
     // hash mismatch. The post-QA compile-check step (project-build.ts) runs
@@ -933,6 +947,7 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
     await verifyHandoff(projectId, "qa-gan", "deploy", filterSourceManifest(stage4Result));
     const result = await runStage6(projectId, stage4Result, plan);
     console.log(`[activity:deploy] success=${result.success} appUrl=${result.appUrl} stuck=${result.stuck ?? false}`);
+    if (result.hold) throw guardHoldFailure(result.hold);
     return { success: result.success, appUrl: result.appUrl, stuck: result.stuck ?? false };
   } finally {
     clearInterval(hb);

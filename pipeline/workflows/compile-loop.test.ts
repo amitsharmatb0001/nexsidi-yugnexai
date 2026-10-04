@@ -96,12 +96,12 @@ test("Stage 6 auto-retries a non-stuck deploy failure without human escalation, 
   const source = readFileSync(new URL("./project-build.ts", import.meta.url), "utf-8");
 
   expect(source).toContain("const MAX_AUTO_RETRIES = 3");
-  expect(source).toContain("if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES)");
+  expect(source).toContain("if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < maxAutoRetries)");
 
   // the auto-retry branch must `continue` the loop, not fall through into
   // the human-escalation call below it — otherwise this is dead code that
   // never actually skips the escalation.
-  const autoRetryIdx = source.indexOf("if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES)");
+  const autoRetryIdx = source.indexOf("if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < maxAutoRetries)");
   const nextEscalateIdx = source.indexOf("escalateAndAwaitRetryDecision(escalationReason)");
   const continueIdx = source.indexOf("continue;", autoRetryIdx);
   expect(continueIdx).toBeGreaterThan(autoRetryIdx);
@@ -126,7 +126,7 @@ test("the auto-retry branch is gated by its own patched() marker, called uncondi
 
   expect(source).toContain('const autoRetryEnabled = patched("auto-retry-non-stuck-deploy-v1")');
   const patchedIdx = source.indexOf('const autoRetryEnabled = patched("auto-retry-non-stuck-deploy-v1")');
-  const autoRetryIdx = source.indexOf("if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < MAX_AUTO_RETRIES)");
+  const autoRetryIdx = source.indexOf("if (autoRetryEnabled && !deployResult.stuck && autoRetryCount < maxAutoRetries)");
   // patched() must be called on its own line, unconditionally, immediately
   // before the branch that reads its result — not inlined inside the `if`
   // condition itself, where it could end up not being called at all

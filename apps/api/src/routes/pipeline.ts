@@ -311,6 +311,9 @@ const RETRYABLE_FAILURE_REASONS = new Set([
   "compile_repair_limit",
   "deploy_stuck",
   "deploy_failed",
+  // 2026-10-04: the progress guard held the work (HOLD.md in the build folder
+  // says why) — Retry is the developer's decision to go on.
+  "guard_hold",
   // 2026-08-30: added alongside project-build.ts's new catch-all for an
   // uncaught Stage 6 activity failure (e.g. "Activity task timed out" from
   // an orphaned/hung call) — see that file's own header comment for the

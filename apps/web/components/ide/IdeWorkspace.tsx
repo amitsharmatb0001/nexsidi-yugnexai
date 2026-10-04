@@ -250,6 +250,7 @@ const FAILURE_REASON_TEXT: Record<string, string> = {
   // (Temporal's "Activity task timed out") used to propagate uncaught and
   // silently discard a project that had already passed QA and compile-check.
   deploy_activity_error: "Something in the deploy step failed unexpectedly (often a transient network or infrastructure issue, not a problem with the generated app itself).",
+  guard_hold: "The work was paused on purpose because it stopped making progress — the same problem kept coming back, or a round cost more without fixing anything. Nothing more is spent until you decide. The reason and evidence are in HOLD.md in the build folder.",
 };
 
 // Reasons may carry a "code: detail" shape (see Riya's failureReason) —
@@ -272,7 +273,7 @@ export function readableFailureReason(reason: string): string {
 export function isRetryableFailure(reason: string | null): boolean {
   if (!reason) return false;
   const code = reason.split(":")[0]!.trim();
-  return ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error"].includes(code);
+  return ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error", "guard_hold"].includes(code);
 }
 
 function DoneComposer({ onSubmit, submitting }: { onSubmit: (text: string) => void; submitting: boolean }) {

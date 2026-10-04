@@ -1062,3 +1062,32 @@ test("a review-incomplete finding alongside a genuinely fixable finding still ro
   expect(capturedFindings.some((f) => f.includes("review-incomplete"))).toBe(false);
   expect(result.pass).toBe(true);
 });
+
+// 2026-10-04 (progress guard): a pre-deploy round that cannot make progress
+// holds the work instead of paying for the next round.
+test("a review round the guard holds stops the loop before any fix is paid for, and reports why", async () => {
+  let fixed = false;
+  const deps: QAFixDeps = {
+    runStage5: async () => ({ pass: false, findings: [{ file: "frontend/app/x.tsx", issue: "[logic/HIGH] same finding" }] }),
+    fixShubham: async () => { fixed = true; return { success: true, filesWritten: ["a"] }; },
+    fixAanya: async () => { fixed = true; return { success: true, filesWritten: ["a"] }; },
+    roundGuard: async () => ({ hold: true as const, reason: "the finding came back", evidence: ["frontend/app/x.tsx|[logic/high] same finding"] }),
+  };
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+  expect(fixed).toBe(false);
+  expect(result.pass).toBe(false);
+  expect(result.hold?.reason).toBe("the finding came back");
+});
+
+test("a review round the guard allows proceeds as before", async () => {
+  let rounds = 0;
+  const deps: QAFixDeps = {
+    runStage5: async () => (rounds++ === 0 ? failResult(1, "shubham") : passResult()),
+    fixShubham: async () => ({ success: true, filesWritten: ["a"] }),
+    fixAanya: async () => ({ success: true }),
+    roundGuard: async () => ({ hold: false as const }),
+  };
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+  expect(result.pass).toBe(true);
+  expect(result.hold).toBeUndefined();
+});
