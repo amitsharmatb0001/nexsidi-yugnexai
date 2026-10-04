@@ -62,6 +62,7 @@ import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { recordDispute } from "./tools/dispute.ts";
 import { recordVerdict } from "./tools/settle.ts";
 import { fixRunUnaccounted } from "./enforce/fix-accounting.ts";
+import { trackWrittenFile } from "./enforce/files-written.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
 
@@ -934,10 +935,12 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
         case "edit_file": {
           result = execEditFile(config.sandboxDir, args as { path: string; old_str: string; new_str: string }, config.writableFile);
+          trackWrittenFile(filesWritten, "edit_file", args as { path: string }, result.status);
           break;
         }
         case "delete_file": {
           result = execDeleteFile(config.sandboxDir, args as { path: string }, config.writableFile);
+          trackWrittenFile(filesWritten, "delete_file", args as { path: string }, result.status);
           break;
         }
         case "run_command": {

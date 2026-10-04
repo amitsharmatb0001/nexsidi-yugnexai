@@ -57,6 +57,7 @@ import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { recordDispute } from "./tools/dispute.ts";
 import { recordVerdict } from "./tools/settle.ts";
 import { fixRunUnaccounted } from "./enforce/fix-accounting.ts";
+import { trackWrittenFile } from "./enforce/files-written.ts";
 import { nimTimeBudgetMs } from "./nim-time-budget.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
@@ -372,6 +373,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           const editArgs = args as { path: string; old_str: string; new_str: string };
           emitEvent({ type: "tool_call", tool: "edit_file", input: { path: editArgs.path } });
           result = execEditFile(config.sandboxDir, editArgs, config.writableFile);
+          trackWrittenFile(filesWritten, "edit_file", editArgs, result.status);
           emitEvent({ type: "tool_result", tool: "edit_file", status: result.status, path: editArgs.path });
           break;
         }
@@ -379,6 +381,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           const delArgs = args as { path: string };
           emitEvent({ type: "tool_call", tool: "delete_file", input: { path: delArgs.path } });
           result = execDeleteFile(config.sandboxDir, delArgs, config.writableFile);
+          trackWrittenFile(filesWritten, "delete_file", delArgs, result.status);
           break;
         }
         case "run_command": {

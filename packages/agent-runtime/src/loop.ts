@@ -34,6 +34,7 @@ import { recordEscalation, ESCALATE_FINDING_TOOL_DEF, type Escalation } from "./
 import { recordDispute, DISPUTE_FINDING_TOOL_DEF } from "./tools/dispute.ts";
 import { recordVerdict, SETTLE_DISPUTE_TOOL_DEF } from "./tools/settle.ts";
 import { fixRunUnaccounted } from "./enforce/fix-accounting.ts";
+import { trackWrittenFile } from "./enforce/files-written.ts";
 import { execScreenshot, SCREENSHOT_TOOL_DEF } from "./tools/screenshot.ts";
 import { BrowserToolset, BROWSER_TOOL_DEFS, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
 import { execDbQuery, DB_QUERY_TOOL_DEF } from "./tools/db.ts";
@@ -999,6 +1000,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           const r = execEditFile(config.sandboxDir, editArgs, config.writableFile);
           if (r.status === "success") {
             commitWorkspaceTransaction(config.sandboxDir, `Edited ${editArgs.path}`);
+            trackWrittenFile(filesWritten, "edit_file", editArgs, "success");
             emitEvent({ type: "tool_result", tool: "edit_file", status: "success", path: editArgs.path });
           }
           result = r;
@@ -1010,6 +1012,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           const r = execDeleteFile(config.sandboxDir, delArgs, config.writableFile);
           if (r.status === "success") {
             commitWorkspaceTransaction(config.sandboxDir, `Deleted ${delArgs.path}`);
+            trackWrittenFile(filesWritten, "delete_file", delArgs, "success");
           }
           result = r;
           break;
