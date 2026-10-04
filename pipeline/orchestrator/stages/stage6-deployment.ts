@@ -580,7 +580,7 @@ function isStage6Deps(value: BuildPlan | Stage6Deps | undefined): value is Stage
 // see agentForFile's header comment in stage4-multi-agent-dev.ts for the
 // full root cause and how it produced an unfixable, endlessly-recurring
 // finding across every live-retest round.
-function splitLiveFindings(findings: unknown): { shubham: string[]; aanya: string[]; pranav: string[] } {
+export function splitLiveFindings(findings: unknown): { shubham: string[]; aanya: string[]; pranav: string[] } {
   const groups = { shubham: [] as string[], aanya: [] as string[], pranav: [] as string[] };
   if (!Array.isArray(findings)) return groups;
   for (const finding of findings as Array<{ file?: string; issue?: string; detail?: string }>) {
@@ -602,6 +602,17 @@ function splitLiveFindings(findings: unknown): { shubham: string[]; aanya: strin
       // stage5-qa-fix-loop.ts's own comment): Tier-3 reviews the RENDERED
       // app, so its findings are almost always frontend/layout/UX, never
       // backend or schema.
+      // 2026-10-04: a whole-app finding goes to the owner of a file its own
+      // text names (Ledgerly run 4: a backend file went to the frontend
+      // builder, which cannot edit it); only one that names none is frontend.
+      const named = text.match(/((?:backend|frontend|db)\/[\w./-]+)/)?.[1];
+      if (text && named) {
+        const owner = agentForFile(named) as "shubham" | "aanya" | "pranav";
+        if (owner === "shubham" || owner === "aanya" || owner === "pranav") {
+          groups[owner].push(`${named}: ${text}`);
+          continue;
+        }
+      }
       if (text) groups.aanya.push(`(site-wide): ${text}`);
       continue;
     }

@@ -813,3 +813,42 @@ test("a live review round the guard holds stops before routing any fix, and the 
   expect(result.success).toBe(false);
   expect(result.hold?.reason).toBe("the finding came back");
 });
+
+// 2026-10-04 (Ledgerly run 4): Tilotma's whole-app review reports findings
+// with no file, which always went to the frontend builder — even when the text
+// names a backend file. The frontend builder cannot edit backend files, so the
+// round spent steps handing it over. A finding goes to the owner of the file
+// its own text names; only one that names none goes to the frontend.
+test("a whole-app finding that names a backend file goes to the backend builder, not the frontend", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const prev = process.env.BUILD_DIR;
+  const dir = mkdtempSync(join(tmpdir(), "stage6-route-"));
+  process.env.BUILD_DIR = dir;
+  mkdirSync(join(dir, "test-proj", "backend", "src", "controllers"), { recursive: true });
+  writeFileSync(join(dir, "test-proj", "backend", "src", "controllers", "exportController.ts"), "export const x = 1;");
+  const seen: Record<string, string[]> = {};
+  const deps: Stage6Deps = {
+    deployFn: async () => ({ success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] }),
+    liveRetestFn: async () => ({
+      pass: false,
+      findings: [
+        { file: "", issue: "in backend/src/controllers/exportController.ts (functions getInvoicePdf lines 28-44) the query is missing AND user_id = $2" },
+        { file: "", issue: "the header is missing on the sign-in page" },
+      ],
+    }),
+    fixShubham: async (_p, f) => { seen.shubham = f; return { success: true, filesWritten: ["src/x.ts"] }; },
+    fixAanya: async (_p, f) => { seen.aanya = f; return { success: true, filesWritten: ["app/y.tsx"] }; },
+  };
+  try {
+    await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+    expect(seen.shubham?.length).toBe(1);
+    expect(seen.shubham?.[0]).toContain("exportController.ts");
+    expect(seen.aanya?.length).toBe(1);
+    expect(seen.aanya?.[0]).toContain("header is missing");
+  } finally {
+    process.env.BUILD_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
