@@ -269,12 +269,13 @@ export async function runStackConformanceCheck(frontendOutputDir: string): Promi
     const packageJson = JSON.parse(readFileSync(join(frontendOutputDir, "package.json"), "utf-8")) as PackageJsonLike;
     results.push(checkStackConformance(packageJson));
   } catch (err) {
-    console.error(`[spec-compliance] Could not read frontend package.json for stack conformance — skipping (fail-open): ${String(err)}`);
+    results.push({ pass: true, violations: [], notChecked: [`stack check: could not read the frontend package.json: ${String(err).slice(0, 200)}`] });
   }
   const nextConfig = ["next.config.ts", "next.config.mjs", "next.config.js"].map((f) => join(frontendOutputDir, f)).find((p) => existsSync(p));
   if (nextConfig) results.push(checkFrontendApiProxy(readFileSync(nextConfig, "utf-8")));
   results.push(checkAuthNavigation(readFrontendSources(frontendOutputDir, readdirSync, readFileSync, join)));
-  return { pass: results.every((r) => r.pass), violations: results.flatMap((r) => r.violations) };
+  const notChecked = results.flatMap((r) => r.notChecked ?? []);
+  return { pass: results.every((r) => r.pass), violations: results.flatMap((r) => r.violations), ...(notChecked.length > 0 ? { notChecked } : {}) };
 }
 
 // Converts violations into Finding-shaped objects ({file, issue} — see

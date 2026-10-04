@@ -354,3 +354,19 @@ test("a colour check that reads no theme values reports not checked, with no vio
   expect(r.violations).toEqual([]);
   expect(r.notChecked?.[0]).toContain("could not read");
 });
+
+// 2026-10-04 (evidence-only): an unreadable package.json used to skip the
+// stack check as a pass ("fail-open"). It is "not checked", with the reason.
+test("a stack check that cannot read package.json is not checked, not a pass", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { runStackConformanceCheck } = await import("./spec-compliance.ts");
+  const dir = mkdtempSync(join(tmpdir(), "stack-"));
+  try {
+    const r = await runStackConformanceCheck(join(dir, "frontend-that-does-not-exist"));
+    expect(r.notChecked?.[0]).toContain("package.json");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
