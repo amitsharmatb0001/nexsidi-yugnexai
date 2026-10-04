@@ -746,6 +746,9 @@ export async function runStage6(
     // decide the real fix belongs in another agent's domain
     // (escalate_finding) — routed in this same round, so it lands before
     // the redeploy instead of a whole wasted round later.
+    // 2026-10-04: a fix made on an escalated finding is a change too — before,
+    // only the first builders' results were counted and the redeploy was skipped.
+    let escalationChanged = false;
     const escalationsByTarget: Record<"shubham" | "aanya" | "pranav", Escalation[]> = { shubham: [], aanya: [], pranav: [] };
     for (const e of fixResults.flatMap((r) => r.escalations ?? [])) escalationsByTarget[e.targetAgent].push(e);
     for (const target of ["shubham", "aanya", "pranav"] as const) {
@@ -754,6 +757,7 @@ export async function runStage6(
       const formatted = targeted.map((e) => `${e.finding} — ${e.reason}`);
       console.log(`[stage6] routing ${formatted.length} escalated finding(s) to ${target} this round`);
       const escalationResult = await fixerFor[target](fixPlan, formatted);
+      if (fixChangedCode(escalationResult)) escalationChanged = true;
       if (!escalationResult.success) {
         console.error(`[stage6] ${target} escalation fix FAILED to complete`);
       }
@@ -762,7 +766,7 @@ export async function runStage6(
     // round go to Tilotma; confirmed ones go back with her evidence, ones she
     // rules not true are dropped from the retest.
     const disputes = await resolveDisputes(projectId, roundStart, fixPlan, { settle: settleReal, fixers: fixerFor });
-    if (fixesChangedNothing && disputes.settledNotTrue === 0 && !disputes.refixChanged) {
+    if (fixesChangedNothing && !escalationChanged && disputes.settledNotTrue === 0 && !disputes.refixChanged) {
       console.error(`[stage6] every implicated fix this round failed outright and changed nothing — skipping redeploy, a retest would be wasted`);
       return "nothing_changed";
     }

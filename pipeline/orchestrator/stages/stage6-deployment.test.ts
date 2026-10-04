@@ -852,3 +852,23 @@ test("a whole-app finding that names a backend file goes to the backend builder,
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// 2026-10-04 (Ledgerly run 4): the frontend builder handed a finding to the
+// backend builder (escalate_finding); the backend builder fixed it and
+// verified. The round was still judged "changed nothing" because only the
+// first builder's result was counted, so the fix was never redeployed and the
+// run was held. A fix made on an escalated finding counts like any other.
+test("a fix made on an escalated finding counts as a change, and the app is redeployed", async () => {
+  let deployCalls = 0;
+  let retests = 0;
+  const deps: Stage6Deps = {
+    deployFn: async () => { deployCalls++; return { success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] }; },
+    liveRetestFn: async () => (retests++ === 0 ? { pass: false, findings: [{ file: "frontend/app", issue: "[ux/HIGH] something" }] } : { pass: true, findings: [] }),
+    fixAanya: async () => ({ success: false, escalations: [{ targetAgent: "shubham" as const, finding: "the export query", reason: "backend file" }] }),
+    fixShubham: async () => ({ success: true, filesWritten: ["src/controllers/exportController.ts"] }),
+  };
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(deployCalls).toBe(2);
+  expect(result.success).toBe(true);
+  expect(result.stuck).toBeFalsy();
+});
