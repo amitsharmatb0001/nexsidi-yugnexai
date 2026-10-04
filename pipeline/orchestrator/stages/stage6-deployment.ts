@@ -642,7 +642,7 @@ const DATABASE_ERROR = /no unique or exclusion constraint|violates (?:foreign ke
 export function deployErrorsToFindings(errors: string[]): { shubham: string[]; aanya: string[]; pranav: string[] } {
   const groups = { shubham: [] as string[], aanya: [] as string[], pranav: [] as string[] };
   for (const error of errors) {
-    if (/migrations did not apply|database has no tables/i.test(error)) {
+    if (/migrations did not apply|database has no tables|changed after it was applied|Database migration problem/i.test(error)) {
       groups.pranav.push(`The deployed database has no tables — the migrations did not apply. ${error}`);
     } else if (SERVER_ERROR.test(error) || DATABASE_ERROR.test(error) || error.startsWith("Backend log")) {
       groups.shubham.push(

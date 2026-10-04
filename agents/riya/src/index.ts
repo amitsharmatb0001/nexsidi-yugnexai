@@ -1,4 +1,5 @@
 // Riya — DevOps agent (real agentic mode)
+import { createHash } from "node:crypto";
 // Writes docker-compose.yml, runs docker compose up, reads logs if it fails,
 // makes HTTP health check, fixes compose/Dockerfile and retries.
 // Agent ACTS via tools — no one-shot generation.
@@ -178,7 +179,46 @@ export function purgeVerificationArtifacts(buildDir: string): void {
   }
 }
 
+// 2026-10-04: every deploy used to run DROP SCHEMA public CASCADE and re-apply
+// every migration. Harmless while the app holds test data; a redeploy after
+// delivery would erase a customer's real data. A database that holds rows is
+// never dropped: migrations already applied are remembered in a ledger table
+// (_nexsidi_migrations, with a checksum of each file) and only new ones run.
+// An empty database may still be reset — there is nothing to lose.
+export interface MigrationPlan {
+  reset: boolean;
+  apply: string[];
+  adopt: boolean; // rows but no ledger yet: try every migration and record them all
+  errors: string[];
+}
+
+export function migrationChecksum(sql: string): string {
+  return createHash("sha256").update(sql.replace(/\r\n/g, "\n")).digest("hex").slice(0, 16);
+}
+
+export function planMigrations(
+  state: { rows: number; ledger: Map<string, string> | null },
+  files: Array<{ name: string; checksum: string }>,
+): MigrationPlan {
+  if (state.rows === 0) return { reset: true, apply: files.map((f) => f.name), adopt: false, errors: [] };
+  if (!state.ledger) return { reset: false, apply: files.map((f) => f.name), adopt: true, errors: [] };
+  const apply: string[] = [];
+  const errors: string[] = [];
+  for (const f of files) {
+    const known = state.ledger.get(f.name);
+    if (known === undefined) apply.push(f.name);
+    else if (known !== f.checksum) {
+      errors.push(`${f.name} changed after it was applied, and the database holds data — add a NEW migration instead of editing an applied one`);
+    }
+  }
+  return { reset: false, apply, adopt: false, errors };
+}
+
+/** Problems the last migration step found (read by run() to explain a failed deploy). */
+export const migrationProblems: string[] = [];
+
 export function applyMigrationsToDeployedDb(buildDir: string): boolean {
+  migrationProblems.length = 0;
   try {
     const composePath = join(buildDir, "docker-compose.yml");
     if (!existsSync(composePath)) {
@@ -233,38 +273,73 @@ export function applyMigrationsToDeployedDb(buildDir: string): boolean {
 
     let tables = countTables();
     const migDir = join(buildDir, "db", "migrations");
-    // Always reset the public schema before running migrations. A stale Docker
-    // volume from a previous pipeline run may have tables with an incompatible
-    // schema (e.g. an old Clerk-based users table with `clerk_id` instead of
-    // `password_hash`). The migration SQL uses plain `CREATE TABLE` (no IF NOT
-    // EXISTS), so replaying it on a non-empty schema silently no-ops — the
-    // stale columns remain and every INSERT at runtime returns "column does
-    // not exist". Dropping and recreating the schema is safe for dev builds
-    // where data durability between runs is not expected.
+    const psql = (q: string) => sh(`docker exec ${cid} psql -U ${user} -d ${dbName} -tAc "${q.replace(/"/g, '\\"')}"`);
+    const files = existsSync(migDir)
+      ? readdirSync(migDir).filter((n) => n.endsWith(".sql")).sort().map((name) => ({ name, sql: readFileSync(join(migDir, name), "utf-8") }))
+      : [];
+    const withSums = files.map((f) => ({ name: f.name, checksum: migrationChecksum(f.sql) }));
+
+    // Rows in every public table except the ledger; a read that fails counts as
+    // "has data" so an unreadable database is never dropped.
+    let rows = 1;
     try {
-      sh(
-        `docker exec ${cid} psql -U ${user} -d ${dbName} -c ` +
-        `"DROP SCHEMA public CASCADE; CREATE SCHEMA public; ` +
-        `GRANT ALL ON SCHEMA public TO ${user}; ` +
-        `GRANT ALL ON SCHEMA public TO public;"`
-      );
-      console.log(`[riya] schema reset — dropped stale tables, clean state for migrations`);
+      rows = parseInt(psql(
+        "SELECT COALESCE(sum((xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', table_schema, table_name), false, true, '')))[1]::text::int), 0) " +
+        "FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND table_name <> '_nexsidi_migrations'",
+      ), 10) || 0;
     } catch (e) {
-      console.warn(`[riya] schema reset warning (non-fatal): ${String(e).split("\n")[0]}`);
+      console.warn(`[riya] could not count rows (treating the database as holding data): ${String(e).split("\n")[0]}`);
+    }
+    let ledger: Map<string, string> | null = null;
+    try {
+      ledger = new Map(psql("SELECT name || '|' || checksum FROM _nexsidi_migrations").split("\n").filter(Boolean).map((l) => {
+        const [n, c] = l.split("|");
+        return [n!, c!] as [string, string];
+      }));
+    } catch { /* no ledger yet */ }
+
+    const plan = planMigrations({ rows, ledger }, withSums);
+    for (const err of plan.errors) {
+      migrationProblems.push(err);
+      console.error(`[riya] migration problem: ${err}`);
+    }
+    if (plan.reset) {
+      // Empty database only: a stale volume from an earlier run may hold an incompatible schema
+      // (e.g. an old Clerk-based users table), and replaying plain CREATE TABLE on it silently
+      // no-ops. With no rows there is nothing to lose.
+      try {
+        sh(
+          `docker exec ${cid} psql -U ${user} -d ${dbName} -c ` +
+          `"DROP SCHEMA public CASCADE; CREATE SCHEMA public; ` +
+          `GRANT ALL ON SCHEMA public TO ${user}; ` +
+          `GRANT ALL ON SCHEMA public TO public;"`
+        );
+        console.log(`[riya] database is empty — schema reset for a clean start`);
+      } catch (e) {
+        console.warn(`[riya] schema reset warning (non-fatal): ${String(e).split("\n")[0]}`);
+      }
+    } else {
+      console.log(`[riya] database holds ${rows} row(s) — NOT dropped; applying ${plan.apply.length} new migration(s) only`);
+    }
+    try {
+      psql("CREATE TABLE IF NOT EXISTS _nexsidi_migrations (name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())");
+    } catch (e) {
+      console.warn(`[riya] could not create the migration ledger: ${String(e).split("\n")[0]}`);
     }
 
-    if (existsSync(migDir)) {
-      for (const f of readdirSync(migDir).filter((n) => n.endsWith(".sql")).sort()) {
-        const sql = readFileSync(join(migDir, f), "utf-8");
-        try {
-          sh(`docker exec -i ${cid} psql -U ${user} -d ${dbName} -v ON_ERROR_STOP=0`, sql);
-          console.log(`[riya] applied migration ${f} to the deployed database`);
-        } catch (e) {
-          console.warn(`[riya] migration ${f} apply reported errors (may be already-applied): ${String(e).split("\n")[0]}`);
-        }
+    for (const f of files.filter((x) => plan.apply.includes(x.name))) {
+      try {
+        sh(`docker exec -i ${cid} psql -U ${user} -d ${dbName} -v ON_ERROR_STOP=0`, f.sql);
+        console.log(`[riya] applied migration ${f.name} to the deployed database`);
+      } catch (e) {
+        console.warn(`[riya] migration ${f.name} apply reported errors (may be already-applied): ${String(e).split("\n")[0]}`);
       }
-      tables = countTables();
+      try {
+        psql(`INSERT INTO _nexsidi_migrations (name, checksum) VALUES ('${f.name}', '${migrationChecksum(f.sql)}') ON CONFLICT (name) DO NOTHING`);
+      } catch { /* ledger is best effort; the next deploy would just try this file again */ }
     }
+    if (files.length > 0) tables = countTables();
+    if (plan.errors.length > 0) return false;
     if (tables === 0) {
       console.warn("[riya] deployed DB has NO tables after migration attempt — delivery is NOT functional");
       return false;
@@ -1752,7 +1827,13 @@ export async function run(
   const deploySucceeded = result.success && migrationOk && roundTrip.ok && crudCheck.ok;
 
   const errors = [...result.errors];
-  if (!migrationOk) errors.push("Deployed database has no tables (migrations did not apply) — app cannot persist data");
+  if (!migrationOk) {
+    errors.push(
+      migrationProblems.length > 0
+        ? `Database migration problem: ${migrationProblems.join("; ")}`
+        : "Deployed database has no tables (migrations did not apply) — app cannot persist data",
+    );
+  }
   if (!roundTrip.ok) errors.push(`Live authenticated round-trip failed: ${roundTrip.reason}`);
   if (!crudCheck.ok) errors.push(...crudCheck.findings.map((f) => `CRUD verification: ${f}`));
   if (errors.some((e) => /returned 5\d\d\b/.test(e))) {
