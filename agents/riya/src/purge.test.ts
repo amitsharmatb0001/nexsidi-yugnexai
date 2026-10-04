@@ -66,3 +66,15 @@ test("the deploy agent may change deployment files only", async () => {
   const src = (await import("node:fs")).readFileSync(new URL("./index.ts", import.meta.url), "utf-8");
   expect(src).toContain("writableFile: isDeployFile");
 });
+
+// 2026-10-04: with the data-safe redeploy, accounts made by checks stay in the
+// database — and they are not all named verify+…: the sign-up check uses
+// smoke+…, Tilotma's review uses testuser@…. All of them live on example.com, a
+// reserved test domain no real person has. The cleanup removes every account on
+// it, and runs again when the live review ends.
+test("the cleanup covers every account on the reserved test domain, and runs after the live review", async () => {
+  const { VERIFICATION_EMAIL_PATTERN } = await import("./index.ts");
+  expect(VERIFICATION_EMAIL_PATTERN).toBe("%@example.com");
+  const src = (await import("node:fs")).readFileSync(new URL("../../../pipeline/orchestrator/stages/stage6-deployment.ts", import.meta.url), "utf-8");
+  expect(src).toContain("purgeVerificationArtifacts(");
+});

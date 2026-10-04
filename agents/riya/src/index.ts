@@ -105,6 +105,9 @@ export function sanitizeGeneratedPackageJsons(buildDir: string): void {
 // 2026-10-03 (Ledgerly run 4): the delete failed on a foreign key — the test
 // client the check created points at the test user — so the accounts and
 // their data stayed. Rows pointing at a test user are now deleted first.
+/** Every account a check makes lives on example.com, a reserved test domain no real person has. */
+export const VERIFICATION_EMAIL_PATTERN = "%@example.com";
+
 export interface ForeignKey { child: string; childColumn: string; parent: string; parentColumn: string }
 
 /** DELETE statements that remove the rows matching `where` in `table` and every row that points at them, deepest first. */
@@ -158,7 +161,7 @@ export function purgeVerificationArtifacts(buildDir: string): void {
       return { child, childColumn, parent, parentColumn };
     });
 
-    const where = "email LIKE 'verify+%@example.com'";
+    const where = `email LIKE '${VERIFICATION_EMAIL_PATTERN}'`;
     let removed = 0;
     for (const table of tables) {
       try {

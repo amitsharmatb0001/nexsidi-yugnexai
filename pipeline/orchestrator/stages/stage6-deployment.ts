@@ -15,7 +15,7 @@
 // default and MUST NOT be reintroduced as the default without a comment
 // explaining why real QA coverage is being turned off again.
 import { resolveFlags } from "../flags.ts";
-import { run as runRiya, type DeployResult } from "../../../agents/riya/src/index.ts";
+import { run as runRiya, purgeVerificationArtifacts, type DeployResult } from "../../../agents/riya/src/index.ts";
 import { agentForFile, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
@@ -251,6 +251,10 @@ async function runRealLiveRetest(
 ): Promise<LiveRetestResult> {
   const notChecked: string[] = [];
   const result = await liveRetestChecks(projectId, appUrl, backendUrl, stage4Result, plan, notChecked, changedFiles);
+  // The live review signs up its own test accounts. With the data-safe redeploy they would stay in
+  // the database for good, so they are removed as soon as the review ends (every account on the
+  // reserved test domain — see VERIFICATION_EMAIL_PATTERN in riya).
+  purgeVerificationArtifacts(joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId));
   const all = [...notChecked, ...(result.specCompliance?.notChecked ?? [])];
   if (all.length === 0) return result;
   console.error(`[stage6] not checked:\n${all.join("\n")}`);
