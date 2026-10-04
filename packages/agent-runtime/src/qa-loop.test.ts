@@ -311,8 +311,10 @@ test("listLabeledFiles skips non-code extensions", () => {
 });
 
 test("listLabeledFiles includes recognized code extensions like .json", () => {
+  mkdirSync(join(root, "backend"), { recursive: true });
+  writeFileSync(join(root, "backend", "tsconfig.json"), "{}");
   const files = listLabeledFiles(dirs);
-  expect(files).toContain("backend/package-lock.json");
+  expect(files).toContain("backend/tsconfig.json");
 });
 
 // 2026-07-28 (live, complex1): real bug found live — a generated frontend's
@@ -350,6 +352,20 @@ test("listLabeledFiles skips the vendored component library in components/nexui"
 
   expect(files.some((f) => f.includes("nexui"))).toBe(false);
   expect(files).toContain("frontend/components/invoices/Form.tsx");
+});
+
+// 2026-10-04 (Ledgerly run 4, final pass): all three reviewers read both
+// package-lock.json files to the end in ~10 chunks each — 110 KB, a third of
+// everything read. A lockfile is machine-generated; no builder can fix a bug in
+// it, and the read-to-the-end rule made reading it mandatory.
+test("listLabeledFiles skips generated lockfiles but keeps package.json", () => {
+  mkdirSync(join(root, "backend"), { recursive: true });
+  for (const f of ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "package.json"]) writeFileSync(join(root, "backend", f), "{}");
+
+  const files = listLabeledFiles(dirs);
+
+  expect(files.some((f) => /package-lock|yarn\.lock|pnpm-lock|bun\.lock/.test(f))).toBe(false);
+  expect(files).toContain("backend/package.json");
 });
 
 test("listLabeledFiles tolerates a directory that doesn't exist yet", () => {

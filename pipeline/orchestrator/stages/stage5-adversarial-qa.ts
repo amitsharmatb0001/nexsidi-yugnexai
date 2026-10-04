@@ -301,6 +301,8 @@ const CODE_EXTENSIONS = new Set([
 // matching SKIP_DIRS comment for the full root cause and live evidence.
 // "nexui": the component library the generator copies into components/nexui (2026-10-04)
 const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", "vendor", "nexui"]);
+// Machine-generated dependency lists: no builder can fix a bug in them (2026-10-04)
+const SKIP_FILES = new Set(["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "bun.lock", "npm-shrinkwrap.json"]);
 const MAX_CODE_CHARS = 200_000; // bound the QA prompt payload
 
 export interface LabeledDir {
@@ -341,7 +343,7 @@ function walkDir(root: string, dir: string, label: string, chunks: string[]): vo
   }
 
   for (const entry of entries) {
-    if (SKIP_DIRS.has(entry)) continue;
+    if (SKIP_DIRS.has(entry) || SKIP_FILES.has(entry)) continue;
     const full = join(dir, entry);
     let stat: import("node:fs").Stats;
     try {

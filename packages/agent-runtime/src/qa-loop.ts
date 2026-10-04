@@ -203,6 +203,8 @@ const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", "
 // the dominant cost behind a real 35+ minute live-retest wall-clock.
 // "nexui": the component library the generator copies into components/nexui (2026-10-04)
 const SKIP_DIRS = new Set(["node_modules", ".git", ".next", "dist", "build", "vendor", "nexui"]);
+// Machine-generated dependency lists: no builder can fix a bug in them (2026-10-04)
+const SKIP_FILES = new Set(["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "bun.lock", "npm-shrinkwrap.json"]);
 const READ_FILE_CHAR_LIMIT = 8000;
 
 // Exported for direct unit testing without touching the filesystem-walking
@@ -221,7 +223,7 @@ function walkLabeled(root: string, dir: string, label: string, out: string[]): v
     return; // directory doesn't exist (yet) or unreadable — skip, don't throw
   }
   for (const entry of entries) {
-    if (SKIP_DIRS.has(entry)) continue;
+    if (SKIP_DIRS.has(entry) || SKIP_FILES.has(entry)) continue;
     const full = join(dir, entry);
     let stat: import("node:fs").Stats;
     try {
