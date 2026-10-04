@@ -45,6 +45,7 @@ export function outsidePathArgs(cwd: string, args: string[]): string[] {
   });
 }
 
+const GIT_READ_ONLY = new Set(["status", "diff", "log", "show", "rev-parse", "ls-files", "blame", "branch"]);
 const BUN_ALLOWED = new Set(["install", "i", "add", "remove", "rm", "pm", "--version", "-v"]);
 const NPX_SCRIPT_RUNNERS = new Set(["tsx", "ts-node", "node", "bun", "esno", "vite-node"]);
 
@@ -66,6 +67,12 @@ export function guardCommand(cmd: string, args: string[], cwd: string, writableF
     if (cmd === "mkdir" || !target || !writableFile(relativeInside(cwd, resolve(cwd, target)))) {
       return { error: `${cmd} ${target ?? ""} is not one of your files. ${NOT_YOUR_FILE_HINT}`, args };
     }
+  }
+  // 2026-10-04 (Ledgerly run 4): `git commit -am` from the backend swept the
+  // frontend builder's work into a commit about a GSTIN fix. Builders may read
+  // git; the system makes the checkpoints.
+  if (cmd === "git" && !(args[0] && GIT_READ_ONLY.has(args[0]))) {
+    return { error: `git ${args[0] ?? ""} is not allowed — the system makes the commits and checkpoints. You may use git status, diff, log and show to look.`, args };
   }
   if (cmd === "bun" && !(args[0] && BUN_ALLOWED.has(args[0]))) {
     return { error: "bun is only for installing packages here — run scripts with node.", args };

@@ -197,3 +197,18 @@ test("a file-limited agent's node scripts cannot write, and cp or mkdir cannot r
   expect(guardCommand("mkdir", ["scripts"], "/b/p", deployFiles).error).toBeDefined();
   expect(guardCommand("cp", ["a.yml", "docker-compose.yml"], "/b/p", deployFiles).error).toBeUndefined();
 });
+
+// 2026-10-04 (Ledgerly run 4): the backend builder ran `git commit -am` and the
+// commit swept in the frontend builder's deleted files and edits under a
+// message about a GSTIN fix. Builders only read git; the system makes the
+// checkpoints.
+test("builders may read git but cannot commit, stage or rewrite history", () => {
+  for (const args of [["status"], ["diff"], ["diff", "src/a.ts"], ["log", "--oneline"], ["show", "HEAD"]]) {
+    expect({ args, refused: Boolean(guardCommand("git", args, "/b/backend").error) }).toEqual({ args, refused: false });
+  }
+  for (const args of [["commit", "-am", "x"], ["add", "."], ["push"], ["reset", "--hard"], ["checkout", "--", "."], ["stash"], ["rebase", "main"], ["clean", "-fd"], ["restore", "."]]) {
+    const g = guardCommand("git", args, "/b/backend");
+    expect({ args, refused: Boolean(g.error) }).toEqual({ args, refused: true });
+    expect(g.error).toContain("system");
+  }
+});
