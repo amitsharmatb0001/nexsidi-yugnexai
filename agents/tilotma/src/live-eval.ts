@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
 import { countAppPages, computeTier3MaxIterations, REALITY_CHECKER_MODEL } from "./tier3-review.ts";
 import { runWithQuotaWatchAndResume } from "../../../pipeline/activities/quota-retry.ts";
+import { reviewAccountFromEnv, reviewAccountSection, reviewSeededFromEnv, type ReviewAccount } from "./review-account.ts";
 import { summarizeFindingToInstinctRule } from "../../../pipeline/orchestrator/stages/stage5-qa-fix-loop.ts";
 
 export interface LiveEvalScores {
@@ -310,7 +311,7 @@ Reaching the call budget without calling task_complete means your evaluation
 is LOST, so wrap up in time.
 `;
 
-export function buildLiveEvalTask(projectId: string, appUrl: string, screenshotDir: string): string {
+export function buildLiveEvalTask(projectId: string, appUrl: string, screenshotDir: string, account: ReviewAccount | null = reviewAccountFromEnv()): string {
   return `PROJECT: ${projectId}
 FRONTEND URL: ${appUrl}
 Save browser_screenshot outputPath to RELATIVE paths under: ${screenshotDir}/ (e.g. "${screenshotDir}/landing.png") — never absolute paths.
@@ -319,5 +320,5 @@ Navigate to the FRONTEND url and judge it per your system prompt's four
 criteria. This app has ALREADY passed objective correctness review — your job
 is purely the subjective design/originality/craft/functionality judgment.
 Be skeptical of anything that looks like a template or an unmodified AI
-default; reward genuine, evidenced design decisions.`;
+default; reward genuine, evidenced design decisions.${reviewAccountSection(account, reviewSeededFromEnv())}`;
 }

@@ -26,6 +26,7 @@ import { runAgentEscalated, readBlockedReports, type BlockedReport } from "@nexs
 import { AGENT_MODELS } from "@nexsidi/llm-client";
 import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
 import { runWithQuotaWatchAndResume } from "../../../pipeline/activities/quota-retry.ts";
+import { reviewAccountFromEnv, reviewAccountSection, reviewSeededFromEnv, type ReviewAccount } from "./review-account.ts";
 
 // 2026-07-27 (live, complex1): real gap found live — the shared default
 // MAX_ITERATIONS (40) let the reality-checker spend its entire budget
@@ -398,6 +399,7 @@ export function buildEvidenceCollectorTask(
   backendUrl: string,
   screenshotDir: string,
   blockedReports: BlockedReport[] = [],
+  account: ReviewAccount | null = reviewAccountFromEnv(),
 ): string {
   const blockedBlock =
     blockedReports.length > 0
@@ -419,7 +421,7 @@ API routes itself. Test API endpoints against the BACKEND API URL above, never
 the frontend url; a 404/auth-redirect from the FRONTEND origin on an API-shaped
 path is expected behavior, not a bug.
 
-Your folder is the whole project, read-only: frontend/, backend/ and db/.${blockedBlock}`;
+Your folder is the whole project, read-only: frontend/, backend/ and db/.${blockedBlock}${reviewAccountSection(account, reviewSeededFromEnv())}`;
 }
 
 export const REALITY_CHECKER_PROMPT = `\
@@ -499,6 +501,7 @@ export function buildRealityCheckerTask(
   backendUrl: string,
   screenshotDir: string,
   stage1Findings: string[],
+  account: ReviewAccount | null = reviewAccountFromEnv(),
 ): string {
   const findingsBlock =
     stage1Findings.length > 0
@@ -524,7 +527,7 @@ the backend url and db_query before repeating it.
 
 Re-drive ${appUrl} with the browser tools, verify or refute each claim above,
 look for anything Stage 1 missed, then give your final READY/NEEDS_WORK verdict
-per your system prompt.`;
+per your system prompt.${reviewAccountSection(account, reviewSeededFromEnv())}`;
 }
 
 // Parses the "FINDINGS:\n- ...\nVERDICT: ..." block an agent's task_complete

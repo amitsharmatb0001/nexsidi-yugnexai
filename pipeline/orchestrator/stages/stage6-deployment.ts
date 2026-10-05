@@ -45,7 +45,7 @@ import { fixChangedCode } from "./stage5-qa-fix-loop.ts";
 import { dropSettledNotTrue, resolveDisputes, type SettleFn } from "../disputes.ts";
 import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { runAuthSmokeTest } from "./auth-smoke.ts";
-import { runRouteSweepReal } from "./route-sweep.ts";
+import { runRouteSweepReal, createReviewAccount } from "./route-sweep.ts";
 import { join as joinPath, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { reviewDbUrl } from "../../../packages/agent-runtime/src/tools/compose-ports.ts";
@@ -402,15 +402,44 @@ async function liveRetestChecks(
       }
     }
 
+    // 2026-10-05 (Amit): ONE ready test account with sample data serves the route sweep and every review agent
+    // below, so the whole user flow is walked with real records and a flow that fails is caught before delivery.
+    // The account sits on the reserved test domain; it and everything under it are removed — and the row counts
+    // compared with those from before — when the review ends (runRealLiveRetest). Off switches: REVIEW_ACCOUNT=off,
+    // SEED_SAMPLE_DATA=off.
+    let reviewSession: { token: string } | undefined;
+    let seededResult: { created: Record<string, string[]>; notSeeded: string[] } | undefined;
+    if (process.env.REVIEW_ACCOUNT !== "off" && plan) {
+      try {
+        const acct = await createReviewAccount({ backendUrl, endpoints: plan.apiContract.endpoints });
+        if ("reason" in acct) {
+          notChecked.push(`review account: ${acct.reason}`);
+        } else {
+          reviewSession = { token: acct.token };
+          process.env.TIER3_REVIEW_EMAIL = acct.email;
+          process.env.TIER3_REVIEW_PASSWORD = acct.password;
+          if (process.env.SEED_SAMPLE_DATA !== "off") {
+            seededResult = await seedSampleData(joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId), backendUrl, acct.token, 2);
+            notChecked.push(...seededResult.notSeeded);
+            process.env.TIER3_REVIEW_SEEDED = JSON.stringify(Object.fromEntries(Object.entries(seededResult.created).map(([k, ids]) => [k, ids.length])));
+            console.log(`[stage6] Review account ready with sample data: ${process.env.TIER3_REVIEW_SEEDED}`);
+          }
+        }
+      } catch (err) {
+        notChecked.push(`review account could not be set up: ${String(err).slice(0, 300)}`);
+      }
+    }
+
     // 2026-10-05 (Ledgerly run 4): the route sweep opens EVERY page of the app in a real browser, signed out
     // and signed in (see route-sweep.ts) — the agents below only visit the pages they choose to click
     // through. No model, so it runs before them: a broken page, a dead link or a failing request skips the
     // expensive review exactly like the checks above. Off switch: ROUTE_SWEEP=off.
     if (process.env.ROUTE_SWEEP !== "off") {
       try {
-        const seedDir = joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
-        const seed = process.env.SEED_SAMPLE_DATA === "off" ? undefined : (token: string) => seedSampleData(seedDir, backendUrl, token, 2);
-        const sweep = await runRouteSweepReal(stage4Result.frontendOutputDir, appUrl, backendUrl, plan?.apiContract.endpoints ?? [], seed);
+        // The account and its sample data were made above; the sweep signs in with it and opens the detail pages
+        // with the ids of the sample records (it makes its own account only when none could be created).
+        const seed = seededResult ? async () => ({ created: seededResult!.created, notSeeded: [] as string[] }) : undefined;
+        const sweep = await runRouteSweepReal(stage4Result.frontendOutputDir, appUrl, backendUrl, plan?.apiContract.endpoints ?? [], seed, reviewSession);
         console.log(`[stage6] Route sweep: ${sweep.ran ? (sweep.pass ? "passed" : "FAILED") : "did not run"} (${sweep.visited} page visits)`);
         notChecked.push(...sweep.notChecked);
         if (sweep.ran && !sweep.pass) {
@@ -473,6 +502,9 @@ async function liveRetestChecks(
     } else {
       process.env.TIER3_DB_URL = previousDbUrl;
     }
+    delete process.env.TIER3_REVIEW_EMAIL;
+    delete process.env.TIER3_REVIEW_PASSWORD;
+    delete process.env.TIER3_REVIEW_SEEDED;
   }
 }
 

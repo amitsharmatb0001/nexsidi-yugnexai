@@ -129,6 +129,8 @@ export interface RouteSweepOptions {
   screenshotDir: string | null;
   /** Creates sample data as the signed-in test account; the ids it returns open the detail pages. */
   seed?: (token: string) => Promise<{ created: Record<string, string[]>; notSeeded: string[] }>;
+  /** An account the caller already created (the review agents use the same one); otherwise the sweep makes its own. */
+  session?: { token: string };
 }
 
 export interface RouteSweepResult {
@@ -147,16 +149,17 @@ const PAGE_INFO_EXPRESSION =
 const pageFileFor = (file: string) => `frontend/${file}`;
 const slug = (route: string) => (route === "/" ? "home" : route.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, ""));
 
-async function createSession(
-  opts: RouteSweepOptions,
-): Promise<{ token: string } | { reason: string }> {
+/** A test account on the reserved test domain (removed with everything under it when the live review ends). */
+export async function createReviewAccount(
+  opts: { backendUrl: string; endpoints: Array<{ method: string; path: string }>; fetchFn?: typeof fetch },
+): Promise<{ email: string; password: string; token: string } | { reason: string }> {
   const auth = contractAuthPaths(opts.endpoints);
   if (!auth) return { reason: "the API contract has no register and login endpoints" };
   const fetchFn = opts.fetchFn ?? fetch;
   const stamp = Date.now();
   // example.com is the reserved test domain; every account on it is removed when the live review ends.
-  const email = `verify+sweep${stamp}@example.com`;
-  const password = `Sweep!${stamp}aA1`;
+  const email = `verify+review${stamp}@example.com`;
+  const password = `Review!${stamp}aA1x`;
   const post = async (path: string, body: object) => {
     const res = await fetchFn(opts.backendUrl + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const text = await res.text();
@@ -164,12 +167,12 @@ async function createSession(
     try { json = JSON.parse(text); } catch { /* not JSON */ }
     return { ok: res.ok, status: res.status, json, text };
   };
-  const reg = await post(auth.registerPath, { email, password, name: "Route Sweep" });
+  const reg = await post(auth.registerPath, { email, password, name: "Review Account" });
   if (!reg.ok) return { reason: `could not create a test account (register answered ${reg.status}: ${(reg.json?.error ?? reg.text).toString().slice(0, 160)})` };
   const login = await post(auth.loginPath, { email, password });
   const token = login.json?.data?.token ?? login.json?.token ?? reg.json?.data?.token ?? reg.json?.token;
   if (!login.ok || typeof token !== "string") return { reason: `could not sign the test account in (login answered ${login.status})` };
-  return { token };
+  return { email, password, token };
 }
 
 async function visitPage(browser: BrowserLike, opts: RouteSweepOptions, route: string, auth: Visit["auth"], file: string | null, links: Array<{ href: string; from: string }>): Promise<Visit> {
@@ -238,7 +241,7 @@ export async function runRouteSweep(opts: RouteSweepOptions): Promise<RouteSweep
   report(out);
 
   // Signed in: a test account, then the session cookie the generated apps use.
-  const session = await createSession(opts);
+  const session = opts.session ?? (await createReviewAccount(opts));
   let signedIn: Visit[] = [];
   if ("reason" in session) {
     notChecked.push(`route sweep, signed-in pages: ${session.reason}`);
@@ -301,6 +304,7 @@ export async function runRouteSweepReal(
   backendUrl: string,
   endpoints: Array<{ method: string; path: string }>,
   seed?: RouteSweepOptions["seed"],
+  session?: RouteSweepOptions["session"],
 ): Promise<RouteSweepResult> {
   const { readdirSync, mkdirSync } = await import("node:fs");
   const { BrowserSession } = await import("../../../packages/agent-runtime/src/browser/client.ts");
@@ -317,7 +321,7 @@ export async function runRouteSweepReal(
   mkdirSync(screenshotDir, { recursive: true });
   const browser = new BrowserSession();
   try {
-    return await runRouteSweep({ appUrl, backendUrl, endpoints, routeFiles: walk("app"), browser, screenshotDir, seed });
+    return await runRouteSweep({ appUrl, backendUrl, endpoints, routeFiles: walk("app"), browser, screenshotDir, seed, session });
   } finally {
     await browser.close().catch(() => {});
   }

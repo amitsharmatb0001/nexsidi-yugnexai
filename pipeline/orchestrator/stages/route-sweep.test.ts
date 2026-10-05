@@ -223,3 +223,30 @@ test("runRouteSweep reports the sample data it could not create, and a broken de
   expect(r.notChecked.join("\n")).toContain("invoices #1 was not created");
   expect(r.notChecked.join("\n")).toContain("/invoices/[id]");
 });
+
+// 2026-10-05 (Amit): one test account serves the sweep AND the review agents. The stage creates it first and hands
+// it to the sweep, which must not register a second one.
+test("runRouteSweep uses the account it is given instead of registering a new one", async () => {
+  const b = fakeBrowser({
+    "/": { status: 200, text: "Home page text with plenty of words to be a real page" },
+    "/sign-in": { status: 200, text: "Sign in to your account please" },
+    "/dashboard": { status: 200, text: "Dashboard content for the signed in user, many words" },
+  });
+  const urls: string[] = [];
+  const spyFetch = (async (url: string) => { urls.push(String(url)); return new Response("{}", { status: 404 }); }) as unknown as typeof fetch;
+  const r = await runRouteSweep({ ...baseOpts(b, ["app/page.tsx", "app/sign-in/page.tsx", "app/dashboard/page.tsx"]), fetchFn: spyFetch, session: { token: "given-token" } });
+  expect(r.pass).toBe(true);
+  expect(urls).toEqual([]);
+  expect(r.notChecked.join("\n")).not.toContain("signed-in");
+});
+
+test("createReviewAccount registers an account on the reserved test domain and returns its details and token", async () => {
+  const { createReviewAccount } = await import("./route-sweep.ts");
+  const a = await createReviewAccount({ backendUrl: "http://api", endpoints: [{ method: "POST", path: "/api/v1/auth/register" }, { method: "POST", path: "/api/v1/auth/login" }], fetchFn: okFetch });
+  expect("token" in a).toBe(true);
+  if ("token" in a) {
+    expect(a.email).toMatch(/^verify\+review\d+@example\.com$/);
+    expect(a.password.length).toBeGreaterThan(10);
+    expect(a.token).toBe("t2");
+  }
+});
