@@ -43,3 +43,16 @@ test("all three review tasks include the account when one is given, and none whe
   expect(buildEvidenceCollectorTask("p", "http://a", "http://b", "shots", [], null)).not.toContain("TEST ACCOUNT");
   expect(buildLiveEvalTask("p", "http://a", "shots", null)).not.toContain("TEST ACCOUNT");
 });
+
+// 2026-10-05: the evidence collector ran on the NIM text model — its screenshots were saved and never shown to it,
+// and today that model timed out until the review fell back and looped. Every live-review agent now runs on a
+// model that is sent the pictures.
+test("every live-review agent runs on a model that is shown the screenshots", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { modelCanSeeImages } = await import("../../../packages/agent-runtime/src/enforce/images-seen.ts");
+  const { REALITY_CHECKER_MODEL } = await import("./tier3-review.ts");
+  expect(modelCanSeeImages(REALITY_CHECKER_MODEL)).toBe(true);
+  const src = readFileSync(new URL("./tier3-review.ts", import.meta.url), "utf-8");
+  const collector = src.slice(src.indexOf('agentName: "tilotma-evidence-collector"'), src.indexOf('agentName: "tilotma-evidence-collector"') + 600);
+  expect(collector).toContain("model: REALITY_CHECKER_MODEL");
+});

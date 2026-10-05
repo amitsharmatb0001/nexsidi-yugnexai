@@ -77,3 +77,17 @@ test("Claude: tool_result must answer a tool_use in the directly preceding assis
   expect(findClaudePairingViolations(ok)).toEqual([]);
   expect(findClaudePairingViolations(orphan)).toEqual(["tool_result t1 at 0 has no matching tool_use"]);
 });
+
+// 2026-10-05 (Ledgerly run 4, final review): Gemini answered 400 "Requests ending with a model turn are not
+// supported" after a screenshot and the log said nothing about what had been sent. When the API rejects a
+// request, the loop now logs the shape of the history it sent (roles and part kinds), so the cause is read, not guessed.
+test("describeGeminiHistoryShape lists each message's role and the kinds of its parts", async () => {
+  const { describeGeminiHistoryShape } = await import("./history-validate.ts");
+  const shape = describeGeminiHistoryShape([
+    { role: "user", content: "task" },
+    { role: "model", content: [{ functionCall: { name: "browser_screenshot", args: {} } }] },
+    { role: "user", content: [{ functionResponse: { name: "browser_screenshot", response: {} } }, { inlineData: { mimeType: "image/png", data: "AAAA" } }] },
+    { role: "model", content: [{ text: "ok" }] },
+  ] as any);
+  expect(shape).toBe("user:text | model:functionCall | user:functionResponse+inlineData | model:text");
+});

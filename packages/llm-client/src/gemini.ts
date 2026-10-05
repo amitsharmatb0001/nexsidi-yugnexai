@@ -567,6 +567,12 @@ export async function geminiChatWithTools(
     if (!res.ok) {
       const errBody = await res.text();
       recordFailure(circuitKey);
+      // 2026-10-05: gemini-3.6/3.7/3.8-flash answer 400 "Requests ending with a model turn are not supported"
+      // (3.5-flash accepts it). Say what was sent — roles and part kinds only — so the cause is read, not guessed.
+      if (res.status === 400 && /ending with a model turn/i.test(errBody)) {
+        const shape = contents.map((c) => `${c.role}:${c.parts.map((p) => Object.keys(p).find((k) => k !== "thoughtSignature" && k !== "thought") ?? "empty").join("+")}`).join(" | ");
+        console.error(`[llm-client] ${model} rejected a request ending with a model turn. Sent: ${shape}`);
+      }
       throw new Error(`[Gemini ${model}] ${res.status}: ${errBody}`);
     }
 

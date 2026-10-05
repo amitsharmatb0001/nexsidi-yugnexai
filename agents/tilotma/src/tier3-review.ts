@@ -23,7 +23,6 @@
 import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runAgentEscalated, readBlockedReports, type BlockedReport } from "@nexsidi/agent-runtime";
-import { AGENT_MODELS } from "@nexsidi/llm-client";
 import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
 import { runWithQuotaWatchAndResume } from "../../../pipeline/activities/quota-retry.ts";
 import { reviewAccountFromEnv, reviewAccountSection, reviewSeededFromEnv, type ReviewAccount } from "./review-account.ts";
@@ -175,7 +174,9 @@ export async function runTier3Review(
   const stage1 = await runWithQuotaWatchAndResume(() =>
     runAgentEscalated({
       agentName: "tilotma-evidence-collector",
-      model: AGENT_MODELS.tilotma,
+      // 2026-10-05: a model that is shown the screenshots it takes. On the NIM text model they were saved and never
+      // seen, and when NIM timed out the run fell back and looped (Ledgerly run 4, final review).
+      model: REALITY_CHECKER_MODEL,
       apiKey,
       systemPrompt: EVIDENCE_COLLECTOR_PROMPT,
       initialMessage: buildEvidenceCollectorTask(projectId, appUrl, backendUrl, screenshotDir, blockedReports),

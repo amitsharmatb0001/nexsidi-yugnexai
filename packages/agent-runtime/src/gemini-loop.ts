@@ -65,6 +65,8 @@ import { fixRunUnaccounted } from "./enforce/fix-accounting.ts";
 import { trackWrittenFile } from "./enforce/files-written.ts";
 import { summaryRejection } from "./enforce/summary-format.ts";
 import { imagesSeenRejection } from "./enforce/images-seen.ts";
+import { describeGeminiHistoryShape } from "./history-validate.ts";
+import { splitToolResultTurn } from "./tool-result-turn.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
 
@@ -709,6 +711,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
       }
     } catch (err) {
+      // 2026-10-05: when the API rejects the request's shape, say what was sent (roles and part kinds only).
+      if (/ending with a model turn|INVALID_ARGUMENT/i.test(String(err))) {
+        console.error(`[${config.agentName}:gemini-agent] request shape that was rejected: ${describeGeminiHistoryShape(messages)}`);
+      }
       if (isUnrecoverableGeminiError(err)) {
         // 2026-08-07: real bug found live (project bae438767bed, redeploy #3)
         // — this branch pushed to `errors` (in-memory only, never printed)
@@ -1168,7 +1174,8 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     if (budgetNotice) responseParts.push({ text: budgetNotice });
     const blockedNotice = blockedTracker.takeNotice();
     if (blockedNotice) responseParts.push({ text: blockedNotice });
-    messages.push({ role: "user", content: responseParts });
+    // gemini-3.6/3.7/3.8-flash reject a screenshot or text in the same turn as the function responses (see tool-result-turn.ts).
+    messages.push(...splitToolResultTurn(responseParts));
     await saveHistory(); // every step is recorded
 
     // Every agent does only its own work: a run that keeps hitting other

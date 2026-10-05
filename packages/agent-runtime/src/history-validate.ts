@@ -85,3 +85,18 @@ export function findClaudePairingViolations(messages: ClaudeMessage[]): string[]
   });
   return out;
 }
+
+/** One line: each message's role and part kinds, e.g. "user:text | model:functionCall | user:functionResponse+inlineData". */
+export function describeGeminiHistoryShape(messages: GeminiMessage[]): string {
+  return messages
+    .map((m) => {
+      const content = (m as { content?: unknown }).content;
+      const kinds = typeof content === "string"
+        ? ["text"]
+        : Array.isArray(content)
+          ? (content as Array<Record<string, unknown>>).map((p) => Object.keys(p).find((k) => k !== "thoughtSignature" && k !== "thought") ?? "empty")
+          : ["empty"];
+      return `${m.role}:${kinds.join("+")}`;
+    })
+    .join(" | ");
+}

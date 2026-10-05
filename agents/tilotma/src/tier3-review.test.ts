@@ -176,12 +176,14 @@ test("shouldSkipStage2 does not skip on a single finding, even one that later tu
 // iterations, re-probing sign-in; ~1.5M input tokens), then Gemini did the job
 // in 25 iterations every time. The evidence collector on NIM finished both
 // times, so only the checker skips NIM and runs on its provider directly.
-test("the reality checker runs on its provider directly (no NIM model); the evidence collector keeps NIM", () => {
+// 2026-10-05 (changed): the evidence collector moved to the same provider. On the NIM text model its screenshots were
+// saved and never shown to it, and when NIM timed out the review fell back and looped (Ledgerly run 4, final review).
+test("the reality checker and the evidence collector both run on their provider directly, on a model that is shown screenshots", () => {
   const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "tier3-review.ts"), "utf-8");
   const checker = source.slice(source.indexOf('agentName: "tilotma-reality-checker"'));
   expect(checker.slice(0, 200)).toContain("model: REALITY_CHECKER_MODEL");
   const collector = source.slice(source.indexOf('agentName: "tilotma-evidence-collector"'));
-  expect(collector.slice(0, 200)).toContain("model: AGENT_MODELS.tilotma");
+  expect(collector.slice(0, 600)).toContain("model: REALITY_CHECKER_MODEL");
 });
 
 // 2026-09-29 (project a034f90ba50e): the reality checker's format asked it to
