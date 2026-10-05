@@ -285,3 +285,20 @@ test("an evaluation that still ends without scores is not scored: no failure, no
   const { designFindings } = await import("../../../pipeline/orchestrator/stages/stage6-deployment.ts");
   expect(designFindings(result)).toEqual([]);
 });
+
+// 2026-10-04 (Ledgerly run 4): the design evaluator ran on a text-only model, its screenshots were saved
+// to disk and never shown to it, and it still described what "landing.png shows". A design judge must be
+// on a model that is sent the pictures, and must be refused a finish until it has actually been shown one.
+test("runLiveEval runs on a model that is shown the screenshots, and must have seen one to finish", async () => {
+  const { modelCanSeeImages } = await import("../../../packages/agent-runtime/src/enforce/images-seen.ts");
+  let capturedConfig: any;
+  const deps: LiveEvalDeps = {
+    runAgent: async (config: any) => {
+      capturedConfig = config;
+      return { success: true, summary: "DESIGN_QUALITY: 8\nORIGINALITY: 8\nCRAFT: 8\nFUNCTIONALITY: 8", filesWritten: [], iterations: 5, errors: [], escalated: false };
+    },
+  };
+  await runLiveEval("diagproj", "http://localhost:3200", "/tmp/nonexistent-frontend-dir", deps);
+  expect(modelCanSeeImages(capturedConfig.model)).toBe(true);
+  expect(capturedConfig.requireImagesSeen).toBe(true);
+});

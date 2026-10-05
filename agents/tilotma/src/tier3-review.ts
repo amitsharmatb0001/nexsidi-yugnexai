@@ -124,7 +124,7 @@ const SCREENSHOT_ROOT = "tier3-review-screenshots";
 // round. A non-NIM model id means runAgentEscalated runs the provider directly
 // (Gemini, or Claude when CLAUDE_ENABLED=true). The evidence collector keeps
 // NIM — it finished there both times.
-const REALITY_CHECKER_MODEL = "gemini-3.8-flash" as const;
+export const REALITY_CHECKER_MODEL = "gemini-3.8-flash" as const;
 
 // 2026-10-02 (approved by Amit): only Tilotma sees the whole project. Every
 // builder is confined to its own folder; Tilotma's reviewers work from the

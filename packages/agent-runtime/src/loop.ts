@@ -90,6 +90,8 @@ export interface AgentRunConfig {
   enableDisputeSettling?: boolean;
   // A format the final task_complete summary must match (a judge's score lines).
   summaryMustMatch?: SummaryRule;
+  // The run may not finish until at least one screenshot was actually sent to the model.
+  requireImagesSeen?: boolean;
   projectId?: string;          // optional, for database history persistence
   enableDockerTools?: boolean; // Riya only
   enableHttpTools?: boolean;   // Shubham verification

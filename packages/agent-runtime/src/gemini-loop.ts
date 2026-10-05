@@ -64,6 +64,7 @@ import { recordVerdict } from "./tools/settle.ts";
 import { fixRunUnaccounted } from "./enforce/fix-accounting.ts";
 import { trackWrittenFile } from "./enforce/files-written.ts";
 import { summaryRejection } from "./enforce/summary-format.ts";
+import { imagesSeenRejection } from "./enforce/images-seen.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
 
@@ -529,6 +530,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   };
 
   const filesWritten: string[] = [];
+  let imagesSeen = 0; // screenshots actually sent to the model (see enforce/images-seen.ts)
 
   let disputesRecorded = 0; // fix runs: see enforce/fix-accounting.ts
   const escalations: Escalation[] = [];
@@ -1009,6 +1011,14 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
               break;
             }
           }
+          // 2026-10-04: a judge of how a page looks must have been shown a picture — see enforce/images-seen.ts.
+          {
+            const noImages = imagesSeenRejection(config.requireImagesSeen, imagesSeen);
+            if (noImages) {
+              result = { status: "error", summary: noImages };
+              break;
+            }
+          }
           // 2026-10-04: a fix run must fix, dispute or hand on — see enforce/fix-accounting.ts.
           const unaccounted = config.enableEscalation
             ? fixRunUnaccounted({ filesWritten: filesWritten.length, disputes: disputesRecorded, escalations: escalations.length })
@@ -1147,6 +1157,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         try {
           const imageBytes = readFileSync(imagePath);
           responseParts.push({ inlineData: { mimeType: "image/png", data: imageBytes.toString("base64") } });
+          imagesSeen++;
         } catch (err) {
           console.error(`[${config.agentName}:gemini-agent] Failed to read screenshot for vision attachment (${imagePath}): ${String(err)}`);
         }

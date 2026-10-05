@@ -21,12 +21,11 @@
 // score) is the right shape here, matching the rubric's own framing as a
 // single evaluator's judgment, not a debate.
 import { runAgentEscalated } from "@nexsidi/agent-runtime";
-import { AGENT_MODELS } from "@nexsidi/llm-client";
 import type { InstinctDomain } from "@nexsidi/db";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
-import { countAppPages, computeTier3MaxIterations } from "./tier3-review.ts";
+import { countAppPages, computeTier3MaxIterations, REALITY_CHECKER_MODEL } from "./tier3-review.ts";
 import { runWithQuotaWatchAndResume } from "../../../pipeline/activities/quota-retry.ts";
 import { summarizeFindingToInstinctRule } from "../../../pipeline/orchestrator/stages/stage5-qa-fix-loop.ts";
 
@@ -177,7 +176,10 @@ export async function runLiveEval(
   const result = await runWithQuotaWatchAndResume(() =>
     deps.runAgent({
       agentName: "tilotma-live-eval",
-      model: AGENT_MODELS.tilotma,
+      // 2026-10-04: a model the screenshots are actually sent to. On the NIM text model the
+      // evaluator never saw a picture and described them anyway (see enforce/images-seen.ts).
+      model: REALITY_CHECKER_MODEL,
+      requireImagesSeen: true,
       apiKey,
       systemPrompt: LIVE_EVAL_SYSTEM_PROMPT,
       initialMessage: buildLiveEvalTask(projectId, appUrl, screenshotDir),
