@@ -423,3 +423,24 @@ test("toFindings routes a violation to the file it names, and uses the default f
   expect(f[0]!.file).toBe("backend/src/routes/authRoutes.ts");
   expect(f[1]!.file).toBe("frontend/package.json");
 });
+
+// 2026-10-05 (Ledgerly run 4, round 8): the design evaluator, shown real screenshots, measured the dashboard
+// subtitle at 1.18:1 contrast. Cause: --nx-color-muted is a light background tint (#E2E8F0) and the frontend
+// used it as TEXT colour in 15+ places; --nx-color-muted-foreground is the text colour. A token used for the
+// wrong job is visible in the source, so it is checked there.
+test("checkMutedTextColor flags the muted background token used as a text colour", async () => {
+  const { checkMutedTextColor } = await import("./spec-compliance.ts");
+  const bad = checkMutedTextColor([
+    { path: "app/dashboard/page.tsx", source: '<p style={{ color: "var(--nx-color-muted)", margin: 0 }}>Overview</p>' },
+    { path: "components/ok.tsx", source: '<p style={{ color: "var(--nx-color-muted-foreground)" }}>fine</p><div style={{ background: "var(--nx-color-muted)" }} />' },
+  ]);
+  expect(bad.pass).toBe(false);
+  expect(bad.violations).toHaveLength(1);
+  expect(bad.violations[0]).toContain("frontend/app/dashboard/page.tsx");
+  expect(bad.violations[0]).toContain("--nx-color-muted-foreground");
+});
+
+test("checkMutedTextColor passes when the muted token is only used for backgrounds and borders", async () => {
+  const { checkMutedTextColor } = await import("./spec-compliance.ts");
+  expect(checkMutedTextColor([{ path: "a.tsx", source: 'style={{ background: "var(--nx-color-muted)", borderColor: "var(--nx-color-muted)" }}' }])).toEqual({ pass: true, violations: [] });
+});

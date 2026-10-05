@@ -270,6 +270,10 @@ library used; only the names listed below exist in this system):
   var(--nx-color-warning)       var(--nx-color-warning-foreground)
   var(--nx-color-border)        var(--nx-color-input)
   var(--nx-color-ring)          var(--nx-color-overlay)
+  Each foreground token is the TEXT colour for its background token. var(--nx-color-muted)
+  is a light BACKGROUND tint — never use it as `color:`; secondary text uses
+  var(--nx-color-muted-foreground). (Ledgerly run 4: the muted background colour used as
+  text in 15+ places measured 1.18:1 contrast. A file check now fails the build on it.)
 
   Spacing/radius (same theme.* access pattern, e.g. theme.space[6] is
   var(--nx-space-6), theme.radius.lg is var(--nx-radius-lg)):

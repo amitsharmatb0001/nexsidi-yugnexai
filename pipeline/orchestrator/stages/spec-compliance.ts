@@ -273,6 +273,17 @@ export function checkBackendRateLimit(files: Array<{ path: string; source: strin
   };
 }
 
+// 2026-10-05 (Ledgerly run 4, round 8): measured in the browser, the dashboard subtitle had 1.18:1 contrast.
+// --nx-color-muted is a light background tint (#E2E8F0 in the Ledgerly theme); the frontend used it as TEXT
+// colour in 15+ places. The text token is --nx-color-muted-foreground.
+export function checkMutedTextColor(files: Array<{ path: string; source: string }>): SpecComplianceResult {
+  const asText = /(?<![-\w])color\s*:\s*["'`]var\(--nx-color-muted\)["'`]/;
+  const violations = files
+    .filter(({ source }) => asText.test(source))
+    .map(({ path }) => `frontend/${path}: uses var(--nx-color-muted) as a text colour. That token is a light background tint, so the text is nearly invisible (about 1.2:1 contrast). Use var(--nx-color-muted-foreground) for secondary text.`);
+  return { pass: violations.length === 0, violations };
+}
+
 function readBackendSources(backendDir: string, readdirSync: typeof import("node:fs").readdirSync, readFileSync: typeof import("node:fs").readFileSync, join: typeof import("node:path").join): Array<{ path: string; source: string }> {
   const out: Array<{ path: string; source: string }> = [];
   const walk = (rel: string) => {
@@ -316,7 +327,9 @@ export async function runStackConformanceCheck(frontendOutputDir: string): Promi
   }
   const nextConfig = ["next.config.ts", "next.config.mjs", "next.config.js"].map((f) => join(frontendOutputDir, f)).find((p) => existsSync(p));
   if (nextConfig) results.push(checkFrontendApiProxy(readFileSync(nextConfig, "utf-8")));
-  results.push(checkAuthNavigation(readFrontendSources(frontendOutputDir, readdirSync, readFileSync, join)));
+  const frontendSources = readFrontendSources(frontendOutputDir, readdirSync, readFileSync, join);
+  results.push(checkAuthNavigation(frontendSources));
+  results.push(checkMutedTextColor(frontendSources));
   // The backend sits beside the frontend in the build folder (frontend/, backend/, db/).
   const backendDir = join(frontendOutputDir, "..", "backend");
   if (existsSync(join(backendDir, "src"))) {
