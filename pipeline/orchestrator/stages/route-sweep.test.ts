@@ -250,3 +250,42 @@ test("createReviewAccount registers an account on the reserved test domain and r
     expect(a.token).toBe("t2");
   }
 });
+
+// 2026-10-05 (Ledgerly run 4, final review): the app's sign-in limiter (10 attempts a minute per IP) answered 429
+// to the review account's registration because the deploy checks had just used the minute's attempts — so the
+// account was never created and the agents got no sample data. A 429 with Retry-After means "wait, then try again".
+test("createReviewAccount waits out a rate limit (429 with Retry-After) and tries again", async () => {
+  const { createReviewAccount } = await import("./route-sweep.ts");
+  let registerCalls = 0;
+  const waits: number[] = [];
+  const limited = (async (url: string) => {
+    const u = String(url);
+    if (u.endsWith("/register")) {
+      registerCalls++;
+      if (registerCalls === 1) return new Response(JSON.stringify({ success: false, error: "Too many attempts" }), { status: 429, headers: { "Retry-After": "7" } });
+      return new Response(JSON.stringify({ success: true, data: { token: "t1" } }), { status: 201 });
+    }
+    return new Response(JSON.stringify({ success: true, data: { token: "t2" } }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const a = await createReviewAccount({
+    backendUrl: "http://api",
+    endpoints: [{ method: "POST", path: "/api/v1/auth/register" }, { method: "POST", path: "/api/v1/auth/login" }],
+    fetchFn: limited,
+    sleep: async (ms: number) => { waits.push(ms); },
+  });
+  expect("token" in a).toBe(true);
+  expect(registerCalls).toBe(2);
+  expect(waits).toEqual([8000]); // Retry-After plus one second
+});
+
+test("createReviewAccount gives up with the reason after repeated rate limits", async () => {
+  const { createReviewAccount } = await import("./route-sweep.ts");
+  const always429 = (async () => new Response("{}", { status: 429, headers: { "Retry-After": "1" } })) as unknown as typeof fetch;
+  const a = await createReviewAccount({
+    backendUrl: "http://api",
+    endpoints: [{ method: "POST", path: "/api/v1/auth/register" }, { method: "POST", path: "/api/v1/auth/login" }],
+    fetchFn: always429,
+    sleep: async () => {},
+  });
+  expect("reason" in a && a.reason).toContain("429");
+});

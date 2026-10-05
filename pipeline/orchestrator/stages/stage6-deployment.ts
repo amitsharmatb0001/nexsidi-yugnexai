@@ -413,6 +413,7 @@ async function liveRetestChecks(
       try {
         const acct = await createReviewAccount({ backendUrl, endpoints: plan.apiContract.endpoints });
         if ("reason" in acct) {
+          console.error(`[stage6] Review account NOT created — the agents get no sample data: ${acct.reason}`);
           notChecked.push(`review account: ${acct.reason}`);
         } else {
           reviewSession = { token: acct.token };

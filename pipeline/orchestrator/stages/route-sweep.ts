@@ -151,7 +151,7 @@ const slug = (route: string) => (route === "/" ? "home" : route.replace(/[^a-z0-
 
 /** A test account on the reserved test domain (removed with everything under it when the live review ends). */
 export async function createReviewAccount(
-  opts: { backendUrl: string; endpoints: Array<{ method: string; path: string }>; fetchFn?: typeof fetch },
+  opts: { backendUrl: string; endpoints: Array<{ method: string; path: string }>; fetchFn?: typeof fetch; sleep?: (ms: number) => Promise<void> },
 ): Promise<{ email: string; password: string; token: string } | { reason: string }> {
   const auth = contractAuthPaths(opts.endpoints);
   if (!auth) return { reason: "the API contract has no register and login endpoints" };
@@ -160,12 +160,22 @@ export async function createReviewAccount(
   // example.com is the reserved test domain; every account on it is removed when the live review ends.
   const email = `verify+review${stamp}@example.com`;
   const password = `Review!${stamp}aA1x`;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  // A 429 with Retry-After is the app's own sign-in limiter (the deploy checks just used the minute's attempts):
+  // wait out the window and try again, up to 3 times.
   const post = async (path: string, body: object) => {
-    const res = await fetchFn(opts.backendUrl + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    const text = await res.text();
-    let json: any = null;
-    try { json = JSON.parse(text); } catch { /* not JSON */ }
-    return { ok: res.ok, status: res.status, json, text };
+    for (let attempt = 1; ; attempt++) {
+      const res = await fetchFn(opts.backendUrl + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      if (res.status === 429 && attempt < 3) {
+        const seconds = Number(res.headers.get("retry-after"));
+        await sleep((Number.isFinite(seconds) && seconds > 0 ? seconds : 60) * 1000 + 1000);
+        continue;
+      }
+      const text = await res.text();
+      let json: any = null;
+      try { json = JSON.parse(text); } catch { /* not JSON */ }
+      return { ok: res.ok, status: res.status, json, text };
+    }
   };
   const reg = await post(auth.registerPath, { email, password, name: "Review Account" });
   if (!reg.ok) return { reason: `could not create a test account (register answered ${reg.status}: ${(reg.json?.error ?? reg.text).toString().slice(0, 160)})` };
