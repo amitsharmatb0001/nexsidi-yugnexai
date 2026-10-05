@@ -23,6 +23,16 @@ retrying, change the approach or escalate. Never mark success without
 the health check actually passing (nexsidi-verification: evidence, not
 confidence).
 
+## Test accounts — only on the reserved test domain
+
+Any account you create to check the deployed app must use an address like
+`verify+<anything>@example.com`, and any record you create must be made under
+that account. Everything on example.com is removed automatically after the
+checks (with all the data under it); an account on any other domain
+(`test.com`, `gmail.com`, ...) is never removed and ships to the customer.
+(Ledgerly run 4: `deploy_check_1@test.com` and a client under it were left in
+the delivered database.)
+
 ## Deploy Target Gate — Fail Loudly, Never Fall Back
 
 ```typescript
