@@ -192,3 +192,34 @@ test("runRouteSweep does not count a link to a static page as an example of a dy
   const r = await runRouteSweep(baseOpts(b, ["app/page.tsx", "app/invoices/new/page.tsx", "app/invoices/[id]/page.tsx"]));
   expect(r.notChecked.join("\n")).toContain("/invoices/[id]");
 });
+
+// 2026-10-05 (Amit): sample data for every resource, so detail pages have a real id to open.
+test("runRouteSweep opens a detail page with a real sample id when sample data was created", async () => {
+  const b = fakeBrowser({
+    "/": { status: 200, text: "Home page text with plenty of words to be a real page" },
+    "/clients/c1": { status: 200, text: "Client detail page for Sample clients 1 with enough words" },
+  });
+  const r = await runRouteSweep({
+    ...baseOpts(b, ["app/page.tsx", "app/clients/[id]/page.tsx"]),
+    seed: async () => ({ created: { clients: ["c1", "c2"] }, notSeeded: [] }),
+  });
+  expect(r.pass).toBe(true);
+  expect(r.notChecked.join("\n")).not.toContain("/clients/[id]");
+  expect(r.visited).toBe(3);
+  expect(r.seeded).toEqual({ clients: ["c1", "c2"] });
+});
+
+test("runRouteSweep reports the sample data it could not create, and a broken detail page is a finding", async () => {
+  const b = fakeBrowser({
+    "/": { status: 200, text: "Home page text with plenty of words to be a real page" },
+    "/clients/c1": { status: 500, text: "Application error: a server-side exception has occurred" },
+  });
+  const r = await runRouteSweep({
+    ...baseOpts(b, ["app/page.tsx", "app/clients/[id]/page.tsx", "app/invoices/[id]/page.tsx"]),
+    seed: async () => ({ created: { clients: ["c1"] }, notSeeded: ["sample data: invoices #1 was not created (POST /api/v1/invoices answered 400: total must be positive)"] }),
+  });
+  expect(r.pass).toBe(false);
+  expect(r.findings.some((f) => f.file === "frontend/app/clients/[id]/page.tsx" && f.issue.includes("HTTP 500"))).toBe(true);
+  expect(r.notChecked.join("\n")).toContain("invoices #1 was not created");
+  expect(r.notChecked.join("\n")).toContain("/invoices/[id]");
+});

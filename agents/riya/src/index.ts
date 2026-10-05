@@ -133,6 +133,14 @@ const FOREIGN_KEYS_SQL =
   "JOIN pg_attribute af ON af.attrelid = c.confrelid AND af.attnum = c.confkey[1] " +
   "WHERE c.contype = 'f' AND array_length(c.conkey, 1) = 1;";
 
+// 2026-10-05: only tables that hold ACCOUNTS (an email plus a password hash) are searched for test accounts. A
+// customer's own clients table may hold an @example.com address as a placeholder; its rows are removed only
+// through the test account they belong to (foreign keys), never because of their email.
+export const ACCOUNT_TABLES_SQL =
+  "SELECT c.table_name FROM information_schema.columns c WHERE c.table_schema='public' AND c.column_name='email' " +
+  "AND EXISTS (SELECT 1 FROM information_schema.columns p WHERE p.table_schema='public' AND p.table_name=c.table_name " +
+  "AND p.column_name IN ('password_hash','password','hashed_password','password_digest'))";
+
 export function purgeVerificationArtifacts(buildDir: string): void {
   try {
     const composePath = join(buildDir, "docker-compose.yml");
@@ -149,10 +157,7 @@ export function purgeVerificationArtifacts(buildDir: string): void {
     // Only touch tables that actually have an email column — the users table
     // in practice, but discovered rather than assumed so a differently-named
     // identity table is still cleaned.
-    const tables = sh(
-      `docker exec ${cid} psql -U ${user} -d ${dbName} -tAc ` +
-      `"SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='email'"`,
-    ).split("\n").map((t) => t.trim()).filter(Boolean);
+    const tables = sh(`docker exec ${cid} psql -U ${user} -d ${dbName} -tAc "${ACCOUNT_TABLES_SQL}"`).split("\n").map((t) => t.trim()).filter(Boolean);
 
     const psql = (sqlText: string) => sh(`docker exec -i ${cid} psql -U ${user} -d ${dbName} -tA -F , -v ON_ERROR_STOP=1 -1 -f -`, sqlText);
     const unquote = (n: string) => n.trim().replace(/^"|"$/g, "");
@@ -179,6 +184,126 @@ export function purgeVerificationArtifacts(buildDir: string): void {
     }
   } catch (e) {
     console.warn(`[riya] verification-artifact cleanup skipped (non-fatal): ${String(e).split("\n")[0]}`);
+  }
+}
+
+// 2026-10-05 (Amit): sample data for every resource. The app is tested with generated records (so every page and
+// every detail route has something to show), then the test account and everything under it is removed and the
+// row counts are compared with those from before (compareSnapshots). Records are created through the app's own
+// API as a test account — parents before children — using the same payload builder as the CRUD verification.
+export interface SeedResult {
+  created: Record<string, string[]>;
+  notSeeded: string[];
+}
+
+export async function seedSampleData(buildDir: string, backendUrl: string, token: string, perResource = 2): Promise<SeedResult> {
+  const created: Record<string, string[]> = {};
+  const notSeeded: string[] = [];
+  const contractPath = join(buildDir, "api-contract.json");
+  if (!existsSync(contractPath)) return { created, notSeeded: ["sample data: api-contract.json not found"] };
+  let endpoints: Array<{ method: string; path: string; auth?: boolean; requestType?: string }>;
+  try {
+    endpoints = (JSON.parse(readFileSync(contractPath, "utf-8")).endpoints ?? []) as typeof endpoints;
+  } catch (err) {
+    return { created, notSeeded: [`sample data: api-contract.json unreadable: ${String(err).slice(0, 120)}`] };
+  }
+  const sharedTypesPath = join(buildDir, "shared-types.ts");
+  const sharedTypesSource = existsSync(sharedTypesPath) ? readFileSync(sharedTypesPath, "utf-8") : "";
+
+  const creates = new Map<string, { path: string; requestType?: string; auth?: boolean }>();
+  for (const ep of endpoints) {
+    const seg = ep.path.replace(/^\/api\/v1\//, "").split("/")[0];
+    if (!seg || seg === "auth" || ep.method !== "POST" || hasPathParam(ep.path) || ep.path.replace(/^\/api\/v1\//, "").includes("/")) continue;
+    creates.set(seg, ep);
+  }
+
+  // Parents first: a resource whose create payload has "<x>_id" fields waits for resources named x.
+  const depsOf = (resource: string): string[] => {
+    const ep = creates.get(resource)!;
+    if (!ep.requestType || ep.requestType === "null") return [];
+    const payload = buildPayloadForRequestType(sharedTypesSource, ep.requestType, "dep-probe") ?? {};
+    return Object.keys(payload)
+      .filter((k) => k.endsWith("_id"))
+      .map((k) => [...creates.keys()].find((r) => r === pluralize(k.slice(0, -3)) || r === k.slice(0, -3)))
+      .filter((r): r is string => !!r && r !== resource);
+  };
+  const order: string[] = [];
+  const remaining = new Set(creates.keys());
+  while (remaining.size > 0) {
+    const ready = [...remaining].filter((r) => depsOf(r).every((d) => order.includes(d)));
+    const next = ready.length > 0 ? ready : [...remaining]; // a cycle: try them anyway
+    for (const r of next) { order.push(r); remaining.delete(r); }
+  }
+
+  for (const resource of order) {
+    const ep = creates.get(resource)!;
+    for (let i = 1; i <= perResource; i++) {
+      try {
+        const marker = `sample-${resource}-${i}`; // no spaces: the payload builder puts it into email addresses
+        const payload = ((ep.requestType && ep.requestType !== "null" ? buildPayloadForRequestType(sharedTypesSource, ep.requestType, marker) : null) ?? { title: marker }) as Record<string, unknown>;
+        for (const [field, value] of Object.entries(payload)) {
+          if (!field.endsWith("_id") || typeof value !== "string") continue;
+          const resolved = await resolveForeignKeyId(field, endpoints, backendUrl, token);
+          if (resolved) payload[field] = resolved;
+        }
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (ep.auth !== false) headers.Authorization = `Bearer ${token}`;
+        const res = await fetch(`${backendUrl}${ep.path}`, { method: "POST", headers, body: JSON.stringify(payload) });
+        const text = await res.text();
+        let json: unknown = null;
+        try { json = JSON.parse(text); } catch { /* not JSON */ }
+        if (!res.ok) {
+          const msg = typeof (json as { error?: unknown })?.error === "string" ? (json as { error: string }).error : text.slice(0, 160);
+          notSeeded.push(`sample data: ${resource} #${i} was not created (POST ${ep.path} answered ${res.status}: ${msg})`);
+          break; // the same payload will fail the same way
+        }
+        const obj = findFirstObjectWithId(json);
+        if (!obj || typeof obj.id !== "string") {
+          notSeeded.push(`sample data: ${resource} #${i} was created but the response carried no id (POST ${ep.path})`);
+          continue;
+        }
+        (created[resource] ??= []).push(obj.id);
+      } catch (err) {
+        notSeeded.push(`sample data: ${resource} #${i} failed: ${String(err).slice(0, 160)}`);
+        break;
+      }
+    }
+  }
+  return { created, notSeeded };
+}
+
+/** Table names that hold more rows after than before (rows the cleanup could not remove). */
+export function compareSnapshots(before: Record<string, number>, after: Record<string, number>): string[] {
+  const out: string[] = [];
+  for (const table of Object.keys(after).sort()) {
+    const was = before[table] ?? 0;
+    if (after[table]! > was) out.push(`${table}: ${was} rows before the testing, ${after[table]} after the cleanup`);
+  }
+  return out;
+}
+
+/** Row count of every table in the deployed database (null when the database cannot be read). */
+export function snapshotTableCounts(buildDir: string): Record<string, number> | null {
+  try {
+    const composePath = join(buildDir, "docker-compose.yml");
+    if (!existsSync(composePath)) return null;
+    const sh = (cmd: string) => execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    const cid = sh(`docker compose -f "${composePath}" ps -q postgres`);
+    if (!cid) return null;
+    const user = (() => { try { return sh(`docker exec ${cid} printenv POSTGRES_USER`); } catch { return ""; } })() || "postgres";
+    const dbName = (() => { try { return sh(`docker exec ${cid} printenv POSTGRES_DB`); } catch { return ""; } })() || user;
+    const query =
+      "SELECT table_name || '|' || (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', table_schema, table_name), false, true, '')))[1]::text " +
+      "FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND table_name <> '_nexsidi_migrations'";
+    const out = sh(`docker exec ${cid} psql -U ${user} -d ${dbName} -tAc "${query}"`);
+    const counts: Record<string, number> = {};
+    for (const line of out.split("\n").map((l) => l.trim()).filter(Boolean)) {
+      const [name, n] = line.split("|");
+      if (name && n !== undefined && Number.isFinite(Number(n))) counts[name] = Number(n);
+    }
+    return counts;
+  } catch {
+    return null;
   }
 }
 

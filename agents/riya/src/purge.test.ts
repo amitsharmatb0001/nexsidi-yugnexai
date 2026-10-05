@@ -78,3 +78,27 @@ test("the cleanup covers every account on the reserved test domain, and runs aft
   const src = (await import("node:fs")).readFileSync(new URL("../../../pipeline/orchestrator/stages/stage6-deployment.ts", import.meta.url), "utf-8");
   expect(src).toContain("purgeVerificationArtifacts(");
 });
+
+// 2026-10-05 (Amit): test data is generated, the app is tested with it, and then it must all be gone. "Gone" is
+// checked, not assumed: row counts of every table before the testing are compared with the counts after the
+// cleanup. A table that holds more rows afterwards names data the cleanup could not remove.
+test("compareSnapshots names every table that holds more rows than before, and ignores the rest", async () => {
+  const { compareSnapshots } = await import("./index.ts");
+  expect(compareSnapshots({ users: 0, clients: 0 }, { users: 0, clients: 0 })).toEqual([]);
+  expect(compareSnapshots({ users: 3, clients: 2 }, { users: 3, clients: 2 })).toEqual([]);
+  expect(compareSnapshots({ users: 0, clients: 0, invoices: 0 }, { users: 0, clients: 2, invoices: 1 })).toEqual([
+    "clients: 0 rows before the testing, 2 after the cleanup",
+    "invoices: 0 rows before the testing, 1 after the cleanup",
+  ]);
+  // a table that is new after the testing counts too; fewer rows than before is not "left behind" test data
+  expect(compareSnapshots({ a: 5 }, { a: 4, b: 1 })).toEqual(["b: 0 rows before the testing, 1 after the cleanup"]);
+});
+
+// 2026-10-05: the cleanup removes accounts on the reserved test domain — but only from tables that hold ACCOUNTS
+// (an email plus a password hash). A customer's own clients table may hold an @example.com address as a
+// placeholder; its rows are removed only through the test account they belong to.
+test("the cleanup only looks for test accounts in tables that hold accounts", async () => {
+  const { ACCOUNT_TABLES_SQL } = await import("./index.ts");
+  expect(ACCOUNT_TABLES_SQL).toContain("column_name='email'");
+  expect(ACCOUNT_TABLES_SQL).toContain("password_hash");
+});

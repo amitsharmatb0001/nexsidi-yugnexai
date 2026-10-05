@@ -15,7 +15,7 @@
 // default and MUST NOT be reintroduced as the default without a comment
 // explaining why real QA coverage is being turned off again.
 import { resolveFlags } from "../flags.ts";
-import { run as runRiya, purgeVerificationArtifacts, type DeployResult } from "../../../agents/riya/src/index.ts";
+import { run as runRiya, purgeVerificationArtifacts, seedSampleData, snapshotTableCounts, compareSnapshots, type DeployResult } from "../../../agents/riya/src/index.ts";
 import { agentForFile, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
@@ -251,11 +251,28 @@ async function runRealLiveRetest(
   changedFiles?: string[],
 ): Promise<LiveRetestResult> {
   const notChecked: string[] = [];
+  const buildDir = joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  // Row counts before any test data exists; compared with the counts after the cleanup below.
+  const baseline = snapshotTableCounts(buildDir);
   const result = await liveRetestChecks(projectId, appUrl, backendUrl, stage4Result, plan, notChecked, changedFiles);
-  // The live review signs up its own test accounts. With the data-safe redeploy they would stay in
-  // the database for good, so they are removed as soon as the review ends (every account on the
-  // reserved test domain — see VERIFICATION_EMAIL_PATTERN in riya).
-  purgeVerificationArtifacts(joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId));
+  // The live review signs up its own test accounts and the route sweep creates sample data under one. With
+  // the data-safe redeploy they would stay in the database for good, so they are removed as soon as the
+  // review ends (every account on the reserved test domain — see VERIFICATION_EMAIL_PATTERN in riya, which
+  // removes everything that points at them too).
+  purgeVerificationArtifacts(buildDir);
+  // 2026-10-05 (Amit): "clean" is checked, not assumed — every table must hold no more rows than before.
+  const after = snapshotTableCounts(buildDir);
+  if (baseline && after) {
+    const left = compareSnapshots(baseline, after);
+    if (left.length > 0) {
+      console.error(`[stage6] TEST DATA LEFT IN THE DATABASE after the cleanup:\n${left.join("\n")}`);
+      notChecked.push(`the database is not clean after the testing — ${left.join("; ")}`);
+    } else {
+      console.log("[stage6] Test data cleanup verified: every table holds no more rows than before the testing");
+    }
+  } else {
+    notChecked.push("the database could not be read, so it was not verified that all test data was removed");
+  }
   const all = [...notChecked, ...(result.specCompliance?.notChecked ?? [])];
   if (all.length === 0) return result;
   console.error(`[stage6] not checked:\n${all.join("\n")}`);
@@ -391,7 +408,9 @@ async function liveRetestChecks(
     // expensive review exactly like the checks above. Off switch: ROUTE_SWEEP=off.
     if (process.env.ROUTE_SWEEP !== "off") {
       try {
-        const sweep = await runRouteSweepReal(stage4Result.frontendOutputDir, appUrl, backendUrl, plan?.apiContract.endpoints ?? []);
+        const seedDir = joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+        const seed = process.env.SEED_SAMPLE_DATA === "off" ? undefined : (token: string) => seedSampleData(seedDir, backendUrl, token, 2);
+        const sweep = await runRouteSweepReal(stage4Result.frontendOutputDir, appUrl, backendUrl, plan?.apiContract.endpoints ?? [], seed);
         console.log(`[stage6] Route sweep: ${sweep.ran ? (sweep.pass ? "passed" : "FAILED") : "did not run"} (${sweep.visited} page visits)`);
         notChecked.push(...sweep.notChecked);
         if (sweep.ran && !sweep.pass) {

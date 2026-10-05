@@ -127,6 +127,8 @@ export interface RouteSweepOptions {
   fetchFn?: typeof fetch;
   /** Where to save one screenshot per visit; null = none. */
   screenshotDir: string | null;
+  /** Creates sample data as the signed-in test account; the ids it returns open the detail pages. */
+  seed?: (token: string) => Promise<{ created: Record<string, string[]>; notSeeded: string[] }>;
 }
 
 export interface RouteSweepResult {
@@ -135,6 +137,8 @@ export interface RouteSweepResult {
   findings: Array<{ file: string; issue: string }>;
   notChecked: string[];
   visited: number;
+  /** Sample records created for the test (resource -> ids). */
+  seeded: Record<string, string[]>;
 }
 
 const PAGE_INFO_EXPRESSION =
@@ -203,7 +207,8 @@ export async function runRouteSweep(opts: RouteSweepOptions): Promise<RouteSweep
   const notChecked: string[] = [];
   const links: Array<{ href: string; from: string }> = [];
   let visited = 0;
-  if (pages.length === 0) return { ran: false, pass: true, findings, notChecked: ["route sweep: the app has no page files under app/"], visited };
+  let seeded: Record<string, string[]> = {};
+  if (pages.length === 0) return { ran: false, pass: true, findings, notChecked: ["route sweep: the app has no page files under app/"], visited, seeded };
 
   const fileOf = new Map(pages.map((p) => [p.route, p.file]));
   const staticRoutes = pages.filter((p) => !isDynamic(p.route));
@@ -241,9 +246,26 @@ export async function runRouteSweep(opts: RouteSweepOptions): Promise<RouteSweep
     await browser.send("newSession");
     await browser.send("navigate", { url: opts.appUrl });
     await browser.send("evaluate", { expression: `document.cookie = "token=${session.token}; path=/; SameSite=Strict"` });
-    // Dynamic routes are opened only through a real link the pages showed (no id is ever guessed).
+    // Sample data first (when asked for), so the pages have something to show and detail pages have a real id.
+    if (opts.seed) {
+      try {
+        const made = await opts.seed(session.token);
+        seeded = made.created;
+        notChecked.push(...made.notSeeded);
+      } catch (err) {
+        notChecked.push(`sample data could not be created: ${String(err).slice(0, 200)}`);
+      }
+    }
+    // Dynamic routes are opened with the id of a sample record of the same resource, or through a real link the
+    // pages showed — an id is never guessed.
     const samples = new Set<string>();
     for (const d of dynamicRoutes) {
+      const resource = d.route.split("/").filter(Boolean)[0] ?? "";
+      const sampleId = seeded[resource]?.[0];
+      if (sampleId) {
+        samples.add(d.route.replace(/\[[^\]]+\]/g, sampleId));
+        continue;
+      }
       const link = links.map((l) => l.href.split(/[?#]/)[0]!).find((h) => routeMatches(d.route, h) && !staticRoutes.some((p) => routeMatches(p.route, h)));
       if (link) samples.add(link);
     }
@@ -269,7 +291,7 @@ export async function runRouteSweep(opts: RouteSweepOptions): Promise<RouteSweep
     findings.push({ file, issue: `[route-sweep] a link to ${m.href} (on ${m.from.join(", ")}) matches no page or route of the app` });
   }
 
-  return { ran: true, pass: findings.length === 0, findings, notChecked, visited };
+  return { ran: true, pass: findings.length === 0, findings, notChecked, visited, seeded };
 }
 
 /** The real run: the app's own page files, a real browser, screenshots kept in the hidden evidence folder. */
@@ -278,6 +300,7 @@ export async function runRouteSweepReal(
   appUrl: string,
   backendUrl: string,
   endpoints: Array<{ method: string; path: string }>,
+  seed?: RouteSweepOptions["seed"],
 ): Promise<RouteSweepResult> {
   const { readdirSync, mkdirSync } = await import("node:fs");
   const { BrowserSession } = await import("../../../packages/agent-runtime/src/browser/client.ts");
@@ -294,7 +317,7 @@ export async function runRouteSweepReal(
   mkdirSync(screenshotDir, { recursive: true });
   const browser = new BrowserSession();
   try {
-    return await runRouteSweep({ appUrl, backendUrl, endpoints, routeFiles: walk("app"), browser, screenshotDir });
+    return await runRouteSweep({ appUrl, backendUrl, endpoints, routeFiles: walk("app"), browser, screenshotDir, seed });
   } finally {
     await browser.close().catch(() => {});
   }
