@@ -243,6 +243,49 @@ export function checkAuthNavigation(files: Array<{ path: string; source: string 
   return { pass: violations.length === 0, violations };
 }
 
+// 2026-10-05 (Ledgerly run 4, round 7): the backend template always installs express-rate-limit and the
+// doctrine asks for it on auth routes, yet sign-in and sign-up shipped with none, and only 1 of 4 review
+// passes noticed. Whether a limiter is imported and put on a route is a fact in the source, so it is read
+// here instead of left to a reviewer's luck. `files` are backend sources, paths relative to backend/.
+const ROUTE_CALL = String.raw`\.(?:use|all|get|post|put|patch|delete)\(`;
+export function checkBackendRateLimit(files: Array<{ path: string; source: string }>): SpecComplianceResult {
+  const importers = files.filter(({ source }) => /from\s+["']express-rate-limit["']|require\(\s*["']express-rate-limit["']\s*\)/.test(source));
+  const fnNames = new Set(["rateLimit"]);
+  for (const { source } of importers) {
+    const m = source.match(/import\s+(\w+)\s*(?:,\s*\{[^}]*\}\s*)?from\s+["']express-rate-limit["']/);
+    if (m) fnNames.add(m[1]!);
+  }
+  const fn = `(?:${[...fnNames].join("|")})`;
+  const inline = new RegExp(ROUTE_CALL + String.raw`[^;]*\b` + fn + String.raw`\(`);
+  const limiterNames = new Set<string>();
+  for (const { source } of importers) {
+    for (const m of source.matchAll(new RegExp(String.raw`(?:const|let|var)\s+(\w+)\s*=\s*` + fn + String.raw`\(`, "g"))) limiterNames.add(m[1]!);
+  }
+  const applied =
+    files.some(({ source }) => inline.test(source)) ||
+    [...limiterNames].some((name) => files.some(({ source }) => new RegExp(ROUTE_CALL + String.raw`[^;]*\b` + name + String.raw`\b`).test(source)));
+  if (applied) return { pass: true, violations: [] };
+  return {
+    pass: false,
+    violations: [
+      "backend/src/routes/authRoutes.ts: express-rate-limit is installed but no limiter is put on any route — sign-in and sign-up can be tried without limit, so passwords can be guessed by brute force. Import express-rate-limit, create a limiter for the auth routes (for example 10 attempts per minute per IP, answering 429 in the standard error envelope) and apply it to the sign-in and sign-up routes.",
+    ],
+  };
+}
+
+function readBackendSources(backendDir: string, readdirSync: typeof import("node:fs").readdirSync, readFileSync: typeof import("node:fs").readFileSync, join: typeof import("node:path").join): Array<{ path: string; source: string }> {
+  const out: Array<{ path: string; source: string }> = [];
+  const walk = (rel: string) => {
+    for (const entry of readdirSync(join(backendDir, rel), { withFileTypes: true })) {
+      const childRel = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(childRel);
+      else if (/\.(tsx?|js)$/.test(entry.name)) out.push({ path: childRel, source: readFileSync(join(backendDir, childRel), "utf-8") });
+    }
+  };
+  walk("src");
+  return out;
+}
+
 function readFrontendSources(frontendOutputDir: string, readdirSync: typeof import("node:fs").readdirSync, readFileSync: typeof import("node:fs").readFileSync, join: typeof import("node:path").join): Array<{ path: string; source: string }> {
   const out: Array<{ path: string; source: string }> = [];
   const walk = (rel: string) => {
@@ -274,6 +317,15 @@ export async function runStackConformanceCheck(frontendOutputDir: string): Promi
   const nextConfig = ["next.config.ts", "next.config.mjs", "next.config.js"].map((f) => join(frontendOutputDir, f)).find((p) => existsSync(p));
   if (nextConfig) results.push(checkFrontendApiProxy(readFileSync(nextConfig, "utf-8")));
   results.push(checkAuthNavigation(readFrontendSources(frontendOutputDir, readdirSync, readFileSync, join)));
+  // The backend sits beside the frontend in the build folder (frontend/, backend/, db/).
+  const backendDir = join(frontendOutputDir, "..", "backend");
+  if (existsSync(join(backendDir, "src"))) {
+    try {
+      results.push(checkBackendRateLimit(readBackendSources(backendDir, readdirSync, readFileSync, join)));
+    } catch (err) {
+      results.push({ pass: true, violations: [], notChecked: [`rate-limit check: could not read the backend sources: ${String(err).slice(0, 200)}`] });
+    }
+  }
   const notChecked = results.flatMap((r) => r.notChecked ?? []);
   return { pass: results.every((r) => r.pass), violations: results.flatMap((r) => r.violations), ...(notChecked.length > 0 ? { notChecked } : {}) };
 }
@@ -288,7 +340,10 @@ export async function runStackConformanceCheck(frontendOutputDir: string): Promi
 // (agentForFile keys off the "frontend/"/"backend/" prefix), not a
 // byte-exact citation.
 export function toFindings(result: SpecComplianceResult, defaultFile: string): Array<{ file: string; issue: string }> {
-  return result.violations.map((issue) => ({ file: defaultFile, issue: `[spec-compliance] ${issue}` }));
+  return result.violations.map((issue) => {
+    const named = issue.match(/^((?:frontend|backend|db)\/[^\s:]+):\s/);
+    return { file: named ? named[1]! : defaultFile, issue: `[spec-compliance] ${issue}` };
+  });
 }
 
 // Real entry point — drives the live deployed app via the same Node browser

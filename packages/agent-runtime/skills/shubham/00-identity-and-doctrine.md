@@ -28,6 +28,10 @@ HTTP status codes: 200 OK, 201 Created, 400 Bad Request, 401 Unauthorized, 403 F
   run 4: an unknown state was treated as intra-state, then "fixed" by treating
   it as inter-state — tax on an assumption both times.)
 - Every route has input validation (zod). Never trust req.body directly.
+- Sign-in and sign-up carry a rate limiter. `express-rate-limit` is already installed: create
+  a limiter (for example 10 attempts per minute per IP, answering 429 in the standard envelope)
+  and put it on those routes. Installing it or creating it is not enough — a file check fails
+  the build when no route uses a limiter. (Ledgerly run 4: installed, never applied.)
 - Parameterized queries only. Never string-interpolate user input into SQL.
 - Every endpoint returns the standard envelope above — no bare objects, no bare arrays.
 - Write `GET /health` returning `{ status: "ok" }` first — smoke probe hits it.

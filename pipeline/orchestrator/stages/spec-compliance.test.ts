@@ -370,3 +370,56 @@ test("a stack check that cannot read package.json is not checked, not a pass", a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// 2026-10-05 (Ledgerly run 4, round 7): the backend template always declares express-rate-limit, the
+// doctrine says "express-rate-limit on auth-sensitive routes", and sign-in / sign-up still shipped with no
+// limiter at all — only the reality checker found it, in 1 of 4 passes. A dependency that is installed
+// and never imported is a fact a file search can state, so it is checked, not left to a reviewer's luck.
+test("checkBackendRateLimit flags a backend that installs express-rate-limit but never uses it", async () => {
+  const { checkBackendRateLimit } = await import("./spec-compliance.ts");
+  const bad = checkBackendRateLimit([
+    { path: "src/routes/authRoutes.ts", source: 'import { Router } from "express";\nrouter.post("/sign-in", signIn);' },
+    { path: "src/index.ts", source: 'import express from "express";' },
+  ]);
+  expect(bad.pass).toBe(false);
+  expect(bad.violations[0]).toContain("backend/src/routes/authRoutes.ts");
+  expect(bad.violations[0]).toContain("express-rate-limit");
+});
+
+test("checkBackendRateLimit passes when the sign-in route file applies a limiter", async () => {
+  const { checkBackendRateLimit } = await import("./spec-compliance.ts");
+  const ok = checkBackendRateLimit([
+    { path: "src/routes/authRoutes.ts", source: 'import rateLimit from "express-rate-limit";\nconst authLimiter = rateLimit({ windowMs: 60000, max: 10 });\nrouter.post("/sign-in", authLimiter, signIn);' },
+  ]);
+  expect(ok).toEqual({ pass: true, violations: [] });
+});
+
+test("checkBackendRateLimit does not accept a limiter that is created but never put on a route", async () => {
+  const { checkBackendRateLimit } = await import("./spec-compliance.ts");
+  const bad = checkBackendRateLimit([
+    { path: "src/middleware/limits.ts", source: 'import rateLimit from "express-rate-limit";\nexport const authLimiter = rateLimit({ max: 5 });' },
+    { path: "src/routes/authRoutes.ts", source: 'router.post("/sign-in", signIn);' },
+  ]);
+  expect(bad.pass).toBe(false);
+});
+
+test("checkBackendRateLimit passes when the limiter is applied app-wide in the entry file", async () => {
+  const { checkBackendRateLimit } = await import("./spec-compliance.ts");
+  const ok = checkBackendRateLimit([
+    { path: "src/index.ts", source: 'import rateLimit from "express-rate-limit";\napp.use("/api/v1/auth", rateLimit({ max: 20 }));' },
+    { path: "src/routes/authRoutes.ts", source: 'router.post("/sign-in", signIn);' },
+  ]);
+  expect(ok.pass).toBe(true);
+});
+
+// A violation that names its own file ("backend/src/...: ...") must reach the agent that owns that
+// file — with one default file every stack violation went to the frontend builder.
+test("toFindings routes a violation to the file it names, and uses the default file otherwise", async () => {
+  const { toFindings } = await import("./spec-compliance.ts");
+  const f = toFindings(
+    { pass: false, violations: ["backend/src/routes/authRoutes.ts: express-rate-limit is installed but unused", "the page has no title"] },
+    "frontend/package.json",
+  );
+  expect(f[0]!.file).toBe("backend/src/routes/authRoutes.ts");
+  expect(f[1]!.file).toBe("frontend/package.json");
+});
