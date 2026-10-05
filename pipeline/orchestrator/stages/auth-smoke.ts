@@ -47,7 +47,7 @@ const fail = (finding: string): AuthSmokeResult => ({ ran: true, pass: false, fi
 
 // Only endpoints the contract really has — no guessed defaults, so an app
 // without auth is skipped instead of tested against paths it never had.
-function contractAuthPaths(endpoints: AuthSmokeOptions["endpoints"]): { loginPath: string; registerPath: string } | null {
+export function contractAuthPaths(endpoints: AuthSmokeOptions["endpoints"]): { loginPath: string; registerPath: string } | null {
   const posts = endpoints.filter((e) => e.method.toUpperCase() === "POST").map((e) => e.path);
   const lastSeg = (p: string) => p.replace(/\/$/, "").split("/").pop()!.toLowerCase().replace(/[-_]/g, "");
   const register = posts.find((p) => ["register", "signup"].includes(lastSeg(p)));

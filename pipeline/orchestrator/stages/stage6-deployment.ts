@@ -45,6 +45,7 @@ import { fixChangedCode } from "./stage5-qa-fix-loop.ts";
 import { dropSettledNotTrue, resolveDisputes, type SettleFn } from "../disputes.ts";
 import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { runAuthSmokeTest } from "./auth-smoke.ts";
+import { runRouteSweepReal } from "./route-sweep.ts";
 import { join as joinPath, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { reviewDbUrl } from "../../../packages/agent-runtime/src/tools/compose-ports.ts";
@@ -381,6 +382,24 @@ async function liveRetestChecks(
         }
       } finally {
         await browser.close().catch(() => {});
+      }
+    }
+
+    // 2026-10-05 (Ledgerly run 4): the route sweep opens EVERY page of the app in a real browser, signed out
+    // and signed in (see route-sweep.ts) — the agents below only visit the pages they choose to click
+    // through. No model, so it runs before them: a broken page, a dead link or a failing request skips the
+    // expensive review exactly like the checks above. Off switch: ROUTE_SWEEP=off.
+    if (process.env.ROUTE_SWEEP !== "off") {
+      try {
+        const sweep = await runRouteSweepReal(stage4Result.frontendOutputDir, appUrl, backendUrl, plan?.apiContract.endpoints ?? []);
+        console.log(`[stage6] Route sweep: ${sweep.ran ? (sweep.pass ? "passed" : "FAILED") : "did not run"} (${sweep.visited} page visits)`);
+        notChecked.push(...sweep.notChecked);
+        if (sweep.ran && !sweep.pass) {
+          console.error(`[stage6] Route sweep FAILED:\n${sweep.findings.map((f) => `${f.file}: ${f.issue}`).join("\n")}`);
+          return { pass: false, findings: sweep.findings, specCompliance };
+        }
+      } catch (err) {
+        notChecked.push(`route sweep could not run: ${String(err).slice(0, 300)}`);
       }
     }
 

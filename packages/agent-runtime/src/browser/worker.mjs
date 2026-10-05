@@ -26,6 +26,8 @@ const pageErrors = [];
 // 2026-10-04: every non-GET request and what it returned, so a check can say
 // what a form actually sent instead of inferring it from timing.
 const requests = [];
+// 2026-10-05: every request of ANY method that failed or answered 4xx/5xx, for the route sweep.
+const failedRequests = [];
 
 async function ensurePage() {
   if (!browser) {
@@ -42,9 +44,11 @@ async function ensurePage() {
     page.on("pageerror", (err) => pageErrors.push(String(err)));
     page.on("response", (res) => {
       const r = res.request();
+      if (res.status() >= 400) failedRequests.push({ method: r.method(), url: r.url(), status: res.status() });
       if (r.method() !== "GET") requests.push({ method: r.method(), url: r.url(), status: res.status() });
     });
     page.on("requestfailed", (r) => {
+      failedRequests.push({ method: r.method(), url: r.url(), status: 0, failure: r.failure()?.errorText ?? "failed" });
       if (r.method() !== "GET") requests.push({ method: r.method(), url: r.url(), status: 0, failure: r.failure()?.errorText ?? "failed" });
     });
   }
@@ -117,6 +121,9 @@ async function handle(req) {
     case "requests": {
       return { requests: [...requests] };
     }
+    case "failedRequests": {
+      return { failed: [...failedRequests] };
+    }
     case "consoleErrors": {
       return { consoleErrors: [...consoleErrors], pageErrors: [...pageErrors] };
     }
@@ -133,6 +140,7 @@ async function handle(req) {
       consoleErrors.length = 0;
       pageErrors.length = 0;
       requests.length = 0;
+      failedRequests.length = 0;
       await ensurePage();
       return { reset: true };
     }
