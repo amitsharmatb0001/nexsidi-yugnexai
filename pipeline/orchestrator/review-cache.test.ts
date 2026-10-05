@@ -90,3 +90,51 @@ test("the real review entry point wraps all three reviewers", async () => {
   const src = (await import("node:fs")).readFileSync(new URL("./stages/stage5-adversarial-qa.ts", import.meta.url), "utf-8");
   expect((src.match(/withReviewCache\(projectId, "(navya|karan|deepika)"/g) ?? []).length).toBe(3);
 });
+
+// 2026-10-05 (Ledgerly run 4): a reviewer had passed the whole app; one builder fix then changed ONE file
+// (authRoutes.ts), and all three reviewers read the entire app again — about $2 to re-check code they had
+// already passed. A reviewer that passed earlier now reads only the files that changed since that pass.
+test("after a change, a reviewer that passed before is asked to read only the changed files", async () => {
+  const dirs = setup();
+  writeFileSync(join(root, "app", "src", "b.ts"), "export const b = 1;");
+  const seen: Array<string[] | undefined> = [];
+  const run = async (changed?: string[]) => { seen.push(changed); return passed; };
+  await withReviewCache("p2", "navya", dirs, run); // first run: nothing passed yet -> reads everything
+  writeFileSync(join(root, "app", "src", "a.ts"), "export const a = 2;");
+  await withReviewCache("p2", "navya", dirs, run);
+  expect(seen[0]).toBeUndefined();
+  expect(seen[1]).toEqual(["backend/src/a.ts"]);
+});
+
+test("a new file counts as changed, and the next change is measured from the latest pass", async () => {
+  const dirs = setup();
+  const seen: Array<string[] | undefined> = [];
+  const run = async (changed?: string[]) => { seen.push(changed); return passed; };
+  await withReviewCache("p3", "karan", dirs, run);
+  writeFileSync(join(root, "app", "src", "c.ts"), "export const c = 1;");
+  await withReviewCache("p3", "karan", dirs, run);
+  writeFileSync(join(root, "app", "src", "a.ts"), "export const a = 5;");
+  await withReviewCache("p3", "karan", dirs, run);
+  expect(seen[1]).toEqual(["backend/src/c.ts"]);
+  expect(seen[2]).toEqual(["backend/src/a.ts"]);
+});
+
+test("a reviewer that never passed reads everything, and a failed review does not become the baseline", async () => {
+  const dirs = setup();
+  const seen: Array<string[] | undefined> = [];
+  const fail = async (changed?: string[]) => { seen.push(changed); return { ...passed, passed: false, score: 50 }; };
+  await withReviewCache("p4", "deepika", dirs, fail);
+  writeFileSync(join(root, "app", "src", "a.ts"), "export const a = 3;");
+  await withReviewCache("p4", "deepika", dirs, fail);
+  expect(seen).toEqual([undefined, undefined]);
+});
+
+test("a change list the caller already has is kept as it is", async () => {
+  const dirs = setup();
+  const seen: Array<string[] | undefined> = [];
+  const run = async (changed?: string[]) => { seen.push(changed); return passed; };
+  await withReviewCache("p5", "navya", dirs, run);
+  writeFileSync(join(root, "app", "src", "a.ts"), "export const a = 7;");
+  await withReviewCache("p5", "navya", dirs, run, undefined, ["backend/src/x.ts"]);
+  expect(seen[1]).toEqual(["backend/src/x.ts"]);
+});

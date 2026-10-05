@@ -428,9 +428,9 @@ export async function runStage5(
   // (see ../review-cache.ts). The fingerprint is computed once and shared.
   const fingerprint = fingerprintCode(labeledDirs(stage4Result));
   const agents: Stage5Agents = {
-    runNavya: (pid, s4, ctx, cf, pf) => withReviewCache(projectId, "navya", labeledDirs(s4), () => runNavyaReal(pid, labeledDirs(s4), undefined, ctx, cf, pf), fingerprint),
-    runKaran: (pid, s4, ctx, cf, pf) => withReviewCache(projectId, "karan", labeledDirs(s4), () => runKaranReal(pid, labeledDirs(s4), undefined, ctx, cf, pf), fingerprint),
-    runDeepika: (pid, s4, ctx, cf, pf) => withReviewCache(projectId, "deepika", labeledDirs(s4), () => runDeepikaReal(pid, labeledDirs(s4), undefined, ctx, cf, pf), fingerprint),
+    runNavya: (pid, s4, ctx, cf, pf) => withReviewCache(projectId, "navya", labeledDirs(s4), (changed) => runNavyaReal(pid, labeledDirs(s4), undefined, ctx, changed ?? cf, pf), fingerprint, cf),
+    runKaran: (pid, s4, ctx, cf, pf) => withReviewCache(projectId, "karan", labeledDirs(s4), (changed) => runKaranReal(pid, labeledDirs(s4), undefined, ctx, changed ?? cf, pf), fingerprint, cf),
+    runDeepika: (pid, s4, ctx, cf, pf) => withReviewCache(projectId, "deepika", labeledDirs(s4), (changed) => runDeepikaReal(pid, labeledDirs(s4), undefined, ctx, changed ?? cf, pf), fingerprint, cf),
     runTier3Review: (pid, s4) => runTier3ReviewReal(pid, s4.frontendOutputDir),
   };
 
