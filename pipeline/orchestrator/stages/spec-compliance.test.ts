@@ -444,3 +444,16 @@ test("checkMutedTextColor passes when the muted token is only used for backgroun
   const { checkMutedTextColor } = await import("./spec-compliance.ts");
   expect(checkMutedTextColor([{ path: "a.tsx", source: 'style={{ background: "var(--nx-color-muted)", borderColor: "var(--nx-color-muted)" }}' }])).toEqual({ pass: true, violations: [] });
 });
+
+// 2026-10-06 (Amit asked whether the delivered app was checked by hand): measured myself in the browser, the
+// invoice form's table header (Description / Qty / Rate / Amount) was almost invisible. It was styled with
+// `color: theme.color.muted` in a css() block — the same background tint, written the other way round, which the
+// check above (var(--nx-color-muted) only) did not match.
+test("checkMutedTextColor also flags theme.color.muted used as a text colour in a style object", async () => {
+  const { checkMutedTextColor } = await import("./spec-compliance.ts");
+  const bad = checkMutedTextColor([{ path: "components/invoices/LineItemsEditor.tsx", source: "const thClass = css({\n  borderBottom: `1px solid ${theme.color.border}`,\n  color: theme.color.muted,\n  fontWeight: 500,\n});" }]);
+  expect(bad.pass).toBe(false);
+  expect(bad.violations[0]).toContain("LineItemsEditor.tsx");
+  const ok = checkMutedTextColor([{ path: "a.tsx", source: "css({ color: theme.color.mutedForeground, backgroundColor: theme.color.muted, borderColor: theme.color.muted })" }]);
+  expect(ok.pass).toBe(true);
+});

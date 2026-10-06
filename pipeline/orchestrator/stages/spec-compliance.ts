@@ -277,7 +277,8 @@ export function checkBackendRateLimit(files: Array<{ path: string; source: strin
 // --nx-color-muted is a light background tint (#E2E8F0 in the Ledgerly theme); the frontend used it as TEXT
 // colour in 15+ places. The text token is --nx-color-muted-foreground.
 export function checkMutedTextColor(files: Array<{ path: string; source: string }>): SpecComplianceResult {
-  const asText = /(?<![-\w])color\s*:\s*["'`]var\(--nx-color-muted\)["'`]/;
+  // Both spellings: the CSS variable in a style prop, and the theme object in a css() block.
+  const asText = /(?<![-\w])color\s*:\s*(?:["'`]var\(--nx-color-muted\)["'`]|theme\.color\.muted(?![\w]))/;
   const violations = files
     .filter(({ source }) => asText.test(source))
     .map(({ path }) => `frontend/${path}: uses var(--nx-color-muted) as a text colour. That token is a light background tint, so the text is nearly invisible (about 1.2:1 contrast). Use var(--nx-color-muted-foreground) for secondary text.`);
