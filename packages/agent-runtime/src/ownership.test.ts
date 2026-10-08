@@ -212,3 +212,16 @@ test("builders may read git but cannot commit, stage or rewrite history", () => 
     expect(g.error).toContain("system");
   }
 });
+
+// 2026-10-08 (Ledgerly 2, phone-layout fix): the frontend builder was asked to change a header and three tables. It
+// also deleted frontend/Dockerfile, a deploy file that belongs to the deploy agent — found only because the whole source
+// was diffed against a snapshot. In a fix round a builder may not change or delete deploy files.
+test("isBuilderFixFile refuses deploy files and allows source files", async () => {
+  const { isBuilderFixFile } = await import("./ownership.ts");
+  for (const f of ["Dockerfile", "docker-compose.yml", "docker-compose.override.yaml", ".dockerignore", ".env", ".env.local", "sub/Dockerfile", "Dockerfile.prod"]) {
+    expect(isBuilderFixFile(f)).toBe(false);
+  }
+  for (const f of ["components/layout/Header.tsx", "app/page.tsx", "src/controllers/invoiceController.ts", "package.json", "next.config.ts", "docs/Dockerfile-notes.md"]) {
+    expect(isBuilderFixFile(f)).toBe(true);
+  }
+});

@@ -15,3 +15,4 @@ export { DISPUTE_FINDING_TOOL_DEF, recordDispute, readDisputes, disputesFile, ty
 export { SETTLE_DISPUTE_TOOL_DEF, recordVerdict, readVerdicts, verdictsFile, type Verdict } from "./tools/settle.ts";
 export { REPORT_BLOCKED_TOOL_DEF, recordBlocked, readBlockedReports, blockersFile, type BlockedReport } from "./tools/blocked.ts";
 export { skillPromptSection } from "./skill-library.ts";
+export { isBuilderFixFile } from "./ownership.ts";

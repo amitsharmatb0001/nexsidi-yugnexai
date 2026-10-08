@@ -2,7 +2,7 @@
 // Uses tool-calling loop: write_file → run npm install → run tsc → fix → repeat.
 // No longer does one-shot LLM generation. Agent ACTS on real tool feedback.
 
-import { resolveGeneratorRunner, type Escalation } from "@nexsidi/agent-runtime";
+import { resolveGeneratorRunner, isBuilderFixFile, type Escalation } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "fs";
 import { join, resolve } from "path";
@@ -431,6 +431,8 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // signal, which only makes sense once there's a specific finding to
     // diagnose.
     enableEscalation: true,
+    // 2026-10-08: a fix round may not change or delete deploy files (Dockerfile, compose, .env) — they are the deploy agent's.
+    writableFile: isBuilderFixFile,
     requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
     // 2026-08-06: real bug found live (project bae438767bed) — the LIVE
     // AUTH-BOUNDARY VERIFICATION section above is prompt text only, and the

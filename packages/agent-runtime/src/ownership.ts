@@ -117,3 +117,8 @@ export function composePathsOutside(composeText: string, cwd: string): string[] 
   }
   return [...found];
 }
+
+// 2026-10-08: deploy files belong to the deploy agent. In a fix round a builder may not change or delete them
+// (Ledgerly 2: a frontend fix also deleted frontend/Dockerfile).
+const DEPLOY_FILE = /(^|\/)(Dockerfile(\.[\w-]+)?|docker-compose[\w.-]*\.ya?ml|\.dockerignore|\.env(\.[\w-]+)?)$/;
+export const isBuilderFixFile: WritableFile = (relPath) => !DEPLOY_FILE.test(relPath.replace(/\\/g, "/"));

@@ -2,7 +2,7 @@
 // Uses tool-calling loop: write_file → run npm install → run next build → fix → repeat.
 // UI: @yugnex/core (NexSidi's own UI runtime) + vendored components/nexui/*.tsx — NO Tailwind, NO shadcn/ui.
 
-import { resolveGeneratorRunner } from "@nexsidi/agent-runtime";
+import { resolveGeneratorRunner, isBuilderFixFile } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { existsSync, mkdirSync, writeFileSync } from "fs";
 import { execSync, exec } from "child_process";
@@ -308,6 +308,8 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // P3 (agent-autonomy-assessment F3): mirrors Shubham's identical flag —
     // see that file for the full rationale.
     enableEscalation: true,
+    // 2026-10-08: a fix round may not change or delete deploy files (Dockerfile, compose, .env) — they are the deploy agent's.
+    writableFile: isBuilderFixFile,
     enableDockerTools: true,
     // 2026-08-24 (Workstream 4): not-found.tsx/error.tsx/global-error.tsx/
     // icon.svg are Next.js App Router FILE CONVENTIONS — auto-discovered by
