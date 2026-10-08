@@ -11,6 +11,7 @@ import { run as runVanya, type DesignBrief } from "../../vanya/src/index.ts";
 import { mkdirSync } from "fs";
 import { join } from "path";
 import { assignTaskPhases, type PlanPhase } from "./phases.ts";
+import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 
 // ── Output types ──────────────────────────────────────────────────────────────
 export interface RestEndpoint {
@@ -426,7 +427,7 @@ function writePlanFiles(projectId: string, plan: Omit<BuildPlan, "buildPlanHash"
 }
 
 export function getBuildDir(projectId: string): string {
-  return join(process.env.BUILD_DIR ?? "/tmp/nexsidi-builds", projectId);
+  return buildDirFor(projectId);
 }
 
 // ── JSON extraction ───────────────────────────────────────────────────────────

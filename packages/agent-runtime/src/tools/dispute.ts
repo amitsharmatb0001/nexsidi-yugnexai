@@ -10,6 +10,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
+import { buildDirFor } from "../build-dir.ts";
 
 export interface Dispute {
   agent: string;
@@ -20,7 +21,7 @@ export interface Dispute {
 }
 
 function buildRoot(projectId: string): string {
-  return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  return buildDirFor(projectId);
 }
 
 export function disputesFile(projectId: string): string {

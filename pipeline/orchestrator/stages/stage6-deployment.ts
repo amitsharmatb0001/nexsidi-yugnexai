@@ -49,6 +49,7 @@ import { runRouteSweepReal, createReviewAccount } from "./route-sweep.ts";
 import { join as joinPath, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { reviewDbUrl } from "../../../packages/agent-runtime/src/tools/compose-ports.ts";
+import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 export { isQuotaExhaustionError };
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
@@ -76,7 +77,7 @@ const INTERNAL_AGENT_NAMES = [
 // If that leaves no findings and nothing else failed, the retest passes.
 export function guardLiveRetest(projectId: string, retest: LiveRetestResult): LiveRetestResult {
   if (retest.pass || !Array.isArray(retest.findings) || retest.findings.length === 0) return retest;
-  const projectDir = joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  const projectDir = buildDirFor(projectId);
   const code = dropCodeContradictedFindings(retest.findings as Array<{ file: string; issue?: string; detail?: string }>, projectDir);
   for (const d of code.dropped) console.log(`[stage6] dropped finding contradicted by the code (${d.reason}): ${d.finding.file}`);
   // 2026-10-03 (evidence-only plan): findings Tilotma ruled not true after a
@@ -220,7 +221,7 @@ async function readProjectSpec(projectId: string): Promise<ProjectSpec> {
   const { readFileSync } = await import("node:fs");
   const { join } = await import("node:path");
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  const specPath = join(buildDir, projectId, "spec.json");
+  const specPath = join(buildDirFor(projectId, buildDir), "spec.json");
   return JSON.parse(readFileSync(specPath, "utf-8")) as ProjectSpec;
 }
 
@@ -251,7 +252,7 @@ async function runRealLiveRetest(
   changedFiles?: string[],
 ): Promise<LiveRetestResult> {
   const notChecked: string[] = [];
-  const buildDir = joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  const buildDir = buildDirFor(projectId);
   // Row counts before any test data exists; compared with the counts after the cleanup below.
   const baseline = snapshotTableCounts(buildDir);
   const result = await liveRetestChecks(projectId, appUrl, backendUrl, stage4Result, plan, notChecked, changedFiles);
@@ -420,7 +421,7 @@ async function liveRetestChecks(
           process.env.TIER3_REVIEW_EMAIL = acct.email;
           process.env.TIER3_REVIEW_PASSWORD = acct.password;
           if (process.env.SEED_SAMPLE_DATA !== "off") {
-            seededResult = await seedSampleData(joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId), backendUrl, acct.token, 2);
+            seededResult = await seedSampleData(buildDirFor(projectId), backendUrl, acct.token, 2);
             notChecked.push(...seededResult.notSeeded);
             process.env.TIER3_REVIEW_SEEDED = JSON.stringify(Object.fromEntries(Object.entries(seededResult.created).map(([k, ids]) => [k, ids.length])));
             console.log(`[stage6] Review account ready with sample data: ${process.env.TIER3_REVIEW_SEEDED}`);
@@ -800,7 +801,7 @@ export async function runStage6(
   const settleReal: SettleFn = deps.settleDisputes ?? (async (pid, disputes) => {
     const { settleDisputes } = await import("../../../agents/tilotma/src/settle-disputes.ts");
     return settleDisputes(pid, disputes, {
-      reviewRoot: joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", pid),
+      reviewRoot: buildDirFor(pid),
       appUrl: deployResult?.appUrl || undefined,
       backendUrl: deployResult?.backendUrl || undefined,
     });
@@ -972,7 +973,7 @@ export async function runStage6(
       const { buildMismatchObservations, appendInstinctObservations } = await import("../../../packages/agent-runtime/src/instinct-observer.ts");
       
       const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-      const submissionsPath = join(buildDir, projectId, "qa-submissions.json");
+      const submissionsPath = join(buildDirFor(projectId, buildDir), "qa-submissions.json");
       if (existsSync(submissionsPath)) {
         const submissions = JSON.parse(readFileSync(submissionsPath, "utf-8"));
         const laterFindings = Array.isArray(retest.findings) ? retest.findings : [];
@@ -1029,7 +1030,7 @@ export async function runStage6(
       const { buildMismatchObservations, appendInstinctObservations } = await import("../../../packages/agent-runtime/src/instinct-observer.ts");
       
       const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-      const submissionsPath = join(buildDir, projectId, "qa-submissions.json");
+      const submissionsPath = join(buildDirFor(projectId, buildDir), "qa-submissions.json");
       if (existsSync(submissionsPath)) {
         const submissions = JSON.parse(readFileSync(submissionsPath, "utf-8"));
         const laterFindings = Array.isArray(retest.findings) ? retest.findings : [];

@@ -10,6 +10,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 
 import { execSync } from "child_process";
 import { randomBytes } from "crypto";
 import { join } from "path";
+import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 // @nexsidi/db and drizzle-orm are imported dynamically inside run() (at the
 // point of use) rather than at module top level — @nexsidi/db's client
 // throws eagerly at import time if DATABASE_URL isn't set, which would make
@@ -1781,7 +1782,7 @@ export async function run(
 ): Promise<DeployResult> {
   resolveDeployTarget(deployTarget);
 
-  const buildDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  const buildDir = buildDirFor(projectId);
   mkdirSync(buildDir, { recursive: true });
 
   // 2026-07-12: real deploy blocker found live (stress-pro run) — the frontend

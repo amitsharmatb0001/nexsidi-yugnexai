@@ -69,6 +69,7 @@ import { describeGeminiHistoryShape } from "./history-validate.ts";
 import { splitToolResultTurn } from "./tool-result-turn.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
+import { buildDirFor } from "./build-dir.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -402,7 +403,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   const emitEvent = (event: Record<string, unknown>) => {
     if (!config.projectId) return;
     try {
-      const logDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", config.projectId, "logs");
+      const logDir = join(buildDirFor(config.projectId), "logs");
       mkdirSync(logDir, { recursive: true });
       appendFileSync(
         join(logDir, "events.jsonl"),

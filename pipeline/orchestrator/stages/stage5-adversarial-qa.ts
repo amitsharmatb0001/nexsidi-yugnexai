@@ -37,6 +37,7 @@ import type { Finding as DeepikaFinding, QAResult as DeepikaResult } from "../..
 import type { Tier3ReviewResult } from "../../../agents/tilotma/src/tier3-review.ts";
 import { fingerprintCode, withReviewCache } from "../review-cache.ts";
 import { buildSystemContext, type BuildPlan } from "../../../agents/arjun/src/index.ts";
+import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 
 // Token-waste-reduction plan, Task 1 (2026-08-16): round-scoped re-review.
 // Each reviewer's OWN findings from THIS round, in their native shapes —
@@ -227,7 +228,7 @@ export async function runStage5WithAgents(
     const { writeFileSync, mkdirSync } = await import("node:fs");
     const { join } = await import("node:path");
     const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-    const projectBuildDir = join(buildDir, projectId);
+    const projectBuildDir = buildDirFor(projectId, buildDir);
     mkdirSync(projectBuildDir, { recursive: true });
     const submissionsPath = join(projectBuildDir, "qa-submissions.json");
     const submissions = [

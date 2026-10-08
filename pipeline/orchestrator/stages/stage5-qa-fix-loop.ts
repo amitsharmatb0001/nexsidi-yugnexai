@@ -37,6 +37,7 @@ import { dropCodeContradictedFindings } from "../finding-evidence.ts";
 import { dropSettledNotTrue, resolveDisputes, type SettleFn } from "../disputes.ts";
 import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { join as joinPath } from "node:path";
+import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 
 export interface QAFixLoopResult extends Stage5Result {
   iterations: number; // total QA passes run (initial + retests)
@@ -258,7 +259,7 @@ export function applyEvidenceGate(result: Stage5Result, projectId?: string): Sta
   let findings = result.findings;
   let droppedAny = false;
   if (projectId) {
-    const code = dropCodeContradictedFindings(findings, joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId));
+    const code = dropCodeContradictedFindings(findings, buildDirFor(projectId));
     for (const d of code.dropped) console.log(`[qa-fix-loop] dropped finding contradicted by the code (${d.reason}): ${d.finding.file}`);
     const settled = dropSettledNotTrue(projectId, code.kept);
     for (const d of settled.dropped) console.log(`[qa-fix-loop] dropped finding Tilotma ruled not true: ${d.file}: ${d.issue.slice(0, 120)}`);
@@ -531,7 +532,7 @@ export async function runQAFixLoop(
     roundGuard: (findings) => checkRoundGuard(projectId, "qa", findings),
     settleDisputes: async (pid, disputes) => {
       const { settleDisputes } = await import("../../../agents/tilotma/src/settle-disputes.ts");
-      return settleDisputes(pid, disputes, { reviewRoot: joinPath(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", pid) });
+      return settleDisputes(pid, disputes, { reviewRoot: buildDirFor(pid) });
     },
     // 2026-07-08: real instinct-memory write path (see packages/db/src/
     // instincts.ts's header comment for why this exists). Each finding

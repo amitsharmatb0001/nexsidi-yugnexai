@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { geminiChat } from "@nexsidi/llm-client";
+import { buildDirFor } from "../packages/agent-runtime/src/build-dir.ts";
 
 export interface MetaSupervisorDeps {
   buildDir?: string;
@@ -24,7 +25,7 @@ export async function runMetaSupervisor(projectId: string, deps: MetaSupervisorD
   const repositoryRoot = deps.repositoryRoot ?? process.cwd();
   const chat = deps.chat ?? geminiChat;
   const commitAgent = deps.commitAgent ?? commitAgentWithGit;
-  const logPath = join(buildDir, projectId, "run.log");
+  const logPath = join(buildDirFor(projectId, buildDir), "run.log");
   if (!existsSync(logPath)) {
     console.log(`[meta-supervisor] No run log found at ${logPath}`);
     return;

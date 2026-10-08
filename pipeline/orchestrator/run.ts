@@ -11,6 +11,7 @@
 import { writeCheckpoint } from "./checkpoint.ts";
 import type { GatewayDecision, Dag } from "./types.ts";
 import type { BuildPlan } from "../../agents/arjun/src/index.ts";
+import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 
 export interface Stage1Output {
   spec: unknown; // ProjectSpec — flows to Stage 2's human-readable summary
@@ -263,7 +264,7 @@ async function runTypescriptBuildGate(
   const { spawnSync } = await import("child_process");
   const { existsSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const buildDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  const buildDir = buildDirFor(projectId);
 
   for (const svc of ["backend", "frontend"] as const) {
     const dir = join(buildDir, svc);
@@ -321,7 +322,7 @@ export async function runPipeline(projectId: string, userInput: string): Promise
   const { join } = await import("node:path");
 
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  const logDir = join(buildDir, projectId);
+  const logDir = buildDirFor(projectId, buildDir);
   mkdirSync(logDir, { recursive: true });
   const logFilePath = join(logDir, "run.log");
 

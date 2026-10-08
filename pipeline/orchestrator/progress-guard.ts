@@ -19,6 +19,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { recordBlocked } from "../../packages/agent-runtime/src/tools/blocked.ts";
+import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 
 export type RoundStage = "qa" | "live";
 
@@ -78,7 +79,7 @@ export function judgeRound(history: RoundRecord[], round: RoundRecord, opts: Gua
 }
 
 function roundsFile(projectId: string): string {
-  return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, "rounds.jsonl");
+  return join(buildDirFor(projectId), "rounds.jsonl");
 }
 
 export function readRounds(projectId: string): RoundRecord[] {
@@ -97,7 +98,7 @@ export function readRounds(projectId: string): RoundRecord[] {
 }
 
 function writeHold(projectId: string, stage: RoundStage, verdict: Extract<GuardVerdict, { hold: true }>, spendUsd: number): void {
-  const dir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  const dir = buildDirFor(projectId);
   mkdirSync(dir, { recursive: true });
   const body = [
     `# Work held — ${stage === "live" ? "live review" : "pre-deploy review"}`,
@@ -156,7 +157,7 @@ export async function checkRoundGuard(
   const history = readRounds(projectId);
   const verdict = judgeRound(history, Number.isFinite(spendUsd) ? record : { ...record, spendUsd: history[history.length - 1]?.spendUsd ?? 0 }, opts);
 
-  mkdirSync(join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId), { recursive: true });
+  mkdirSync(buildDirFor(projectId), { recursive: true });
   appendFileSync(roundsFile(projectId), JSON.stringify(record) + "\n");
   console.log(`[guard] ${stage} round ${history.filter((h) => h.stage === stage).length + 1}: ${record.findings.length} open finding(s), spent $${record.spendUsd.toFixed(2)} — ${verdict.hold ? "HOLD" : "ok"}`);
   if (verdict.hold) writeHold(projectId, stage, verdict, record.spendUsd);

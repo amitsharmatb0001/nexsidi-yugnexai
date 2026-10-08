@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { listLabeledFiles, resolveLabeledFile, type LabeledDir } from "../../packages/agent-runtime/src/qa-loop.ts";
+import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 
 export function isReviewCacheEnabled(): boolean {
   return process.env.QA_REVIEW_CACHE_ENABLED !== "false";
@@ -60,7 +61,7 @@ interface CacheEntry<T> {
 }
 
 function cacheFile(projectId: string): string {
-  return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, "review-pass-cache.json");
+  return join(buildDirFor(projectId), "review-pass-cache.json");
 }
 
 function readAll(projectId: string): Record<string, CacheEntry<unknown>> {
@@ -106,7 +107,7 @@ export async function withReviewCache<T extends { passed: boolean }>(
   const result = await run(changed);
   if (result.passed) {
     try {
-      mkdirSync(join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId), { recursive: true });
+      mkdirSync(buildDirFor(projectId), { recursive: true });
       const next = { ...readAll(projectId), [reviewer]: { hash, result, at: new Date().toISOString(), files } };
       writeFileSync(cacheFile(projectId), JSON.stringify(next), "utf-8");
     } catch (err) {

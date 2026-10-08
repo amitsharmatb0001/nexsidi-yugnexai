@@ -62,7 +62,7 @@ const planCache = new Map<string, BuildPlan>();
 
 function getAttachmentsContext(projectId: string): string {
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  const attachmentsDir = join(buildDir, projectId, "attachments");
+  const attachmentsDir = join(buildDirFor(projectId, buildDir), "attachments");
   if (!existsSync(attachmentsDir)) return "";
 
   try {
@@ -117,7 +117,7 @@ async function getReferencedUrlContext(userRequest: string): Promise<string> {
 // ── Planner fast path: check if build-plan.json was pre-generated ───────────────
 export async function checkBuildPlanExists(projectId: string): Promise<boolean> {
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  const planPath = join(buildDir, projectId, "build-plan.json");
+  const planPath = join(buildDirFor(projectId, buildDir), "build-plan.json");
   for (let i = 0; i < 10; i++) {
     if (existsSync(planPath)) return true;
     await new Promise(res => setTimeout(res, 200));
@@ -294,7 +294,7 @@ function parsePlannerSimplePlan(raw: string): PlannerSimplePlan | null {
 }
 
 function readPlannerSimplePlan(projectId: string): PlannerSimplePlan | null {
-  const dir = join(process.env.BUILD_DIR ?? "/tmp/nexsidi-builds", projectId);
+  const dir = buildDirFor(projectId);
 
   // Preferred: the durable copy, immune to Arjun's overwrite.
   const durable = join(dir, PLANNER_PLAN_FILE);
@@ -422,6 +422,7 @@ export async function assertWithinBudget(projectId: string, agentName: string): 
 import { runGeneratorWithQuotaRetry } from "./quota-retry.ts";
 import { runBuilderPhase, listBuiltFiles, type PhaseStore } from "./build-phases.ts";
 import { recordBlocked } from "../../packages/agent-runtime/src/tools/blocked.ts";
+import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 
 // ── Stage 3a–c: code generators (run in parallel from workflow) ───────────────
 export async function runShubham(projectId: string): Promise<void> {
@@ -489,7 +490,7 @@ async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phas
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", builder, plan);
     const normalized = withNormalizedDbSchema(plan);
-    const outputDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, builder === "aanya" ? "frontend" : "backend");
+    const outputDir = join(buildDirFor(projectId), builder === "aanya" ? "frontend" : "backend");
     await runBuilderPhase({
       projectId,
       builder,
@@ -643,7 +644,7 @@ export async function runCompileCheck(
 // ── WS event publisher — appends to events.jsonl, tailed by /ws/pipeline/:id ─
 function appendEvent(projectId: string, event: Record<string, unknown>): void {
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  const logsDir = join(buildDir, projectId, "logs");
+  const logsDir = join(buildDirFor(projectId, buildDir), "logs");
   try {
     mkdirSync(logsDir, { recursive: true });
     appendFileSync(join(logsDir, "events.jsonl"), JSON.stringify({ ...event, ts: Date.now() }) + "\n", "utf-8");
@@ -1011,18 +1012,18 @@ export function getPlan(projectId: string): BuildPlan {
 }
 
 function readUserRequest(projectId: string): string {
-  const p = join(process.env.BUILD_DIR ?? "/tmp/nexsidi-builds", projectId, "user-request.txt");
+  const p = join(buildDirFor(projectId), "user-request.txt");
   return existsSync(p) ? readFileSync(p, "utf-8").trim() : `Project ${projectId}`;
 }
 
 function writeCacheFile(projectId: string, filename: string, content: string): void {
-  const dir = join(process.env.BUILD_DIR ?? "/tmp/nexsidi-builds", projectId);
+  const dir = buildDirFor(projectId);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, filename), content, "utf-8");
 }
 
 function readCacheFile<T>(projectId: string, filename: string): T {
-  const p = join(process.env.BUILD_DIR ?? "/tmp/nexsidi-builds", projectId, filename);
+  const p = join(buildDirFor(projectId), filename);
   if (!existsSync(p)) throw new Error(`Cache file missing: ${p} — did runSaanvi/runArjun run first?`);
   return JSON.parse(readFileSync(p, "utf-8")) as T;
 }

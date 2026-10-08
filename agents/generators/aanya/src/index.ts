@@ -15,9 +15,10 @@ import { buildFontOverrideCss, buildThemeOverrideTokens, themeColorMode, usedInH
 import { inHouseFontFaceCss, vendorInHouseFonts } from "./fonts.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
+import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
 export function getOutputDir(projectId: string): string {
-  return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, "frontend");
+  return join(buildDirFor(projectId), "frontend");
 }
 
 // 2026-07-08: see agents/generators/shubham/src/index.ts's identical helper

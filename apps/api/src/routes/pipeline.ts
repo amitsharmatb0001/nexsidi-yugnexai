@@ -17,6 +17,7 @@ import { join } from "node:path";
 // Shared with routes/projects.ts — see utils/stage-labels.ts for why this
 // must be the single copy.
 import { translateStage } from "../utils/stage-labels.ts";
+import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
 type Env = { Variables: { userId: string } };
 export const pipelineRouter = new Hono<Env>();
@@ -374,7 +375,7 @@ pipelineRouter.post("/:projectId/ensure-running", async (c) => {
   }
 
   const { ensureProjectRunning } = await import("../../../../agents/riya/src/index.ts");
-  const buildDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  const buildDir = buildDirFor(projectId);
   const result = await ensureProjectRunning(buildDir);
 
   if (!result.running) {

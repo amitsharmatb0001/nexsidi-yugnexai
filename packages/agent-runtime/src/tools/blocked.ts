@@ -9,6 +9,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
+import { buildDirFor } from "../build-dir.ts";
 
 export const BLOCKED_OWNERS = ["shubham", "aanya", "pranav", "riya", "tilotma"] as const;
 export type BlockedOwner = (typeof BLOCKED_OWNERS)[number];
@@ -22,7 +23,7 @@ export interface BlockedReport {
 }
 
 function buildRoot(projectId: string): string {
-  return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  return buildDirFor(projectId);
 }
 
 export function blockersFile(projectId: string): string {

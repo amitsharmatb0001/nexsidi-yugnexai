@@ -22,6 +22,7 @@ import { execFileSync } from "child_process";
 import { db, projects, diffReviews } from "@nexsidi/db";
 import { and, eq } from "drizzle-orm";
 import { isSecretPath } from "../utils/secret-paths.ts";
+import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
 type Env = { Variables: { userId: string } };
 export const artifactsRouter = new Hono<Env>();
@@ -146,7 +147,7 @@ artifactsRouter.get("/:projectId/tree", async (c) => {
     return c.json({ error: "not_found" }, 404);
   }
 
-  const projectDir = resolve(BUILD_DIR, projectId);
+  const projectDir = buildDirFor(projectId, BUILD_DIR);
   if (!existsSync(projectDir)) {
     return c.json({ error: "build_not_ready" }, 404);
   }
@@ -368,7 +369,7 @@ artifactsRouter.get("/:projectId/diff", async (c) => {
     return c.json({ error: "not_found" }, 404);
   }
 
-  const projectDir = resolve(BUILD_DIR, projectId);
+  const projectDir = buildDirFor(projectId, BUILD_DIR);
   if (!existsSync(projectDir)) {
     return c.json({ error: "build_not_ready" }, 404);
   }
@@ -417,7 +418,7 @@ artifactsRouter.get("/:projectId/diff/file", async (c) => {
     return c.json({ error: "not_found" }, 404);
   }
 
-  const projectDir = resolve(BUILD_DIR, projectId);
+  const projectDir = buildDirFor(projectId, BUILD_DIR);
   if (!existsSync(projectDir)) return c.json({ error: "build_not_ready" }, 404);
 
   // Same containment rule the file endpoint uses — a path arriving from the
@@ -458,7 +459,7 @@ artifactsRouter.post("/:projectId/diff/accept", async (c) => {
   const path = typeof body?.path === "string" ? body.path : "";
   if (!path) return c.json({ error: "path required" }, 400);
 
-  const projectDir = resolve(BUILD_DIR, projectId);
+  const projectDir = buildDirFor(projectId, BUILD_DIR);
   if (!existsSync(projectDir)) return c.json({ error: "build_not_ready" }, 404);
 
   try {
@@ -491,7 +492,7 @@ artifactsRouter.post("/:projectId/diff/accept-all", async (c) => {
     return c.json({ error: "not_found" }, 404);
   }
 
-  const projectDir = resolve(BUILD_DIR, projectId);
+  const projectDir = buildDirFor(projectId, BUILD_DIR);
   if (!existsSync(projectDir)) return c.json({ error: "build_not_ready" }, 404);
 
   try {
@@ -529,7 +530,7 @@ artifactsRouter.post("/:projectId/diff/reject", async (c) => {
   const path = typeof body?.path === "string" ? body.path : "";
   if (!path) return c.json({ error: "path required" }, 400);
 
-  const projectDir = resolve(BUILD_DIR, projectId);
+  const projectDir = buildDirFor(projectId, BUILD_DIR);
   if (!existsSync(projectDir)) return c.json({ error: "build_not_ready" }, 404);
 
   // Same containment rule the file/diff-file endpoints use — a path arriving
@@ -570,7 +571,7 @@ artifactsRouter.post("/:projectId/diff/reject-all", async (c) => {
     return c.json({ error: "not_found" }, 404);
   }
 
-  const projectDir = resolve(BUILD_DIR, projectId);
+  const projectDir = buildDirFor(projectId, BUILD_DIR);
   if (!existsSync(projectDir)) return c.json({ error: "build_not_ready" }, 404);
 
   try {
@@ -612,7 +613,7 @@ artifactsRouter.get("/:projectId/build-plan.json", async (c) => {
     return c.json({ error: "not_found" }, 404);
   }
 
-  const planPath = resolve(BUILD_DIR, projectId, "build-plan.json");
+  const planPath = resolve(buildDirFor(projectId, BUILD_DIR), "build-plan.json");
   if (!existsSync(planPath)) {
     return c.json({ error: "build_plan_not_found" }, 404);
   }
@@ -642,7 +643,7 @@ artifactsRouter.get("/:projectId/file", async (c) => {
     return c.json({ error: "not_found" }, 404);
   }
 
-  const projectDir = resolve(BUILD_DIR, projectId);
+  const projectDir = buildDirFor(projectId, BUILD_DIR);
   const fullPath   = resolve(projectDir, requestPath);
 
   // Path traversal guard — resolved path must be strictly inside projectDir

@@ -44,6 +44,7 @@ import { runAgentEscalated } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import type { ProjectSpec } from "../../saanvi/src/index.ts";
 import { resolveInHouseFont } from "../../generators/aanya/src/fonts.ts";
+import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 
 export interface DesignBrief {
   mood: string;
@@ -69,7 +70,7 @@ export interface VanyaDeps {
 const VANYA_MAX_ITERATIONS = 15;
 
 function vanyaWorkspace(projectId: string): string {
-  const dir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId);
+  const dir = buildDirFor(projectId);
   mkdirSync(dir, { recursive: true });
   return dir;
 }

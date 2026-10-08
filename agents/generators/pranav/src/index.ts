@@ -9,6 +9,7 @@ import type { BuildPlan, DrizzleTable, DrizzleColumn } from "../../../arjun/src/
 import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { recordDispute } from "../../../../packages/agent-runtime/src/tools/dispute.ts";
 import { findQuoteLine } from "../../../../packages/agent-runtime/src/enforce/finding-evidence.ts";
+import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
 // ── Main entry ────────────────────────────────────────────────────────────────
 export async function run(plan: BuildPlan): Promise<GeneratorResult> {
@@ -456,7 +457,7 @@ function snakeToCamel(str: string): string {
 }
 
 export function getOutputDir(projectId: string): string {
-  return join(process.env.BUILD_DIR ?? "/tmp/nexsidi-builds", projectId, "db");
+  return join(buildDirFor(projectId), "db");
 }
 
 // ── Migration system prompt ───────────────────────────────────────────────────

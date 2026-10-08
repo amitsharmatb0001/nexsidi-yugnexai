@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync, rmSync } from "fs";
 import { join, dirname } from "path";
 import type { PipelineCheckpoint } from "./types.ts";
+import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 
 const INVALID_IDENTIFIER = /\.\.|\/|\\/;
 
@@ -20,7 +21,7 @@ function checkpointPath(projectId: string, stage: string): string {
   assertValidIdentifier(projectId, "projectId");
   assertValidIdentifier(stage, "stage");
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  return join(buildDir, projectId, "checkpoints", `${stage}.json`);
+  return join(buildDirFor(projectId, buildDir), "checkpoints", `${stage}.json`);
 }
 
 export function writeCheckpoint(projectId: string, stage: string, data: unknown): void {

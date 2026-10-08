@@ -21,6 +21,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import type { Finding } from "./stage4-multi-agent-dev.ts";
+import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 
 export interface RawJsxTag {
   raw: string;
@@ -150,7 +151,7 @@ function walkTsxFiles(dir: string, projectRoot: string): string[] {
 
 export function scanProjectForDeadButtons(projectId: string): Finding[] {
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  const projectRoot = join(buildDir, projectId);
+  const projectRoot = buildDirFor(projectId, buildDir);
   const frontendDir = join(projectRoot, "frontend");
   const files = walkTsxFiles(frontendDir, projectRoot);
   const findings: Finding[] = [];

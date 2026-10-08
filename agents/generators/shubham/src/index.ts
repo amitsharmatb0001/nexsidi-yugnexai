@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from 
 import { join, resolve } from "path";
 import type { BuildPlan, GeneratorTask } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
+import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
 export interface GeneratorResult {
   success: boolean;
@@ -22,7 +23,7 @@ export interface GeneratorResult {
 }
 
 export function getOutputDir(projectId: string): string {
-  return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, "backend");
+  return join(buildDirFor(projectId), "backend");
 }
 
 // 2026-10-03 (Ledgerly run 4): the backend used ON CONFLICT on a unique

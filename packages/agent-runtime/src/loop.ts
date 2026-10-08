@@ -57,6 +57,7 @@ import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { timeBudgetExceeded } from "./nim-time-budget.ts";
 import { runStopReason } from "./run-abort.ts";
 import { LOAD_SKILL_TOOL_DEF, loadSkillText, skillsForAgent } from "./skill-library.ts";
+import { buildDirFor } from "./build-dir.ts";
 
 // Exported so claude-loop.ts's runAgentWithClaude() can reuse the exact same
 // iteration cap instead of redefining it (per Task 15 spec — "same
@@ -475,7 +476,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   const emitEvent = (event: Record<string, unknown>) => {
     if (!config.projectId) return;
     try {
-      const logDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", config.projectId!, "logs");
+      const logDir = join(buildDirFor(config.projectId!), "logs");
       const { mkdirSync, appendFileSync } = require("fs");
       mkdirSync(logDir, { recursive: true });
       appendFileSync(
@@ -489,7 +490,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   if (config.projectId) {
     const logToFile = (msg: string) => {
       try {
-        const logDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", config.projectId!, "logs");
+        const logDir = join(buildDirFor(config.projectId!), "logs");
         const { mkdirSync, appendFileSync } = require("fs");
         mkdirSync(logDir, { recursive: true });
         appendFileSync(join(logDir, "pipeline.log"), `${new Date().toISOString()} [${config.agentName}] ${msg}\n`, "utf-8");
@@ -557,7 +558,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
   const localHistoryPath = config.projectId
-    ? join(buildDir, config.projectId, `history-${config.agentName}.json`)
+    ? join(buildDirFor(config.projectId, buildDir), `history-${config.agentName}.json`)
     : null;
 
   if (resumesSavedHistory(config)) {

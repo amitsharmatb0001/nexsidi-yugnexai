@@ -19,6 +19,7 @@ import { join } from "path";
 import { createHash } from "node:crypto";
 import { resolveOptionalUserId } from "../middleware/auth.ts";
 import type { PlannerState, BuildPlan, ProposedPlan } from "../../../../agents/planner/src/types.ts";
+import { buildDirFor, registerBuildFolder } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
 // Ensure project IDs fit the varchar(12) DB column — hash anything longer
 function normalizeProjectId(raw: string): string {
@@ -124,8 +125,11 @@ chatRouter.post("/", async (c) => {
         state.projectId = triggeredProjectId;
         state.buildPlan = triggeredBuildPlan;
 
+        // The build folder carries the app's own name (kept if POST /api/projects already named it).
+        try { registerBuildFolder(triggeredProjectId, triggeredBuildPlan.appName, BUILD_DIR); } catch (err) { console.error(`[chat] could not name the build folder for ${triggeredProjectId}: ${String(err)}`); }
+
         // Write build-plan.json so the pipeline can skip Saanvi/Arjun
-        const projectDir = join(BUILD_DIR, triggeredProjectId);
+        const projectDir = buildDirFor(triggeredProjectId, BUILD_DIR);
         mkdirSync(projectDir, { recursive: true });
         writeFileSync(
           join(projectDir, "build-plan.json"),

@@ -16,3 +16,4 @@ export { SETTLE_DISPUTE_TOOL_DEF, recordVerdict, readVerdicts, verdictsFile, typ
 export { REPORT_BLOCKED_TOOL_DEF, recordBlocked, readBlockedReports, blockersFile, type BlockedReport } from "./tools/blocked.ts";
 export { skillPromptSection } from "./skill-library.ts";
 export { isBuilderFixFile } from "./ownership.ts";
+export { buildDirFor, buildRoot, registerBuildFolder, folderNameFor } from "./build-dir.ts";

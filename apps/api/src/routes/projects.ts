@@ -13,6 +13,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { getPipelineStatus } from "../utils/temporal.ts";
 import { translateStage } from "../utils/stage-labels.ts";
+import { buildDirFor, registerBuildFolder } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
 type Env = { Variables: { userId: string } };
 export const projectsRouter = new Hono<Env>();
@@ -149,6 +150,8 @@ projectsRouter.post("/", async (c) => {
     if (existing.length > 0) continue;
 
     await db.insert(projects).values({ id, userId, name, status: "planning", context });
+    // The build folder (and so every Docker container name) carries the app's own name, not the id.
+    try { registerBuildFolder(id, name); } catch (err) { console.error(`[projects] could not name the build folder for ${id}: ${String(err)}`); }
     return c.json({ id, name }, 201);
   }
 
@@ -223,11 +226,11 @@ projectsRouter.get("/:id/similar", async (c) => {
   const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
 
   const readShape = (pid: string) => {
-    const specPath = join(BUILD_DIR, pid, "spec.json");
+    const specPath = join(buildDirFor(pid, BUILD_DIR), "spec.json");
     if (!existsSync(specPath)) return null;
     try {
       const spec = JSON.parse(readFileSync(specPath, "utf-8"));
-      const pageCount = countAppPages(join(BUILD_DIR, pid, "frontend"));
+      const pageCount = countAppPages(join(buildDirFor(pid, BUILD_DIR), "frontend"));
       return deriveProjectShape(spec, pageCount);
     } catch {
       return null; // malformed/partial spec.json — skip rather than crash the whole comparison
@@ -324,7 +327,7 @@ projectsRouter.post("/express-build", async (c) => {
     if (doneProjects.length === 0) return c.json({ error: "no_candidates", message: "Express Build needs at least one finished project on your account." }, 409);
 
     const candidates = doneProjects.map((p) => {
-      const specPath = joinForPick(BUILD_DIR_FOR_PICK, p.id, "spec.json");
+      const specPath = joinForPick(buildDirFor(p.id, BUILD_DIR_FOR_PICK), "spec.json");
       let description = p.name;
       if (existsSyncForPick(specPath)) {
         try {
@@ -364,7 +367,7 @@ projectsRouter.post("/express-build", async (c) => {
   const { getRunningDeploymentPorts } = await import("../../../../agents/riya/src/index.ts");
   const BUILD_DIR = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
 
-  const sourceSpecPath = join(BUILD_DIR, sourceId, "spec.json");
+  const sourceSpecPath = join(buildDirFor(sourceId, BUILD_DIR), "spec.json");
   if (!existsSync(sourceSpecPath)) {
     console.error(`[express-build] base ${sourceId} has no spec.json`);
     return c.json({ error: "base_unusable" }, 409);
@@ -372,7 +375,7 @@ projectsRouter.post("/express-build", async (c) => {
   const sourceSpec = JSON.parse(readFileSync(sourceSpecPath, "utf-8"));
   const oldName = sourceSpec.name as string;
 
-  const sourceComposePath = join(BUILD_DIR, sourceId, "docker-compose.yml");
+  const sourceComposePath = join(buildDirFor(sourceId, BUILD_DIR), "docker-compose.yml");
   if (!existsSync(sourceComposePath)) {
     console.error(`[express-build] base ${sourceId} has no docker-compose.yml`);
     return c.json({ error: "base_unusable" }, 409);
@@ -394,6 +397,8 @@ projectsRouter.post("/express-build", async (c) => {
     const existingRow = await db.select({ id: projects.id }).from(projects).where(eq(projects.id, newId)).limit(1);
     if (existingRow.length > 0) continue;
 
+    // The new app's folder carries its own name, not the id (the clone is built into it).
+    try { registerBuildFolder(newId, newName, BUILD_DIR); } catch (err) { console.error(`[express-build] could not name the build folder for ${newId}: ${String(err)}`); }
     let cloneResult: Awaited<ReturnType<typeof cloneProject>>;
     try {
       cloneResult = await cloneProject({ sourceProjectId: sourceId, newProjectId: newId, oldName, newName, sourcePorts, buildDir: BUILD_DIR, ...(hasOwnRequest ? { requestText } : {}) });

@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 
 export function extractBackendContract(backendDir: string): string {
   const routesDir = join(backendDir, "src", "routes");
@@ -75,13 +76,13 @@ export function extractBackendContract(backendDir: string): string {
 
 export function saveContract(projectId: string, contract: string): void {
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  const projectBuildDir = join(buildDir, projectId);
+  const projectBuildDir = buildDirFor(projectId, buildDir);
   writeFileSync(join(projectBuildDir, "api-contract.md"), contract, "utf-8");
 }
 
 export function loadAndInjectContract(projectId: string, basePrompt: string): string {
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  const contractPath = join(buildDir, projectId, "api-contract.md");
+  const contractPath = join(buildDirFor(projectId, buildDir), "api-contract.md");
   if (existsSync(contractPath)) {
     const contract = readFileSync(contractPath, "utf-8");
     return `${basePrompt}\n\n${contract}`;

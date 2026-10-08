@@ -11,6 +11,7 @@ import { upgradeWebSocket } from "hono/bun";
 import { getAllStates, getBucketState, MODEL_RPM_LIMITS } from "@nexsidi/llm-client";
 import { existsSync, readFileSync, statSync } from "fs";
 import { join } from "path";
+import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
 export const wsRouter = new Hono();
 
@@ -103,8 +104,8 @@ wsRouter.get(
     return {
       onOpen(_, ws) {
         const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-        const logPath   = join(buildDir, projectId, "logs", "pipeline.log");
-        const eventsPath = join(buildDir, projectId, "logs", "events.jsonl");
+        const logPath   = join(buildDirFor(projectId, buildDir), "logs", "pipeline.log");
+        const eventsPath = join(buildDirFor(projectId, buildDir), "logs", "events.jsonl");
 
         // Send initial log content
         if (existsSync(logPath)) {
@@ -182,10 +183,7 @@ wsRouter.get("/screenshots/:projectId", upgradeWebSocket((c) => {
   return {
     onOpen(_, ws) {
       const { readdirSync, readFileSync, existsSync } = require("fs");
-      const screenshotDir = join(
-        process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds",
-        projectId,
-        "screenshots",
+      const screenshotDir = join(buildDirFor(projectId), "screenshots",
       );
 
       const sendScreenshots = () => {

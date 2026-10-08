@@ -63,6 +63,7 @@ import { imagesSeenRejection } from "./enforce/images-seen.ts";
 import { nimTimeBudgetMs } from "./nim-time-budget.ts";
 import { runStopReason } from "./run-abort.ts";
 import { loadSkillText } from "./skill-library.ts";
+import { buildDirFor } from "./build-dir.ts";
 
 export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 
@@ -123,7 +124,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   if (config.projectId) {
     const logToFile = (msg: string) => {
       try {
-        const logDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", config.projectId!, "logs");
+        const logDir = join(buildDirFor(config.projectId!), "logs");
         const { mkdirSync, appendFileSync } = require("fs");
         mkdirSync(logDir, { recursive: true });
         appendFileSync(join(logDir, "pipeline.log"), `${new Date().toISOString()} [${config.agentName}:claude] ${msg}\n`, "utf-8");
@@ -144,7 +145,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
   const emitEvent = (event: Record<string, unknown>) => {
     if (!config.projectId) return;
     try {
-      const logDir = join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", config.projectId!, "logs");
+      const logDir = join(buildDirFor(config.projectId!), "logs");
       const { mkdirSync, appendFileSync } = require("fs");
       mkdirSync(logDir, { recursive: true });
       appendFileSync(

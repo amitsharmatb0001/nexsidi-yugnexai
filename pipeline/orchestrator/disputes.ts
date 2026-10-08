@@ -12,6 +12,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readDisputes, type Dispute } from "../../packages/agent-runtime/src/tools/dispute.ts";
 import type { BuildPlan } from "../../agents/arjun/src/index.ts";
+import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 
 export interface DisputeVerdict {
   dispute: Dispute;
@@ -30,7 +31,7 @@ interface SettledNotTrue {
 }
 
 function settledFile(projectId: string): string {
-  return join(process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds", projectId, "settled-not-true.jsonl");
+  return join(buildDirFor(projectId), "settled-not-true.jsonl");
 }
 
 function readSettled(projectId: string): SettledNotTrue[] {

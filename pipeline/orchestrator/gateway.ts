@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync, renameSync } from "fs";
 import { join, dirname } from "path";
 import type { GatewayDecision } from "./types.ts";
+import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 
 const DECISION_READ_RETRY_DELAY_MS = 50;
 const DECISION_READ_MAX_ATTEMPTS = 3;
@@ -23,14 +24,14 @@ function requestPath(projectId: string, stage: string): string {
   assertValidIdentifier(projectId, "projectId");
   assertValidIdentifier(stage, "stage");
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  return join(buildDir, projectId, "gateway", `${stage}.request.json`);
+  return join(buildDirFor(projectId, buildDir), "gateway", `${stage}.request.json`);
 }
 
 function decisionPath(projectId: string, stage: string): string {
   assertValidIdentifier(projectId, "projectId");
   assertValidIdentifier(stage, "stage");
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  return join(buildDir, projectId, "gateway", `${stage}.decision.json`);
+  return join(buildDirFor(projectId, buildDir), "gateway", `${stage}.decision.json`);
 }
 
 export function writeGatewayRequest(projectId: string, stage: string, summary: string): void {

@@ -36,6 +36,7 @@ import type { GeneratorResult } from "../../../agents/generators/shubham/src/ind
 import { assertValidIdentifier } from "../checkpoint.ts";
 import type { Dag } from "../types.ts";
 import { extractBackendContract, saveContract } from "./contract-extractor.ts";
+import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 
 // 2026-08-05: with GENERATOR_TIER=gemini and PIPELINE_TIER=gemini both set
 // (this project's .env), Pranav and Shubham both route through Gemini's
@@ -159,7 +160,7 @@ interface KeyPaths {
 export function getProjectKeyPair(projectId: string): KeyPaths {
   assertValidIdentifier(projectId, "projectId");
   const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-  const keysDir = join(buildDir, projectId, "keys");
+  const keysDir = join(buildDirFor(projectId, buildDir), "keys");
   const privateKeyPath = join(keysDir, "private.pem");
   const publicKeyPath = join(keysDir, "public.pem");
 

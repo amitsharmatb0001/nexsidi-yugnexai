@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
+import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
 type Env = { Variables: { userId: string } };
 export const attachmentsRouter = new Hono<Env>();
@@ -36,7 +37,7 @@ attachmentsRouter.post("/:projectId", async (c) => {
     }
 
     const buildDir = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
-    const attachmentsDir = join(buildDir, projectId, "attachments");
+    const attachmentsDir = join(buildDirFor(projectId, buildDir), "attachments");
     mkdirSync(attachmentsDir, { recursive: true });
 
     const savedFiles: string[] = [];
