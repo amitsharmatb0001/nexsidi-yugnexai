@@ -33,6 +33,12 @@ checks (with all the data under it); an account on any other domain
 (Ledgerly run 4: `deploy_check_1@test.com` and a client under it were left in
 the delivered database.)
 
+## No auto-start — never write a restart policy
+
+Do not put `restart:` (always, unless-stopped, on-failure) or `deploy.restart_policy` in any compose file. The owner
+starts and stops their apps by hand; nothing may start by itself when Docker starts. (Ledgerly 2 day: 14 of 17 apps
+woke up at once when Docker Desktop started. `docker_compose up` now removes restart policies from the file anyway.)
+
 ## Deploy Target Gate — Fail Loudly, Never Fall Back
 
 ```typescript

@@ -50,6 +50,7 @@ export function execDockerCompose(
   const timeout = Math.min(args.timeout_ms ?? 300_000, 600_000);
   let cmdArgs: string[];
   let boundPorts = 0;
+  let restartRemoved = 0;
 
   switch (args.action) {
     case "up": {
@@ -77,6 +78,7 @@ export function execDockerCompose(
         });
       }
       boundPorts = prep.changed;
+      restartRemoved = prep.restartRemoved;
       cmdArgs = ["compose", "up", "-d", "--build", "--remove-orphans"];
       break;
     }
@@ -118,7 +120,7 @@ export function execDockerCompose(
       resolve({
         status: success ? "success" : "error",
         summary: success
-          ? `docker compose ${args.action} succeeded${boundPorts > 0 ? ` (bound ${boundPorts} published port(s) to 127.0.0.1)` : ""}`
+          ? `docker compose ${args.action} succeeded${boundPorts > 0 ? ` (bound ${boundPorts} published port(s) to 127.0.0.1)` : ""}${restartRemoved > 0 ? ` (removed ${restartRemoved} restart polic${restartRemoved === 1 ? "y" : "ies"} — nothing may start by itself when Docker starts)` : ""}`
           : `docker compose ${args.action} failed (exit ${timedOut ? "timeout" : exitCode})`,
         output: combined || "(no output)",
         next_actions: success

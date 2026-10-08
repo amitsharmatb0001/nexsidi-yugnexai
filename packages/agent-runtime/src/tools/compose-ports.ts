@@ -94,6 +94,58 @@ export function bindComposePortsToLoopback(compose: string): LoopbackBindResult 
   return { content: out.join(eol), changed, unsupported };
 }
 
+// ── No auto-start (2026-10-08, Amit) ────────────────────────────────────────
+// Generated compose files came back from the deploy agent with `restart: always` / `unless-stopped` (14 of 17 apps on
+// this PC), so every app woke up the moment Docker started. The owner starts what they want, by hand. No generated
+// compose file may carry a restart policy; `restart: no` (or none) is what Docker does by default.
+
+/** Value of a `restart:` line without trailing comment and quotes, e.g. `"always" # x` -> always. */
+function restartValue(raw: string): string {
+  return raw.replace(/\s+#.*$/, "").trim().replace(/^["']|["']$/g, "");
+}
+
+export interface RestartStripResult {
+  content: string;
+  removed: number;
+}
+
+/** Removes every restart policy except `no`: `restart:` lines and `deploy.restart_policy` blocks. Idempotent; keeps line endings. */
+export function removeRestartPolicies(compose: string): RestartStripResult {
+  const eol = compose.includes("\r\n") ? "\r\n" : "\n";
+  const lines = compose.split(/\r?\n/);
+  const out: string[] = [];
+  let removed = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const key = line.match(/^(\s+)restart:\s*(.*)$/);
+    if (key) {
+      if (restartValue(key[2]!) === "no") out.push(line);
+      else removed++;
+      continue;
+    }
+    const block = line.match(/^(\s+)restart_policy:\s*$/);
+    if (block) {
+      const indent = block[1]!.length;
+      while (i + 1 < lines.length && (lines[i + 1]!.trim() === "" || lines[i + 1]!.search(/\S/) > indent)) i++;
+      removed++;
+      continue;
+    }
+    out.push(line);
+  }
+  // A `deploy:` that lost its only child is an empty mapping; drop it so the file stays valid.
+  const cleaned: string[] = [];
+  for (let i = 0; i < out.length; i++) {
+    const line = out[i]!;
+    const d = line.match(/^(\s+)deploy:\s*$/);
+    if (d) {
+      const next = out.slice(i + 1).find((l) => l.trim() !== "");
+      if (next === undefined || next.search(/\S/) <= d[1]!.length) continue;
+    }
+    cleaned.push(line);
+  }
+  return { content: removed > 0 ? cleaned.join(eol) : compose, removed };
+}
+
 export interface ComposeFs {
   exists(path: string): boolean;
   read(path: string): string;
@@ -110,13 +162,13 @@ const nodeFs: ComposeFs = {
 const COMPOSE_FILES = ["compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml"];
 
 export type PrepareComposeResult =
-  | { ok: true; file: string | null; changed: number }
+  | { ok: true; file: string | null; changed: number; restartRemoved: number }
   | { ok: false; error: string };
 
 /** Binds the compose file `docker compose up` would use in `cwd` to 127.0.0.1, or refuses when it has ports that can't be bound safely. */
 export function prepareComposeForUp(cwd: string, fs: ComposeFs = nodeFs): PrepareComposeResult {
   const file = COMPOSE_FILES.map((name) => join(cwd, name)).find((path) => fs.exists(path)) ?? null;
-  if (!file) return { ok: true, file: null, changed: 0 };
+  if (!file) return { ok: true, file: null, changed: 0, restartRemoved: 0 };
 
   const result = bindComposePortsToLoopback(fs.read(file));
   if (result.unsupported.length > 0) {
@@ -125,9 +177,11 @@ export function prepareComposeForUp(cwd: string, fs: ComposeFs = nodeFs): Prepar
       error: `Refusing to publish ports that are not bound to this PC only: ${result.unsupported.join(", ")}. Write every published port as "127.0.0.1:<host>:<container>".`,
     };
   }
-  if (result.changed > 0) fs.write(file, result.content);
+  // No restart policy, ever: nothing may start by itself when Docker starts.
+  const stripped = removeRestartPolicies(result.content);
+  if (result.changed > 0 || stripped.removed > 0) fs.write(file, stripped.content);
   pinFrontendDockerfile(dirname(file), fs);
-  return { ok: true, file, changed: result.changed };
+  return { ok: true, file, changed: result.changed, restartRemoved: stripped.removed };
 }
 
 // 2026-09-29 (project a034f90ba50e): tools/db.ts says Stage 6 sets
@@ -164,4 +218,12 @@ function pinFrontendDockerfile(projectDir: string, fs: ComposeFs): void {
   const current = fs.read(dockerfilePath);
   const pinned = pinFrontendApiUrl(current, url);
   if (pinned !== current) fs.write(dockerfilePath, pinned);
+}
+
+/** Removes restart policies from one compose file on disk (for code paths that run `docker compose -f <file> up` themselves). Returns how many were removed. */
+export function stripRestartPoliciesInFile(composePath: string, fs: ComposeFs = nodeFs): number {
+  if (!fs.exists(composePath)) return 0;
+  const r = removeRestartPolicies(fs.read(composePath));
+  if (r.removed > 0) fs.write(composePath, r.content);
+  return r.removed;
 }

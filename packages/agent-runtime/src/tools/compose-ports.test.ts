@@ -65,7 +65,7 @@ test("prepareComposeForUp rewrites the file docker compose would pick, and refus
   const files: Record<string, string> = { [key]: compose(`"3202:3000"`, `"3303:3001"`, `"5437:5432"`) };
   const fs = { exists: (p: string) => p in files, read: (p: string) => files[p]!, write: (p: string, s: string) => { files[p] = s; } };
   const ok = prepareComposeForUp("/app", fs);
-  expect(ok).toEqual({ ok: true, file: key, changed: 3 });
+  expect(ok).toEqual({ ok: true, file: key, changed: 3, restartRemoved: 0 });
   expect(files[key]).toContain(`"127.0.0.1:3202:3000"`);
 
   files[key] = `services:\n  web:\n    ports:\n      - "3000"\n`;
@@ -76,5 +76,5 @@ test("prepareComposeForUp rewrites the file docker compose would pick, and refus
 
 test("prepareComposeForUp is a no-op when the directory has no compose file", () => {
   const fs = { exists: () => false, read: () => "", write: () => { throw new Error("must not write"); } };
-  expect(prepareComposeForUp("/empty", fs)).toEqual({ ok: true, file: null, changed: 0 });
+  expect(prepareComposeForUp("/empty", fs)).toEqual({ ok: true, file: null, changed: 0, restartRemoved: 0 });
 });

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 // makes HTTP health check, fixes compose/Dockerfile and retries.
 // Agent ACTS via tools — no one-shot generation.
 
-import { runAgentEscalated, parseServiceHostPort, ensureDeliveryGitignore } from "@nexsidi/agent-runtime";
+import { runAgentEscalated, parseServiceHostPort, ensureDeliveryGitignore, stripRestartPoliciesInFile } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "fs";
 import { execSync } from "child_process";
@@ -2311,6 +2311,8 @@ export async function ensureProjectRunning(
   }
 
   try {
+    // No auto-start: an old compose file may still carry a restart policy (2026-10-08).
+    try { stripRestartPoliciesInFile(composePath); } catch { /* best effort */ }
     execFn(`docker compose -f "${composePath}" up -d`);
   } catch (err) {
     return { running: false, started: false, ports: null, error: `docker compose up failed: ${String(err)}` };

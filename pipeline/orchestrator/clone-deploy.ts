@@ -11,6 +11,7 @@
 // "transient infra hiccup, not a real logic bug" failure (see
 // MAX_CONSECUTIVE_TRANSPORT_FAILURES in packages/agent-runtime/src/loop.ts).
 import { execSync } from "node:child_process";
+import { stripRestartPoliciesInFile } from "../../packages/agent-runtime/src/tools/compose-ports.ts";
 
 // Deliberately narrow: only the exact real failure shape seen live. A
 // genuine build failure (npm/tsc/next erroring inside the container) must
@@ -30,6 +31,8 @@ export async function deployWithRetry(composePath: string, deps: DeployWithRetry
   const execFn = deps.execFn ?? ((command: string) => execSync(command, { encoding: "utf-8", timeout: 300_000 }));
   const maxAttempts = deps.maxAttempts ?? 2;
   const command = `docker compose -f "${composePath}" up -d --build`;
+  // No auto-start: a cloned compose file may still carry a restart policy (2026-10-08).
+  try { stripRestartPoliciesInFile(composePath); } catch { /* best effort */ }
 
   let lastErr: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
