@@ -151,7 +151,7 @@ test("runRouteSweep visits every static route signed out and signed in, and pass
   expect(r.pass).toBe(true);
   expect(r.findings).toEqual([]);
   expect(b.calls.filter((c) => c === "newSession")).toHaveLength(2);
-  expect(r.visited).toBe(6);
+  expect(r.visited).toBe(12); // 3 pages x signed out / signed in x desktop / phone
 });
 
 test("runRouteSweep reports a broken page with its route file, and a dead link", async () => {
@@ -205,7 +205,7 @@ test("runRouteSweep opens a detail page with a real sample id when sample data w
   });
   expect(r.pass).toBe(true);
   expect(r.notChecked.join("\n")).not.toContain("/clients/[id]");
-  expect(r.visited).toBe(3);
+  expect(r.visited).toBe(6);
   expect(r.seeded).toEqual({ clients: ["c1", "c2"] });
 });
 
@@ -288,4 +288,71 @@ test("createReviewAccount gives up with the reason after repeated rate limits", 
     sleep: async () => {},
   });
   expect("reason" in a && a.reason).toContain("429");
+});
+
+// 2026-10-08 (Ledgerly 2, tested by hand): at 375px every signed-in page was ~120px wider than the screen and the header
+// menu's "Settings" and "Sign Out" sat off-screen — the brief said "must work well on a phone". No review step had ever
+// looked at a phone width (the browser was fixed at 1280x800). The sweep now repeats the pages at phone width and judges
+// sideways overflow and clipped header items from what the browser measures.
+test("judgeVisit reports sideways overflow and clipped header items on a phone", () => {
+  const phone = (over: Partial<Visit> = {}) => visit({ viewport: "phone", ...over });
+  expect(judgeVisit(phone({ overflowPx: 0, clippedNav: [] }))).toEqual([]);
+  expect(judgeVisit(phone({ overflowPx: 3 }))).toEqual([]); // sub-pixel / rounding noise
+  const wide = judgeVisit(phone({ overflowPx: 121 }));
+  expect(wide[0]).toContain("121px wider");
+  expect(wide[0]).toContain("phone");
+  const clipped = judgeVisit(phone({ overflowPx: 0, clippedNav: ["Settings", "Sign Out"] }));
+  expect(clipped[0]).toContain("Settings");
+  expect(clipped[0]).toContain("Sign Out");
+});
+
+test("a desktop visit with no overflow fields is judged as before", () => {
+  expect(judgeVisit(visit())).toEqual([]);
+});
+
+test("runRouteSweep repeats the pages at phone width and reports a page that is too wide", async () => {
+  const calls: Array<{ action: string; args: Record<string, unknown> }> = [];
+  const b = fakeBrowser({
+    "/": { status: 200, text: "Home page text with plenty of words to be a real page" },
+    "/sign-in": { status: 200, text: "Sign in to your account please" },
+    "/dashboard": { status: 200, text: "Dashboard content for the signed in user, many words" },
+  });
+  let phoneNow = false;
+  const wrapped = {
+    ...b,
+    async send(action: string, args: Record<string, unknown> = {}) {
+      calls.push({ action, args });
+      if (action === "setViewport") { phoneNow = Number(args.width) < 500; return { ok: true }; }
+      const res: any = await b.send(action, args);
+      if (action === "evaluate" && String(args.expression).includes("/*page*/") && res?.value) {
+        return { value: { ...res.value, overflowPx: phoneNow && String(args.expression).length > 0 && currentIsDashboard ? 121 : 0, clippedNav: phoneNow && currentIsDashboard ? ["Sign Out"] : [] } };
+      }
+      if (action === "navigate") currentIsDashboard = String(args.url).endsWith("/dashboard");
+      return res;
+    },
+  };
+  let currentIsDashboard = false;
+  const r = await runRouteSweep(baseOpts(wrapped as any, ["app/page.tsx", "app/sign-in/page.tsx", "app/dashboard/page.tsx"]));
+  expect(calls.some((c) => c.action === "setViewport" && Number(c.args.width) === 375)).toBe(true);
+  expect(calls.filter((c) => c.action === "setViewport").pop()?.args.width).toBe(1280); // restored afterwards
+  expect(r.pass).toBe(false);
+  const f = r.findings.find((x) => x.issue.includes("phone"))!;
+  expect(f.file).toBe("frontend/app/dashboard/page.tsx");
+  expect(f.issue).toContain("121px wider");
+  expect(f.issue).toContain("Sign Out");
+});
+
+test("the same phone problem on many pages becomes one finding that points at the shared header", async () => {
+  const { mergePhoneFindings } = await import("./route-sweep.ts");
+  const merged = mergePhoneFindings([
+    { file: "frontend/app/dashboard/page.tsx", issue: "[route-sweep] /dashboard (signed-in, on a phone) is 122px wider than the phone screen, so the page scrolls sideways and has header items that do not fit on the screen: Settings, Sign Out" },
+    { file: "frontend/app/clients/page.tsx", issue: "[route-sweep] /clients (signed-in, on a phone) is 122px wider than the phone screen, so the page scrolls sideways and has header items that do not fit on the screen: Settings, Sign Out" },
+    { file: "frontend/app/page.tsx", issue: "[route-sweep] / (signed-in) answered HTTP 500" },
+  ]);
+  expect(merged).toHaveLength(2);
+  const phone = merged.find((f) => f.issue.includes("phone"))!;
+  expect(phone.issue).toContain("/dashboard");
+  expect(phone.issue).toContain("/clients");
+  expect(phone.issue).toContain("shared header");
+  expect(merged.some((f) => f.issue.includes("HTTP 500"))).toBe(true);
 });

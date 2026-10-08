@@ -51,7 +51,11 @@ Never use `@apply` — style with @yugnex/core's `css()`/theme tokens, not Tailw
 - Loading states on every data-fetching component, never a blank screen —
   there is no standalone spinner component in this library; use Button's own
   isLoading prop for in-button loading, Skeleton for page/section loading.
-- Mobile-first. Check 375px mentally before marking done.
+- Mobile-first, and checked by a real browser at 375px wide: no page may be wider than the screen (no sideways
+  scroll), and every header link and button must be reachable — let the header wrap or collapse, never rely on a
+  single row of five links. A table goes inside a container with `overflow-x: auto` so only the table scrolls.
+  (Ledgerly 2: the header's "Settings" and "Sign Out" sat off-screen on a phone and every page was 120px too wide.
+  The route sweep now fails the build on this.)
 
 ## Landing page composition
 - The hero shows the product itself: a real preview built from this app's

@@ -121,6 +121,11 @@ async function handle(req) {
     case "requests": {
       return { requests: [...requests] };
     }
+    case "setViewport": {
+      const p = await ensurePage();
+      await p.setViewportSize({ width: Number(req.width), height: Number(req.height) });
+      return { width: Number(req.width), height: Number(req.height) };
+    }
     case "failedRequests": {
       return { failed: [...failedRequests] };
     }

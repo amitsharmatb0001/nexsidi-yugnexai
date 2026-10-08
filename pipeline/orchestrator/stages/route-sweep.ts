@@ -30,7 +30,16 @@ export interface Visit {
   pageErrors: string[];
   failedRequests: Array<{ method: string; url: string; status: number; failure?: string }>;
   loadError: string | null;
+  /** Desktop (1280x800) unless set. */
+  viewport?: "desktop" | "phone";
+  /** How many pixels the page is wider than the screen (document scroll width minus window width). */
+  overflowPx?: number;
+  /** Header / nav links and buttons that sit partly or fully off-screen. */
+  clippedNav?: string[];
 }
+
+export const PHONE_VIEWPORT = { width: 375, height: 812 };
+export const DESKTOP_VIEWPORT = { width: 1280, height: 800 };
 
 const PAGE_FILE = /^app\/(?:.*\/)?page\.(?:tsx|jsx|ts|js)$/;
 const HANDLER_FILE = /^app\/(?:.*\/)?route\.(?:ts|js)$/;
@@ -96,9 +105,15 @@ const NOT_FOUND_TEXT = /\b404\b|page could not be found|page not found|not found
 
 /** What a visit shows that is wrong, as plain sentences with the evidence. Empty = healthy. */
 export function judgeVisit(v: Visit): string[] {
-  const where = `${v.route} (${v.auth})`;
+  const where = `${v.route} (${v.auth}${v.viewport === "phone" ? ", on a phone" : ""})`;
   if (v.loadError) return [`${where} did not load: ${v.loadError}`];
   const out: string[] = [];
+  // 2026-10-08: on a phone only the layout is judged (the errors and requests were already judged on the desktop visit).
+  const problems: string[] = [];
+  if ((v.overflowPx ?? 0) > 8) problems.push(`is ${v.overflowPx}px wider than the phone screen, so the page scrolls sideways`);
+  if ((v.clippedNav?.length ?? 0) > 0) problems.push(`has header items that do not fit on the screen: ${v.clippedNav!.join(", ")}`);
+  const layout = problems.length > 0 ? [`${where} ${problems.join(" and ")}`] : [];
+  if (v.viewport === "phone") return layout;
   if (v.status !== null && v.status >= 400) out.push(`${where} answered HTTP ${v.status}`);
   const text = v.bodyText.trim();
   if (text.length < 20) out.push(`${where} is blank — the page rendered no visible text`);
@@ -114,7 +129,29 @@ export function judgeVisit(v: Visit): string[] {
     if (v.auth === "signed-out" && (r.status === 401 || r.status === 403)) continue;
     out.push(`${where} made a request that failed: ${r.method} ${r.url} -> ${r.status || r.failure || "no response"}`);
   }
-  return out;
+  return [...out, ...layout];
+}
+
+/**
+ * The same header or width problem shows on every page at phone width. One finding per distinct problem, naming every
+ * page it was seen on and pointing at the shared header, is what a builder can act on (eight copies would be noise).
+ */
+export function mergePhoneFindings(findings: Array<{ file: string; issue: string }>): Array<{ file: string; issue: string }> {
+  const groups = new Map<string, { file: string; routes: string[]; detail: string }>();
+  const rest: Array<{ file: string; issue: string }> = [];
+  for (const f of findings) {
+    const m = f.issue.match(/^\[route-sweep\] (\S+) \((?:signed-in|signed-out), on a phone\) (.*)$/);
+    if (!m) { rest.push(f); continue; }
+    const detail = m[2]!;
+    const g = groups.get(detail) ?? { file: f.file, routes: [], detail };
+    g.routes.push(m[1]!);
+    groups.set(detail, g);
+  }
+  const merged = [...groups.values()].map((g) => ({
+    file: g.file,
+    issue: `[route-sweep] on a phone (375px wide), ${g.routes.length} page(s) (${g.routes.join(", ")}): the page ${g.detail}. The header is shared by these pages, so fix it once in the shared header or layout component (collapse the menu or let it wrap), and wrap any wide table in a container that scrolls sideways inside itself.`,
+  }));
+  return [...rest, ...merged];
 }
 
 export interface RouteSweepOptions {
@@ -144,7 +181,9 @@ export interface RouteSweepResult {
 }
 
 const PAGE_INFO_EXPRESSION =
-  "/*page*/ ({ text: (document.body ? document.body.innerText : '').slice(0, 2000), links: [...document.querySelectorAll('a[href]')].map((a) => a.getAttribute('href') || '') })";
+  "/*page*/ ({ text: (document.body ? document.body.innerText : '').slice(0, 2000), links: [...document.querySelectorAll('a[href]')].map((a) => a.getAttribute('href') || ''), " +
+  "overflowPx: Math.max(0, document.documentElement.scrollWidth - window.innerWidth), " +
+  "clippedNav: [...document.querySelectorAll('header a, header button, nav a, nav button')].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.right > window.innerWidth + 1 || r.left < -1); }).map((e) => (e.textContent || '').trim()).filter(Boolean) })";
 
 const pageFileFor = (file: string) => `frontend/${file}`;
 const slug = (route: string) => (route === "/" ? "home" : route.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, ""));
@@ -185,22 +224,24 @@ export async function createReviewAccount(
   return { email, password, token };
 }
 
-async function visitPage(browser: BrowserLike, opts: RouteSweepOptions, route: string, auth: Visit["auth"], file: string | null, links: Array<{ href: string; from: string }>): Promise<Visit> {
+async function visitPage(browser: BrowserLike, opts: RouteSweepOptions, route: string, auth: Visit["auth"], file: string | null, links: Array<{ href: string; from: string }>, viewport: "desktop" | "phone" = "desktop"): Promise<Visit> {
   const before = {
     console: (((await browser.send("consoleErrors")) as any)?.consoleErrors ?? []).length as number,
     page: (((await browser.send("consoleErrors")) as any)?.pageErrors ?? []).length as number,
     failed: (((await browser.send("failedRequests")) as any)?.failed ?? []).length as number,
   };
-  const v: Visit = { route, auth, status: null, finalPath: route, bodyText: "", consoleErrors: [], pageErrors: [], failedRequests: [], loadError: null };
+  const v: Visit = { route, auth, status: null, finalPath: route, bodyText: "", consoleErrors: [], pageErrors: [], failedRequests: [], loadError: null, viewport };
   try {
     const nav = (await browser.send("navigate", { url: opts.appUrl.replace(/\/$/, "") + route })) as { status: number | null; finalUrl?: string; url?: string };
     v.status = nav?.status ?? null;
     try { v.finalPath = new URL(nav?.finalUrl ?? nav?.url ?? "", "http://x").pathname; } catch { /* keep route */ }
-    const info = ((await browser.send("evaluate", { expression: PAGE_INFO_EXPRESSION })) as any)?.value as { text?: string; links?: string[] } | null;
+    const info = ((await browser.send("evaluate", { expression: PAGE_INFO_EXPRESSION })) as any)?.value as { text?: string; links?: string[]; overflowPx?: number; clippedNav?: string[] } | null;
     v.bodyText = info?.text ?? "";
-    for (const href of info?.links ?? []) links.push({ href, from: route });
+    v.overflowPx = info?.overflowPx ?? 0;
+    v.clippedNav = info?.clippedNav ?? [];
+    if (viewport === "desktop") for (const href of info?.links ?? []) links.push({ href, from: route });
     if (opts.screenshotDir) {
-      await browser.send("screenshot", { path: join(opts.screenshotDir, `${auth}-${slug(route)}.png`), fullPage: true }).catch(() => {});
+      await browser.send("screenshot", { path: join(opts.screenshotDir, `${viewport === "phone" ? "phone-" : ""}${auth}-${slug(route)}.png`), fullPage: true }).catch(() => {});
     }
   } catch (err) {
     v.loadError = String(err instanceof Error ? err.message : err).slice(0, 200);
@@ -227,13 +268,18 @@ export async function runRouteSweep(opts: RouteSweepOptions): Promise<RouteSweep
   const staticRoutes = pages.filter((p) => !isDynamic(p.route));
   const dynamicRoutes = pages.filter((p) => isDynamic(p.route));
 
-  const pass = async (auth: Visit["auth"], extra: string[]) => {
+  const pass = async (auth: Visit["auth"], extra: string[], viewport: "desktop" | "phone" = "desktop") => {
     const targets = [...staticRoutes.map((p) => p.route), ...extra];
     const results: Visit[] = [];
-    for (const route of targets) {
-      const v = await visitPage(browser, opts, route, auth, fileOf.get(route) ?? null, links);
-      visited++;
-      results.push(v);
+    if (viewport === "phone") await browser.send("setViewport", PHONE_VIEWPORT);
+    try {
+      for (const route of targets) {
+        const v = await visitPage(browser, opts, route, auth, fileOf.get(route) ?? null, links, viewport);
+        visited++;
+        results.push(v);
+      }
+    } finally {
+      if (viewport === "phone") await browser.send("setViewport", DESKTOP_VIEWPORT);
     }
     return results;
   };
@@ -249,6 +295,8 @@ export async function runRouteSweep(opts: RouteSweepOptions): Promise<RouteSweep
   await browser.send("newSession");
   const out = await pass("signed-out", []);
   report(out);
+  // The same pages at phone width (a phone is the first screen many users have).
+  report(await pass("signed-out", [], "phone"));
 
   // Signed in: a test account, then the session cookie the generated apps use.
   const session = opts.session ?? (await createReviewAccount(opts));
@@ -290,6 +338,7 @@ export async function runRouteSweep(opts: RouteSweepOptions): Promise<RouteSweep
       signedIn = signedIn.filter((v) => !bounced.includes(v));
     }
     report(signedIn);
+    report(await pass("signed-in", [...samples], "phone"));
   }
 
   for (const d of dynamicRoutes) {
@@ -304,7 +353,8 @@ export async function runRouteSweep(opts: RouteSweepOptions): Promise<RouteSweep
     findings.push({ file, issue: `[route-sweep] a link to ${m.href} (on ${m.from.join(", ")}) matches no page or route of the app` });
   }
 
-  return { ran: true, pass: findings.length === 0, findings, notChecked, visited, seeded };
+  const merged = mergePhoneFindings(findings);
+  return { ran: true, pass: merged.length === 0, findings: merged, notChecked, visited, seeded };
 }
 
 /** The real run: the app's own page files, a real browser, screenshots kept in the hidden evidence folder. */
