@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, unlinkSync } from "fs";
-import { join, dirname, resolve } from "path";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, unlinkSync, rmSync } from "fs";
+import { join, dirname, resolve, basename } from "path";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { EvidenceLedger } from "../enforce/evidence.ts";
 import { rollbackWorkspaceTransaction } from "./git.ts";
@@ -158,8 +158,42 @@ export function execDeleteFile(sandboxDir: string, args: { path: string }, writa
     if (!existsSync(abs)) {
       return { status: "error", summary: `File not found: ${args.path}`, next_actions: ["use list_files to see what exists"] };
     }
-    unlinkSync(abs);
-    return { status: "success", summary: `Deleted ${args.path}` };
+    if (!statSync(abs).isDirectory()) {
+      unlinkSync(abs);
+      return { status: "success", summary: `Deleted ${args.path}` };
+    }
+
+    // A folder (2026-10-13): rm is not in the allowlist, so this is the only way to remove one. Never the
+    // project folder itself, never dependencies or git history, and all-or-nothing — if any file inside is
+    // one the agent may not change, nothing is deleted.
+    if (resolve(abs) === resolve(sandboxDir)) {
+      return { status: "error", summary: "delete_file will not remove the project folder itself.", next_actions: ["name a folder or file inside it"] };
+    }
+    const name = basename(abs);
+    if (name === "node_modules" || name === ".git") {
+      return { status: "error", summary: `delete_file will not remove ${name}.`, next_actions: ["leave dependencies and git history alone"] };
+    }
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else files.push(full);
+      }
+    };
+    walk(abs);
+    if (writableFile) {
+      const blocked = files.filter((f) => !writableFile(relativeInside(sandboxDir, f)));
+      if (blocked.length > 0) {
+        const first = relativeInside(sandboxDir, blocked[0]!);
+        return {
+          status: "error",
+          summary: `"${args.path}" holds ${blocked.length} file${blocked.length === 1 ? "" : "s"} that are not yours to change (for example "${first}"), so nothing was deleted. ${NOT_YOUR_FILE_HINT}`,
+        };
+      }
+    }
+    rmSync(abs, { recursive: true, force: true });
+    return { status: "success", summary: `Deleted folder ${args.path} (${files.length} file${files.length === 1 ? "" : "s"})` };
   } catch (err) {
     return { status: "error", summary: `delete_file failed: ${String(err)}`, next_actions: ["check path for traversal"] };
   }
@@ -321,7 +355,7 @@ export const FILE_TOOL_DEFS: NimToolDef[] = [
     type: "function",
     function: {
       name: "delete_file",
-      description: "Delete a file in the project output directory. Use this instead of run_command('rm ...') — rm is not in the shell allowlist.",
+      description: "Delete a file, or a whole folder with everything in it, in the project output directory. Use this instead of run_command('rm ...') — rm is not in the shell allowlist. It will not remove the project folder itself, node_modules or .git.",
       parameters: {
         type: "object",
         properties: {

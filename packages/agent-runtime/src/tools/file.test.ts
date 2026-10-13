@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execWriteFile, execWriteFiles, execEditFile, execDeleteFile } from "./file.ts";
@@ -150,6 +150,50 @@ test("delete_file errors when the target file does not exist", () => {
 test("delete_file blocks path traversal outside the sandbox", () => {
   const result = execDeleteFile(sandboxDir, { path: "../../etc/passwd" });
   expect(result.status).toBe("error");
+});
+
+// 2026-10-13 (Stockroom Express Build): the frontend editor had to remove whole
+// folders (app/invoices, app/clients, ...). delete_file only unlinked single
+// files, and rm is not in the allowlist, so it spent ~8 of its 40 iterations on
+// rm -rf, delete_file on a folder and npx rimraf before running out.
+test("delete_file removes a folder and everything in it, and says how many files went", () => {
+  mkdirSync(join(sandboxDir, "app", "invoices", "[id]"), { recursive: true });
+  writeFileSync(join(sandboxDir, "app", "invoices", "page.tsx"), "a");
+  writeFileSync(join(sandboxDir, "app", "invoices", "[id]", "page.tsx"), "b");
+  writeFileSync(join(sandboxDir, "app", "keep.tsx"), "c");
+  const result = execDeleteFile(sandboxDir, { path: "app/invoices" });
+  expect(result.status).toBe("success");
+  expect(result.summary).toContain("2 files");
+  expect(existsSync(join(sandboxDir, "app", "invoices"))).toBe(false);
+  expect(existsSync(join(sandboxDir, "app", "keep.tsx"))).toBe(true);
+});
+
+test("delete_file never deletes the project folder itself", () => {
+  writeFileSync(join(sandboxDir, "a.ts"), "x");
+  for (const path of [".", "", "./", "app/.."]) {
+    const result = execDeleteFile(sandboxDir, { path });
+    expect(result.status).toBe("error");
+  }
+  expect(existsSync(join(sandboxDir, "a.ts"))).toBe(true);
+});
+
+test("delete_file refuses a folder that holds a file the agent may not change, and deletes nothing", () => {
+  mkdirSync(join(sandboxDir, "deploy"), { recursive: true });
+  writeFileSync(join(sandboxDir, "deploy", "docker-compose.yml"), "services: {}");
+  writeFileSync(join(sandboxDir, "deploy", "notes.md"), "n");
+  const onlyNotes = (rel: string) => rel.endsWith("notes.md");
+  const result = execDeleteFile(sandboxDir, { path: "deploy" }, onlyNotes);
+  expect(result.status).toBe("error");
+  expect(existsSync(join(sandboxDir, "deploy", "docker-compose.yml"))).toBe(true);
+  expect(existsSync(join(sandboxDir, "deploy", "notes.md"))).toBe(true);
+});
+
+test("delete_file will not remove node_modules or .git folders", () => {
+  mkdirSync(join(sandboxDir, "node_modules", "x"), { recursive: true });
+  writeFileSync(join(sandboxDir, "node_modules", "x", "i.js"), "1");
+  const result = execDeleteFile(sandboxDir, { path: "node_modules" });
+  expect(result.status).toBe("error");
+  expect(existsSync(join(sandboxDir, "node_modules", "x", "i.js"))).toBe(true);
 });
 
 test("cleanComposeContent strips container_name from docker-compose.yml", () => {
