@@ -174,3 +174,29 @@ test("applyThemeVariation reports applied:false without throwing on an old-syste
   expect(result.applied).toBe(false);
   expect(result.reason).toContain("createTheme()");
 });
+
+// 2026-10-13 (Shopbill run 5): the request said "the main accent colour becomes a deep blue", and the always-on
+// variation had already set the theme's primary to a random magenta. A colour the person named wins.
+test("applyThemeVariation uses the accent the request named, exactly, instead of picking one", () => {
+  const buildDir = join("E:", "tmp", "nexsidi-builds", "clone4");
+  const layoutPath = join(buildDir, "frontend", "app", "layout.tsx");
+  const fakeFs = { ...makeFakeFs({ [layoutPath]: REAL_LAYOUT_SHAPE }), accent: "#1D4ED8" };
+
+  const result = applyThemeVariation(buildDir, "clone4", fakeFs);
+
+  expect(result.applied).toBe(true);
+  expect(result.newAccent).toBe("#1D4ED8");
+  expect(fakeFs.writes[layoutPath]).toContain('"primary": "#1D4ED8"');
+});
+
+test("applyThemeVariation ignores a named accent that is not a hex colour and picks as before", () => {
+  const buildDir = join("E:", "tmp", "nexsidi-builds", "clone5");
+  const layoutPath = join(buildDir, "frontend", "app", "layout.tsx");
+  const fakeFs = { ...makeFakeFs({ [layoutPath]: REAL_LAYOUT_SHAPE }), accent: "deep blue" };
+
+  const result = applyThemeVariation(buildDir, "clone5", fakeFs);
+
+  expect(result.applied).toBe(true);
+  expect(result.newAccent).not.toBe("deep blue");
+  expect(CLONE_ACCENT_PALETTE as readonly string[]).toContain(result.newAccent!);
+});

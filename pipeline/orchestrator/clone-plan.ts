@@ -30,6 +30,8 @@ export interface CloneChangePlan {
   frontendInstructions: string;
   // How big the change is — null when the planner did not say. See expressScope().
   scope: CloneChangeScope | null;
+  // The accent colour the request names, as a hex such as #1D4ED8; null when it names none.
+  accentColor: string | null;
 }
 
 // 2026-10-13 (Amit): Express Build is a template with tweaks — it reuses an older app's backend and frontend and
@@ -110,6 +112,7 @@ Respond with ONLY this JSON shape, no other text, no markdown fences:
   "reasoning": "one sentence citing what already exists vs what's actually missing",
   "backendInstructions": "a clear, specific brief for exactly what to build on the backend, naming an exact existing file (e.g. src/routes/orders.routes.ts) to model it after — or null if not needed",
   "frontendInstructions": "a clear, specific brief for what to build/wire on the frontend, naming an exact existing file to model new components after, and referencing the backend's new endpoints by path if any were planned",
+  "accentColor": "a hex colour like #1D4ED8 — a deep, professional shade of the colour the request asks for as the main accent — or null if it names no colour",
   "scope": {
     "newTables": integer — how many NEW database tables this change needs (0 if none),
     "newPages": integer — how many NEW pages or screens this change needs (0 if none),
@@ -152,6 +155,7 @@ export function parseCloneChangePlan(raw: string): CloneChangePlan {
     backendInstructions: typeof parsed.backendInstructions === "string" ? parsed.backendInstructions : null,
     frontendInstructions: parsed.frontendInstructions,
     scope: parseScope(parsed.scope),
+    accentColor: typeof parsed.accentColor === "string" && /^#[0-9a-fA-F]{6}$/.test(parsed.accentColor) ? parsed.accentColor : null,
   };
 }
 

@@ -453,3 +453,11 @@ test("with no request of its own, spec.json keeps the site's description", async
   expect(typeof spec.description).toBe("string");
   expect(spec.description.length).toBeGreaterThan(0);
 });
+
+test("an Express Build uses the accent colour the request named", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  makeSourceWithTraces(tempBuildDir, "srcaaa000001");
+  const result = await expressFrom(tempBuildDir, "srcaaa000001", "newbbb000002", { accentColor: "#1D4ED8" } as never);
+  expect(result.theme.newAccent).toBe("#1D4ED8");
+  expect(readFileSync(join(tempBuildDir, "newbbb000002", "frontend", "app", "layout.tsx"), "utf-8")).toContain('"primary": "#1D4ED8"');
+});

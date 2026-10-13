@@ -231,3 +231,43 @@ test("applyCloneChanges does not call a change applied just because the untouche
   expect(r.errors.join(" ")).toContain("no-tool-call");
   expect(runs).toBe(1);
 });
+
+// 2026-10-13 (Shopbill run 5): links left pointing at a section the pass removed.
+test("applyCloneChanges sends the agent back once about in-page links to sections that no longer exist", async () => {
+  const messages: string[] = [];
+  let call = 0;
+  const runGenerator = async (config: AgentRunConfig) => {
+    call += 1;
+    messages.push(config.initialMessage);
+    return { success: true, summary: call === 1 ? "done" : "removed the dead link", filesWritten: call === 1 ? ["app/page.tsx"] : ["components/marketing/Hero.tsx"], iterations: 4, errors: [], escalated: false };
+  };
+  const results = [[{ anchor: "comparison", file: "components/marketing/Hero.tsx" }], []];
+  const anchors = async () => results.shift() ?? [];
+  const r = await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k" }, { runGenerator, anchors });
+  expect(call).toBe(2);
+  expect(messages[1]).toContain("#comparison");
+  expect(messages[1]).toContain("components/marketing/Hero.tsx");
+  expect(r.applied).toBe(true);
+  expect(r.filesWritten).toContain("components/marketing/Hero.tsx");
+  expect(r.errors).toEqual([]);
+});
+
+test("applyCloneChanges does not go back when there are no dead in-page links", async () => {
+  let call = 0;
+  const runGenerator = async () => {
+    call += 1;
+    return { success: true, summary: "done", filesWritten: ["app/page.tsx"], iterations: 4, errors: [], escalated: false };
+  };
+  const anchors = async () => [];
+  const r = await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k" }, { runGenerator, anchors });
+  expect(call).toBe(1);
+  expect(r.applied).toBe(true);
+});
+
+test("applyCloneChanges keeps a delivered change and reports dead links that are still there after the one retry", async () => {
+  const runGenerator = async () => ({ success: true, summary: "done", filesWritten: ["app/page.tsx"], iterations: 4, errors: [], escalated: false });
+  const anchors = async () => [{ anchor: "comparison", file: "components/marketing/Hero.tsx" }];
+  const r = await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k" }, { runGenerator, anchors });
+  expect(r.applied).toBe(true);
+  expect(r.errors.join(" ")).toContain("#comparison");
+});

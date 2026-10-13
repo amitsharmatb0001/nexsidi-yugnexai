@@ -10,9 +10,10 @@
 // respects whichever tier (GENERATOR_TIER=gemini vs NIM/Claude-escalation)
 // is actually active in this environment rather than hardcoding an
 // assumption about it.
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
+import { findDanglingAnchors, type DanglingAnchor } from "./anchor-check.ts";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 // Deep relative import, not the "@nexsidi/agent-runtime" package alias —
 // pipeline/package.json's dependencies list does not include agent-runtime
@@ -127,6 +128,24 @@ export async function verifyFrontend(frontendDir: string): Promise<FrontendVerif
   return { ran: build.code !== null, ok: build.code === 0, output: tail(build.output) };
 }
 
+export type DanglingAnchorScan = (frontendDir: string) => Promise<DanglingAnchor[]>;
+
+/** Every in-page link in the app's pages and components whose target id exists nowhere. */
+export async function scanDanglingAnchors(frontendDir: string): Promise<DanglingAnchor[]> {
+  const files: { path: string; content: string }[] = [];
+  const walk = (dir: string) => {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir)) {
+      if (entry === "node_modules" || entry === ".next" || entry.startsWith(".")) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (/\.(tsx?|jsx?)$/.test(entry)) files.push({ path: relative(frontendDir, full).split(sep).join("/"), content: readFileSync(full, "utf-8") });
+    }
+  };
+  for (const d of ["app", "components"]) walk(join(frontendDir, d));
+  return findDanglingAnchors(files);
+}
+
 export interface ApplyCloneChangesResult {
   applied: boolean;
   summary: string;
@@ -136,10 +155,11 @@ export interface ApplyCloneChangesResult {
 
 export async function applyCloneChanges(
   opts: ApplyCloneChangesOptions,
-  deps: { runGenerator?: GeneratorRunner; verify?: FrontendVerify } = {},
+  deps: { runGenerator?: GeneratorRunner; verify?: FrontendVerify; anchors?: DanglingAnchorScan } = {},
 ): Promise<ApplyCloneChangesResult> {
   const runGenerator = deps.runGenerator ?? resolveGeneratorRunner();
   const verify = deps.verify ?? verifyFrontend;
+  const anchors = deps.anchors ?? scanDanglingAnchors;
   const frontendDir = join(opts.buildDir, "frontend");
 
   const runPass = (initialMessage: string, maxIterations: number) =>
@@ -164,10 +184,31 @@ export async function applyCloneChanges(
   // A scoped edit against an already-complete app needs far fewer turns than a full build (Aanya's own
   // maxIterations is 90) — bounded low so a run that can't converge fails fast. 25 for a content edit; 40 when it
   // also wires to a backend that just changed (measured live 2026-09-02: 25 was one component short).
+  // A section the pass removed can leave links pointing at it (Shopbill run 5: a "Compare vs Spreadsheets" button).
+  // Types and the build cannot see that. Ask the agent once to take them out; whatever is left is reported, and the
+  // delivered change is kept.
+  const finish = async (done: ApplyCloneChangesResult): Promise<ApplyCloneChangesResult> => {
+    const dead = await anchors(frontendDir);
+    if (dead.length === 0) return done;
+    const list = dead.map((d) => `"#${d.anchor}" in ${d.file}`).join(", ");
+    const fix = await runPass(
+      `Some links on the page point at sections that no longer exist: ${list}. ` +
+        `Remove each such link or button (or point it at something that exists). Change nothing else, ` +
+        `then run "npx tsc --noEmit" and "npx next build" until both pass.`,
+      8,
+    );
+    const left = await anchors(frontendDir);
+    const filesWritten = [...new Set([...done.filesWritten, ...fix.filesWritten])];
+    const errors = left.length > 0
+      ? [...done.errors, `Links to sections that no longer exist remain: ${left.map((d) => `"#${d.anchor}" in ${d.file}`).join(", ")}`]
+      : done.errors;
+    return { ...done, filesWritten, errors };
+  };
+
   const first = await runPass(buildCloneEditTask(opts.changes, opts.newName, opts.backendContext), opts.backendContext ? 40 : 25);
 
   if (first.success) {
-    return { applied: true, summary: first.summary, filesWritten: first.filesWritten, errors: first.errors };
+    return finish({ applied: true, summary: first.summary, filesWritten: first.filesWritten, errors: first.errors });
   }
 
   // The pass ended without its checks green (typically out of iterations, one error short — Shopbill run 3).
@@ -190,7 +231,7 @@ ${found.output}`,
   const again = await verify(frontendDir);
   const filesWritten = [...new Set([...first.filesWritten, ...second.filesWritten])];
   if (again.ran && again.ok) {
-    return { applied: true, summary: second.summary || first.summary, filesWritten, errors: [] };
+    return finish({ applied: true, summary: second.summary || first.summary, filesWritten, errors: [] });
   }
   return {
     applied: false,

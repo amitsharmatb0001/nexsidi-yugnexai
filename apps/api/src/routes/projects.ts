@@ -421,7 +421,7 @@ projectsRouter.post("/express-build", async (c) => {
     try { await registerBuildFolderSafely(newId, newName, BUILD_DIR); } catch (err) { console.error(`[express-build] could not name the build folder for ${newId}: ${String(err)}`); }
     let cloneResult: Awaited<ReturnType<typeof cloneProject>>;
     try {
-      cloneResult = await cloneProject({ sourceProjectId: sourceId, newProjectId: newId, oldName, newName, sourcePorts, buildDir: BUILD_DIR, ...(hasOwnRequest ? { requestText } : {}) });
+      cloneResult = await cloneProject({ sourceProjectId: sourceId, newProjectId: newId, oldName, newName, sourcePorts, buildDir: BUILD_DIR, ...(hasOwnRequest ? { requestText } : {}), accentColor: earlyPlan?.accentColor ?? null });
     } catch (err) {
       console.error(`[express-build] ${newId} from ${sourceId} failed: ${String(err)}`);
       return c.json({ error: "express_build_failed", message: "Express Build couldn't create the project. Please try again." }, 500);
@@ -476,7 +476,7 @@ projectsRouter.post("/express-build", async (c) => {
         // pass on the user's raw request — rather than failing the whole
         // clone over a planning-step hiccup.
         console.warn(`[express-build] ${newId}: change planning failed, defaulting to frontend-only: ${String(err)}`);
-        plan = { needsBackendChanges: false, reasoning: "planning failed, defaulted to frontend-only", backendInstructions: null, frontendInstructions: changes, scope: null };
+        plan = { needsBackendChanges: false, reasoning: "planning failed, defaulted to frontend-only", backendInstructions: null, frontendInstructions: changes, scope: null, accentColor: null };
       }
       planReasoning = plan.reasoning;
 

@@ -181,3 +181,16 @@ test("the refusal tells the person why, what Express Build is for, and what to d
   expect(m.toLowerCase()).toContain("fresh build");
   expect(m.toLowerCase()).toContain("narrow");
 });
+
+test("the plan carries the accent colour the request names, as a hex, and null when it names none", () => {
+  const withColour = JSON.stringify({ needsBackendChanges: false, reasoning: "r", backendInstructions: null, frontendInstructions: "f", accentColor: "#1D4ED8" });
+  expect(parseCloneChangePlan(withColour).accentColor).toBe("#1D4ED8");
+  const none = JSON.stringify({ needsBackendChanges: false, reasoning: "r", backendInstructions: null, frontendInstructions: "f", accentColor: null });
+  expect(parseCloneChangePlan(none).accentColor).toBeNull();
+  const junk = JSON.stringify({ needsBackendChanges: false, reasoning: "r", backendInstructions: null, frontendInstructions: "f", accentColor: "deep blue" });
+  expect(parseCloneChangePlan(junk).accentColor).toBeNull();
+});
+
+test("the prompt asks for the accent colour", () => {
+  expect(buildPlanPrompt("make it blue", { endpoints: [] }, { tables: [] }, "", "")).toContain("accentColor");
+});

@@ -130,6 +130,9 @@ export interface ApplyThemeVariationDeps {
   readFn?: (path: string) => string;
   writeFn?: (path: string, content: string) => void;
   existsFn?: (path: string) => boolean;
+  // A colour the request named, as a hex. It wins over the random pick (2026-10-13, Shopbill: "the main accent
+  // colour becomes a deep blue" had been set to a random magenta).
+  accent?: string | null;
 }
 
 export function applyThemeVariation(
@@ -151,7 +154,8 @@ export function applyThemeVariation(
   // No real source signal to steer away from (e.g. old-system project that
   // happens to still hit this far) — any palette pick is "distinct enough".
   const sourceAccent = sourceAccentMatch?.[1] ?? "#000000";
-  const newAccent = pickDistinctAccent(sourceAccent, seed);
+  const named = typeof deps.accent === "string" && /^#[0-9a-fA-F]{6}$/.test(deps.accent) ? deps.accent : null;
+  const newAccent = named ?? pickDistinctAccent(sourceAccent, seed);
 
   const rewritten = shiftThemeAccent(content, newAccent);
   if (!rewritten) {

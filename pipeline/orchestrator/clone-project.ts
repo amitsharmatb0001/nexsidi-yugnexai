@@ -218,6 +218,8 @@ export interface CloneProjectOptions {
   // Written as user-request.txt; without it, the new name plus the site's
   // own spec description is used. Never the source customer's request.
   requestText?: string;
+  // A hex colour the request named for the main accent; wins over the always-on random variation.
+  accentColor?: string | null;
 }
 
 export interface CloneProjectResult {
@@ -279,7 +281,7 @@ export async function cloneProject(
   // so it costs zero LLM tokens and never depends on the optional edit
   // pass. Seeded on the new project's own id, so it's deterministic and
   // different clones from the same source land on different accents too.
-  const theme = applyThemeVariation(destDir, opts.newProjectId);
+  const theme = applyThemeVariation(destDir, opts.newProjectId, { accent: opts.accentColor ?? null });
 
   const composePath = join(destDir, "docker-compose.yml");
   if (existsSync(composePath)) {
