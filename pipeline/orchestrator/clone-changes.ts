@@ -173,8 +173,11 @@ export async function applyCloneChanges(
   // The pass ended without its checks green (typically out of iterations, one error short — Shopbill run 3).
   // Run the real checks here; if they fail, send the agent back ONCE with exactly those errors, then fail honestly.
   const found = await verify(frontendDir);
+  // Green checks mean the app builds, not that the requested change was made (an agent that gave up having written
+  // nothing leaves an untouched app that passes). Only a pass that reported success counts as applied, so with no
+  // failing checks to hand back there is nothing to fix up: the pass failed, and says so.
   if (!found.ran || found.ok) {
-    return { applied: found.ran && found.ok ? true : false, summary: first.summary, filesWritten: first.filesWritten, errors: first.errors };
+    return { applied: false, summary: first.summary, filesWritten: first.filesWritten, errors: first.errors };
   }
 
   const second = await runPass(

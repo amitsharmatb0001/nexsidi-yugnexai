@@ -360,7 +360,9 @@ export async function routeToolsWithFallback(
   messages: GeminiMessage[],
   tools: GeminiToolDef[],
   opts?: { model?: string; cachedContent?: string; agentName?: string },
+  deps: { chat?: typeof geminiChatWithTools } = {},
 ): Promise<GeminiChatWithToolsResult & { modelUsed: string }> {
+  const chat = deps.chat ?? geminiChatWithTools;
   // 2026-07-28: opts.agentName rotates the FALLBACK order (see
   // rotatedPoolForAgent's header comment) so parallel callers sharing one
   // tier (Navya/Karan/Deepika all on "qa") don't all collide on the same
@@ -389,9 +391,10 @@ export async function routeToolsWithFallback(
     console.log(`[routeToolsWithFallback:${tier}] every pool model is cooling down or circuit-open — attempting anyway rather than failing without trying`);
   }
 
+  let lastEmpty: (GeminiChatWithToolsResult & { modelUsed: string }) | null = null;
   for (const model of attemptOrder) {
     try {
-      const result = await geminiChatWithTools(messages, tools, {
+      const result = await chat(messages, tools, {
         model,
         thinkingLevel,
         cachedContent: opts?.cachedContent,
@@ -399,6 +402,14 @@ export async function routeToolsWithFallback(
         // guaranteed fallback model is one line away in this loop.
         fastFailOn429: true,
       });
+      // An answer with no text and no tool call is a failed call, not a turn (Shopbill run 4: three in a row ended
+      // a whole pass having written nothing). Try the next model, as for an error.
+      if (result.toolCalls.length === 0 && !result.content?.trim()) {
+        console.log(`[routeToolsWithFallback:${tier}] ${model} answered with nothing — trying the next model`);
+        errors.push(`${model}: empty answer`);
+        lastEmpty = { ...result, modelUsed: model };
+        continue;
+      }
       if (model !== pool[0]) {
         console.log(`[routeToolsWithFallback:${tier}] used fallback model ${model} (pool[0]=${pool[0]} failed)`);
       }
@@ -414,6 +425,10 @@ export async function routeToolsWithFallback(
       // Zero-wait: immediately try next model, no sleep/backoff
     }
   }
+
+  // Every model that answered at all answered with nothing: hand that back, so the caller's own handling
+  // (nudge, then give up) runs, instead of reporting a provider outage that did not happen.
+  if (lastEmpty) return lastEmpty;
 
   throw new Error(
     `[llm-client] routeToolsWithFallback(${tier}) — all pool models exhausted:\n${errors.join("\n")}`,

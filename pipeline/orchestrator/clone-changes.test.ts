@@ -215,3 +215,19 @@ test("applyCloneChanges, when its own check cannot run, leaves the pass's own fa
   expect(runs).toBe(1);
   expect(r.applied).toBe(false);
 });
+
+// 2026-10-13 (Shopbill run 4): the frontend editor got three empty turns from the model and gave up having written
+// nothing. The untouched app type-checks, and that was read as "the change was applied". Green checks mean the app
+// builds; they do not mean the requested change was made.
+test("applyCloneChanges does not call a change applied just because the untouched app passes its checks", async () => {
+  let runs = 0;
+  const runGenerator = async () => {
+    runs += 1;
+    return { success: false, summary: "gave up: 3 consecutive no-tool-call turns", filesWritten: [], iterations: 5, errors: ["3 consecutive no-tool-call turns"], escalated: false };
+  };
+  const verify = async () => ({ ran: true, ok: true, output: "" });
+  const r = await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k" }, { runGenerator, verify });
+  expect(r.applied).toBe(false);
+  expect(r.errors.join(" ")).toContain("no-tool-call");
+  expect(runs).toBe(1);
+});

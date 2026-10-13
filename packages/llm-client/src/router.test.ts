@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { allPoolModels, shouldUseGeminiForQA, poolForTier, thinkingLevelForTier, pipelineTierFor, shouldSkipGeminiModel, rotatedPoolForAgent } from "./router.ts";
+import { allPoolModels, shouldUseGeminiForQA, poolForTier, thinkingLevelForTier, pipelineTierFor, shouldSkipGeminiModel, rotatedPoolForAgent, routeToolsWithFallback } from "./router.ts";
 import { recordFailure } from "./circuit-breaker.ts";
 import { circuitKeyFor } from "./gemini.ts";
 
@@ -198,4 +198,40 @@ test("allPoolModels lists every model any tier pool can pick, once each", () => 
     expect(models).toContain(m);
   }
   expect(new Set(models).size).toBe(models.length);
+});
+
+// 2026-10-13 (Shopbill run 4): a fallback model answered three turns in a row with nothing at all — no text and no
+// tool call. The loop counted them as "chatty" turns and gave up, and the whole frontend pass wrote nothing. An empty
+// answer is a failed call; the next model in the pool should be tried, as it is for an error.
+const emptyAnswer = { content: "", toolCalls: [], stopReason: "STOP", rawParts: [] };
+const toolAnswer = { content: "", toolCalls: [{ name: "read_file", input: { path: "a" } }], stopReason: "STOP", rawParts: [] };
+
+test("routeToolsWithFallback tries the next model when one answers with nothing", async () => {
+  const tried: string[] = [];
+  const chat = async (_m: unknown, _t: unknown, o: { model: string }) => {
+    tried.push(o.model);
+    return tried.length === 1 ? emptyAnswer : toolAnswer;
+  };
+  const r = await routeToolsWithFallback("design", [], [], undefined, { chat: chat as never });
+  expect(tried.length).toBe(2);
+  expect(r.toolCalls.length).toBe(1);
+  expect(r.modelUsed).toBe(tried[1]!);
+});
+
+test("routeToolsWithFallback returns the empty answer, not an error, when every model answers with nothing", async () => {
+  const chat = async () => emptyAnswer;
+  const r = await routeToolsWithFallback("design", [], [], undefined, { chat: chat as never });
+  expect(r.toolCalls).toEqual([]);
+  expect(r.content).toBe("");
+});
+
+test("routeToolsWithFallback does not treat a text-only answer as empty — that can be a real 'I am done'", async () => {
+  const tried: string[] = [];
+  const chat = async (_m: unknown, _t: unknown, o: { model: string }) => {
+    tried.push(o.model);
+    return { content: "All steps are complete.", toolCalls: [], stopReason: "STOP", rawParts: [] };
+  };
+  const r = await routeToolsWithFallback("design", [], [], undefined, { chat: chat as never });
+  expect(tried.length).toBe(1);
+  expect(r.content).toContain("complete");
 });
