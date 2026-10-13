@@ -27,6 +27,7 @@ import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { join } from "node:path";
 import { resolveGeneratorRunner, type GeneratorRunner } from "../../packages/agent-runtime/src/generator-tier.ts";
 import { missingColumns, schemaFromSql } from "./schema-check.ts";
+import { verifyDir, type VerifyResult } from "./verify-commands.ts";
 
 export const CLONE_BACKEND_EDIT_SYSTEM_PROMPT = `You are editing an ALREADY WORKING, ALREADY DELIVERED Express + TypeScript backend.
 This is NOT a fresh build — it already compiles and its existing endpoints already work. Your ONLY job is to add exactly what's requested below, without breaking anything that already works.
@@ -98,11 +99,21 @@ export interface ApplyCloneBackendChangesResult {
   migrationApplied: string | null; // the new migration's real filename, or null if none was requested
 }
 
+export type BackendVerify = (backendDir: string) => Promise<VerifyResult>;
+
+/** The same two checks the Docker build runs for the backend. */
+export const verifyBackend: BackendVerify = (backendDir) =>
+  verifyDir(backendDir, [
+    { command: "npx tsc --noEmit", timeoutMs: 240_000 },
+    { command: "npm run build", timeoutMs: 300_000 },
+  ]);
+
 export async function applyCloneBackendChanges(
   opts: ApplyCloneBackendChangesOptions,
-  deps: { runGenerator?: GeneratorRunner } = {},
+  deps: { runGenerator?: GeneratorRunner; verify?: BackendVerify } = {},
 ): Promise<ApplyCloneBackendChangesResult> {
   const runGenerator = deps.runGenerator ?? resolveGeneratorRunner();
+  const verify = deps.verify ?? verifyBackend;
   const backendDir = join(opts.buildDir, "backend");
 
   const runPass = (initialMessage: string, maxIterations: number) =>
@@ -155,10 +166,36 @@ export async function applyCloneBackendChanges(
 
   let result = await runPass(buildBackendEditTask(opts.instructions), 25);
   applyMigrationRequest();
+  let passFilesWritten = result.filesWritten;
+
+  // The pass ended without finishing (typically out of iterations, one step short — Shopbill run 6). Run its real
+  // checks here. Failing: send it back once with exactly those errors. Passing: it just did not get to say so, so
+  // continue it once with the original request. Either way the work it did is kept.
+  if (!result.success) {
+    const found = await verify(backendDir);
+    if (found.ran) {
+      const more = await runPass(
+        found.ok
+          ? `You did not finish this task. Compare what is already done with the request below, finish whatever is still ` +
+              `missing (including MIGRATION_REQUEST.sql if the change needs a new column or table), run "npx tsc --noEmit" ` +
+              `and "npm run build" until both pass, then call task_complete.\n\n${buildBackendEditTask(opts.instructions)}`
+          : `The change was made, but the backend does not pass its checks. Fix exactly these errors and nothing else, ` +
+              `then run "npx tsc --noEmit" and "npm run build" until both pass:\n\n${found.output}`,
+        12,
+      );
+      applyMigrationRequest();
+      passFilesWritten = [...new Set([...passFilesWritten, ...more.filesWritten])];
+      if (more.success) {
+        result = { ...result, success: true, summary: more.summary || result.summary, errors: [], iterations: result.iterations + more.iterations };
+      } else {
+        result = { ...result, errors: [...result.errors, ...more.errors], iterations: result.iterations + more.iterations };
+      }
+    }
+  }
 
   // Types and the build cannot see a database column. If the code writes one no migration creates, send the
   // agent back once to write that migration — and fail the pass honestly if it still is not there.
-  let filesWritten = result.filesWritten;
+  let filesWritten = passFilesWritten;
   let gaps = missing(filesWritten);
   if (gaps.length > 0) {
     const list = gaps.map((g) => `${g.table}.${g.column} (used in ${g.file})`).join(", ");
@@ -171,7 +208,7 @@ export async function applyCloneBackendChanges(
     );
     applyMigrationRequest();
     filesWritten = [...filesWritten, ...follow.filesWritten];
-    gaps = missing(result.filesWritten);
+    gaps = missing(passFilesWritten);
     result = { ...result, iterations: result.iterations + follow.iterations };
     if (gaps.length > 0) {
       const list2 = gaps.map((g) => `${g.table}.${g.column}`).join(", ");

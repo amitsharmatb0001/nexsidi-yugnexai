@@ -11,9 +11,9 @@
 // is actually active in this environment rather than hardcoding an
 // assumption about it.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { spawn } from "node:child_process";
 import { join, relative, sep } from "node:path";
 import { findDanglingAnchors, type DanglingAnchor } from "./anchor-check.ts";
+import { verifyDir, type VerifyResult } from "./verify-commands.ts";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 // Deep relative import, not the "@nexsidi/agent-runtime" package alias —
 // pipeline/package.json's dependencies list does not include agent-runtime
@@ -91,42 +91,15 @@ export interface ApplyCloneChangesOptions {
   backendContext?: string;
 }
 
-export interface FrontendVerifyResult {
-  ran: boolean; // false when the check could not run at all (no install, timed out)
-  ok: boolean;
-  output: string; // the tail of what the failing command printed
-}
+export type FrontendVerifyResult = VerifyResult;
 export type FrontendVerify = (frontendDir: string) => Promise<FrontendVerifyResult>;
 
-function runShell(command: string, cwd: string, timeoutMs: number): Promise<{ code: number | null; output: string }> {
-  return new Promise((resolve) => {
-    // Asynchronous on purpose: a synchronous spawn would stop the whole API from answering for minutes.
-    const child = spawn(command, { cwd, shell: true });
-    let out = "";
-    const timer = setTimeout(() => {
-      child.kill();
-      resolve({ code: null, output: `${out}
-(timed out after ${Math.round(timeoutMs / 1000)}s)` });
-    }, timeoutMs);
-    child.stdout?.on("data", (d) => { out += String(d); });
-    child.stderr?.on("data", (d) => { out += String(d); });
-    child.on("error", (e) => { clearTimeout(timer); resolve({ code: null, output: String(e) }); });
-    child.on("close", (code) => { clearTimeout(timer); resolve({ code, output: out }); });
-  });
-}
-
-const tail = (text: string, chars = 3500) => (text.length > chars ? `...${text.slice(-chars)}` : text);
-
 /** The same two checks the Docker build runs, run here so a failure is found now and not minutes later. */
-export async function verifyFrontend(frontendDir: string): Promise<FrontendVerifyResult> {
-  if (!existsSync(join(frontendDir, "package.json")) || !existsSync(join(frontendDir, "node_modules"))) {
-    return { ran: false, ok: false, output: "" };
-  }
-  const tsc = await runShell("npx tsc --noEmit", frontendDir, 240_000);
-  if (tsc.code !== 0) return { ran: tsc.code !== null, ok: false, output: tail(tsc.output) };
-  const build = await runShell("npx next build", frontendDir, 420_000);
-  return { ran: build.code !== null, ok: build.code === 0, output: tail(build.output) };
-}
+export const verifyFrontend: FrontendVerify = (frontendDir) =>
+  verifyDir(frontendDir, [
+    { command: "npx tsc --noEmit", timeoutMs: 240_000 },
+    { command: "npx next build", timeoutMs: 420_000 },
+  ]);
 
 export type DanglingAnchorScan = (frontendDir: string) => Promise<DanglingAnchor[]>;
 
@@ -217,8 +190,23 @@ export async function applyCloneChanges(
   // Green checks mean the app builds, not that the requested change was made (an agent that gave up having written
   // nothing leaves an untouched app that passes). Only a pass that reported success counts as applied, so with no
   // failing checks to hand back there is nothing to fix up: the pass failed, and says so.
-  if (!found.ran || found.ok) {
+  if (!found.ran) {
     return { applied: false, summary: first.summary, filesWritten: first.filesWritten, errors: first.errors };
+  }
+  if (found.ok) {
+    // The app builds, but the pass did not finish (out of iterations, or the model went quiet). Continue it once
+    // from the state it left, with the original request — instead of throwing away what it did.
+    const more = await runPass(
+      `You did not finish this task. Compare what is already done in the app with the request below, finish whatever ` +
+        `is still missing, run "npx tsc --noEmit" and "npx next build" until both pass, then call task_complete.\n\n` +
+        buildCloneEditTask(opts.changes, opts.newName, opts.backendContext),
+      12,
+    );
+    const filesWrittenMore = [...new Set([...first.filesWritten, ...more.filesWritten])];
+    if (more.success) {
+      return finish({ applied: true, summary: more.summary || first.summary, filesWritten: filesWrittenMore, errors: [] });
+    }
+    return { applied: false, summary: more.summary || first.summary, filesWritten: filesWrittenMore, errors: [...first.errors, ...more.errors] };
   }
 
   const second = await runPass(

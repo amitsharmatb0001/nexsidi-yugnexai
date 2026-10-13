@@ -197,3 +197,69 @@ test("applyCloneBackendChanges does not retry when nothing it wrote needs a new 
   expect(call).toBe(1);
   expect(result.applied).toBe(true);
 });
+
+// 2026-10-13 (Shopbill run 6): the backend editor used all 25 iterations, stopped right after running its checks,
+// and the build failed although it was one step from done.
+test("applyCloneBackendChanges does not run a second pass when the first finished", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-backend-test-"));
+  makeFixture(tempBuildDir);
+  let call = 0;
+  const runGenerator = async () => {
+    call += 1;
+    return { success: true, summary: "done", filesWritten: [], iterations: 5, errors: [], escalated: false };
+  };
+  const verify = async () => ({ ran: true, ok: true, output: "" });
+  const r = await applyCloneBackendChanges({ buildDir: tempBuildDir, instructions: "x", apiKey: "k" }, { runGenerator, verify });
+  expect(call).toBe(1);
+  expect(r.applied).toBe(true);
+});
+
+test("applyCloneBackendChanges, when the pass ends with failing checks, sends the agent back once with exactly those errors", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-backend-test-"));
+  makeFixture(tempBuildDir);
+  const messages: string[] = [];
+  let call = 0;
+  const runGenerator = async (config: AgentRunConfig) => {
+    call += 1;
+    messages.push(config.initialMessage);
+    return call === 1
+      ? { success: false, summary: "ran out", filesWritten: ["src/a.ts"], iterations: 25, errors: ["ran out"], escalated: false }
+      : { success: true, summary: "fixed", filesWritten: ["src/a.ts"], iterations: 3, errors: [], escalated: false };
+  };
+  const outputs = [{ ran: true, ok: false, output: "src/a.ts(3,1): error TS2304: Cannot find name 'x'" }, { ran: true, ok: true, output: "" }];
+  const verify = async () => outputs.shift()!;
+  const r = await applyCloneBackendChanges({ buildDir: tempBuildDir, instructions: "x", apiKey: "k" }, { runGenerator, verify });
+  expect(call).toBe(2);
+  expect(messages[1]).toContain("TS2304");
+  expect(r.applied).toBe(true);
+});
+
+test("applyCloneBackendChanges, when the pass ends unfinished with green checks, continues it once with the original request", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-backend-test-"));
+  makeFixture(tempBuildDir);
+  const messages: string[] = [];
+  let call = 0;
+  const runGenerator = async (config: AgentRunConfig) => {
+    call += 1;
+    messages.push(config.initialMessage);
+    return call === 1
+      ? { success: false, summary: "ran out", filesWritten: ["src/a.ts"], iterations: 25, errors: ["ran out"], escalated: false }
+      : { success: true, summary: "finished", filesWritten: ["src/b.ts"], iterations: 4, errors: [], escalated: false };
+  };
+  const verify = async () => ({ ran: true, ok: true, output: "" });
+  const r = await applyCloneBackendChanges({ buildDir: tempBuildDir, instructions: "add a po reference to invoices", apiKey: "k" }, { runGenerator, verify });
+  expect(call).toBe(2);
+  expect(messages[1]).toContain("add a po reference to invoices");
+  expect(r.applied).toBe(true);
+  expect(r.filesWritten).toEqual(expect.arrayContaining(["src/a.ts", "src/b.ts"]));
+});
+
+test("applyCloneBackendChanges fails the pass when the continuation does not finish either", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-backend-test-"));
+  makeFixture(tempBuildDir);
+  const runGenerator = async () => ({ success: false, summary: "ran out", filesWritten: [], iterations: 25, errors: ["ran out"], escalated: false });
+  const verify = async () => ({ ran: true, ok: true, output: "" });
+  const r = await applyCloneBackendChanges({ buildDir: tempBuildDir, instructions: "x", apiKey: "k" }, { runGenerator, verify });
+  expect(r.applied).toBe(false);
+  expect(r.errors).toContain("ran out");
+});

@@ -219,17 +219,36 @@ test("applyCloneChanges, when its own check cannot run, leaves the pass's own fa
 // 2026-10-13 (Shopbill run 4): the frontend editor got three empty turns from the model and gave up having written
 // nothing. The untouched app type-checks, and that was read as "the change was applied". Green checks mean the app
 // builds; they do not mean the requested change was made.
-test("applyCloneChanges does not call a change applied just because the untouched app passes its checks", async () => {
+test("applyCloneChanges does not call a change applied just because the untouched app passes its checks — it continues the pass once", async () => {
+  const messages: string[] = [];
   let runs = 0;
-  const runGenerator = async () => {
+  const runGenerator = async (config: AgentRunConfig) => {
     runs += 1;
+    messages.push(config.initialMessage);
     return { success: false, summary: "gave up: 3 consecutive no-tool-call turns", filesWritten: [], iterations: 5, errors: ["3 consecutive no-tool-call turns"], escalated: false };
   };
   const verify = async () => ({ ran: true, ok: true, output: "" });
-  const r = await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k" }, { runGenerator, verify });
+  const r = await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "make the logo blue", newName: "N", apiKey: "k" }, { runGenerator, verify });
+  expect(runs).toBe(2);
+  expect(messages[1]).toContain("make the logo blue");
   expect(r.applied).toBe(false);
   expect(r.errors.join(" ")).toContain("no-tool-call");
-  expect(runs).toBe(1);
+});
+
+test("applyCloneChanges counts a continuation that finishes as applied", async () => {
+  let runs = 0;
+  const runGenerator = async () => {
+    runs += 1;
+    return runs === 1
+      ? { success: false, summary: "ran out", filesWritten: ["app/page.tsx"], iterations: 40, errors: ["ran out"], escalated: false }
+      : { success: true, summary: "finished the rest", filesWritten: ["app/pricing/page.tsx"], iterations: 6, errors: [], escalated: false };
+  };
+  const verify = async () => ({ ran: true, ok: true, output: "" });
+  const anchors = async () => [];
+  const r = await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k" }, { runGenerator, verify, anchors });
+  expect(runs).toBe(2);
+  expect(r.applied).toBe(true);
+  expect(r.filesWritten).toEqual(expect.arrayContaining(["app/page.tsx", "app/pricing/page.tsx"]));
 });
 
 // 2026-10-13 (Shopbill run 5): links left pointing at a section the pass removed.
