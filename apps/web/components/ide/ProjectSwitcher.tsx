@@ -14,6 +14,7 @@ import {
   DropdownMenuItem,
 } from "@/components/nexui/dropdown-menu";
 import NewProjectModal from "../NewProjectModal";
+import { FROM_SCRATCH_ENABLED } from "@/lib/entry";
 import { IconChevronDown } from "./IdeIcons";
 import { ws as s } from "./IdeWorkspace.styles";
 
@@ -65,12 +66,12 @@ export default function ProjectSwitcher({ projectId, projectName }: { projectId:
               ))
           )}
           <div className={s.projectSwitcherSep} />
-          <DropdownMenuItem onSelect={() => setShowCreate(true)}>New project…</DropdownMenuItem>
+          {FROM_SCRATCH_ENABLED && <DropdownMenuItem onSelect={() => setShowCreate(true)}>New project…</DropdownMenuItem>}
           <DropdownMenuItem onSelect={() => router.push("/projects")}>All projects</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <NewProjectModal open={showCreate} onOpenChange={setShowCreate} />
+      {FROM_SCRATCH_ENABLED && <NewProjectModal open={showCreate} onOpenChange={setShowCreate} />}
     </>
   );
 }

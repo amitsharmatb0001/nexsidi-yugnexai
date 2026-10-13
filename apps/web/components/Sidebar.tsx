@@ -8,7 +8,7 @@ import AccountMenu from "./AccountMenu";
 import YugnexLogo from "./ide/YugnexLogo";
 import { sidebar as s } from "./Sidebar.styles";
 
-type NavHref = "/dashboard" | "/projects" | "/memory" | "/approvals" | "/billing";
+type NavHref = "/dashboard/express-build" | "/dashboard" | "/projects" | "/memory" | "/approvals" | "/billing";
 
 interface NavItem {
   href: NavHref;
@@ -37,6 +37,7 @@ interface NavItem {
  * shell doesn't duplicate that surface.
  */
 const NAV: (approvalsCount?: number) => NavItem[] = (approvalsCount) => [
+  { href: "/dashboard/express-build", label: "Express Build" },
   { href: "/dashboard", label: "Dashboard" },
   { href: "/projects", label: "Projects" },
   { href: "/memory", label: "Memory Vault" },
@@ -63,7 +64,7 @@ export default function Sidebar({
 
         <nav className={s.nav}>
           {NAV(approvalsCount).map((item) => {
-            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const active = item.href === "/dashboard" ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`);
             return (
               <Link
                 key={item.href}

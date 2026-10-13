@@ -4,6 +4,7 @@ import type { FormEvent } from "react";
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { POST_AUTH_PATH } from "@/lib/entry";
 import s from "./auth.module.css";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
@@ -21,7 +22,7 @@ export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
     try {
       const response = await fetch(`${API}/api/auth/${mode}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
       if (!response.ok) throw new Error(signingUp ? "We could not create that account. Try a different email or a stronger password." : "Email or password is incorrect.");
-      router.push("/dashboard");
+      router.push(POST_AUTH_PATH);
     } catch (err) { setError(err instanceof Error ? err.message : "Something went wrong. Please try again."); } finally { setBusy(false); }
   }
 

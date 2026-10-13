@@ -28,7 +28,7 @@ const item = css({
 const FAQ: Array<{ q: string; a: string }> = [
   {
     q: "How do I start a new project?",
-    a: "From the dashboard, click New project and describe what you want built in your own words. You'll be asked only what's actually needed before the build starts.",
+    a: "Open Express Build from the sidebar and describe what you want built in your own words. You'll be asked only what's actually needed before the build starts.",
   },
   {
     q: "What happens when a project needs my approval?",

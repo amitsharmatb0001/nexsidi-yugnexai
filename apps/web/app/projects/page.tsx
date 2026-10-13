@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Sidebar from "@/components/Sidebar";
 import NewProjectModal from "@/components/NewProjectModal";
+import { FROM_SCRATCH_ENABLED } from "@/lib/entry";
 import { EmptyState } from "@/components/nexui/empty-state";
 import { Button } from "@/components/nexui/button";
 import { projects as s } from "./projects.styles";
@@ -143,9 +144,13 @@ export default function ProjectsPage() {
             <span className={s.eyebrow}>All Projects</span>
             <h1 className={s.mastheadTitle}>Projects</h1>
           </div>
-          <Button onClick={() => setShowCreate(true)}>
-            New project
-          </Button>
+          {FROM_SCRATCH_ENABLED ? (
+            <Button onClick={() => setShowCreate(true)}>
+              New project
+            </Button>
+          ) : (
+            <Link href="/dashboard/express-build"><Button>Express Build</Button></Link>
+          )}
         </header>
 
         {error && <div className={s.errorBanner}>{error}</div>}
@@ -162,8 +167,12 @@ export default function ProjectsPage() {
           <div className={`${s.list} ${s.emptyWrap}`}>
             <EmptyState
               title="No projects yet"
-              description="Click New project above and watch it get planned, built, and reviewed end to end."
-              actions={<Button onClick={() => setShowCreate(true)}>New project</Button>}
+              description={FROM_SCRATCH_ENABLED
+                ? "Click New project above and watch it get planned, built, and reviewed end to end."
+                : "Start with Express Build and watch it get built and reviewed end to end."}
+              actions={FROM_SCRATCH_ENABLED
+                ? <Button onClick={() => setShowCreate(true)}>New project</Button>
+                : <Link href="/dashboard/express-build"><Button>Express Build</Button></Link>}
             />
           </div>
         ) : (
@@ -279,7 +288,7 @@ export default function ProjectsPage() {
           </div>
         )}
       </main>
-      <NewProjectModal open={showCreate} onOpenChange={setShowCreate} />
+      {FROM_SCRATCH_ENABLED && <NewProjectModal open={showCreate} onOpenChange={setShowCreate} />}
     </Sidebar>
   );
 }
