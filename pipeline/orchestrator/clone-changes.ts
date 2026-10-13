@@ -95,6 +95,8 @@ export interface ApplyCloneChangesOptions {
   // wires to real endpoints instead of guessing at shapes that were never
   // confirmed to exist.
   backendContext?: string;
+  // The project the spend of every pass is added to (the same per-project total full builds use).
+  projectId?: string;
 }
 
 export type FrontendVerifyResult = VerifyResult;
@@ -154,6 +156,7 @@ export async function applyCloneChanges(
       systemPrompt: CLONE_EDIT_SYSTEM_PROMPT,
       initialMessage,
       sandboxDir: frontendDir,
+      ...(opts.projectId ? { projectId: opts.projectId } : {}),
       geminiTier: "design",
       enableHttpTools: true,
       maxIterations,

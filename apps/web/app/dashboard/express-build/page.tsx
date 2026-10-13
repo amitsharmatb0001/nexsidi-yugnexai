@@ -200,6 +200,12 @@ export default function ExpressBuildPage() {
                     <a className={s.link} href={result.body.appUrl} target="_blank" rel="noreferrer">{result.body.appUrl}</a>
                   </p>
                 )}
+                {result.body.spend && typeof (result.body.spend as { costUsd?: unknown }).costUsd === "number" && (
+                  <p className={s.resultLine}>
+                    <span className={s.resultLabel}>Cost</span>
+                    ${((result.body.spend as { costUsd: number }).costUsd).toFixed(2)} for the editing passes
+                  </p>
+                )}
                 {typeof result.body.backendSummary === "string" && (
                   <p className={s.resultLine}>
                     <span className={s.resultLabel}>Backend</span>

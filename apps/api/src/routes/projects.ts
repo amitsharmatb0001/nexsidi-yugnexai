@@ -486,6 +486,7 @@ projectsRouter.post("/express-build", async (c) => {
           buildDir: cloneResult.buildDir,
           instructions: plan.backendInstructions,
           apiKey,
+          projectId: newId,
         });
         backendApplied = backendResult.applied;
         backendSummary = backendResult.summary;
@@ -512,6 +513,7 @@ projectsRouter.post("/express-build", async (c) => {
         newName,
         apiKey,
         backendContext,
+        projectId: newId,
       });
       changesApplied = changeResult.applied;
       changesSummary = changeResult.summary;
@@ -586,11 +588,24 @@ projectsRouter.post("/express-build", async (c) => {
     const appUrl = `http://localhost:${cloneResult.ports.frontendPort}`;
     await db.update(projects).set({ status: "done", appUrl, updatedAt: new Date() }).where(eq(projects.id, newId));
 
+    // What this build cost: the model calls of its editing passes, added up by the same per-project total full
+    // builds use. (The small planning and starting-point calls before the project exists are not in it.)
+    const [spendRow] = await db
+      .select({ costUsd: tokenSpend.totalCostUsd, tokensIn: tokenSpend.totalTokensIn, tokensOut: tokenSpend.totalTokensOut })
+      .from(tokenSpend)
+      .where(eq(tokenSpend.projectId, newId))
+      .limit(1);
+    const spend = spendRow
+      ? { costUsd: Number(spendRow.costUsd), tokensIn: spendRow.tokensIn, tokensOut: spendRow.tokensOut }
+      : null;
+    console.log(`[express-build] ${newId} spend: ${spend ? `$${spend.costUsd.toFixed(2)} (${spend.tokensIn} in / ${spend.tokensOut} out)` : "none recorded"}`);
+
     return c.json({
       id: newId,
       name: newName,
       appUrl,
       ports: cloneResult.ports,
+      spend,
       ...(changes ? { planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors } : {}),
     }, 201);
   }

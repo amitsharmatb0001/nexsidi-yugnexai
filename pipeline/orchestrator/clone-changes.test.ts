@@ -295,3 +295,21 @@ test("CLONE_EDIT_SYSTEM_PROMPT tells the agent to make a new field required on t
   expect(CLONE_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("required");
   expect(CLONE_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("every place");
 });
+
+// 2026-10-13: Express Build recorded no spend (nine Shopbill runs left no cost anywhere). Every model call of a
+// pass is added to the project's total through the project id on the run config.
+test("applyCloneChanges runs every pass under the project id, so its spend is recorded", async () => {
+  const seen: (string | undefined)[] = [];
+  let call = 0;
+  const runGenerator = async (config: AgentRunConfig) => {
+    call += 1;
+    seen.push(config.projectId);
+    return call === 1
+      ? { success: false, summary: "ran out", filesWritten: [], iterations: 40, errors: ["ran out"], escalated: false }
+      : { success: true, summary: "done", filesWritten: [], iterations: 3, errors: [], escalated: false };
+  };
+  const verify = async () => ({ ran: true, ok: true, output: "" });
+  const anchors = async () => [];
+  await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k", projectId: "abc123def456" }, { runGenerator, verify, anchors });
+  expect(seen).toEqual(["abc123def456", "abc123def456"]);
+});

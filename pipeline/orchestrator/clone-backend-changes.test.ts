@@ -307,3 +307,20 @@ test("a migration the agent writes is made safe to run again (IF NOT EXISTS)", a
   expect(sql).toContain("CREATE TABLE IF NOT EXISTS notes");
   expect(sql).toContain("CREATE INDEX IF NOT EXISTS idx_notes");
 });
+
+test("applyCloneBackendChanges runs every pass under the project id, so its spend is recorded", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-backend-test-"));
+  makeFixture(tempBuildDir);
+  const seen: (string | undefined)[] = [];
+  let call = 0;
+  const runGenerator = async (config: AgentRunConfig) => {
+    call += 1;
+    seen.push(config.projectId);
+    return call === 1
+      ? { success: false, summary: "ran out", filesWritten: [], iterations: 25, errors: ["ran out"], escalated: false }
+      : { success: true, summary: "done", filesWritten: [], iterations: 3, errors: [], escalated: false };
+  };
+  const verify = async () => ({ ran: true, ok: true, output: "" });
+  await applyCloneBackendChanges({ buildDir: tempBuildDir, instructions: "x", apiKey: "k", projectId: "abc123def456" }, { runGenerator, verify });
+  expect(seen).toEqual(["abc123def456", "abc123def456"]);
+});

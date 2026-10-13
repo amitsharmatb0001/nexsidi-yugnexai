@@ -108,6 +108,8 @@ export interface ApplyCloneBackendChangesOptions {
   buildDir: string; // clone root — backend/ and db/migrations/ are both children of this
   instructions: string;
   apiKey: string;
+  // The project the spend of every pass is added to (the same per-project total full builds use).
+  projectId?: string;
 }
 
 export interface ApplyCloneBackendChangesResult {
@@ -146,6 +148,7 @@ export async function applyCloneBackendChanges(
       systemPrompt: CLONE_BACKEND_EDIT_SYSTEM_PROMPT,
       initialMessage,
       sandboxDir: backendDir,
+      ...(opts.projectId ? { projectId: opts.projectId } : {}),
       geminiTier: "design",
       enableHttpTools: true,
       maxIterations,
