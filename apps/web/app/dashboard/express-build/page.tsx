@@ -190,7 +190,7 @@ export default function ExpressBuildPage() {
               <>
                 <div className={s.statusRow}>
                   <span className={result.ok ? s.ok : s.fail}>
-                    {result.ok ? "✓ Delivered" : `✗ ${String(result.body.error ?? "Failed")}`}
+                    {result.ok ? "✓ Delivered" : result.body.error === "out_of_scope" ? "Too big for Express Build" : `✗ ${String(result.body.error ?? "Failed")}`}
                   </span>
                 </div>
 

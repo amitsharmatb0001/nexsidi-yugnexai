@@ -360,7 +360,7 @@ projectsRouter.post("/express-build", async (c) => {
   const { join } = await import("node:path");
   const { cloneProject, parseComposePorts } = await import("../../../../pipeline/orchestrator/clone-project.ts");
   const { applyCloneChanges } = await import("../../../../pipeline/orchestrator/clone-changes.ts");
-  const { planCloneChanges } = await import("../../../../pipeline/orchestrator/clone-plan.ts");
+  const { planCloneChanges, expressScope, outOfScopeMessage } = await import("../../../../pipeline/orchestrator/clone-plan.ts");
   const { applyCloneBackendChanges } = await import("../../../../pipeline/orchestrator/clone-backend-changes.ts");
   const { checkCrossLayerContract } = await import("../../../../pipeline/orchestrator/clone-contract-check.ts");
   const { deployWithRetry } = await import("../../../../pipeline/orchestrator/clone-deploy.ts");
@@ -389,6 +389,25 @@ projectsRouter.post("/express-build", async (c) => {
   // The new project's own request (never the base project's customer's).
   const requestText = [newName, description, changes ? `Requested changes:\n${changes}` : ""].filter(Boolean).join("\n\n");
   const hasOwnRequest = Boolean(description || changes);
+
+  // Express Build changes an app that already exists; it does not build a new one. The size of the request is
+  // judged here, before a folder, a row or a model pass exists, so a request that is really a fresh build is
+  // refused in seconds with what to do instead (Stockroom ran 18 minutes and failed).
+  let earlyPlan: Awaited<ReturnType<typeof planCloneChanges>> | null = null;
+  if (changes) {
+    try {
+      earlyPlan = await planCloneChanges({ buildDir: buildDirFor(sourceId, BUILD_DIR), changes, apiKey: process.env.NIM_API_KEY ?? "" });
+    } catch (err) {
+      console.warn(`[express-build] scope check skipped, planning failed: ${String(err)}`);
+    }
+    if (earlyPlan) {
+      const verdict = expressScope(earlyPlan);
+      if (!verdict.inScope) {
+        console.log(`[express-build] refused as out of scope: ${verdict.reason}`);
+        return c.json({ error: "out_of_scope", message: outOfScopeMessage(oldName, verdict.reason), reasoning: verdict.reason }, 422);
+      }
+    }
+  }
 
   // Same collision-retry as POST / above — id is both the primary key and
   // the on-disk build directory name.
@@ -448,14 +467,15 @@ projectsRouter.post("/express-build", async (c) => {
       const apiKey = process.env.NIM_API_KEY ?? "";
       let plan: Awaited<ReturnType<typeof planCloneChanges>>;
       try {
-        plan = await planCloneChanges({ buildDir: cloneResult.buildDir, changes, apiKey });
+        // Already planned (and found in scope) before anything was created; same files, so the same plan.
+        plan = earlyPlan ?? (await planCloneChanges({ buildDir: cloneResult.buildDir, changes, apiKey }));
       } catch (err) {
         // Fails open: if planning itself breaks (bad LLM response, network
         // error), fall back to the pre-planning behavior — one frontend-only
         // pass on the user's raw request — rather than failing the whole
         // clone over a planning-step hiccup.
         console.warn(`[express-build] ${newId}: change planning failed, defaulting to frontend-only: ${String(err)}`);
-        plan = { needsBackendChanges: false, reasoning: "planning failed, defaulted to frontend-only", backendInstructions: null, frontendInstructions: changes };
+        plan = { needsBackendChanges: false, reasoning: "planning failed, defaulted to frontend-only", backendInstructions: null, frontendInstructions: changes, scope: null };
       }
       planReasoning = plan.reasoning;
 

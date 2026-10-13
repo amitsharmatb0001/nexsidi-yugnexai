@@ -17,11 +17,55 @@ import { join } from "node:path";
 import { agentChat, type AgentName, type ChatMessage } from "@nexsidi/llm-client";
 import { execListFiles } from "../../packages/agent-runtime/src/tools/file.ts";
 
+export interface CloneChangeScope {
+  newTables: number; // new database tables the change needs
+  newPages: number; // new pages/screens the change needs
+  replacesCoreFeatures: boolean; // removes or replaces what the app mainly does, so it becomes a different product
+}
+
 export interface CloneChangePlan {
   needsBackendChanges: boolean;
   reasoning: string;
   backendInstructions: string | null;
   frontendInstructions: string;
+  // How big the change is — null when the planner did not say. See expressScope().
+  scope: CloneChangeScope | null;
+}
+
+// 2026-10-13 (Amit): Express Build is a template with tweaks — it reuses an older app's backend and frontend and
+// changes them. It is not a fresh build. A request beyond that is refused up front (or narrowed), and the person
+// is told to use a fresh build, instead of running for 18 minutes and failing (Stockroom: a whole invoicing
+// product replaced by a purchase-order product).
+export const EXPRESS_MAX_NEW_TABLES = 2;
+export const EXPRESS_MAX_NEW_PAGES = 5;
+
+export interface ExpressScopeVerdict {
+  inScope: boolean;
+  reason: string;
+}
+
+/** What the person is told when their request is beyond Express Build. */
+export function outOfScopeMessage(baseName: string, reason: string): string {
+  return (
+    `This is too big for Express Build: ${reason}. ` +
+    `Express Build starts from an app you already have (here, ${baseName}) and changes it: wording, colours, a page, a small feature. ` +
+    `A new product needs a fresh build. You can narrow the request to the changes you want on ${baseName}, or start a fresh build.`
+  );
+}
+
+export function expressScope(plan: CloneChangePlan): ExpressScopeVerdict {
+  const s = plan.scope;
+  if (!s) return { inScope: true, reason: "" }; // no numbers: let it through rather than block on a guess
+  if (s.replacesCoreFeatures) {
+    return { inScope: false, reason: "it would replace what the app mainly does, which makes it a different product rather than a changed one" };
+  }
+  if (s.newTables > EXPRESS_MAX_NEW_TABLES) {
+    return { inScope: false, reason: `it needs ${s.newTables} new database tables (Express Build takes up to ${EXPRESS_MAX_NEW_TABLES})` };
+  }
+  if (s.newPages > EXPRESS_MAX_NEW_PAGES) {
+    return { inScope: false, reason: `it needs ${s.newPages} new pages (Express Build takes up to ${EXPRESS_MAX_NEW_PAGES})` };
+  }
+  return { inScope: true, reason: "" };
 }
 
 // 2026-09-02: real live test found the actual cost of NOT doing this — the
@@ -65,7 +109,12 @@ Respond with ONLY this JSON shape, no other text, no markdown fences:
   "needsBackendChanges": boolean,
   "reasoning": "one sentence citing what already exists vs what's actually missing",
   "backendInstructions": "a clear, specific brief for exactly what to build on the backend, naming an exact existing file (e.g. src/routes/orders.routes.ts) to model it after — or null if not needed",
-  "frontendInstructions": "a clear, specific brief for what to build/wire on the frontend, naming an exact existing file to model new components after, and referencing the backend's new endpoints by path if any were planned"
+  "frontendInstructions": "a clear, specific brief for what to build/wire on the frontend, naming an exact existing file to model new components after, and referencing the backend's new endpoints by path if any were planned",
+  "scope": {
+    "newTables": integer — how many NEW database tables this change needs (0 if none),
+    "newPages": integer — how many NEW pages or screens this change needs (0 if none),
+    "replacesCoreFeatures": boolean — true when the change removes or replaces what this app mainly does, so the result is a different product rather than this one adjusted
+  }
 }`;
 }
 
@@ -102,7 +151,16 @@ export function parseCloneChangePlan(raw: string): CloneChangePlan {
     reasoning: typeof parsed.reasoning === "string" ? parsed.reasoning : "",
     backendInstructions: typeof parsed.backendInstructions === "string" ? parsed.backendInstructions : null,
     frontendInstructions: parsed.frontendInstructions,
+    scope: parseScope(parsed.scope),
   };
+}
+
+function parseScope(raw: unknown): CloneChangeScope | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const whole = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 0;
+  if (!whole(r.newTables) || !whole(r.newPages) || typeof r.replacesCoreFeatures !== "boolean") return null;
+  return { newTables: r.newTables as number, newPages: r.newPages as number, replacesCoreFeatures: r.replacesCoreFeatures };
 }
 
 export type PlanChatFn = (agentName: AgentName, messages: ChatMessage[], apiKey: string) => Promise<{ content: string }>;

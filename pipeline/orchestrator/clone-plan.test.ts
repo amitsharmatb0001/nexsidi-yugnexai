@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { join } from "node:path";
 import type { AgentName, ChatMessage, ModelId } from "@nexsidi/llm-client";
-import { buildPlanPrompt, parseCloneChangePlan, planCloneChanges } from "./clone-plan.ts";
+import { buildPlanPrompt, parseCloneChangePlan, planCloneChanges, expressScope, outOfScopeMessage, EXPRESS_MAX_NEW_TABLES, EXPRESS_MAX_NEW_PAGES } from "./clone-plan.ts";
 
 // ── buildPlanPrompt (pure) ────────────────────────────────────────────────
 test("buildPlanPrompt includes the change request and the real existing contract/schema", () => {
@@ -125,4 +125,59 @@ test("planCloneChanges degrades gracefully to an empty contract/schema when thos
   );
 
   expect(plan.needsBackendChanges).toBe(false);
+});
+
+// ── Scope: Express Build is a template with tweaks, not a fresh build ────────
+// 2026-10-13 (Amit): "Express Build uses the logic of the older apps' backend and frontend like a template
+// that we give tweaks — not a complete fresh build. Out of scope has to be refined or redirected to the
+// fresh build, and the user told." Stockroom replaced a whole invoicing product and ran 18 minutes to a 502.
+const planWith = (scope: object | undefined) =>
+  JSON.stringify({ needsBackendChanges: true, reasoning: "r", backendInstructions: "b", frontendInstructions: "f", ...(scope ? { scope } : {}) });
+
+test("the plan carries how big the change is: new tables, new pages, and whether it replaces what the app mainly does", () => {
+  const plan = parseCloneChangePlan(planWith({ newTables: 5, newPages: 7, replacesCoreFeatures: true }));
+  expect(plan.scope).toEqual({ newTables: 5, newPages: 7, replacesCoreFeatures: true });
+});
+
+test("a plan without scope numbers still parses, with scope unknown", () => {
+  expect(parseCloneChangePlan(planWith(undefined)).scope).toBeNull();
+  // junk numbers are not trusted
+  expect(parseCloneChangePlan(planWith({ newTables: "many", newPages: -2, replacesCoreFeatures: "yes" })).scope).toBeNull();
+});
+
+test("the prompt asks for the scope numbers", () => {
+  const prompt = buildPlanPrompt("tweak", { endpoints: [] }, { tables: [] }, "", "");
+  expect(prompt).toContain("newTables");
+  expect(prompt).toContain("newPages");
+  expect(prompt).toContain("replacesCoreFeatures");
+});
+
+test("a tweak is in scope", () => {
+  const r = expressScope(parseCloneChangePlan(planWith({ newTables: 1, newPages: 2, replacesCoreFeatures: false })));
+  expect(r.inScope).toBe(true);
+});
+
+test("a change that replaces what the app mainly does is out of scope, whatever the counts", () => {
+  const r = expressScope(parseCloneChangePlan(planWith({ newTables: 0, newPages: 0, replacesCoreFeatures: true })));
+  expect(r.inScope).toBe(false);
+  expect(r.reason).toMatch(/replace/i);
+});
+
+test("too many new tables or too many new pages is out of scope; the limits themselves are in", () => {
+  expect(expressScope(parseCloneChangePlan(planWith({ newTables: EXPRESS_MAX_NEW_TABLES, newPages: 0, replacesCoreFeatures: false }))).inScope).toBe(true);
+  expect(expressScope(parseCloneChangePlan(planWith({ newTables: EXPRESS_MAX_NEW_TABLES + 1, newPages: 0, replacesCoreFeatures: false }))).inScope).toBe(false);
+  expect(expressScope(parseCloneChangePlan(planWith({ newTables: 0, newPages: EXPRESS_MAX_NEW_PAGES, replacesCoreFeatures: false }))).inScope).toBe(true);
+  expect(expressScope(parseCloneChangePlan(planWith({ newTables: 0, newPages: EXPRESS_MAX_NEW_PAGES + 1, replacesCoreFeatures: false }))).inScope).toBe(false);
+});
+
+test("when the planner gave no scope numbers the request is let through, not blocked on a guess", () => {
+  expect(expressScope(parseCloneChangePlan(planWith(undefined))).inScope).toBe(true);
+});
+
+test("the refusal tells the person why, what Express Build is for, and what to do instead", () => {
+  const m = outOfScopeMessage("Ledgerly 2", "it needs 5 new database tables (Express Build takes up to 2)");
+  expect(m).toContain("5 new database tables");
+  expect(m).toContain("Ledgerly 2");
+  expect(m.toLowerCase()).toContain("fresh build");
+  expect(m.toLowerCase()).toContain("narrow");
 });
