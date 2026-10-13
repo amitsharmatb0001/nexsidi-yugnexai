@@ -298,6 +298,8 @@ export async function cloneProject(
     spec.projectId = opts.newProjectId;
     spec.name = opts.newName;
     if (typeof spec.description === "string") specDescription = spec.description;
+    // The new project's own words describe it. Without its own request the site keeps its description.
+    if (opts.requestText) spec.description = opts.requestText;
     writeFileSync(specPath, JSON.stringify(spec, null, 2), "utf-8");
   }
 

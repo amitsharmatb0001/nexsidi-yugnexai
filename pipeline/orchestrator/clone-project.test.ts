@@ -433,3 +433,23 @@ test("an Express Build writes the new project's own request, never the source cu
   expect(fallback).toStartWith("Beacon Labs");
   expect(fallback).not.toContain("confidential product launch");
 });
+
+// 2026-10-13 (Stockroom): after an Express Build spec.json still described the SOURCE app ("a GST invoicing
+// platform for freelancers"), so the reviews and the generated copy read the wrong product.
+test("an Express Build's spec.json describes the new request, not the source customer's product", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  makeSourceWithTraces(tempBuildDir, "srcaaa000001");
+  await expressFrom(tempBuildDir, "srcaaa000001", "newbbb000002", { requestText: "Beacon Labs: a site for our lighthouse tours." });
+  const spec = JSON.parse(readFileSync(join(tempBuildDir, "newbbb000002", "spec.json"), "utf-8"));
+  expect(spec.description).toBe("Beacon Labs: a site for our lighthouse tours.");
+  expect(spec.name).toBe("Beacon Labs");
+});
+
+test("with no request of its own, spec.json keeps the site's description", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  makeSourceWithTraces(tempBuildDir, "srcaaa000001");
+  await expressFrom(tempBuildDir, "srcaaa000001", "newccc000003");
+  const spec = JSON.parse(readFileSync(join(tempBuildDir, "newccc000003", "spec.json"), "utf-8"));
+  expect(typeof spec.description).toBe("string");
+  expect(spec.description.length).toBeGreaterThan(0);
+});
