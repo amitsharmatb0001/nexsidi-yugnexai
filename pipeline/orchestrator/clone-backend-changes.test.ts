@@ -93,7 +93,7 @@ test("applyCloneBackendChanges picks up a MIGRATION_REQUEST.sql the agent wrote 
 
   const migrationPath = join(tempBuildDir, "db", "migrations", "0001_clone_change.sql");
   expect(existsSync(migrationPath)).toBe(true);
-  expect(readFileSync(migrationPath, "utf-8")).toContain("CREATE TABLE wishlist_items");
+  expect(readFileSync(migrationPath, "utf-8")).toContain("CREATE TABLE IF NOT EXISTS wishlist_items");
 
   // Hand-off file must not linger inside backend/ once applied — it's not
   // meant to ship as part of the real backend source.
@@ -269,4 +269,41 @@ test("applyCloneBackendChanges fails the pass when the continuation does not fin
 test("CLONE_BACKEND_EDIT_SYSTEM_PROMPT tells the agent to make a new field required on the type that carries it", () => {
   expect(CLONE_BACKEND_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("required");
   expect(CLONE_BACKEND_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("every place");
+});
+
+// 2026-10-13 (Shopbill run 8): the continuation pass wrote the same "ADD COLUMN po_reference" a second time, it was
+// applied as a second migration, and the database failed to start on the duplicate column.
+test("applyCloneBackendChanges does not apply the same migration twice when a later pass writes it again", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-backend-test-"));
+  makeFixture(tempBuildDir);
+  writeFileSync(join(tempBuildDir, "db", "migrations", "0000_initial.sql"), "CREATE TABLE invoices (id uuid PRIMARY KEY, total bigint);\n");
+  let call = 0;
+  const runGenerator = async (config: AgentRunConfig) => {
+    call += 1;
+    writeFileSync(join(config.sandboxDir, "MIGRATION_REQUEST.sql"), "ALTER TABLE invoices ADD COLUMN po_reference VARCHAR(50);\n");
+    return call === 1
+      ? { success: false, summary: "ran out", filesWritten: [], iterations: 25, errors: ["ran out"], escalated: false }
+      : { success: true, summary: "finished", filesWritten: [], iterations: 4, errors: [], escalated: false };
+  };
+  const verify = async () => ({ ran: true, ok: true, output: "" });
+  const r = await applyCloneBackendChanges({ buildDir: tempBuildDir, instructions: "add a po reference", apiKey: "k" }, { runGenerator, verify });
+  expect(call).toBe(2);
+  expect(r.applied).toBe(true);
+  expect(readdirSync(join(tempBuildDir, "db", "migrations")).sort()).toEqual(["0000_initial.sql", "0001_clone_change.sql"]);
+  expect(existsSync(join(tempBuildDir, "backend", "MIGRATION_REQUEST.sql"))).toBe(false);
+});
+
+test("a migration the agent writes is made safe to run again (IF NOT EXISTS)", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-backend-test-"));
+  makeFixture(tempBuildDir);
+  const runGenerator = async (config: AgentRunConfig) => {
+    writeFileSync(join(config.sandboxDir, "MIGRATION_REQUEST.sql"),
+      "ALTER TABLE invoices ADD COLUMN po_reference VARCHAR(50);\nCREATE TABLE notes (id uuid PRIMARY KEY);\nCREATE INDEX idx_notes ON notes (id);\n");
+    return { success: true, summary: "done", filesWritten: [], iterations: 3, errors: [], escalated: false };
+  };
+  await applyCloneBackendChanges({ buildDir: tempBuildDir, instructions: "x", apiKey: "k" }, { runGenerator });
+  const sql = readFileSync(join(tempBuildDir, "db", "migrations", "0001_clone_change.sql"), "utf-8");
+  expect(sql).toContain("ADD COLUMN IF NOT EXISTS po_reference");
+  expect(sql).toContain("CREATE TABLE IF NOT EXISTS notes");
+  expect(sql).toContain("CREATE INDEX IF NOT EXISTS idx_notes");
 });

@@ -78,6 +78,19 @@ on an existing file under src/routes/ to match its conventions before
 adding anything new.`;
 }
 
+/**
+ * Makes a migration safe to run again: ADD COLUMN / CREATE TABLE / CREATE INDEX get IF NOT EXISTS. An agent that
+ * writes the same change twice then costs nothing, instead of stopping the database at start-up (Shopbill run 8).
+ */
+export function makeMigrationIdempotent(sql: string): string {
+  return sql
+    .replace(/\bADD\s+COLUMN\s+(?!IF\s+NOT\s+EXISTS\b)/gi, "ADD COLUMN IF NOT EXISTS ")
+    .replace(/\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS\b)/gi, "CREATE TABLE IF NOT EXISTS ")
+    .replace(/\bCREATE\s+(UNIQUE\s+)?INDEX\s+(?!IF\s+NOT\s+EXISTS\b|CONCURRENTLY\b)/gi, (_m, u) => `CREATE ${u ?? ""}INDEX IF NOT EXISTS `);
+}
+
+const normalizeSql = (sql: string) => sql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+
 // Continues this project's own real numbering convention (0000_initial.sql,
 // 0001_fix.sql, ... — confirmed live against a real generated project's
 // db/migrations/ directory) rather than inventing a different scheme.
@@ -149,9 +162,15 @@ export async function applyCloneBackendChanges(
   const applyMigrationRequest = () => {
     if (!existsSync(migrationRequestPath)) return;
     const existingMigrations = existsSync(migrationsDir) ? readdirSync(migrationsDir) : [];
-    const filename = nextMigrationFilename(existingMigrations, "clone_change");
-    writeFileSync(join(migrationsDir, filename), readFileSync(migrationRequestPath, "utf-8"), "utf-8");
+    const sql = makeMigrationIdempotent(readFileSync(migrationRequestPath, "utf-8"));
     unlinkSync(migrationRequestPath); // hand-off file — not real backend source, must not ship
+    // A later pass can write the same change again; it must never become a second migration.
+    const already = existingMigrations
+      .filter((f) => f.endsWith(".sql"))
+      .some((f) => normalizeSql(readFileSync(join(migrationsDir, f), "utf-8")) === normalizeSql(sql));
+    if (already) return;
+    const filename = nextMigrationFilename(existingMigrations, "clone_change");
+    writeFileSync(join(migrationsDir, filename), sql, "utf-8");
     migrationApplied = migrationApplied ? `${migrationApplied}, ${filename}` : filename;
   };
 
