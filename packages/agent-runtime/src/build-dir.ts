@@ -80,13 +80,25 @@ export function registerBuildFolder(projectId: string, name: string, root: strin
   const base = folderNameFor(name);
   let folder = projectId;
   if (base) {
-    const taken = new Set([...Object.values(map), ...safeList(root).map((d) => d.toLowerCase())]);
+    // An empty folder nobody is registered to holds nothing (a build that failed before writing a file) — reusable.
+    // One a project IS registered to is that build's reservation, so it stays taken even while empty.
+    const reserved = new Set(Object.values(map).map((d) => d.toLowerCase()));
+    const used = safeList(root).filter((d) => reserved.has(d.toLowerCase()) || !isEmptyDir(join(root, d)));
+    const taken = new Set([...reserved, ...used.map((d) => d.toLowerCase())]);
     folder = base;
     for (let n = 2; taken.has(folder); n++) folder = `${base}-${n}`.slice(0, 44);
   }
   mkdirSync(join(root, folder), { recursive: true });
   if (folder !== projectId) writeRegistry(root, { ...map, [projectId]: folder });
   return folder;
+}
+
+function isEmptyDir(dir: string): boolean {
+  try {
+    return readdirSync(dir).length === 0;
+  } catch {
+    return false;
+  }
 }
 
 function safeList(root: string): string[] {

@@ -276,6 +276,23 @@ test("cloneProject refuses to overwrite an existing destination rather than sile
   ).rejects.toThrow(/already exists/);
 });
 
+// 2026-10-13: the app's own named folder is made (empty) when its name is
+// reserved, before the clone runs. Express Build failed 500 on every request
+// because the clone treated that empty reserved folder as "already exists".
+test("cloneProject builds into an empty folder that was reserved for the app's name", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  makeFixtureSource(tempBuildDir, "source7");
+  mkdirSync(join(tempBuildDir, "clone7")); // reserved, still empty
+
+  const result = await cloneProject(
+    { sourceProjectId: "source7", newProjectId: "clone7", oldName: "Acme Co", newName: "Beacon Labs", sourcePorts: { frontendPort: 3200, backendPort: 3301, dbPort: 5437 }, buildDir: tempBuildDir },
+    { findFreePort: async (start) => start },
+  );
+
+  expect(result.newProjectId).toBe("clone7");
+  expect(existsSync(join(tempBuildDir, "clone7", "frontend", "app", "page.tsx"))).toBe(true);
+});
+
 // ── Vendored packages (2026-09-27) ───────────────────────────────────────
 // Real bug found live: a clone of NexTech (88d7b375eaef) failed `npm run
 // build` with "Can't resolve '@yugnex/nexui-react'". Older NexUI-era

@@ -63,7 +63,8 @@ test("two projects with the same name get different folders; an existing folder 
   expect(registerBuildFolder("aaaaaaaaaaaa", "Ledgerly")).toBe("ledgerly");
   expect(registerBuildFolder("bbbbbbbbbbbb", "Ledgerly")).toBe("ledgerly-2");
   expect(registerBuildFolder("cccccccccccc", "Ledgerly")).toBe("ledgerly-3");
-  mkdirSync(join(r, "stockroom")); // an old folder that is not in the registry
+  mkdirSync(join(r, "stockroom")); // an old folder, with real work in it, that is not in the registry
+  writeFileSync(join(r, "stockroom", "spec.json"), "{}");
   expect(registerBuildFolder("dddddddddddd", "Stockroom")).toBe("stockroom-2");
 });
 
@@ -92,4 +93,22 @@ test("a change made by another process is seen at once (the API registers, the w
   expect(buildDirFor("ffffffffffff")).toBe(join(r, "ffffffffffff"));
   writeFileSync(join(r, ".folders.json"), JSON.stringify({ ffffffffffff: "tallyo" }), "utf-8");
   expect(buildDirFor("ffffffffffff")).toBe(join(r, "tallyo"));
+});
+
+// 2026-10-13: a build that failed before anything was written left an empty folder carrying the name, and the next
+// attempt became "stockroom-2". An empty folder that no project is registered to holds nothing — it is reusable.
+// One that IS registered is another build's reservation and must still be skipped.
+test("registerBuildFolder reuses an empty leftover folder that no project is registered to", () => {
+  const r = fresh();
+  mkdirSync(join(r, "stockroom"));
+  expect(registerBuildFolder("bbbbbbbbbbbb", "Stockroom")).toBe("stockroom");
+});
+
+test("registerBuildFolder still skips an empty folder another project has reserved, and a folder with files in it", () => {
+  const r = fresh();
+  expect(registerBuildFolder("cccccccccccc", "Stockroom")).toBe("stockroom"); // reserved, still empty
+  expect(registerBuildFolder("dddddddddddd", "Stockroom")).toBe("stockroom-2");
+  mkdirSync(join(r, "ledgerly"));
+  writeFileSync(join(r, "ledgerly", "spec.json"), "{}");
+  expect(registerBuildFolder("eeeeeeeeeeee", "Ledgerly")).toBe("ledgerly-2");
 });

@@ -237,7 +237,12 @@ export async function cloneProject(
   const destDir = buildDirFor(opts.newProjectId, baseDir);
 
   if (!existsSync(sourceDir)) throw new Error(`clone source not found: ${sourceDir}`);
-  if (existsSync(destDir)) throw new Error(`clone destination already exists: ${destDir} — refusing to overwrite`);
+  // An empty folder is the app's own reserved name (registerBuildFolder makes it
+  // before the clone runs) — building into it is the point. Anything with files
+  // in it is somebody's work and is never overwritten.
+  if (existsSync(destDir) && readdirSync(destDir).length > 0) {
+    throw new Error(`clone destination already exists: ${destDir} — refusing to overwrite`);
+  }
 
   // 2026-09-26 security fix: every clone is bound to 127.0.0.1 (below). Check
   // up front that the source's ports CAN be bound, so an unusual source fails
