@@ -26,6 +26,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { join } from "node:path";
 import { resolveGeneratorRunner, type GeneratorRunner } from "../../packages/agent-runtime/src/generator-tier.ts";
+import { missingColumns, schemaFromSql } from "./schema-check.ts";
 
 export const CLONE_BACKEND_EDIT_SYSTEM_PROMPT = `You are editing an ALREADY WORKING, ALREADY DELIVERED Express + TypeScript backend.
 This is NOT a fresh build — it already compiles and its existing endpoints already work. Your ONLY job is to add exactly what's requested below, without breaking anything that already works.
@@ -104,40 +105,88 @@ export async function applyCloneBackendChanges(
   const runGenerator = deps.runGenerator ?? resolveGeneratorRunner();
   const backendDir = join(opts.buildDir, "backend");
 
-  const result = await runGenerator({
-    agentName: "shubham-clone-edit",
-    // Same primary + fallback Shubham's own generator uses — this literally
-    // IS his job (backend endpoints), just scoped to an existing app.
-    model: AGENT_MODELS.shubham, // 2026-09-28: from llm-client's model registry (types.ts)
-    fallbackModels: FALLBACK_CHAIN.shubham,
-    apiKey: opts.apiKey,
-    systemPrompt: CLONE_BACKEND_EDIT_SYSTEM_PROMPT,
-    initialMessage: buildBackendEditTask(opts.instructions),
-    sandboxDir: backendDir,
-    geminiTier: "design",
-    enableHttpTools: true,
-    maxIterations: 25,
-    // Identical strings to Shubham's own real config — see agents/generators/
-    // shubham/src/index.ts — not a new convention.
-    requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
-  });
+  const runPass = (initialMessage: string, maxIterations: number) =>
+    runGenerator({
+      agentName: "shubham-clone-edit",
+      // Same primary + fallback Shubham's own generator uses — this literally
+      // IS his job (backend endpoints), just scoped to an existing app.
+      model: AGENT_MODELS.shubham, // 2026-09-28: from llm-client's model registry (types.ts)
+      fallbackModels: FALLBACK_CHAIN.shubham,
+      apiKey: opts.apiKey,
+      systemPrompt: CLONE_BACKEND_EDIT_SYSTEM_PROMPT,
+      initialMessage,
+      sandboxDir: backendDir,
+      geminiTier: "design",
+      enableHttpTools: true,
+      maxIterations,
+      // Identical strings to Shubham's own real config — see agents/generators/
+      // shubham/src/index.ts — not a new convention.
+      requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
+    });
 
-  let migrationApplied: string | null = null;
+  const migrationsDir = join(opts.buildDir, "db", "migrations");
   const migrationRequestPath = join(backendDir, "MIGRATION_REQUEST.sql");
-  if (existsSync(migrationRequestPath)) {
-    const migrationsDir = join(opts.buildDir, "db", "migrations");
+  let migrationApplied: string | null = null;
+
+  // Moves the agent's hand-off file into db/migrations as the next numbered migration.
+  const applyMigrationRequest = () => {
+    if (!existsSync(migrationRequestPath)) return;
     const existingMigrations = existsSync(migrationsDir) ? readdirSync(migrationsDir) : [];
     const filename = nextMigrationFilename(existingMigrations, "clone_change");
-    const sql = readFileSync(migrationRequestPath, "utf-8");
-    writeFileSync(join(migrationsDir, filename), sql, "utf-8");
+    writeFileSync(join(migrationsDir, filename), readFileSync(migrationRequestPath, "utf-8"), "utf-8");
     unlinkSync(migrationRequestPath); // hand-off file — not real backend source, must not ship
-    migrationApplied = filename;
+    migrationApplied = migrationApplied ? `${migrationApplied}, ${filename}` : filename;
+  };
+
+  // Columns the code the agent wrote puts into the database that no migration creates.
+  const missing = (filesWritten: string[]) => {
+    const migrations = existsSync(migrationsDir)
+      ? readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).map((f) => readFileSync(join(migrationsDir, f), "utf-8"))
+      : [];
+    const schema = schemaFromSql(migrations);
+    const found: { table: string; column: string; file: string }[] = [];
+    for (const rel of filesWritten) {
+      const abs = join(backendDir, rel);
+      if (!/\.(ts|js)$/.test(rel) || !existsSync(abs)) continue;
+      for (const m of missingColumns(readFileSync(abs, "utf-8"), schema)) found.push({ ...m, file: rel });
+    }
+    return found;
+  };
+
+  let result = await runPass(buildBackendEditTask(opts.instructions), 25);
+  applyMigrationRequest();
+
+  // Types and the build cannot see a database column. If the code writes one no migration creates, send the
+  // agent back once to write that migration — and fail the pass honestly if it still is not there.
+  let filesWritten = result.filesWritten;
+  let gaps = missing(filesWritten);
+  if (gaps.length > 0) {
+    const list = gaps.map((g) => `${g.table}.${g.column} (used in ${g.file})`).join(", ");
+    const follow = await runPass(
+      `Your change writes to database columns that no migration creates: ${list}.
+` +
+        `Write MIGRATION_REQUEST.sql now, at the root of this directory, with exactly the ALTER TABLE / CREATE TABLE statements these need ` +
+        `(match the types already used for this project's tables). Do not change anything else.`,
+      10,
+    );
+    applyMigrationRequest();
+    filesWritten = [...filesWritten, ...follow.filesWritten];
+    gaps = missing(result.filesWritten);
+    result = { ...result, iterations: result.iterations + follow.iterations };
+    if (gaps.length > 0) {
+      const list2 = gaps.map((g) => `${g.table}.${g.column}`).join(", ");
+      result = {
+        ...result,
+        success: false,
+        errors: [...result.errors, `The code writes ${list2}, but no migration creates it, so it would fail at runtime.`],
+      };
+    }
   }
 
   return {
     applied: result.success,
     summary: result.summary,
-    filesWritten: result.filesWritten,
+    filesWritten,
     errors: result.errors,
     migrationApplied,
   };

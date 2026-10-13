@@ -136,3 +136,64 @@ test("applyCloneBackendChanges reports applied:false and surfaces errors when th
   expect(result.applied).toBe(false);
   expect(result.errors).toContain("Max iterations exceeded");
 });
+
+// 2026-10-13 (Shopbill): code that writes a column no migration creates must not ship.
+test("applyCloneBackendChanges sends the agent back once when its code uses a column no migration adds, and applies the migration it then writes", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-backend-test-"));
+  makeFixture(tempBuildDir);
+  writeFileSync(join(tempBuildDir, "db", "migrations", "0000_initial.sql"), "CREATE TABLE invoices (id uuid PRIMARY KEY, total bigint);\n");
+
+  const messages: string[] = [];
+  let call = 0;
+  const runGenerator = async (config: AgentRunConfig) => {
+    call += 1;
+    messages.push(config.initialMessage);
+    if (call === 1) {
+      writeFileSync(join(config.sandboxDir, "src", "routes", "invoice.routes.ts"), "db.query(`INSERT INTO invoices (id, total, po_reference) VALUES ($1, $2, $3)`);\n");
+      return { success: true, summary: "added po reference", filesWritten: ["src/routes/invoice.routes.ts"], iterations: 6, errors: [], escalated: false };
+    }
+    writeFileSync(join(config.sandboxDir, "MIGRATION_REQUEST.sql"), "ALTER TABLE invoices ADD COLUMN po_reference VARCHAR(50);\n");
+    return { success: true, summary: "wrote the migration", filesWritten: ["MIGRATION_REQUEST.sql"], iterations: 2, errors: [], escalated: false };
+  };
+
+  const result = await applyCloneBackendChanges({ buildDir: tempBuildDir, instructions: "add a po reference to invoices", apiKey: "k" }, { runGenerator });
+
+  expect(call).toBe(2);
+  expect(messages[1]).toContain("po_reference");
+  expect(result.applied).toBe(true);
+  expect(result.migrationApplied).toBe("0001_clone_change.sql");
+});
+
+test("applyCloneBackendChanges fails the pass when the column is still missing after the one retry", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-backend-test-"));
+  makeFixture(tempBuildDir);
+  writeFileSync(join(tempBuildDir, "db", "migrations", "0000_initial.sql"), "CREATE TABLE invoices (id uuid PRIMARY KEY, total bigint);\n");
+
+  let call = 0;
+  const runGenerator = async (config: AgentRunConfig) => {
+    call += 1;
+    if (call === 1) writeFileSync(join(config.sandboxDir, "src", "routes", "invoice.routes.ts"), "db.query(`INSERT INTO invoices (id, total, po_reference) VALUES ($1, $2, $3)`);\n");
+    return { success: true, summary: "done", filesWritten: call === 1 ? ["src/routes/invoice.routes.ts"] : [], iterations: 3, errors: [], escalated: false };
+  };
+
+  const result = await applyCloneBackendChanges({ buildDir: tempBuildDir, instructions: "add a po reference to invoices", apiKey: "k" }, { runGenerator });
+
+  expect(call).toBe(2);
+  expect(result.applied).toBe(false);
+  expect(result.errors.join(" ")).toContain("po_reference");
+});
+
+test("applyCloneBackendChanges does not retry when nothing it wrote needs a new column", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-backend-test-"));
+  makeFixture(tempBuildDir);
+  writeFileSync(join(tempBuildDir, "db", "migrations", "0000_initial.sql"), "CREATE TABLE invoices (id uuid PRIMARY KEY, total bigint);\n");
+  let call = 0;
+  const runGenerator = async (config: AgentRunConfig) => {
+    call += 1;
+    writeFileSync(join(config.sandboxDir, "src", "routes", "invoice.routes.ts"), "db.query(`INSERT INTO invoices (id, total) VALUES ($1, $2)`);\n");
+    return { success: true, summary: "done", filesWritten: ["src/routes/invoice.routes.ts"], iterations: 3, errors: [], escalated: false };
+  };
+  const result = await applyCloneBackendChanges({ buildDir: tempBuildDir, instructions: "tweak", apiKey: "k" }, { runGenerator });
+  expect(call).toBe(1);
+  expect(result.applied).toBe(true);
+});
