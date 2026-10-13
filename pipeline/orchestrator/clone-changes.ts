@@ -12,7 +12,7 @@
 // assumption about it.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { findDanglingAnchors, type DanglingAnchor } from "./anchor-check.ts";
+import { findDanglingAnchorsInApp, type DanglingAnchor } from "./anchor-check.ts";
 import { verifyDir, type VerifyResult } from "./verify-commands.ts";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 // Deep relative import, not the "@nexsidi/agent-runtime" package alias —
@@ -122,7 +122,7 @@ export async function scanDanglingAnchors(frontendDir: string): Promise<Dangling
     }
   };
   for (const d of ["app", "components"]) walk(join(frontendDir, d));
-  return findDanglingAnchors(files);
+  return findDanglingAnchorsInApp(files);
 }
 
 export interface ApplyCloneChangesResult {

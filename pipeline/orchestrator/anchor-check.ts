@@ -29,3 +29,44 @@ export function findDanglingAnchors(files: SourceFile[]): DanglingAnchor[] {
   }
   return found;
 }
+
+const IMPORT_RE = /(?:from|import)\s*\(?\s*["']([^"']+)["']/g;
+
+function resolveImport(from: string, spec: string, known: Set<string>): string | null {
+  let base: string;
+  if (spec.startsWith("@/")) base = spec.slice(2);
+  else if (spec.startsWith(".")) {
+    const parts = from.split("/").slice(0, -1);
+    for (const seg of spec.split("/")) {
+      if (seg === "." || seg === "") continue;
+      if (seg === "..") parts.pop();
+      else parts.push(seg);
+    }
+    base = parts.join("/");
+  } else return null;
+  for (const c of [base, `${base}.tsx`, `${base}.ts`, `${base}.jsx`, `${base}.js`, `${base}/index.tsx`, `${base}/index.ts`]) {
+    if (known.has(c)) return c;
+  }
+  return null;
+}
+
+/**
+ * Like findDanglingAnchors, but only files the app renders count: everything under app/ plus whatever they import,
+ * directly or through other files. A leftover, unused component can no longer make a dead link look valid.
+ */
+export function findDanglingAnchorsInApp(files: SourceFile[]): DanglingAnchor[] {
+  const byPath = new Map(files.map((f) => [f.path, f]));
+  const known = new Set(byPath.keys());
+  const reachable = new Set<string>();
+  const queue = files.filter((f) => f.path.startsWith("app/")).map((f) => f.path);
+  while (queue.length > 0) {
+    const path = queue.pop()!;
+    if (reachable.has(path)) continue;
+    reachable.add(path);
+    for (const m of byPath.get(path)!.content.matchAll(IMPORT_RE)) {
+      const target = resolveImport(path, m[1]!, known);
+      if (target && !reachable.has(target)) queue.push(target);
+    }
+  }
+  return findDanglingAnchors(files.filter((f) => reachable.has(f.path)));
+}
