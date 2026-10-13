@@ -10,6 +10,8 @@
 // respects whichever tier (GENERATOR_TIER=gemini vs NIM/Claude-escalation)
 // is actually active in this environment rather than hardcoding an
 // assumption about it.
+import { existsSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 // Deep relative import, not the "@nexsidi/agent-runtime" package alias —
@@ -57,7 +59,11 @@ RULES:
 8. After editing, run "npx tsc --noEmit" then "npx next build" to verify
    nothing broke. Do not call task_complete until both pass.
 9. Call task_complete with a summary that states, for EACH requested change,
-   which file(s) you edited to make it — not just "done".`;
+   which file(s) you edited to make it — not just "done".
+10. Read a file once, whole. read_file already returns up to 8000 characters;
+   do not pass a smaller limit or an offset unless the file is longer than
+   that. Re-reading one file in small slices spends iterations you do not
+   have.`;
 
 export function buildCloneEditTask(changes: string, newName: string, backendContext?: string): string {
   const backendSection = backendContext
@@ -84,6 +90,43 @@ export interface ApplyCloneChangesOptions {
   backendContext?: string;
 }
 
+export interface FrontendVerifyResult {
+  ran: boolean; // false when the check could not run at all (no install, timed out)
+  ok: boolean;
+  output: string; // the tail of what the failing command printed
+}
+export type FrontendVerify = (frontendDir: string) => Promise<FrontendVerifyResult>;
+
+function runShell(command: string, cwd: string, timeoutMs: number): Promise<{ code: number | null; output: string }> {
+  return new Promise((resolve) => {
+    // Asynchronous on purpose: a synchronous spawn would stop the whole API from answering for minutes.
+    const child = spawn(command, { cwd, shell: true });
+    let out = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve({ code: null, output: `${out}
+(timed out after ${Math.round(timeoutMs / 1000)}s)` });
+    }, timeoutMs);
+    child.stdout?.on("data", (d) => { out += String(d); });
+    child.stderr?.on("data", (d) => { out += String(d); });
+    child.on("error", (e) => { clearTimeout(timer); resolve({ code: null, output: String(e) }); });
+    child.on("close", (code) => { clearTimeout(timer); resolve({ code, output: out }); });
+  });
+}
+
+const tail = (text: string, chars = 3500) => (text.length > chars ? `...${text.slice(-chars)}` : text);
+
+/** The same two checks the Docker build runs, run here so a failure is found now and not minutes later. */
+export async function verifyFrontend(frontendDir: string): Promise<FrontendVerifyResult> {
+  if (!existsSync(join(frontendDir, "package.json")) || !existsSync(join(frontendDir, "node_modules"))) {
+    return { ran: false, ok: false, output: "" };
+  }
+  const tsc = await runShell("npx tsc --noEmit", frontendDir, 240_000);
+  if (tsc.code !== 0) return { ran: tsc.code !== null, ok: false, output: tail(tsc.output) };
+  const build = await runShell("npx next build", frontendDir, 420_000);
+  return { ran: build.code !== null, ok: build.code === 0, output: tail(build.output) };
+}
+
 export interface ApplyCloneChangesResult {
   applied: boolean;
   summary: string;
@@ -93,45 +136,64 @@ export interface ApplyCloneChangesResult {
 
 export async function applyCloneChanges(
   opts: ApplyCloneChangesOptions,
-  deps: { runGenerator?: GeneratorRunner } = {},
+  deps: { runGenerator?: GeneratorRunner; verify?: FrontendVerify } = {},
 ): Promise<ApplyCloneChangesResult> {
   const runGenerator = deps.runGenerator ?? resolveGeneratorRunner();
+  const verify = deps.verify ?? verifyFrontend;
   const frontendDir = join(opts.buildDir, "frontend");
 
-  const result = await runGenerator({
-    agentName: "aanya-clone-edit",
-    // Same primary + fallback Aanya's own generator uses (packages/llm-client/
-    // src/types.ts's AGENT_MODELS.aanya) — this literally IS Aanya's job
-    // (frontend content edits), just scoped to an existing app instead of a
-    // fresh one, so it gets her same model routing.
-    model: AGENT_MODELS.aanya, // 2026-09-28: from llm-client's model registry (types.ts)
-    fallbackModels: FALLBACK_CHAIN.aanya,
-    apiKey: opts.apiKey,
-    systemPrompt: CLONE_EDIT_SYSTEM_PROMPT,
-    initialMessage: buildCloneEditTask(opts.changes, opts.newName, opts.backendContext),
-    sandboxDir: frontendDir,
-    geminiTier: "design",
-    enableHttpTools: true,
-    // A scoped edit against an already-complete app needs far fewer turns
-    // than a full build (Aanya's own maxIterations is 90) — bounded low so a
-    // run that can't converge fails fast instead of burning a full budget.
-    // 2026-09-02: real live test found 25 wasn't enough specifically when
-    // backendContext is set — wiring a genuinely new feature into an
-    // existing component (find the right integration point among several
-    // candidates, add a new store, a new interactive control, verify) is a
-    // bigger task than a content/copy edit. Measured live: it was mid-edit
-    // on the right file, one component away from done, when it hit 25.
-    // Mirrors Aanya's own real precedent for raising this number (60->90)
-    // only when evidence showed the existing budget was genuinely tight —
-    // not a blanket increase for the common, cheaper, backend-free case.
-    maxIterations: opts.backendContext ? 40 : 25,
-    requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
-  });
+  const runPass = (initialMessage: string, maxIterations: number) =>
+    runGenerator({
+      agentName: "aanya-clone-edit",
+      // Same primary + fallback Aanya's own generator uses (packages/llm-client/
+      // src/types.ts's AGENT_MODELS.aanya) — this literally IS Aanya's job
+      // (frontend content edits), just scoped to an existing app instead of a
+      // fresh one, so it gets her same model routing.
+      model: AGENT_MODELS.aanya, // 2026-09-28: from llm-client's model registry (types.ts)
+      fallbackModels: FALLBACK_CHAIN.aanya,
+      apiKey: opts.apiKey,
+      systemPrompt: CLONE_EDIT_SYSTEM_PROMPT,
+      initialMessage,
+      sandboxDir: frontendDir,
+      geminiTier: "design",
+      enableHttpTools: true,
+      maxIterations,
+      requiredVerificationCommands: ["npx tsc --noEmit", "npx next build"],
+    });
 
+  // A scoped edit against an already-complete app needs far fewer turns than a full build (Aanya's own
+  // maxIterations is 90) — bounded low so a run that can't converge fails fast. 25 for a content edit; 40 when it
+  // also wires to a backend that just changed (measured live 2026-09-02: 25 was one component short).
+  const first = await runPass(buildCloneEditTask(opts.changes, opts.newName, opts.backendContext), opts.backendContext ? 40 : 25);
+
+  if (first.success) {
+    return { applied: true, summary: first.summary, filesWritten: first.filesWritten, errors: first.errors };
+  }
+
+  // The pass ended without its checks green (typically out of iterations, one error short — Shopbill run 3).
+  // Run the real checks here; if they fail, send the agent back ONCE with exactly those errors, then fail honestly.
+  const found = await verify(frontendDir);
+  if (!found.ran || found.ok) {
+    return { applied: found.ran && found.ok ? true : false, summary: first.summary, filesWritten: first.filesWritten, errors: first.errors };
+  }
+
+  const second = await runPass(
+    `The change was applied, but the frontend does not pass its checks. Fix exactly these errors and nothing else, ` +
+      `then run "npx tsc --noEmit" and "npx next build" until both pass:
+
+${found.output}`,
+    12,
+  );
+  const again = await verify(frontendDir);
+  const filesWritten = [...new Set([...first.filesWritten, ...second.filesWritten])];
+  if (again.ran && again.ok) {
+    return { applied: true, summary: second.summary || first.summary, filesWritten, errors: [] };
+  }
   return {
-    applied: result.success,
-    summary: result.summary,
-    filesWritten: result.filesWritten,
-    errors: result.errors,
+    applied: false,
+    summary: second.summary || first.summary,
+    filesWritten,
+    errors: [...first.errors, ...second.errors, `The frontend still does not build:
+${again.output || found.output}`],
   };
 }

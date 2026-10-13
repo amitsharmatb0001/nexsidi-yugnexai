@@ -148,3 +148,70 @@ test("applyCloneChanges reports applied:false and surfaces errors when the agent
   expect(result.applied).toBe(false);
   expect(result.errors).toContain("Max iterations exceeded");
 });
+
+// ── 2026-10-13 (Shopbill run 3): a pass that runs out of iterations with a failing check ─────────────
+// The editor spent 40 iterations (six of them re-reading one file in 2000-character slices) and stopped one type
+// error short. The route went on to deploy and Docker's build found the error six minutes later.
+test("CLONE_EDIT_SYSTEM_PROMPT tells the agent to read a file whole, not in small slices", () => {
+  expect(CLONE_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("whole");
+  expect(CLONE_EDIT_SYSTEM_PROMPT).toContain("limit");
+});
+
+test("applyCloneChanges does not run its own check, or send the agent back, when the pass already finished with its checks green", async () => {
+  let runs = 0;
+  let verifies = 0;
+  const runGenerator = async () => {
+    runs += 1;
+    return { success: true, summary: "done", filesWritten: ["app/page.tsx"], iterations: 10, errors: [], escalated: false };
+  };
+  const verify = async () => {
+    verifies += 1;
+    return { ran: true, ok: true, output: "" };
+  };
+  const r = await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k" }, { runGenerator, verify });
+  expect(r.applied).toBe(true);
+  expect(runs).toBe(1);
+  expect(verifies).toBe(0);
+});
+
+test("applyCloneChanges, when the pass ends with failing checks, reads the real errors and sends the agent back once with exactly those", async () => {
+  const messages: string[] = [];
+  let call = 0;
+  const runGenerator = async (config: AgentRunConfig) => {
+    call += 1;
+    messages.push(config.initialMessage);
+    return call === 1
+      ? { success: false, summary: "ran out", filesWritten: ["app/pricing/page.tsx"], iterations: 40, errors: ["required verification command(s) did not exit 0"], escalated: false }
+      : { success: true, summary: "fixed", filesWritten: ["app/pricing/page.tsx"], iterations: 3, errors: [], escalated: false };
+  };
+  const outputs = [
+    { ran: true, ok: false, output: "app/pricing/page.tsx(192,19): error TS2322: Type 'secondary' is not assignable" },
+    { ran: true, ok: true, output: "" },
+  ];
+  const verify = async () => outputs.shift()!;
+  const r = await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k" }, { runGenerator, verify });
+  expect(call).toBe(2);
+  expect(messages[1]).toContain("app/pricing/page.tsx(192,19)");
+  expect(r.applied).toBe(true);
+  expect(r.filesWritten).toContain("app/pricing/page.tsx");
+});
+
+test("applyCloneChanges fails the pass, with the real error text, when the one fix-up does not make the checks pass", async () => {
+  const runGenerator = async () => ({ success: false, summary: "ran out", filesWritten: [], iterations: 40, errors: ["ran out"], escalated: false });
+  const verify = async () => ({ ran: true, ok: false, output: "app/x.tsx(1,1): error TS1005: ';' expected" });
+  const r = await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k" }, { runGenerator, verify });
+  expect(r.applied).toBe(false);
+  expect(r.errors.join(" ")).toContain("error TS1005");
+});
+
+test("applyCloneChanges, when its own check cannot run, leaves the pass's own failure as it is — no fix-up on a guess", async () => {
+  let runs = 0;
+  const runGenerator = async () => {
+    runs += 1;
+    return { success: false, summary: "ran out", filesWritten: [], iterations: 40, errors: ["ran out"], escalated: false };
+  };
+  const verify = async () => ({ ran: false, ok: false, output: "" });
+  const r = await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k" }, { runGenerator, verify });
+  expect(runs).toBe(1);
+  expect(r.applied).toBe(false);
+});

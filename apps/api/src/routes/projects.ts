@@ -491,6 +491,16 @@ projectsRouter.post("/express-build", async (c) => {
         backendErrors = backendResult.errors;
         migrationApplied = backendResult.migrationApplied;
         if (backendResult.applied) backendContext = backendResult.summary;
+        // A backend that was not finished leaves nothing real for the frontend to wire to. Stop here, with the
+        // reason, instead of spending minutes building and deploying an app that cannot work.
+        if (!backendResult.applied) {
+          await db.update(projects).set({ status: "error", failureReason: "express_build_backend_failed", updatedAt: new Date() }).where(eq(projects.id, newId));
+          return c.json({
+            error: "backend_failed",
+            message: "The backend change could not be finished, so the app was not built. The details are in the server log.",
+            projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied,
+          }, 502);
+        }
       }
 
       // Always the user's own original words, never a paraphrase of them —
@@ -505,6 +515,16 @@ projectsRouter.post("/express-build", async (c) => {
       changesApplied = changeResult.applied;
       changesSummary = changeResult.summary;
       changesErrors = changeResult.errors;
+      // The same for the frontend: a change that does not build is not delivered. (Shopbill run 3 deployed one and
+      // Docker's build found the type error six minutes later.)
+      if (!changeResult.applied) {
+        await db.update(projects).set({ status: "error", failureReason: "express_build_frontend_failed", updatedAt: new Date() }).where(eq(projects.id, newId));
+        return c.json({
+          error: "frontend_failed",
+          message: "The frontend change could not be finished, so the app was not deployed. The details are in the server log.",
+          projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors,
+        }, 502);
+      }
 
       // 2026-09-02: real live bug found and reproduced exactly — a backend
       // pass and a frontend pass each independently pass their OWN build/
