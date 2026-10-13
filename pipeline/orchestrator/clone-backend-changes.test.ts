@@ -263,3 +263,10 @@ test("applyCloneBackendChanges fails the pass when the continuation does not fin
   expect(r.applied).toBe(false);
   expect(r.errors).toContain("ran out");
 });
+
+// 2026-10-13 (Shopbill run 7): the PDF generator gained an optional po_reference, but the code that builds its input
+// never passed it, and the compiler could not object because the field was optional.
+test("CLONE_BACKEND_EDIT_SYSTEM_PROMPT tells the agent to make a new field required on the type that carries it", () => {
+  expect(CLONE_BACKEND_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("required");
+  expect(CLONE_BACKEND_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("every place");
+});

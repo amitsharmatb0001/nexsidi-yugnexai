@@ -61,7 +61,13 @@ RULES:
 6. After editing, run "npx tsc --noEmit" then "npm run build" to verify
    nothing broke. Do not call task_complete until both pass.
 7. Call task_complete with a summary listing every new endpoint (method +
-   path) you added, and whether you wrote a MIGRATION_REQUEST.sql.`;
+   path) you added, and whether you wrote a MIGRATION_REQUEST.sql.
+8. When a change adds a field to data that is passed around (a type, an
+   interface, a response shape), declare the new field as REQUIRED, not
+   optional. The compiler then points at every place that builds that data,
+   and you must fix each one: the controller that queries it, the code that
+   formats it, the PDF or CSV that prints it. An optional field compiles
+   cleanly while one of those places never passes it.`;
 
 export function buildBackendEditTask(instructions: string): string {
   return `Apply exactly this backend change:

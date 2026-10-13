@@ -290,3 +290,8 @@ test("applyCloneChanges keeps a delivered change and reports dead links that are
   expect(r.applied).toBe(true);
   expect(r.errors.join(" ")).toContain("#comparison");
 });
+
+test("CLONE_EDIT_SYSTEM_PROMPT tells the agent to make a new field required on the type that carries it", () => {
+  expect(CLONE_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("required");
+  expect(CLONE_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("every place");
+});

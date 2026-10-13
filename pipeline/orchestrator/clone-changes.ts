@@ -64,7 +64,13 @@ RULES:
 10. Read a file once, whole. read_file already returns up to 8000 characters;
    do not pass a smaller limit or an offset unless the file is longer than
    that. Re-reading one file in small slices spends iterations you do not
-   have.`;
+   have.
+11. When a change adds a field to data that is passed around (a type or
+   interface in lib/api.ts, a props type), declare the new field as
+   REQUIRED, not optional, so the compiler points at every place that builds
+   or renders that data. Fix each one: the form that sends it, the screen
+   that shows it. An optional field compiles cleanly while one of those
+   places never uses it.`;
 
 export function buildCloneEditTask(changes: string, newName: string, backendContext?: string): string {
   const backendSection = backendContext
