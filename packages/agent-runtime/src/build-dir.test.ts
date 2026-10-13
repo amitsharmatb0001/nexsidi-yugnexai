@@ -112,3 +112,17 @@ test("registerBuildFolder still skips an empty folder another project has reserv
   writeFileSync(join(r, "ledgerly", "spec.json"), "{}");
   expect(registerBuildFolder("eeeeeeeeeeee", "Ledgerly")).toBe("ledgerly-2");
 });
+
+// 2026-10-13 (Shopbill run 4): the folder name is also the Docker project name. An earlier run's database volume
+// (shopbill_postgres_data_fresh) outlived its folder, the name was free again, and the new app started on the OLD
+// database — so its migration never ran. A name that existing Docker data already carries is taken.
+test("registerBuildFolder skips a name Docker data already carries", () => {
+  fresh();
+  expect(registerBuildFolder("ffffffffffff", "Shopbill", undefined, ["shopbill"])).toBe("shopbill-2");
+  expect(registerBuildFolder("gggggggggggg", "Shopbill", undefined, ["shopbill", "shopbill-2"])).toBe("shopbill-3");
+});
+
+test("registerBuildFolder with no Docker names behaves as before", () => {
+  fresh();
+  expect(registerBuildFolder("hhhhhhhhhhhh", "Shopbill")).toBe("shopbill");
+});

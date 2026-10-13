@@ -13,7 +13,8 @@ import { and, desc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { getPipelineStatus } from "../utils/temporal.ts";
 import { translateStage } from "../utils/stage-labels.ts";
-import { buildDirFor, registerBuildFolder } from "../../../../packages/agent-runtime/src/build-dir.ts";
+import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
+import { registerBuildFolderSafely } from "../../../../packages/agent-runtime/src/docker-names.ts";
 
 type Env = { Variables: { userId: string } };
 export const projectsRouter = new Hono<Env>();
@@ -151,7 +152,7 @@ projectsRouter.post("/", async (c) => {
 
     await db.insert(projects).values({ id, userId, name, status: "planning", context });
     // The build folder (and so every Docker container name) carries the app's own name, not the id.
-    try { registerBuildFolder(id, name); } catch (err) { console.error(`[projects] could not name the build folder for ${id}: ${String(err)}`); }
+    try { await registerBuildFolderSafely(id, name); } catch (err) { console.error(`[projects] could not name the build folder for ${id}: ${String(err)}`); }
     return c.json({ id, name }, 201);
   }
 
@@ -417,7 +418,7 @@ projectsRouter.post("/express-build", async (c) => {
     if (existingRow.length > 0) continue;
 
     // The new app's folder carries its own name, not the id (the clone is built into it).
-    try { registerBuildFolder(newId, newName, BUILD_DIR); } catch (err) { console.error(`[express-build] could not name the build folder for ${newId}: ${String(err)}`); }
+    try { await registerBuildFolderSafely(newId, newName, BUILD_DIR); } catch (err) { console.error(`[express-build] could not name the build folder for ${newId}: ${String(err)}`); }
     let cloneResult: Awaited<ReturnType<typeof cloneProject>>;
     try {
       cloneResult = await cloneProject({ sourceProjectId: sourceId, newProjectId: newId, oldName, newName, sourcePorts, buildDir: BUILD_DIR, ...(hasOwnRequest ? { requestText } : {}) });

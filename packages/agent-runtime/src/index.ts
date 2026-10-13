@@ -17,3 +17,4 @@ export { REPORT_BLOCKED_TOOL_DEF, recordBlocked, readBlockedReports, blockersFil
 export { skillPromptSection } from "./skill-library.ts";
 export { isBuilderFixFile } from "./ownership.ts";
 export { buildDirFor, buildRoot, registerBuildFolder, folderNameFor } from "./build-dir.ts";
+export { registerBuildFolderSafely, dockerProjectNames, projectNamesFromDocker } from "./docker-names.ts";

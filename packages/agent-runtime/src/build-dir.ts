@@ -68,7 +68,7 @@ function writeRegistry(root: string, map: Record<string, string>): void {
  * Gives a project its named folder and creates it. Idempotent: a project that already has a folder keeps it. Two projects
  * with the same name get name, name-2, name-3…; a folder that already exists on disk is never reused.
  */
-export function registerBuildFolder(projectId: string, name: string, root: string = buildRoot()): string {
+export function registerBuildFolder(projectId: string, name: string, root: string = buildRoot(), alsoTaken: Iterable<string> = []): string {
   if (!/^[\w.-]+$/.test(projectId) || projectId === "." || projectId === ".." || projectId.includes("..")) {
     throw new Error(`registerBuildFolder: "${projectId}" is not a valid project id`);
   }
@@ -84,7 +84,9 @@ export function registerBuildFolder(projectId: string, name: string, root: strin
     // One a project IS registered to is that build's reservation, so it stays taken even while empty.
     const reserved = new Set(Object.values(map).map((d) => d.toLowerCase()));
     const used = safeList(root).filter((d) => reserved.has(d.toLowerCase()) || !isEmptyDir(join(root, d)));
-    const taken = new Set([...reserved, ...used.map((d) => d.toLowerCase())]);
+    // Docker data under a name (volumes, containers) keeps that name taken even after its folder is gone: the folder
+    // name is the compose project name, and a new app must never start on an older app's database.
+    const taken = new Set([...reserved, ...used.map((d) => d.toLowerCase()), ...[...alsoTaken].map((d) => d.toLowerCase())]);
     folder = base;
     for (let n = 2; taken.has(folder); n++) folder = `${base}-${n}`.slice(0, 44);
   }
