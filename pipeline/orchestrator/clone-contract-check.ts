@@ -154,9 +154,21 @@ export function checkCrossLayerContract(
   const routesDir = join(opts.buildDir, "backend", "src", "routes");
   if (!existsFn(routesDir)) return { checked: false, mismatches: [] };
 
+  // A route file may be a one-line re-export of the real router (Ledgerly 2's backend: `export { default } from
+  // "./clientRoutes"`). Follow it, so the routes are read from where they are actually written.
+  const REEXPORT_RE = /export\s*\{\s*default\s*\}\s*from\s*["'`]\.\/([\w.-]+)["'`]/;
+  const readRouter = (file: string, hops = 0): string => {
+    const content = readFn(join(routesDir, file));
+    // A shim has no route of its own, only a re-export (possibly followed by `export * from`).
+    const m = hops < 3 && !new RegExp(EXPRESS_ROUTE_RE.source).test(content) ? REEXPORT_RE.exec(content) : null;
+    if (!m) return content;
+    const target = m[1]!.endsWith(".ts") ? m[1]! : `${m[1]}.ts`;
+    return existsFn(join(routesDir, target)) ? readRouter(target, hops + 1) : content;
+  };
+
   const routeFiles: Record<string, string> = {};
   for (const entry of readdirFn(routesDir)) {
-    if (entry.endsWith(".routes.ts")) routeFiles[entry] = readFn(join(routesDir, entry));
+    if (entry.endsWith(".routes.ts")) routeFiles[entry] = readRouter(entry);
   }
   if (Object.keys(routeFiles).length === 0) return { checked: false, mismatches: [] };
 
@@ -168,6 +180,9 @@ export function checkCrossLayerContract(
   const routeMounts = existsFn(indexTsPath) ? extractRouteMounts(readFn(indexTsPath)) : {};
 
   const backendRoutes = extractBackendRoutes(routeFiles, routeMounts, basePrefix);
+  // Not one route could be read: the check cannot say anything. Calling every call a mismatch would fail a
+  // build for the checker's own blindness.
+  if (backendRoutes.length === 0) return { checked: false, mismatches: [] };
 
   const frontendContents = opts.frontendFilesWritten
     .map((rel) => join(opts.buildDir, "frontend", rel))

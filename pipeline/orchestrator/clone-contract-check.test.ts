@@ -177,3 +177,56 @@ test("checkCrossLayerContract only inspects the NEWLY WRITTEN frontend files, no
   expect(result.checked).toBe(true);
   expect(result.mismatches).toEqual([]); // NewOne's call matches; PreExisting was never scanned at all
 });
+
+// 2026-10-13 (Shopbill Express Build): in the Ledgerly 2 backend every *.routes.ts file is a one-line
+// re-export of the real router ("export { default } from './clientRoutes'"). The checker read only the
+// *.routes.ts text, found no routes at all, and called every frontend call a mismatch — failing a build whose
+// two passes had both verified.
+test("checkCrossLayerContract follows a one-line re-export to the real router", () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-contract-check-test-"));
+  mkdirSync(join(tempBuildDir, "backend", "src", "routes"), { recursive: true });
+  mkdirSync(join(tempBuildDir, "frontend", "components"), { recursive: true });
+  writeFileSync(join(tempBuildDir, "backend", "src", "app.ts"), 'app.use("/api/v1", routes);\n');
+  writeFileSync(join(tempBuildDir, "backend", "src", "routes", "index.ts"),
+    'import clientsRouter from "./clients.routes";\nconst router = require("express").Router();\nrouter.use("/clients", clientsRouter);\nexport default router;\n');
+  writeFileSync(join(tempBuildDir, "backend", "src", "routes", "clients.routes.ts"), 'export { default } from "./clientRoutes";\n');
+  writeFileSync(join(tempBuildDir, "backend", "src", "routes", "clientRoutes.ts"), 'router.get("/", list);\nrouter.get("/:id", one);\nrouter.post("/", create);\n');
+  writeFileSync(join(tempBuildDir, "frontend", "components", "Clients.tsx"),
+    'apiFetch("/api/v1/clients");\napiFetch(`/api/v1/clients/${id}`);\napiFetch("/api/v1/clients", { method: "POST", body: b });\napiFetch("/api/v1/clients/nope", { method: "DELETE" });\n');
+
+  const result = checkCrossLayerContract({ buildDir: tempBuildDir, frontendFilesWritten: ["components/Clients.tsx"] });
+
+  expect(result.checked).toBe(true);
+  // only the call to a route that genuinely is not there is flagged
+  expect(result.mismatches.map((m) => `${m.frontendCall.method} ${m.frontendCall.path}`)).toEqual(["DELETE /api/v1/clients/nope"]);
+});
+
+test("checkCrossLayerContract is inconclusive when no backend route could be read at all, never a wall of false failures", () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-contract-check-test-"));
+  mkdirSync(join(tempBuildDir, "backend", "src", "routes"), { recursive: true });
+  mkdirSync(join(tempBuildDir, "frontend", "components"), { recursive: true });
+  writeFileSync(join(tempBuildDir, "backend", "src", "routes", "orders.routes.ts"), 'export default makeOrdersRouter();\n'); // no router.get(...) to read
+  writeFileSync(join(tempBuildDir, "frontend", "components", "Orders.tsx"), 'apiFetch("/api/v1/orders");\n');
+
+  const result = checkCrossLayerContract({ buildDir: tempBuildDir, frontendFilesWritten: ["components/Orders.tsx"] });
+
+  expect(result.checked).toBe(false);
+  expect(result.mismatches).toEqual([]);
+});
+
+test("checkCrossLayerContract follows the two-line shim the real backend uses (default re-export plus export *)", () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-contract-check-test-"));
+  mkdirSync(join(tempBuildDir, "backend", "src", "routes"), { recursive: true });
+  mkdirSync(join(tempBuildDir, "frontend", "components"), { recursive: true });
+  writeFileSync(join(tempBuildDir, "backend", "src", "routes", "index.ts"),
+    'import invoicesRouter from "./invoices.routes";\nconst router = require("express").Router();\nrouter.use("/invoices", invoicesRouter);\nexport default router;\n');
+  writeFileSync(join(tempBuildDir, "backend", "src", "routes", "invoices.routes.ts"), 'export { default } from "./invoiceRoutes";\nexport * from "./invoiceRoutes";\n');
+  writeFileSync(join(tempBuildDir, "backend", "src", "routes", "invoiceRoutes.ts"), 'router.get("/", a);\nrouter.post("/", b);\nrouter.patch("/:id/status", c);\n');
+  writeFileSync(join(tempBuildDir, "frontend", "components", "Inv.tsx"),
+    'apiFetch("/api/v1/invoices");\napiFetch("/api/v1/invoices", { method: "POST", body: b });\napiFetch(`/api/v1/invoices/${id}/status`, { method: "PATCH", body: b });\n');
+
+  const result = checkCrossLayerContract({ buildDir: tempBuildDir, frontendFilesWritten: ["components/Inv.tsx"] });
+
+  expect(result.checked).toBe(true);
+  expect(result.mismatches).toEqual([]);
+});
