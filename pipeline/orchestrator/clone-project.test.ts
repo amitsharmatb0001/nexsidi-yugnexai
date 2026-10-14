@@ -461,3 +461,31 @@ test("an Express Build uses the accent colour the request named", async () => {
   expect(result.theme.newAccent).toBe("#1D4ED8");
   expect(readFileSync(join(tempBuildDir, "newbbb000002", "frontend", "app", "layout.tsx"), "utf-8")).toContain('"primary": "#1D4ED8"');
 });
+
+// 2026-10-13 (Shopbill run 9): the lowercase forms of the source's name ("ledgerly" as a database name and as an
+// object key) survived the rename, and a standalone compose file inside backend/ carried them with a weak secret.
+test("renameInFile also renames the lowercase, hyphen and underscore forms of the old name, as whole words", () => {
+  const out = renameInFile(
+    'db: "acme_widgets", slug: "acme-widgets", key: acmewidgets, label: "Acme Widgets", mid: "xacmewidgetsx"',
+    "Acme Widgets",
+    "Beacon Labs",
+  );
+  expect(out).toContain('db: "beacon_labs"');
+  expect(out).toContain('slug: "beacon-labs"');
+  expect(out).toContain("key: beaconlabs");
+  expect(out).toContain('label: "Beacon Labs"');
+  expect(out).toContain('mid: "xacmewidgetsx"'); // inside another word: left alone
+});
+
+test("renameInFile leaves short names alone in their lowercase forms — they are too likely to be ordinary words", () => {
+  expect(renameInFile("a cart of cart items", "Cart", "Box")).toBe("a cart of cart items");
+});
+
+test("an Express Build leaves out a standalone compose file nested in backend/ or frontend/, and keeps the root one", async () => {
+  tempBuildDir = mkdtempSync(join(tmpdir(), "nexsidi-clone-test-"));
+  makeSourceWithTraces(tempBuildDir, "srcaaa000001");
+  writeFileSync(join(tempBuildDir, "srcaaa000001", "backend", "docker-compose.yml"), "services:\n  postgres:\n    environment:\n      POSTGRES_DB: acme\n");
+  await expressFrom(tempBuildDir, "srcaaa000001", "newbbb000002");
+  expect(existsSync(join(tempBuildDir, "newbbb000002", "backend", "docker-compose.yml"))).toBe(false);
+  expect(existsSync(join(tempBuildDir, "newbbb000002", "docker-compose.yml"))).toBe(true);
+});

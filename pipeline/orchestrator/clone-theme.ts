@@ -165,3 +165,41 @@ export function applyThemeVariation(
   writeFn(layoutPath, rewritten);
   return { applied: true, newAccent };
 }
+
+function rgbOf(hex: string): [number, number, number] {
+  const clean = hex.replace("#", "");
+  const full = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean;
+  return [parseInt(full.slice(0, 2), 16), parseInt(full.slice(2, 4), 16), parseInt(full.slice(4, 6), 16)];
+}
+
+function relativeLuminance(hex: string): number {
+  const [r, g, b] = rgbOf(hex).map((v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  }) as [number, number, number];
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** WCAG contrast ratio of two hex colours, 1 to 21. */
+export function contrastRatio(a: string, b: string): number {
+  const la = relativeLuminance(a);
+  const lb = relativeLuminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+// The two dark surfaces the marketing panels sit on.
+const DARK_PANELS = ["#1E293B", "#0F172A"];
+
+/** The accent, lightened toward white only as far as needed to read at 4.5:1 on both dark panels. */
+export function accentOnDark(accent: string): string {
+  const ok = (c: string) => DARK_PANELS.every((p) => contrastRatio(c, p) >= 4.5);
+  if (ok(accent)) return accent;
+  const [r, g, b] = rgbOf(accent);
+  for (let step = 1; step <= 20; step++) {
+    const t = step * 0.05;
+    const mix = (v: number) => Math.round(v + (255 - v) * t);
+    const hex = `#${[mix(r), mix(g), mix(b)].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+    if (ok(hex)) return hex;
+  }
+  return "#FFFFFF";
+}

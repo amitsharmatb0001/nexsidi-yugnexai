@@ -6,7 +6,7 @@
 // swaps the literal display name/branding text via find-and-replace, not
 // deeper content variation (different testimonials, different colors) —
 // that needs an LLM-assisted pass and is a natural v2, not built here.
-import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, cpSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, cpSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { findFreePort, isPortUsedByDocker } from "../../agents/riya/src/index.ts";
 import { bindComposePortsToLoopback, parseServiceHostPort } from "../../packages/agent-runtime/src/tools/compose-ports.ts";
@@ -108,6 +108,23 @@ export function renameInFile(content: string, oldName: string, newName: string):
   // Escape regex metacharacters in oldName — a company name like "R&D Co."
   // or "C++ Labs" must be matched literally, not interpreted as a pattern.
   let result = content.replace(new RegExp(escapeRegex(oldName), "g"), newName);
+
+  // 2026-10-13 (Shopbill run 9): the lowercase forms survived — "ledgerly" as a database name and as an object key.
+  // Whole words only, and only for names long enough not to be an ordinary word.
+  const wordsOf = (name: string) => name.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  const oldWords = wordsOf(oldName);
+  const newWords = wordsOf(newName);
+  if (oldWords.length > 0 && newWords.length > 0) {
+    const forms = (ws: string[]) => [ws.join("").toLowerCase(), ws.join("-").toLowerCase(), ws.join("_").toLowerCase()];
+    const from = forms(oldWords);
+    const to = forms(newWords);
+    const done = new Set<string>();
+    from.forEach((f, i) => {
+      if (f.length < 5 || done.has(f) || f === to[i]) return;
+      done.add(f);
+      result = result.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRegex(f)}(?![A-Za-z0-9])`, "g"), to[i]!);
+    });
+  }
 
   // 2026-09-02: real bug found live cloning Gatherly — its own Navbar hardcodes
   // the wordmark as a literal ALL-CAPS string ("GATHERLY") rather than computing
@@ -258,6 +275,17 @@ export async function cloneProject(
   }
 
   copyProjectDir(sourceDir, destDir, fileDependencyDirs(sourceDir));
+
+  // A standalone compose file inside backend/ or frontend/ is the source's own leftover, not part of this project's
+  // delivery (the root compose is), and it carries the source's database name and a weak literal secret.
+  if (existsSync(join(destDir, "docker-compose.yml"))) {
+    for (const sub of ["backend", "frontend", "db"]) {
+      for (const name of ["docker-compose.yml", "docker-compose.yaml"]) {
+        const nested = join(destDir, sub, name);
+        if (existsSync(nested)) unlinkSync(nested);
+      }
+    }
+  }
 
   // Fresh, collision-free ports — same ranges tonight's manual port
   // reassignment used (32xx frontend, 33xx backend, 54xx db), scanning

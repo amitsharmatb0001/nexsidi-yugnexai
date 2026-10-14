@@ -22,6 +22,8 @@ export function isPipelineBookkeeping(path: string): boolean {
     /^history-[a-z0-9-]+\.json$/.test(path) ||
     path === "qa-submissions.json" ||
     path === "planner-plan.json" ||
+    // 2026-10-13: the review cache holds one project's scores and per-file hashes; another project must not carry it.
+    path === "review-pass-cache.json" ||
     // 2026-09-28: agents' screenshot evidence (tools/screenshot.ts), which
     // lives inside an agent's own folder (e.g. frontend/), so any depth.
     path.split("/").includes(".nexsidi-evidence")

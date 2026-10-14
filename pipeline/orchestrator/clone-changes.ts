@@ -10,9 +10,10 @@
 // respects whichever tier (GENERATOR_TIER=gemini vs NIM/Claude-escalation)
 // is actually active in this environment rather than hardcoding an
 // assumption about it.
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { findDanglingAnchorsInApp, type DanglingAnchor } from "./anchor-check.ts";
+import { findDanglingAnchorsInApp, reachableFiles, type DanglingAnchor } from "./anchor-check.ts";
+import { accentOnDark } from "./clone-theme.ts";
 import { verifyDir, type VerifyResult } from "./verify-commands.ts";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 // Deep relative import, not the "@nexsidi/agent-runtime" package alias —
@@ -72,15 +73,18 @@ RULES:
    that shows it. An optional field compiles cleanly while one of those
    places never uses it.`;
 
-export function buildCloneEditTask(changes: string, newName: string, backendContext?: string): string {
+export function buildCloneEditTask(changes: string, newName: string, backendContext?: string, accentColor?: string | null): string {
   const backendSection = backendContext
     ? `\n\nThe backend was just updated to support this request:\n${backendContext}\nWire your changes to what it now actually provides — don't guess at endpoint shapes, use exactly what's described above.\n`
+    : "";
+  const accentSection = accentColor
+    ? `\n\nAccent colour: the main accent is ${accentColor}; the app's theme token already carries it. Where you recolour literal hex values elsewhere, use ${accentColor} for fills and buttons, and ${accentOnDark(accentColor)} for text and icons on dark panels (it is lightened so it reads at 4.5:1 there).\n`
     : "";
   return `App name: ${newName}
 
 Apply exactly this change request to the existing frontend:
 "${changes}"
-${backendSection}
+${backendSection}${accentSection}
 Start with list_files to see the current project structure, then read_file
 on whichever files are relevant to the request before editing anything.`;
 }
@@ -97,6 +101,8 @@ export interface ApplyCloneChangesOptions {
   backendContext?: string;
   // The project the spend of every pass is added to (the same per-project total full builds use).
   projectId?: string;
+  // The accent colour the request names, as a hex (see clone-plan.ts).
+  accentColor?: string | null;
 }
 
 export type FrontendVerifyResult = VerifyResult;
@@ -111,8 +117,8 @@ export const verifyFrontend: FrontendVerify = (frontendDir) =>
 
 export type DanglingAnchorScan = (frontendDir: string) => Promise<DanglingAnchor[]>;
 
-/** Every in-page link in the app's pages and components whose target id exists nowhere. */
-export async function scanDanglingAnchors(frontendDir: string): Promise<DanglingAnchor[]> {
+/** The source files under app/ and components/, paths relative to the frontend folder. */
+export async function readFrontendSources(frontendDir: string): Promise<{ path: string; content: string }[]> {
   const files: { path: string; content: string }[] = [];
   const walk = (dir: string) => {
     if (!existsSync(dir)) return;
@@ -124,7 +130,12 @@ export async function scanDanglingAnchors(frontendDir: string): Promise<Dangling
     }
   };
   for (const d of ["app", "components"]) walk(join(frontendDir, d));
-  return findDanglingAnchorsInApp(files);
+  return files;
+}
+
+/** Every in-page link in the app's pages and components whose target id exists nowhere. */
+export async function scanDanglingAnchors(frontendDir: string): Promise<DanglingAnchor[]> {
+  return findDanglingAnchorsInApp(await readFrontendSources(frontendDir));
 }
 
 export interface ApplyCloneChangesResult {
@@ -169,7 +180,25 @@ export async function applyCloneChanges(
   // A section the pass removed can leave links pointing at it (Shopbill run 5: a "Compare vs Spreadsheets" button).
   // Types and the build cannot see that. Ask the agent once to take them out; whatever is left is reported, and the
   // delivered change is kept.
-  const finish = async (done: ApplyCloneChangesResult): Promise<ApplyCloneChangesResult> => {
+  const finish = async (applied: ApplyCloneChangesResult): Promise<ApplyCloneChangesResult> => {
+    let done = applied;
+    // Files the pass itself orphaned (a removed section's component) are taken out, so they do not ship unused —
+    // and cannot make a dead link look valid. Only files the app used before and no longer uses; never anything else.
+    const sourcesAfter = await readFrontendSources(frontendDir);
+    const reachableAfter = reachableFiles(sourcesAfter);
+    const removed: string[] = [];
+    for (const path of reachableBefore) {
+      if (reachableAfter.has(path) || !sourcesAfter.some((f) => f.path === path)) continue;
+      try {
+        unlinkSync(join(frontendDir, path));
+        removed.push(path);
+      } catch {
+        /* leave it: an unused file is harmless */
+      }
+    }
+    if (removed.length > 0) {
+      done = { ...done, summary: `${done.summary}\nRemoved files the change left unused: ${removed.join(", ")}.`.trim() };
+    }
     const dead = await anchors(frontendDir);
     if (dead.length === 0) return done;
     const list = dead.map((d) => `"#${d.anchor}" in ${d.file}`).join(", ");
@@ -187,7 +216,9 @@ export async function applyCloneChanges(
     return { ...done, filesWritten, errors };
   };
 
-  const first = await runPass(buildCloneEditTask(opts.changes, opts.newName, opts.backendContext), opts.backendContext ? 40 : 25);
+  const sourcesBefore = await readFrontendSources(frontendDir);
+  const reachableBefore = reachableFiles(sourcesBefore);
+  const first = await runPass(buildCloneEditTask(opts.changes, opts.newName, opts.backendContext, opts.accentColor), opts.backendContext ? 40 : 25);
 
   if (first.success) {
     return finish({ applied: true, summary: first.summary, filesWritten: first.filesWritten, errors: first.errors });

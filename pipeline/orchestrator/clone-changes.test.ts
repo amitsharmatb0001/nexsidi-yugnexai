@@ -1,5 +1,7 @@
 import { test, expect } from "bun:test";
 import { join } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import type { AgentRunConfig, AgentRunResult } from "../../packages/agent-runtime/src/loop.ts";
 import { applyCloneChanges, buildCloneEditTask, CLONE_EDIT_SYSTEM_PROMPT } from "./clone-changes.ts";
 
@@ -312,4 +314,58 @@ test("applyCloneChanges runs every pass under the project id, so its spend is re
   const anchors = async () => [];
   await applyCloneChanges({ buildDir: join("E:", "tmp", "x", "clone1"), changes: "c", newName: "N", apiKey: "k", projectId: "abc123def456" }, { runGenerator, verify, anchors });
   expect(seen).toEqual(["abc123def456", "abc123def456"]);
+});
+
+// 2026-10-13 (Shopbill run 9): the pass removed the comparison section from the page and left its file behind.
+test("applyCloneChanges removes the files the pass itself orphaned, and nothing else", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "nexsidi-clone-orphan-"));
+  try {
+    const fe = join(dir, "frontend");
+    mkdirSync(join(fe, "app"), { recursive: true });
+    mkdirSync(join(fe, "components", "marketing"), { recursive: true });
+    mkdirSync(join(fe, "components", "nexui"), { recursive: true });
+    writeFileSync(join(fe, "app", "page.tsx"), 'import { Hero } from "@/components/marketing/Hero";\nimport { Comparison } from "@/components/marketing/Comparison";\n');
+    writeFileSync(join(fe, "components", "marketing", "Hero.tsx"), "export function Hero() { return null; }\n");
+    writeFileSync(join(fe, "components", "marketing", "Comparison.tsx"), "export function Comparison() { return null; }\n");
+    writeFileSync(join(fe, "components", "nexui", "unused-kit-part.tsx"), "export const K = 1;\n"); // never used, before or after
+    const runGenerator = async (config: AgentRunConfig) => {
+      writeFileSync(join(config.sandboxDir, "app", "page.tsx"), 'import { Hero } from "@/components/marketing/Hero";\n');
+      return { success: true, summary: "removed the comparison section", filesWritten: ["app/page.tsx"], iterations: 3, errors: [], escalated: false };
+    };
+    const anchors = async () => [];
+    const r = await applyCloneChanges({ buildDir: dir, changes: "remove the comparison section", newName: "N", apiKey: "k" }, { runGenerator, anchors });
+    expect(r.applied).toBe(true);
+    expect(existsSync(join(fe, "components", "marketing", "Comparison.tsx"))).toBe(false);
+    expect(existsSync(join(fe, "components", "marketing", "Hero.tsx"))).toBe(true);
+    expect(existsSync(join(fe, "components", "nexui", "unused-kit-part.tsx"))).toBe(true);
+    expect(r.summary).toContain("components/marketing/Comparison.tsx");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("applyCloneChanges removes nothing when the pass did not finish", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "nexsidi-clone-orphan-"));
+  try {
+    const fe = join(dir, "frontend");
+    mkdirSync(join(fe, "app"), { recursive: true });
+    mkdirSync(join(fe, "components"), { recursive: true });
+    writeFileSync(join(fe, "app", "page.tsx"), 'import { A } from "@/components/A";\n');
+    writeFileSync(join(fe, "components", "A.tsx"), "export const A = 1;\n");
+    const runGenerator = async (config: AgentRunConfig) => {
+      writeFileSync(join(config.sandboxDir, "app", "page.tsx"), "export default function P() { return null; }\n");
+      return { success: false, summary: "ran out", filesWritten: ["app/page.tsx"], iterations: 40, errors: ["ran out"], escalated: false };
+    };
+    const verify = async () => ({ ran: false, ok: false, output: "" });
+    await applyCloneChanges({ buildDir: dir, changes: "c", newName: "N", apiKey: "k" }, { runGenerator, verify });
+    expect(existsSync(join(fe, "components", "A.tsx"))).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("buildCloneEditTask gives the exact accent colours, with a lighter one that reads on dark panels", () => {
+  const task = buildCloneEditTask("make the accent a deep blue", "N", undefined, "#1D4ED8");
+  expect(task).toContain("#1D4ED8");
+  expect(task.toLowerCase()).toContain("dark");
 });

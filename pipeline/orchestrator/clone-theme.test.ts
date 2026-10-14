@@ -7,6 +7,8 @@ import {
   shiftThemeAccent,
   applyThemeVariation,
   CLONE_ACCENT_PALETTE,
+  accentOnDark,
+  contrastRatio,
 } from "./clone-theme.ts";
 
 // ── hexHue / hueDistance (pure color math) ───────────────────────────────
@@ -199,4 +201,16 @@ test("applyThemeVariation ignores a named accent that is not a hex colour and pi
   expect(result.applied).toBe(true);
   expect(result.newAccent).not.toBe("deep blue");
   expect(CLONE_ACCENT_PALETTE as readonly string[]).toContain(result.newAccent!);
+});
+
+// 2026-10-13 (Shopbill run 9): the new blue as text on the dark panels (#3b82f6 on #1e293b) was 3.98:1.
+test("accentOnDark returns the accent unchanged when it already reads on dark panels", () => {
+  expect(accentOnDark("#93C5FD").toLowerCase()).toBe("#93c5fd");
+});
+
+test("accentOnDark lightens an accent until it reads at 4.5:1 on both dark panel colours", () => {
+  const out = accentOnDark("#1D4ED8");
+  expect(contrastRatio(out, "#1E293B")).toBeGreaterThanOrEqual(4.5);
+  expect(contrastRatio(out, "#0F172A")).toBeGreaterThanOrEqual(4.5);
+  expect(hexHue(out)).toBeCloseTo(hexHue("#1D4ED8"), -1); // still the same colour family
 });

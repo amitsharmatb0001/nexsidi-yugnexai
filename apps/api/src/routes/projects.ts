@@ -514,6 +514,7 @@ projectsRouter.post("/express-build", async (c) => {
         apiKey,
         backendContext,
         projectId: newId,
+        accentColor: earlyPlan?.accentColor ?? null,
       });
       changesApplied = changeResult.applied;
       changesSummary = changeResult.summary;

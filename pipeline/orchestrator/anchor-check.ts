@@ -54,7 +54,7 @@ function resolveImport(from: string, spec: string, known: Set<string>): string |
  * Like findDanglingAnchors, but only files the app renders count: everything under app/ plus whatever they import,
  * directly or through other files. A leftover, unused component can no longer make a dead link look valid.
  */
-export function findDanglingAnchorsInApp(files: SourceFile[]): DanglingAnchor[] {
+export function reachableFiles(files: SourceFile[]): Set<string> {
   const byPath = new Map(files.map((f) => [f.path, f]));
   const known = new Set(byPath.keys());
   const reachable = new Set<string>();
@@ -68,5 +68,10 @@ export function findDanglingAnchorsInApp(files: SourceFile[]): DanglingAnchor[] 
       if (target && !reachable.has(target)) queue.push(target);
     }
   }
+  return reachable;
+}
+
+export function findDanglingAnchorsInApp(files: SourceFile[]): DanglingAnchor[] {
+  const reachable = reachableFiles(files);
   return findDanglingAnchors(files.filter((f) => reachable.has(f.path)));
 }
