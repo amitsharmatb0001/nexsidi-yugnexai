@@ -177,7 +177,6 @@ test("when the planner gave no scope numbers the request is let through, not blo
 test("the refusal tells the person why, what Express Build is for, and what to do instead", () => {
   const m = outOfScopeMessage("Ledgerly 2", "it needs 5 new database tables (Express Build takes up to 2)", true);
   expect(m).toContain("5 new database tables");
-  expect(m).toContain("Ledgerly 2");
   expect(m.toLowerCase()).toContain("fresh build");
   expect(m.toLowerCase()).toContain("narrow");
 });
@@ -188,6 +187,12 @@ test("the refusal does not mention a fresh build while fresh builds are not offe
   expect(m.toLowerCase()).not.toContain("fresh build");
   expect(m.toLowerCase()).toContain("narrow");
   expect(m).toContain("5 new database tables");
+});
+
+// Express Build never says which app it starts from — that stays in the server log.
+test("the refusal never names the app it would have started from", () => {
+  expect(outOfScopeMessage("Ledgerly 2", "too big", true)).not.toContain("Ledgerly");
+  expect(outOfScopeMessage("Ledgerly 2", "too big", false)).not.toContain("Ledgerly");
 });
 
 test("the refusal defaults to not mentioning a fresh build", () => {

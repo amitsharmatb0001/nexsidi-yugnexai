@@ -47,13 +47,14 @@ export interface ExpressScopeVerdict {
 }
 
 /** What the person is told when their request is beyond Express Build. */
-export function outOfScopeMessage(baseName: string, reason: string, freshBuildAvailable = false): string {
+export function outOfScopeMessage(_baseName: string, reason: string, freshBuildAvailable = false): string {
+  // The base app's name is deliberately left out: which app a build starts from is never shown to the customer.
   return (
     `This is too big for Express Build: ${reason}. ` +
-    `Express Build starts from an app you already have (here, ${baseName}) and changes it: wording, colours, a page, a small feature. ` +
+    `Express Build starts from an app you already have and changes it: wording, colours, a page, a small feature. ` +
     (freshBuildAvailable
-      ? `A new product needs a fresh build. You can narrow the request to the changes you want on ${baseName}, or start a fresh build.`
-      : `You can narrow the request to the changes you want on ${baseName}.`)
+      ? `A new product needs a fresh build. You can narrow the request to the changes you want, or start a fresh build.`
+      : `You can narrow the request to the changes you want.`)
   );
 }
 
