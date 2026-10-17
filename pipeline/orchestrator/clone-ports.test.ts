@@ -66,3 +66,20 @@ test("a clone's .env files and source files name the clone's own ports, not the 
   // the source is untouched
   expect(readFileSync(join(s, "frontend", ".env"), "utf-8")).toBe("NEXT_PUBLIC_API_URL=http://localhost:3301\n");
 });
+
+// 2026-10-18 (Leafkeeper run): the frontend's Dockerfile carried `ARG NEXT_PUBLIC_API_URL=http://localhost:<source port>`,
+// which Next bakes into the bundle at build time. A file with no extension was never looked at.
+test("a clone's Dockerfile build defaults name the clone's own ports", async () => {
+  dir = mkdtempSync(join(tmpdir(), "nexsidi-ports-"));
+  const s = join(dir, "srcaaa000001");
+  mkdirSync(join(s, "frontend", "app"), { recursive: true });
+  writeFileSync(join(s, "frontend", "app", "page.tsx"), "export default function P() { return null; }\n");
+  writeFileSync(join(s, "frontend", "Dockerfile"), "FROM node:20-alpine\nARG NEXT_PUBLIC_API_URL=http://localhost:3301\nENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL\n");
+  writeFileSync(join(s, "docker-compose.yml"), `services:\n  postgres:\n    ports:\n      - "5437:5432"\n  backend:\n    ports:\n      - "3301:3001"\n  frontend:\n    ports:\n      - "3200:3000"\n`);
+  writeFileSync(join(s, "spec.json"), JSON.stringify({ projectId: "srcaaa000001", name: "Acme Co", description: "d" }));
+  await cloneProject(
+    { sourceProjectId: "srcaaa000001", newProjectId: "newbbb000002", oldName: "Acme Co", newName: "Beacon Labs", sourcePorts: OLD, buildDir: dir },
+    { findFreePort: async (start) => start },
+  );
+  expect(readFileSync(join(dir, "newbbb000002", "frontend", "Dockerfile"), "utf-8")).toContain("ARG NEXT_PUBLIC_API_URL=http://localhost:3302");
+});

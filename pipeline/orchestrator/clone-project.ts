@@ -228,7 +228,7 @@ function rewritePortsInDir(dir: string, oldPorts: ClonePorts, newPorts: ClonePor
     if (entry === "package-lock.json") continue;
     const dotIdx = entry.lastIndexOf(".");
     const ext = dotIdx === -1 ? "" : entry.slice(dotIdx);
-    if (!(entry.startsWith(".env") || PORT_FILE_EXTENSIONS.has(ext))) continue;
+    if (!(entry.startsWith(".env") || entry.startsWith("Dockerfile") || PORT_FILE_EXTENSIONS.has(ext))) continue;
     const content = readFileSync(full, "utf-8");
     const next = rewriteHostPortsInText(content, oldPorts, newPorts);
     if (next !== content) writeFileSync(full, next, "utf-8");
