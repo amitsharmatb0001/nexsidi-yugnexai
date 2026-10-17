@@ -341,8 +341,13 @@ projectsRouter.post("/express-build", async (c) => {
       return { id: p.id, name: p.name, description };
     });
 
+    // Originals first: a copy of a copy carries traces of the app it came from.
+    const { preferOriginals } = await import("../../../../pipeline/orchestrator/clone-source-picker.ts");
+    const { isClone } = await import("../../../../pipeline/orchestrator/clone-lineage.ts");
+    const offered = preferOriginals(candidates, (id) => isClone(BUILD_DIR_FOR_PICK, id));
+
     try {
-      const picked = await pickCloneSource(description, candidates, process.env.NIM_API_KEY ?? "");
+      const picked = await pickCloneSource(description, offered, process.env.NIM_API_KEY ?? "");
       sourceId = picked.sourceId;
       sourcePickReasoning = picked.reasoning;
     } catch (err) {

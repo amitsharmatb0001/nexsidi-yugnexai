@@ -6,6 +6,8 @@
 // swaps the literal display name/branding text via find-and-replace, not
 // deeper content variation (different testimonials, different colors) —
 // that needs an LLM-assisted pass and is a natural v2, not built here.
+import { lineageOf, recordLineage } from "./clone-lineage.ts";
+import { pruneUnusedComponents } from "./prune-unused.ts";
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, cpSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { findFreePort, isPortUsedByDocker } from "../../agents/riya/src/index.ts";
@@ -244,6 +246,8 @@ export interface CloneProjectResult {
   buildDir: string;
   ports: ClonePorts;
   theme: ApplyThemeVariationResult;
+  // Unused components left out of the new app (paths relative to the project).
+  pruned: string[];
 }
 
 export async function cloneProject(
@@ -298,6 +302,11 @@ export async function cloneProject(
 
   const vendored = fileDependencyDirs(destDir);
   renameInDir(destDir, opts.oldName, opts.newName, vendored);
+  // A source that was itself a copy still carries the names it inherited: rename those as well.
+  const inherited = lineageOf(baseDir, opts.sourceProjectId)?.priorNames ?? [];
+  for (const prior of inherited) {
+    if (prior && prior !== opts.oldName && prior !== opts.newName) renameInDir(destDir, prior, opts.newName, vendored);
+  }
   // 2026-09-27 (Express Build): the source's project id survived in
   // package.json / package-lock.json names ("88d7b375eaef-frontend"). Ids are
   // 12-char random hex, so a plain swap cannot hit unrelated text.
@@ -338,5 +347,12 @@ export async function cloneProject(
   const requestText = opts.requestText ?? (specDescription ? `${opts.newName}\n\n${specDescription}` : opts.newName);
   writeFileSync(join(destDir, "user-request.txt"), requestText, "utf-8");
 
-  return { newProjectId: opts.newProjectId, buildDir: destDir, ports: newPorts, theme };
+  // Components the source inherited and no page renders are not carried into the new app.
+  const pruned = pruneUnusedComponents(join(destDir, "frontend")).map((f) => `frontend/${f}`);
+  recordLineage(baseDir, opts.newProjectId, {
+    clonedFrom: opts.sourceProjectId,
+    priorNames: [...new Set([...inherited, opts.oldName])].filter((n) => n !== opts.newName),
+  });
+
+  return { newProjectId: opts.newProjectId, buildDir: destDir, ports: newPorts, theme, pruned };
 }

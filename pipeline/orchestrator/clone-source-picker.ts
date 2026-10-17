@@ -22,6 +22,15 @@ export interface PickCloneSourceResult {
   reasoning: string;
 }
 
+/**
+ * A copy of a copy still carries traces of the app it came from, so originals are offered first. When every
+ * candidate is a copy, all of them stay available: the user is never left without a starting point.
+ */
+export function preferOriginals<T extends { id: string }>(candidates: T[], isClone: (id: string) => boolean): T[] {
+  const originals = candidates.filter((c) => !isClone(c.id));
+  return originals.length > 0 ? originals : candidates;
+}
+
 export function buildPickSourcePrompt(description: string, candidates: CloneSourceCandidate[]): string {
   const listing = candidates.map((c) => `- id: "${c.id}", name: "${c.name}", description: "${c.description}"`).join("\n");
   return `A user wants a new project built with this description:
