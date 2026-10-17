@@ -22,6 +22,13 @@ export function isTransientSpawnError(err: unknown): boolean {
   return msg.includes("ETIMEDOUT") && msg.includes("spawnSync");
 }
 
+// 2026-10-18 (Leafkeeper run): the images built, then "docker compose up" failed because Docker had no network
+// addresses left — every project leaves a network behind, and the default pools hold about thirty. Unused networks
+// (none of their containers exist) are safe to remove; the project's data lives in volumes, which are not touched.
+export function isNetworkPoolExhausted(err: unknown): boolean {
+  return String(err).includes("all predefined address pools have been fully subnetted");
+}
+
 export interface DeployWithRetryDeps {
   execFn?: (command: string) => string;
   maxAttempts?: number;
@@ -35,12 +42,24 @@ export async function deployWithRetry(composePath: string, deps: DeployWithRetry
   try { stripRestartPoliciesInFile(composePath); } catch { /* best effort */ }
 
   let lastErr: unknown;
+  let pruned = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       execFn(command);
       return;
     } catch (err) {
       lastErr = err;
+      if (!pruned && isNetworkPoolExhausted(err)) {
+        pruned = true;
+        console.log("[clone-deploy] Docker has no network addresses left — removing unused networks and retrying once");
+        try {
+          execFn("docker network prune -f");
+        } catch {
+          throw err;
+        }
+        execFn(command);
+        return;
+      }
       if (attempt < maxAttempts && isTransientSpawnError(err)) {
         console.log(`[clone-deploy] attempt ${attempt} hit a transient spawn error, retrying: ${String(err).slice(0, 200)}`);
         continue;

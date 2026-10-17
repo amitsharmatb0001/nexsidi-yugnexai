@@ -50,3 +50,50 @@ test("deployWithRetry gives up and throws the last error after exhausting real t
   await expect(deployWithRetry("compose.yml", { execFn, maxAttempts: 2 })).rejects.toThrow(/ETIMEDOUT/);
   expect(calls).toBe(2);
 });
+
+// 2026-10-18 (Leafkeeper run): a build's images were built, then "docker compose up" failed with Docker having no
+// network addresses left, because stale networks from earlier projects were never removed.
+const POOL_ERROR = 'Error response from daemon: all predefined address pools have been fully subnetted';
+
+test("isNetworkPoolExhausted recognises Docker running out of network addresses, and nothing else", async () => {
+  const { isNetworkPoolExhausted } = await import("./clone-deploy.ts");
+  expect(isNetworkPoolExhausted(new Error(`failed to create network x_app-net: ${POOL_ERROR}`))).toBe(true);
+  expect(isNetworkPoolExhausted(new Error("npm ERR! build failed"))).toBe(false);
+});
+
+test("deployWithRetry removes unused Docker networks once and retries when Docker has no network addresses left", async () => {
+  const { deployWithRetry } = await import("./clone-deploy.ts");
+  const calls: string[] = [];
+  const execFn = (command: string) => {
+    calls.push(command);
+    if (command.includes("up -d --build") && calls.filter((c) => c.includes("up -d --build")).length === 1) throw new Error(POOL_ERROR);
+    return "";
+  };
+  await deployWithRetry("E:/x/docker-compose.yml", { execFn });
+  expect(calls.map((c) => (c.includes("network prune") ? "prune" : "up"))).toEqual(["up", "prune", "up"]);
+  expect(calls[1]).toBe("docker network prune -f");
+});
+
+test("deployWithRetry does not prune or retry for a real build failure", async () => {
+  const { deployWithRetry } = await import("./clone-deploy.ts");
+  const calls: string[] = [];
+  const execFn = (command: string) => {
+    calls.push(command);
+    throw new Error("npm ERR! next build failed");
+  };
+  await expect(deployWithRetry("E:/x/docker-compose.yml", { execFn })).rejects.toThrow("next build failed");
+  expect(calls.length).toBe(1);
+});
+
+test("deployWithRetry gives up after one prune: if the network pool is still exhausted it throws, it does not loop", async () => {
+  const { deployWithRetry } = await import("./clone-deploy.ts");
+  const calls: string[] = [];
+  const execFn = (command: string) => {
+    calls.push(command);
+    if (command.includes("up -d --build")) throw new Error(POOL_ERROR);
+    return "";
+  };
+  await expect(deployWithRetry("E:/x/docker-compose.yml", { execFn })).rejects.toThrow("fully subnetted");
+  expect(calls.filter((c) => c.includes("network prune")).length).toBe(1);
+  expect(calls.filter((c) => c.includes("up -d --build")).length).toBe(2);
+});
