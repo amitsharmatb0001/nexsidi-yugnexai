@@ -22,6 +22,7 @@
 // judgment — moves that content into a properly-numbered file under
 // db/migrations/ after the agent run completes, then deletes the hand-off
 // file. The agent's write access never actually widens.
+import { extractNotApplied } from "./clone-report.ts";
 import { existsSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { join } from "node:path";
@@ -67,7 +68,13 @@ RULES:
    optional. The compiler then points at every place that builds that data,
    and you must fix each one: the controller that queries it, the code that
    formats it, the PDF or CSV that prints it. An optional field compiles
-   cleanly while one of those places never passes it.`;
+   cleanly while one of those places never passes it.
+9. If part of the change refers to something that does not exist in this
+   backend (an endpoint, a table, a feature the request assumes), do NOT
+   build a new feature to match it and do NOT skip it quietly. Apply every
+   part that can be applied, then end the task_complete summary with one
+   line per part you could not apply, in exactly this form:
+   "Not applied: <the part> — <why it cannot be applied here>".`;
 
 export function buildBackendEditTask(instructions: string): string {
   return `Apply exactly this backend change:
@@ -118,6 +125,8 @@ export interface ApplyCloneBackendChangesResult {
   filesWritten: string[];
   errors: string[];
   migrationApplied: string | null; // the new migration's real filename, or null if none was requested
+  // Parts of the change the pass reported it could not apply (see clone-report.ts).
+  notApplied: string[];
 }
 
 export type BackendVerify = (backendDir: string) => Promise<VerifyResult>;
@@ -129,10 +138,20 @@ export const verifyBackend: BackendVerify = (backendDir) =>
     { command: "npm run build", timeoutMs: 300_000 },
   ]);
 
+type ApplyCloneBackendChangesCore = Omit<ApplyCloneBackendChangesResult, "notApplied">;
+
 export async function applyCloneBackendChanges(
   opts: ApplyCloneBackendChangesOptions,
   deps: { runGenerator?: GeneratorRunner; verify?: BackendVerify } = {},
 ): Promise<ApplyCloneBackendChangesResult> {
+  const core = await applyCloneBackendChangesCore(opts, deps);
+  return { ...core, notApplied: extractNotApplied(core.summary) };
+}
+
+async function applyCloneBackendChangesCore(
+  opts: ApplyCloneBackendChangesOptions,
+  deps: { runGenerator?: GeneratorRunner; verify?: BackendVerify } = {},
+): Promise<ApplyCloneBackendChangesCore> {
   const runGenerator = deps.runGenerator ?? resolveGeneratorRunner();
   const verify = deps.verify ?? verifyBackend;
   const backendDir = join(opts.buildDir, "backend");

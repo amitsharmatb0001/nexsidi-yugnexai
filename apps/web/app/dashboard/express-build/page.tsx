@@ -1,5 +1,6 @@
 "use client";
 
+import { notAppliedOf } from "@/lib/not-applied";
 import { useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import { expressBuild as s } from "./express-build.styles";
@@ -205,6 +206,16 @@ export default function ExpressBuildPage() {
                     <span className={s.resultLabel}>Cost</span>
                     ${((result.body.spend as { costUsd: number }).costUsd).toFixed(2)} for the editing passes
                   </p>
+                )}
+                {notAppliedOf(result.body).length > 0 && (
+                  <div className={s.resultLine}>
+                    <span className={s.resultLabel}>Not applied</span>
+                    <ul>
+                      {notAppliedOf(result.body).map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
                 {typeof result.body.backendSummary === "string" && (
                   <p className={s.resultLine}>

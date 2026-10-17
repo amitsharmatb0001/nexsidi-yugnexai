@@ -464,6 +464,8 @@ projectsRouter.post("/express-build", async (c) => {
     let changesApplied: boolean | null = null;
     let changesSummary: string | null = null;
     let changesErrors: string[] = [];
+    // Parts of the request the passes reported they could not apply because the app has nothing for them to apply to.
+    let notApplied: string[] = [];
     let planReasoning: string | null = null;
     let backendApplied: boolean | null = null;
     let backendSummary: string | null = null;
@@ -496,6 +498,7 @@ projectsRouter.post("/express-build", async (c) => {
         backendApplied = backendResult.applied;
         backendSummary = backendResult.summary;
         backendErrors = backendResult.errors;
+        notApplied = [...notApplied, ...backendResult.notApplied];
         migrationApplied = backendResult.migrationApplied;
         if (backendResult.applied) backendContext = backendResult.summary;
         // A backend that was not finished leaves nothing real for the frontend to wire to. Stop here, with the
@@ -524,6 +527,7 @@ projectsRouter.post("/express-build", async (c) => {
       changesApplied = changeResult.applied;
       changesSummary = changeResult.summary;
       changesErrors = changeResult.errors;
+      notApplied = [...notApplied, ...changeResult.notApplied.filter((n) => !notApplied.includes(n))];
       // The same for the frontend: a change that does not build is not delivered. (Shopbill run 3 deployed one and
       // Docker's build found the type error six minutes later.)
       if (!changeResult.applied) {
@@ -531,7 +535,7 @@ projectsRouter.post("/express-build", async (c) => {
         return c.json({
           error: "frontend_failed",
           message: "The frontend change could not be finished, so the app was not deployed. The details are in the server log.",
-          projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors,
+          projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors, notApplied,
         }, 502);
       }
 
@@ -554,7 +558,7 @@ projectsRouter.post("/express-build", async (c) => {
             error: "contract_mismatch",
             message: "The frontend calls an endpoint the backend never registered — the two layers disagree on the real request shape.",
             mismatches: contractResult.mismatches,
-            projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors,
+            projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors, notApplied,
           }, 502);
         }
       }
@@ -570,7 +574,7 @@ projectsRouter.post("/express-build", async (c) => {
     } catch (err) {
       await db.update(projects).set({ status: "error", failureReason: "express_build_deploy_failed", updatedAt: new Date() }).where(eq(projects.id, newId));
       console.error(`[express-build] ${newId}: deploy failed: ${String(err)}`);
-      return c.json({ error: "deploy_failed", message: "The new project didn't start. The details are in the server log.", projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors }, 502);
+      return c.json({ error: "deploy_failed", message: "The new project didn't start. The details are in the server log.", projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors, notApplied }, 502);
     }
 
     // 2026-09-02: `docker compose up -d` can return success once containers
@@ -588,7 +592,7 @@ projectsRouter.post("/express-build", async (c) => {
     }
     if (!livePorts) {
       await db.update(projects).set({ status: "error", failureReason: "express_build_unhealthy", updatedAt: new Date() }).where(eq(projects.id, newId));
-      return c.json({ error: "deploy_unhealthy", message: "docker compose reported success but the containers never became reachable on their expected ports — likely a bad migration or a crash-looping service", projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors }, 502);
+      return c.json({ error: "deploy_unhealthy", message: "docker compose reported success but the containers never became reachable on their expected ports — likely a bad migration or a crash-looping service", projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors, notApplied }, 502);
     }
 
     // Open ports are not a working app. Open the app as a visitor would before calling it delivered.
@@ -601,7 +605,7 @@ projectsRouter.post("/express-build", async (c) => {
     if (!smoke.ok) {
       await db.update(projects).set({ status: "error", failureReason: "express_build_smoke_failed", updatedAt: new Date() }).where(eq(projects.id, newId));
       console.error(`[express-build] ${newId}: smoke check failed: ${smoke.failures.join("; ")}`);
-      return c.json({ error: "smoke_check_failed", message: "The new project started but did not open correctly. The details are in the server log.", projectId: newId, failures: smoke.failures, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors }, 502);
+      return c.json({ error: "smoke_check_failed", message: "The new project started but did not open correctly. The details are in the server log.", projectId: newId, failures: smoke.failures, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors, notApplied }, 502);
     }
     console.log(`[express-build] ${newId}: smoke check passed`);
 
@@ -626,7 +630,7 @@ projectsRouter.post("/express-build", async (c) => {
       appUrl,
       ports: cloneResult.ports,
       spend,
-      ...(changes ? { planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors } : {}),
+      ...(changes ? { planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors, notApplied } : {}),
     }, 201);
   }
 

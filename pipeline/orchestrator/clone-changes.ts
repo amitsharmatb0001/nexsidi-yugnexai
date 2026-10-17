@@ -14,6 +14,7 @@ import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "nod
 import { join, relative, sep } from "node:path";
 import { findDanglingAnchorsInApp, reachableFiles, type DanglingAnchor } from "./anchor-check.ts";
 import { accentOnDark } from "./clone-theme.ts";
+import { extractNotApplied } from "./clone-report.ts";
 import { verifyDir, type VerifyResult } from "./verify-commands.ts";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 // Deep relative import, not the "@nexsidi/agent-runtime" package alias —
@@ -71,7 +72,13 @@ RULES:
    REQUIRED, not optional, so the compiler points at every place that builds
    or renders that data. Fix each one: the form that sends it, the screen
    that shows it. An optional field compiles cleanly while one of those
-   places never uses it.`;
+   places never uses it.
+12. If part of the request refers to something that does not exist in this
+   app (for example "when editing an invoice" in an app with no edit
+   screen), do NOT build a new feature to match it and do NOT skip it
+   quietly. Apply every part that can be applied, then end the task_complete
+   summary with one line per part you could not apply, in exactly this form:
+   "Not applied: <the part> — <why it cannot be applied here>".`;
 
 export function buildCloneEditTask(changes: string, newName: string, backendContext?: string, accentColor?: string | null): string {
   const backendSection = backendContext
@@ -143,12 +150,24 @@ export interface ApplyCloneChangesResult {
   summary: string;
   filesWritten: string[];
   errors: string[];
+  // Parts of the request the pass reported it could not apply (see clone-report.ts).
+  notApplied: string[];
 }
+
+type ApplyCloneChangesCore = Omit<ApplyCloneChangesResult, "notApplied">;
 
 export async function applyCloneChanges(
   opts: ApplyCloneChangesOptions,
   deps: { runGenerator?: GeneratorRunner; verify?: FrontendVerify; anchors?: DanglingAnchorScan } = {},
 ): Promise<ApplyCloneChangesResult> {
+  const core = await applyCloneChangesCore(opts, deps);
+  return { ...core, notApplied: extractNotApplied(core.summary) };
+}
+
+async function applyCloneChangesCore(
+  opts: ApplyCloneChangesOptions,
+  deps: { runGenerator?: GeneratorRunner; verify?: FrontendVerify; anchors?: DanglingAnchorScan } = {},
+): Promise<ApplyCloneChangesCore> {
   const runGenerator = deps.runGenerator ?? resolveGeneratorRunner();
   const verify = deps.verify ?? verifyFrontend;
   const anchors = deps.anchors ?? scanDanglingAnchors;
@@ -180,7 +199,7 @@ export async function applyCloneChanges(
   // A section the pass removed can leave links pointing at it (Shopbill run 5: a "Compare vs Spreadsheets" button).
   // Types and the build cannot see that. Ask the agent once to take them out; whatever is left is reported, and the
   // delivered change is kept.
-  const finish = async (applied: ApplyCloneChangesResult): Promise<ApplyCloneChangesResult> => {
+  const finish = async (applied: ApplyCloneChangesCore): Promise<ApplyCloneChangesCore> => {
     let done = applied;
     // Files the pass itself orphaned (a removed section's component) are taken out, so they do not ship unused —
     // and cannot make a dead link look valid. Only files the app used before and no longer uses; never anything else.
