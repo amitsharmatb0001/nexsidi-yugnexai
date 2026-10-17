@@ -410,7 +410,7 @@ projectsRouter.post("/express-build", async (c) => {
       const verdict = expressScope(earlyPlan);
       if (!verdict.inScope) {
         console.log(`[express-build] refused as out of scope: ${verdict.reason}`);
-        return c.json({ error: "out_of_scope", message: outOfScopeMessage(oldName, verdict.reason), reasoning: verdict.reason }, 422);
+        return c.json({ error: "out_of_scope", message: outOfScopeMessage(oldName, verdict.reason, process.env.NEXT_PUBLIC_FROM_SCRATCH === "1"), reasoning: verdict.reason }, 422);
       }
     }
   }

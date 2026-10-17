@@ -175,11 +175,23 @@ test("when the planner gave no scope numbers the request is let through, not blo
 });
 
 test("the refusal tells the person why, what Express Build is for, and what to do instead", () => {
-  const m = outOfScopeMessage("Ledgerly 2", "it needs 5 new database tables (Express Build takes up to 2)");
+  const m = outOfScopeMessage("Ledgerly 2", "it needs 5 new database tables (Express Build takes up to 2)", true);
   expect(m).toContain("5 new database tables");
   expect(m).toContain("Ledgerly 2");
   expect(m.toLowerCase()).toContain("fresh build");
   expect(m.toLowerCase()).toContain("narrow");
+});
+
+// 2026-10-15: from-scratch builds are hidden for now; a refusal must not send people to a button that is not there.
+test("the refusal does not mention a fresh build while fresh builds are not offered", () => {
+  const m = outOfScopeMessage("Ledgerly 2", "it needs 5 new database tables (Express Build takes up to 2)", false);
+  expect(m.toLowerCase()).not.toContain("fresh build");
+  expect(m.toLowerCase()).toContain("narrow");
+  expect(m).toContain("5 new database tables");
+});
+
+test("the refusal defaults to not mentioning a fresh build", () => {
+  expect(outOfScopeMessage("Base", "too big").toLowerCase()).not.toContain("fresh build");
 });
 
 test("the plan carries the accent colour the request names, as a hex, and null when it names none", () => {
