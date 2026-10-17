@@ -464,7 +464,9 @@ projectsRouter.post("/express-build", async (c) => {
     let changesApplied: boolean | null = null;
     let changesSummary: string | null = null;
     let changesErrors: string[] = [];
-    // Parts of the request the passes reported they could not apply because the app has nothing for them to apply to.
+    // Parts of the person's request the frontend pass (the one that sees their own words) reported it could not apply
+    // because the app has nothing for them to apply to. The backend pass works from the planner's technical steps, not
+    // from the request, so what it leaves out is kept in the log only.
     let notApplied: string[] = [];
     let planReasoning: string | null = null;
     let backendApplied: boolean | null = null;
@@ -498,7 +500,7 @@ projectsRouter.post("/express-build", async (c) => {
         backendApplied = backendResult.applied;
         backendSummary = backendResult.summary;
         backendErrors = backendResult.errors;
-        notApplied = [...notApplied, ...backendResult.notApplied];
+        if (backendResult.notApplied.length > 0) console.log(`[express-build] ${newId} backend steps not applied: ${backendResult.notApplied.join(" | ")}`);
         migrationApplied = backendResult.migrationApplied;
         if (backendResult.applied) backendContext = backendResult.summary;
         // A backend that was not finished leaves nothing real for the frontend to wire to. Stop here, with the
@@ -527,7 +529,7 @@ projectsRouter.post("/express-build", async (c) => {
       changesApplied = changeResult.applied;
       changesSummary = changeResult.summary;
       changesErrors = changeResult.errors;
-      notApplied = [...notApplied, ...changeResult.notApplied.filter((n) => !notApplied.includes(n))];
+      notApplied = changeResult.notApplied;
       // The same for the frontend: a change that does not build is not delivered. (Shopbill run 3 deployed one and
       // Docker's build found the type error six minutes later.)
       if (!changeResult.applied) {
