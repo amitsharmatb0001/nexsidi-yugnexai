@@ -89,3 +89,16 @@ test("the frontend prompt says to read the backend's validator for each field an
   expect(CLONE_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("validator");
   expect(CLONE_EDIT_SYSTEM_PROMPT).toContain("YYYY-MM-DD");
 });
+
+// 2026-10-18 (Leafkeeper run 5): the tasks list endpoint answered { data: { tasks } } while the screen expected
+// { data: [...] }, so opening a plant crashed with "a is not iterable". tsc, the build and the delivery check passed.
+test("the backend prompt says a new endpoint copies the response shape of the app's existing endpoints, and states it in the summary", () => {
+  expect(CLONE_BACKEND_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("response shape");
+  expect(CLONE_BACKEND_EDIT_SYSTEM_PROMPT).toContain("data: [");
+  expect(CLONE_BACKEND_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("existing");
+});
+
+test("the frontend prompt says to use the response shape the backend states, or read it from the controller, before using a new endpoint's data", () => {
+  expect(CLONE_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("response shape");
+  expect(CLONE_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("controller");
+});

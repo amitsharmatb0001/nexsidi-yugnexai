@@ -85,7 +85,11 @@ RULES:
    wants something else, convert it in the form's submit code or, if the
    validator is plainly too strict for a date picker, say so in the summary.
    A form that the validator rejects looks finished and fails the first time
-   anyone uses it.`;
+   anyone uses it.
+14. Use a new endpoint's response shape exactly as the backend summary states
+   it. If the summary does not state it, open the endpoint's controller and
+   read its res.json call before writing code that uses the data. A screen
+   that treats an object as a list crashes the first time the page opens.`;
 
 export function buildCloneEditTask(changes: string, newName: string, backendContext?: string, accentColor?: string | null): string {
   const backendSection = backendContext

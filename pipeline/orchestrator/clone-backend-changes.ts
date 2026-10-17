@@ -79,7 +79,13 @@ RULES:
    timestamp. Validate such a field so that "YYYY-MM-DD" is accepted (a
    regular expression for that shape, or a coercion that takes it). Do NOT
    use z.string().datetime() alone: it rejects "2026-10-31", and the screen
-   that sends it would show "Invalid datetime".`;
+   that sends it would show "Invalid datetime".
+11. A new endpoint answers in exactly the response shape the app's existing
+   endpoints use: read an existing list controller and an existing single-item
+   controller first and copy their shape (for a list, the rows themselves as
+   the array — "data: [...]" — not wrapped in another object). End the
+   task_complete summary with one line per new endpoint stating its exact
+   response shape, for example "GET /plants/:id/tasks -> { success, data: Task[] }".`;
 
 export function buildBackendEditTask(instructions: string): string {
   return `Apply exactly this backend change:
