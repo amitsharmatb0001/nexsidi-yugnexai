@@ -76,3 +76,16 @@ test("applyCloneBackendChanges returns the parts the pass reported as not applie
   const r = await applyCloneBackendChanges({ buildDir: dir, instructions: "x", apiKey: "k" }, { runGenerator, verify: async () => ({ ran: true, ok: true, output: "" }) });
   expect(r.notApplied).toEqual(["bulk import — no import endpoint exists."]);
 });
+
+// 2026-10-18 (Leafkeeper run 4): the backend accepted due dates only as full timestamps (z.string().datetime()) while
+// the frontend's date picker sends "2026-10-31", so adding a task with a due date showed "Invalid datetime". The build,
+// the type check and the delivery check all passed.
+test("the backend prompt says a date picked on a form arrives as YYYY-MM-DD and must be accepted in that form", () => {
+  expect(CLONE_BACKEND_EDIT_SYSTEM_PROMPT).toContain("YYYY-MM-DD");
+  expect(CLONE_BACKEND_EDIT_SYSTEM_PROMPT).toContain("datetime()");
+});
+
+test("the frontend prompt says to read the backend's validator for each field and send exactly the format it accepts", () => {
+  expect(CLONE_EDIT_SYSTEM_PROMPT.toLowerCase()).toContain("validator");
+  expect(CLONE_EDIT_SYSTEM_PROMPT).toContain("YYYY-MM-DD");
+});

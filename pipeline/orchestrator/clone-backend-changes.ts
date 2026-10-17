@@ -74,7 +74,12 @@ RULES:
    build a new feature to match it and do NOT skip it quietly. Apply every
    part that can be applied, then end the task_complete summary with one
    line per part you could not apply, in exactly this form:
-   "Not applied: <the part> — <why it cannot be applied here>".`;
+   "Not applied: <the part> — <why it cannot be applied here>".
+10. A date the person picks on a form arrives as "YYYY-MM-DD", not as a full
+   timestamp. Validate such a field so that "YYYY-MM-DD" is accepted (a
+   regular expression for that shape, or a coercion that takes it). Do NOT
+   use z.string().datetime() alone: it rejects "2026-10-31", and the screen
+   that sends it would show "Invalid datetime".`;
 
 export function buildBackendEditTask(instructions: string): string {
   return `Apply exactly this backend change:

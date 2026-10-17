@@ -78,7 +78,14 @@ RULES:
    screen), do NOT build a new feature to match it and do NOT skip it
    quietly. Apply every part that can be applied, then end the task_complete
    summary with one line per part you could not apply, in exactly this form:
-   "Not applied: <the part> — <why it cannot be applied here>".`;
+   "Not applied: <the part> — <why it cannot be applied here>".
+13. Before a form sends a field to the backend, read the backend's validator
+   for that route (the schema in its controller) and send exactly the format
+   it accepts. An <input type="date"> gives "YYYY-MM-DD"; if the validator
+   wants something else, convert it in the form's submit code or, if the
+   validator is plainly too strict for a date picker, say so in the summary.
+   A form that the validator rejects looks finished and fails the first time
+   anyone uses it.`;
 
 export function buildCloneEditTask(changes: string, newName: string, backendContext?: string, accentColor?: string | null): string {
   const backendSection = backendContext
