@@ -591,6 +591,20 @@ projectsRouter.post("/express-build", async (c) => {
       return c.json({ error: "deploy_unhealthy", message: "docker compose reported success but the containers never became reachable on their expected ports — likely a bad migration or a crash-looping service", projectId: newId, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors }, 502);
     }
 
+    // Open ports are not a working app. Open the app as a visitor would before calling it delivered.
+    const { smokeCheck, staticRoutes } = await import("../../../../pipeline/orchestrator/clone-smoke.ts");
+    const smoke = await smokeCheck({
+      frontendUrl: `http://127.0.0.1:${cloneResult.ports.frontendPort}`,
+      backendUrl: `http://127.0.0.1:${cloneResult.ports.backendPort}`,
+      routes: staticRoutes(join(cloneResult.buildDir, "frontend")),
+    });
+    if (!smoke.ok) {
+      await db.update(projects).set({ status: "error", failureReason: "express_build_smoke_failed", updatedAt: new Date() }).where(eq(projects.id, newId));
+      console.error(`[express-build] ${newId}: smoke check failed: ${smoke.failures.join("; ")}`);
+      return c.json({ error: "smoke_check_failed", message: "The new project started but did not open correctly. The details are in the server log.", projectId: newId, failures: smoke.failures, planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors }, 502);
+    }
+    console.log(`[express-build] ${newId}: smoke check passed`);
+
     const appUrl = `http://localhost:${cloneResult.ports.frontendPort}`;
     await db.update(projects).set({ status: "done", appUrl, updatedAt: new Date() }).where(eq(projects.id, newId));
 
