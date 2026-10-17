@@ -8,6 +8,7 @@
 // that needs an LLM-assisted pass and is a natural v2, not built here.
 import { lineageOf, recordLineage } from "./clone-lineage.ts";
 import { pruneUnusedComponents } from "./prune-unused.ts";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, cpSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { findFreePort, isPortUsedByDocker } from "../../agents/riya/src/index.ts";
@@ -162,6 +163,35 @@ function renameInDir(dir: string, oldName: string, newName: string, fileDeps: Se
     const renamed = renameInFile(content, oldName, newName);
     if (renamed !== content) writeFileSync(full, renamed, "utf-8");
   }
+}
+
+// 2026-10-18 (Leafkeeper run): a clone kept its source's JWT secret, so a token signed by one app opened the other and
+// every clone of one source shared it for good. Each new app gets its own: every distinct secret the source's compose
+// file or .env files set is replaced, everywhere those files use it, by a fresh random one.
+const SECRET_FILES = [
+  "docker-compose.yml",
+  "docker-compose.yaml",
+  ".env",
+  join("backend", ".env"),
+  join("frontend", ".env"),
+  join("backend", ".env.production"),
+];
+
+export function freshenJwtSecrets(projectDir: string): number {
+  const files = SECRET_FILES.map((f) => join(projectDir, f)).filter((f) => existsSync(f));
+  const texts = new Map(files.map((f) => [f, readFileSync(f, "utf-8")]));
+  const old = new Set<string>();
+  for (const text of texts.values()) {
+    for (const m of text.matchAll(/^[ 	]*JWT_SECRET\s*[:=]\s*["']?([^\s"'#]+)["']?/gm)) old.add(m[1]!);
+  }
+  if (old.size === 0) return 0;
+  const fresh = new Map([...old].map((secret) => [secret, randomBytes(32).toString("hex")]));
+  for (const [file, text] of texts) {
+    let next = text;
+    for (const [secret, replacement] of fresh) next = next.split(secret).join(replacement);
+    if (next !== text) writeFileSync(file, next, "utf-8");
+  }
+  return fresh.size;
 }
 
 export interface ClonePorts {
@@ -319,6 +349,8 @@ export async function cloneProject(
   // pass. Seeded on the new project's own id, so it's deterministic and
   // different clones from the same source land on different accents too.
   const theme = applyThemeVariation(destDir, opts.newProjectId, { accent: opts.accentColor ?? null });
+
+  freshenJwtSecrets(destDir);
 
   const composePath = join(destDir, "docker-compose.yml");
   if (existsSync(composePath)) {
