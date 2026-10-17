@@ -603,6 +603,9 @@ projectsRouter.post("/express-build", async (c) => {
       frontendUrl: `http://127.0.0.1:${cloneResult.ports.frontendPort}`,
       backendUrl: `http://127.0.0.1:${cloneResult.ports.backendPort}`,
       routes: staticRoutes(join(cloneResult.buildDir, "frontend")),
+      // What a visitor's browser uses, so the check can see the frontend call its own API and the API accept its address.
+      publicOrigin: `http://localhost:${cloneResult.ports.frontendPort}`,
+      ownBackendPort: cloneResult.ports.backendPort,
     });
     if (!smoke.ok) {
       await db.update(projects).set({ status: "error", failureReason: "express_build_smoke_failed", updatedAt: new Date() }).where(eq(projects.id, newId));

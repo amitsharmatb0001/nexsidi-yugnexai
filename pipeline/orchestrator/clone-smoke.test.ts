@@ -85,3 +85,65 @@ test("smokeCheck keeps trying while the app warms up, and passes once it answers
   expect(r.ok).toBe(true);
   expect(calls).toBe(3);
 });
+
+// 2026-10-18 (Leafkeeper run): the smoke check passed on an app whose frontend was built to call the SOURCE app's API
+// port, so sign-up said "Failed to fetch". The check now reads what the built frontend calls and asks the API whether
+// it accepts the app's own address.
+const HOME = (scripts: string[]) => `<html><body>${"x".repeat(300)}${scripts.map((s) => `<script src="${s}"></script>`).join("")}</body></html>`;
+
+function appFetch(opts: { chunk: string; acao?: string | null }) {
+  return async (url: string, init?: RequestInit) => {
+    if (url === "http://fe/") return new Response(HOME(["/_next/static/chunks/a.js"]), { status: 200 });
+    if (url === "http://fe/_next/static/chunks/a.js") return new Response(opts.chunk, { status: 200 });
+    if (url.startsWith("http://be") && init?.method === "OPTIONS") {
+      const headers = new Headers();
+      if (opts.acao) headers.set("access-control-allow-origin", opts.acao);
+      return new Response(null, { status: 204, headers });
+    }
+    return new Response("ok" + "x".repeat(300), { status: url.startsWith("http://be") ? 404 : 200 });
+  };
+}
+
+const APP = { frontendUrl: "http://fe", backendUrl: "http://be", routes: ["/"], sleep: noWait, attempts: 1, publicOrigin: "http://localhost:3201", ownBackendPort: 3302 };
+
+test("smokeCheck passes when the frontend calls its own API and the API allows the app's address", async () => {
+  const r = await smokeCheck({ ...APP, fetchFn: appFetch({ chunk: 'fetch("http://localhost:3302/api/v1/x")', acao: "http://localhost:3201" }) });
+  expect(r).toEqual({ ok: true, failures: [] });
+});
+
+test("smokeCheck fails, naming both ports, when the built frontend calls another app's API port", async () => {
+  const r = await smokeCheck({ ...APP, fetchFn: appFetch({ chunk: 'const A="http://localhost:3308";', acao: "http://localhost:3201" }) });
+  expect(r.ok).toBe(false);
+  expect(r.failures[0]).toContain("3308");
+  expect(r.failures[0]).toContain("3302");
+});
+
+test("smokeCheck fails when the API does not allow the app's own address", async () => {
+  const r = await smokeCheck({ ...APP, fetchFn: appFetch({ chunk: "no addresses here", acao: "http://localhost:3207" }) });
+  expect(r.ok).toBe(false);
+  expect(r.failures[0]).toContain("3201");
+});
+
+test("smokeCheck does not fail on addresses outside the app ports or on its own frontend and database ports", async () => {
+  const r = await smokeCheck({ ...APP, fetchFn: appFetch({ chunk: 'a="http://localhost:3201" b="http://localhost:3000" c="http://localhost:5438"', acao: "http://localhost:3201" }) });
+  expect(r.ok).toBe(true);
+});
+
+test("smokeCheck skips these two checks when it is not given the app's public address and backend port", async () => {
+  const r = await smokeCheck({ frontendUrl: "http://fe", backendUrl: "http://be", routes: ["/"], sleep: noWait, attempts: 1, fetchFn: appFetch({ chunk: 'x="http://localhost:3308"', acao: null }) });
+  expect(r.ok).toBe(true);
+});
+
+test("smokeCheck reads the scripts of every page, because the API address is often only in the sign-up page's script", async () => {
+  const fetchFn = async (url: string, init?: RequestInit) => {
+    if (url === "http://fe/") return new Response(HOME(["/_next/static/chunks/home.js"]), { status: 200 });
+    if (url === "http://fe/sign-up") return new Response(HOME(["/_next/static/chunks/home.js", "/_next/static/chunks/auth.js"]), { status: 200 });
+    if (url === "http://fe/_next/static/chunks/home.js") return new Response("nothing here", { status: 200 });
+    if (url === "http://fe/_next/static/chunks/auth.js") return new Response('const A="http://localhost:3308";', { status: 200 });
+    if (url.startsWith("http://be") && init?.method === "OPTIONS") return new Response(null, { status: 204, headers: { "access-control-allow-origin": "http://localhost:3201" } });
+    return new Response("ok" + "x".repeat(300), { status: url.startsWith("http://be") ? 404 : 200 });
+  };
+  const r = await smokeCheck({ ...APP, routes: ["/", "/sign-up"], fetchFn });
+  expect(r.ok).toBe(false);
+  expect(r.failures[0]).toContain("3308");
+});

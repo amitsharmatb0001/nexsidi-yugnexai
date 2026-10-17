@@ -194,6 +194,47 @@ export function freshenJwtSecrets(projectDir: string): number {
   return fresh.size;
 }
 
+// 2026-10-18 (Leafkeeper run): only the compose file had its ports rewritten; the clone's frontend/.env.production still
+// named the source's backend port, so the delivered app could not reach its own API ("Failed to fetch"). The same swap,
+// for host:port addresses in any text file of the app. Whole numbers only; swapped through tokens so it never chains.
+export function rewriteHostPortsInText(text: string, oldPorts: ClonePorts, newPorts: ClonePorts): string {
+  const pairs: [number, number][] = [
+    [oldPorts.frontendPort, newPorts.frontendPort],
+    [oldPorts.backendPort, newPorts.backendPort],
+    [oldPorts.dbPort, newPorts.dbPort],
+  ];
+  let out = text;
+  pairs.forEach(([from], i) => {
+    out = out.replace(new RegExp("\\b(localhost|127\\.0\\.0\\.1):" + from + "(?!\\d)", "g"), `$1:__PORT_${i}__`);
+  });
+  pairs.forEach(([, to], i) => {
+    out = out.split(`__PORT_${i}__`).join(String(to));
+  });
+  return out;
+}
+
+const PORT_FILE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".json", ".yml", ".yaml", ".md", ".txt", ".css"]);
+
+function rewritePortsInDir(dir: string, oldPorts: ClonePorts, newPorts: ClonePorts, fileDeps: Set<string>, isRoot = true): void {
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    const stat = statSync(full);
+    if (stat.isDirectory()) {
+      if (!isVendoredDir(full, entry, fileDeps)) rewritePortsInDir(full, oldPorts, newPorts, fileDeps, false);
+      continue;
+    }
+    // The root compose file has its own, more careful port rewrite below.
+    if (isRoot && (entry === "docker-compose.yml" || entry === "docker-compose.yaml")) continue;
+    if (entry === "package-lock.json") continue;
+    const dotIdx = entry.lastIndexOf(".");
+    const ext = dotIdx === -1 ? "" : entry.slice(dotIdx);
+    if (!(entry.startsWith(".env") || PORT_FILE_EXTENSIONS.has(ext))) continue;
+    const content = readFileSync(full, "utf-8");
+    const next = rewriteHostPortsInText(content, oldPorts, newPorts);
+    if (next !== content) writeFileSync(full, next, "utf-8");
+  }
+}
+
 export interface ClonePorts {
   frontendPort: number;
   backendPort: number;
@@ -351,6 +392,7 @@ export async function cloneProject(
   const theme = applyThemeVariation(destDir, opts.newProjectId, { accent: opts.accentColor ?? null });
 
   freshenJwtSecrets(destDir);
+  rewritePortsInDir(destDir, opts.sourcePorts, newPorts, vendored);
 
   const composePath = join(destDir, "docker-compose.yml");
   if (existsSync(composePath)) {
