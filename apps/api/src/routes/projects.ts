@@ -302,6 +302,8 @@ projectsRouter.get("/:id/similar", async (c) => {
 // response named the source project. The starting project now travels in the
 // body as `basedOn` (omitted = the system picks), never in the URL, and the
 // source's identity and every raw internal error go to the server log only.
+const verify_label = (pass: boolean) => (pass ? "passed" : "FAILED");
+
 projectsRouter.post("/express-build", async (c) => {
   const userId = c.get("userId") as string;
 
@@ -614,6 +616,36 @@ projectsRouter.post("/express-build", async (c) => {
     }
     console.log(`[express-build] ${newId}: smoke check passed`);
 
+    // The full live check a full build gets: a real browser, a test account with sample data, every page signed out
+    // and signed in. What it finds is repaired by the same editing steps and the app is checked again (up to twice).
+    const { verifyAndRepair, runLiveCheck, repairRequest } = await import("../../../../pipeline/orchestrator/clone-verify.ts");
+    const liveStarted = Date.now();
+    const repairApiKey = process.env.NIM_API_KEY ?? "";
+    const live = await verifyAndRepair({
+      liveCheck: () =>
+        runLiveCheck({
+          buildDir: cloneResult.buildDir,
+          frontendDir: join(cloneResult.buildDir, "frontend"),
+          appUrl: `http://localhost:${cloneResult.ports.frontendPort}`,
+          backendUrl: `http://localhost:${cloneResult.ports.backendPort}`,
+        }),
+      repair: async (found) => {
+        const request = repairRequest(found);
+        console.log(`[express-build] ${newId}: live check found ${found.length} problem(s); repairing: ${found.map((x) => x.issue.slice(0, 120)).join(" | ")}`);
+        // A failed request or an error answer points at the backend as well as the screen.
+        if (found.some((x) => /made a request that failed|answered HTTP [45]\d\d|\[auth-smoke\]/.test(x.issue))) {
+          await applyCloneBackendChanges({ buildDir: cloneResult.buildDir, instructions: request, apiKey: repairApiKey, projectId: newId });
+        }
+        await applyCloneChanges({ buildDir: cloneResult.buildDir, changes: request, newName, apiKey: repairApiKey, projectId: newId });
+        await deployWithRetry(join(cloneResult.buildDir, "docker-compose.yml"));
+      },
+    });
+    console.log(`[express-build] ${newId}: live check ${verify_label(live.pass)} after ${live.rounds} repair round(s) in ${Math.round((Date.now() - liveStarted) / 1000)}s${live.notChecked.length ? `; not checked: ${live.notChecked.join(" | ")}` : ""}`);
+    if (!live.pass) {
+      await db.update(projects).set({ status: "error", failureReason: "express_build_live_check_failed", updatedAt: new Date() }).where(eq(projects.id, newId));
+      return c.json({ error: "live_check_failed", message: "The new project started, but testing it found problems that could not be repaired. The details are in the server log.", projectId: newId, findings: live.findings.map((x) => x.issue), repairRounds: live.rounds, ...(live.repairError ? { repairError: live.repairError } : {}), planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors, notApplied }, 502);
+    }
+
     const appUrl = `http://localhost:${cloneResult.ports.frontendPort}`;
     await db.update(projects).set({ status: "done", appUrl, updatedAt: new Date() }).where(eq(projects.id, newId));
 
@@ -635,6 +667,7 @@ projectsRouter.post("/express-build", async (c) => {
       appUrl,
       ports: cloneResult.ports,
       spend,
+      liveCheck: { passed: true, repairRounds: live.rounds, notChecked: live.notChecked },
       ...(changes ? { planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors, notApplied } : {}),
     }, 201);
   }
