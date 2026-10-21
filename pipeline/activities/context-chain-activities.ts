@@ -22,7 +22,10 @@
 // makes recordHandoff/verifyHandoff callable directly for live verification
 // scripts (see audit-2026-07-25.md) without a running Temporal worker.
 import { ApplicationFailure } from "@temporalio/activity";
-import { hashContext, signOutput, verifySignature, linkRecord, verifyChain, type ChainVerdict } from "@nexsidi/context-chain";
+import { hashContext, signOutput, verifySignature, linkRecord, verifyChain, canonicalize, stageHandoffFile, takeSnapshot, restoreSnapshot, type ChainVerdict, type StagedHandoff } from "@nexsidi/context-chain";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 
 export interface ContextChainRecordInput {
   projectId: string;
@@ -121,6 +124,17 @@ function keyPaths(): { privateKeyPath: string; publicKeyPath: string } {
 // propagating, which is the actual security property Claim 3 protects.
 export async function rollbackAndEscalate(projectId: string, reason: string): Promise<never> {
   console.error(`[context-chain] ROLLBACK triggered for project=${projectId}: ${reason}`);
+  // Claim 1(c)/3: automatic rollback puts the project's files back to the last good snapshot, not only stops the work.
+  try {
+    const buildDir = buildDirFor(projectId);
+    const restored = existsSync(buildDir) ? restoreSnapshot(buildDir) : null;
+    if (restored) {
+      reason = `${reason} (files restored from the last good state: ${restored.restored.length} put back, ${restored.removed.length} removed)`;
+      console.error(`[context-chain] restored ${restored.restored.length} file(s) and removed ${restored.removed.length} from snapshot ${restored.snapshot.id}`);
+    }
+  } catch (e) {
+    console.error(`[context-chain] could not restore files during rollback: ${String(e)}`);
+  }
   try {
     const { db, projects } = await import("@nexsidi/db");
     const { eq } = await import("drizzle-orm");
@@ -157,18 +171,43 @@ export async function recordHandoff(
   // Claim 10: the record carries the hashes of ALL earlier records of the project. Builders hand off in parallel, so
   // the read of the earlier records and the insert happen under one lock per project — two records can never both
   // claim the same predecessors.
-  await db.transaction(async (tx) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${projectId}))`);
-    const earlier = await tx
-      .select({ contextHash: contextChain.contextHash })
-      .from(contextChain)
-      .where(and(eq(contextChain.projectId, projectId), isNotNull(contextChain.chainSeq)))
-      .orderBy(asc(contextChain.chainSeq));
-    const link = linkRecord(earlier.map((r) => r.contextHash), contextHash);
-    await tx
-      .insert(contextChain)
-      .values(buildContextChainRecord({ projectId, agentFrom, agentTo, contextHash, signature, chainSeq: earlier.length + 1, ...link }));
-  });
+  // Claim 3(d): the handoff is one unit. The chain row and the handoff file either both exist or neither does: the row is
+  // inserted, the file is written whole, checked and moved into place inside the same transaction, and a failure at any
+  // step rolls the row back and removes the file.
+  const buildDir = buildDirFor(projectId);
+  const hasBuildDir = existsSync(buildDir);
+  let staged: StagedHandoff | null = null;
+  try {
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${projectId}))`);
+      const earlier = await tx
+        .select({ contextHash: contextChain.contextHash })
+        .from(contextChain)
+        .where(and(eq(contextChain.projectId, projectId), isNotNull(contextChain.chainSeq)))
+        .orderBy(asc(contextChain.chainSeq));
+      const link = linkRecord(earlier.map((r) => r.contextHash), contextHash);
+      const seq = earlier.length + 1;
+      await tx
+        .insert(contextChain)
+        .values(buildContextChainRecord({ projectId, agentFrom, agentTo, contextHash, signature, chainSeq: seq, ...link }));
+      if (hasBuildDir) {
+        staged = stageHandoffFile(join(buildDir, ".nexsidi", "handoffs"), `${String(seq).padStart(4, "0")}-${agentFrom}-${agentTo}.json`, canonicalize(context));
+        if (staged.hash !== contextHash) throw new Error("handoff file hash differs from the recorded context hash");
+        staged.commit();
+      }
+    });
+  } catch (err) {
+    (staged as StagedHandoff | null)?.abort();
+    throw err;
+  }
+  // The way back: after a handoff the project's files are kept, so a later corrupt handoff can restore them.
+  if (hasBuildDir) {
+    try {
+      takeSnapshot(buildDir, `${agentFrom}-${agentTo}`);
+    } catch (err) {
+      console.error(`[context-chain] could not snapshot files after handoff ${agentFrom} -> ${agentTo}: ${String(err).slice(0, 160)}`);
+    }
+  }
   console.log(
     `[context-chain] recorded handoff ${agentFrom} -> ${agentTo} (project=${projectId}, hash=${contextHash.slice(0, 12)}...)`,
   );

@@ -12,3 +12,9 @@ test("existing bookkeeping is still recognised", () => {
   expect(isPipelineBookkeeping("qa-submissions.json")).toBe(true);
   expect(isPipelineBookkeeping("backend/src/app.ts")).toBe(false);
 });
+
+// 2026-10-21: handoff files and rollback snapshots are a project's own audit trail; a copy must not carry them.
+test("the handoff and snapshot folder is pipeline bookkeeping, at the top level only", () => {
+  expect(isPipelineBookkeeping(".nexsidi")).toBe(true);
+  expect(isPipelineBookkeeping("backend/.nexsidi")).toBe(false);
+});
