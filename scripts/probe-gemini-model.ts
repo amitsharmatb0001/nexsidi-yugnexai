@@ -52,7 +52,7 @@ await check("3 tool call", true, async () => {
   );
   const call = r.toolCalls[0];
   if (!call || call.name !== "get_weather") throw new Error(`no tool call (answered ${JSON.stringify(r.content.slice(0, 60))})`);
-  return `${call.name}(${JSON.stringify(call.args)})`;
+  return `${call.name}(${JSON.stringify(call.input)})`;
 });
 
 await check("4 conversation ending on a model turn", false, async () => {

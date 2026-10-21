@@ -76,8 +76,10 @@ async function main() {
   const history = await store.history(name);
   let level = (history.length ? nextLevel(history[history.length - 1]!.level, history).level : 1) as Level;
   console.log(`Checker: ${name}. Training set: ${files.length} real files. Starting at level ${level} (${history.length} earlier round(s)).${flag("--dry") ? " DRY RUN: nothing is written." : ""}`);
+  // The checker's findings on the unchanged files are the same every round, so they are asked for once (it matters when each call costs money).
+  const baseline = await checker(files);
   for (let i = 0; i < rounds; i++) {
-    const res = await runTrainingRound({ checker, checkerName: name, files, level, count, seed: `${Date.now()}-${i}` });
+    const res = await runTrainingRound({ checker, checkerName: name, files, level, count, seed: `${Date.now()}-${i}`, baseline });
     await recordRound(store, res);
     const next = nextLevel(level, await store.history(name));
     const missedKinds = [...new Set(res.missed.map((d) => d.operator))].join(", ") || "none";
