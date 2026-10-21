@@ -12,6 +12,28 @@ The PDF `Provisional Specification_Form 2.pdf` (10 Feb 2026) could not be read h
   a PCT application claiming priority is filed within the same 12 months (Paris Convention). Indian national phase is 31 months from priority.
   Both secondary sources disagree on whether the 31 months can be extended, so check the Rules.
 - CLAUDE.md says the PCT deadline is 4 Jan 2027 and that no attorney is engaged yet. That could not be verified from the repository.
+- 2026-10-21: the claims in `Form2_Provisional_Specification_YUGNEX (1).docx` (the original) were compared word for word with the `.md` copy
+  (919 words each, identical after normalising), so the table below applies to both.
+
+## What the patent professional said on the call (`E:\dev doc pat\Person 2 Statements.markdown`, translated from Hindi/English)
+
+These are the lines of one speaker only; the other side of the call, who she is, and the quotation she mentions are not in the file.
+
+- The claims and the full information go into the application; it is the **final version and cannot be changed afterwards**.
+- **Code is not required** in a patent.
+- An **app is not registered** as a patent; what must be shown is a **process improvement or methodology improvement**, and what is finally
+  claimed on that improvement.
+- Keep **hardware and software** in mind: **software per se gets no protection**.
+- Next step on her side: give the details and inputs and the go-ahead for the **complete application**. She says she mostly emailed the
+  request at the start, and asks to check the quotation in that email and to email her with questions.
+
+What this means for the work, from the statements alone:
+- The complete application should be written around technical process steps and their technical effect, not around the app. That is why the
+  elements that are really built and measurable (hash chain over all predecessors, isolated execution with kernel-visible limits, live check
+  that finds defects) matter more than ones that exist only as prompts or not at all.
+- Because the final version cannot be changed, every element described must be one the system really does. See the status table below
+  and decide, with her, which unbuilt elements are built first or left out of the claims.
+- This call suggests a patent professional is already in contact; CLAUDE.md's "attorney not engaged" line may be out of date.
 
 ## Implementation status, claim by claim
 
