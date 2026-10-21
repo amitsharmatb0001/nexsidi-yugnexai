@@ -32,9 +32,9 @@ used the wrong table; the statuses given afterwards use the filed claims.
 
 Full tables: `docs/patent/for-the-lawyer.md`.
 
-- **Done:** ordered task breakdown; SHA-256 checking of handoffs with stop-and-alert; the hash record where each entry holds all earlier hashes (claim 10); three checking agents in parallel; locked throwaway container (claim 5); repeat until progress stops; memory of past mistakes.
-- **Partly:** checking agents are instructed, not trained; container missing a disk-speed limit, user remapping, hardware timers; security and performance agents have text only; undo does not restore files; mistake memory counts and does not use statistics.
-- **Not done:** task assignment by agent skills; code map in handoffs; requirement-to-code map; all-or-nothing handoffs; training the checking agents; a new approach when stuck; taint analysis and attack-input tester; real speed and memory analysis.
+- **Done:** ordered task breakdown; SHA-256 checking of handoffs with stop-and-alert; the hash record where each entry holds all earlier hashes (claim 10); three checking agents in parallel; locked throwaway container (claim 5); repeat until progress stops; memory of past mistakes. Added later the same day (see section 10): task assignment by agent skills; all-or-nothing handoffs; undo that restores files; a new approach when stuck.
+- **Partly:** checking agents are instructed, not trained; container missing a disk-speed limit, user remapping, hardware timers; security and performance agents have text only; mistake memory counts and does not use statistics.
+- **Not done:** code map in handoffs; requirement-to-code map; training the checking agents; taint analysis and attack-input tester; real speed and memory analysis.
 
 Express Build (copy a finished app and change it) does not use these mechanisms.
 
@@ -70,12 +70,12 @@ Nothing here changes the filed paper.
 
 | Item | What would be built | Effort |
 |---|---|---|
-| Task assignment by skills | Skill tags on each agent and each task, a matching step, a log of why each task went to which agent. Today tasks have only a description, a size and what they depend on, and the agent table has no skills | 1 to 2 days |
+| ~~Task assignment by skills~~ | Built (section 10) | done |
 | Code map in handoffs | Before each handoff, build the code's structure and what-depends-on-what from the generated files with the TypeScript compiler, add the spec's rules and the current error records, and hash it all | 3 to 4 days |
 | Requirement-to-code map | Give each requirement an ID, link requirements to tasks, files and findings, store it, and allow questions in both directions | 3 to 4 days |
-| All-or-nothing handoffs | Write each handoff to a temporary place, check it, then switch it in as one step; keep earlier versions so it can be undone. Same work as "undo that restores files" below | 2 days (shared) |
+| ~~All-or-nothing handoffs~~ | Built (section 10) | done |
 | Training the checking agents | Software version: score each checker by confirmed defects found, keep a store of missed defects that comes back as test cases, and raise the difficulty round by round. Real model training would need data, hardware and weeks, with an uncertain result | 5 to 7 days for the software version |
-| New approach when stuck | When progress stalls, ask for several different approaches, try the next one, and remember which were tried | 1 to 2 days |
+| ~~New approach when stuck~~ | Built (section 10); automatic in the repair of newly built apps only | done |
 | Taint analysis | Follow untrusted input (request data) through generated code to risky places (database queries, shell commands, file paths, HTML output), in the code itself | 5 to 7 days, with false alarms to tune |
 | Attack-input tester | Send standard attack inputs (database injection, script injection, path tricks) to every route of the running app with a test account and judge the answers | 3 to 4 days |
 | Speed and memory analysis | Estimate growth from loop nesting and queries inside loops; find leaks by hitting routes repeatedly and watching memory; compare speed and memory between rounds | 7 to 8 days |
@@ -87,12 +87,12 @@ Nothing here changes the filed paper.
 | Checking agents "trained" | The scoring and missed-defect store above, so the claim has a measurable objective | about 2 days beyond the item above |
 | Locked container gaps | A disk-speed limit; user remapping (a setting for the whole Docker engine on the server); kernel-enforced time limits (these are not literally hardware timers, so the wording is for the lawyer); turn it on for builds on a Linux server and check speed | 2 to 3 days, needs a Linux server |
 | Security agent database | A stored list of attack patterns and public vulnerability entries, filled by the existing vulnerability feed, and used by the checker | 3 to 4 days |
-| Undo that restores files | Versioned copies of each stage's files so a bad handoff puts the last good ones back (shared with all-or-nothing handoffs) | 2 days beyond shared work |
+| ~~Undo that restores files~~ | Built (section 10) | done |
 | Memory of mistakes with statistics | Rate of recurrence across projects compared with chance, minimum evidence, and a significance score before a pattern is kept | 2 days |
 
 ### Totals and order
 
-- Roughly 40 to 50 working days if done one after another. About ten weeks remain to the January 2027 date.
+- Roughly 40 to 50 working days if done one after another (counted before the three quick items; about 6 days of that is now done). About ten weeks remain to the January 2027 date.
 - Suggested order: handoff undo and all-or-nothing, new approach when stuck, skill-based assignment; then the code map and requirement map; then the attack-input tester, the security database and the speed and memory checks; then taint analysis; training only after the lawyer decides.
 - Build only what the lawyer wants claimed. Anything she leaves out is time saved.
 - Needs from Amit: the decisions in section 7, a Linux server for the container items, and a review of each piece when it is done.
