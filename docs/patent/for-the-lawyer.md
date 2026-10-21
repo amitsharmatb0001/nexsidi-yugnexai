@@ -1,6 +1,6 @@
 # Where the software stands against the filed provisional specification
 
-Prepared 21 October 2026 from the software itself. For Amit to review before it is shared. Not legal advice.
+Prepared 21 October 2026 from the software itself; updated the same day after three items were built. For Amit to review before it is shared. Not legal advice.
 
 **Document compared:** `Form2_Provisional_Specification_YUGNEX (1).docx` (declarations dated 31 December 2025). The filing date and application number
 (5 January 2026, 202611001020) are as recorded in our internal notes; they were not checked against the Patent Office record.
@@ -19,6 +19,10 @@ Prepared 21 October 2026 from the software itself. For Amit to review before it 
 | Running code in a locked, throwaway container: separate process and network space, limits on processor, memory and number of processes, a list of allowed system calls, no network, removed after the run | 1, 2, 5 |
 | Repeating fix and check until progress stops | 1, 2, 6 |
 | A memory of past mistakes that changes later prompts | 7 |
+| Giving each task to the agent whose skills fit it best: each of the three builder agents has a profile, and a task moves only on strong evidence (its files sit wholly in another agent's folder) | 1 |
+| Handoffs that either fully succeed or are fully undone: the record and the handoff file are written as one unit | 3 |
+| When a handoff turns out to be altered, the project's own files are put back to the last good state | 1, 3 |
+| When the same problem comes back after a repair, the next try uses a different approach, never one already used (in the repair of newly built apps; in the main fix loops the held-work report lists untried approaches but they are not tried automatically) | 6 |
 
 ## Partly done
 
@@ -28,7 +32,6 @@ Prepared 21 October 2026 from the software itself. For Amit to review before it 
 | Locked container | No limit on disk speed; no remapping of user identities at the system level; time limits use software timers, not hardware timers; on the development PC it is off by default | 1, 2, 5 |
 | Security checking agent | It has a list of common attack types as text and a feed of public vulnerability reports, but no stored pattern database | 8 |
 | Performance checking agent | Its instructions mention speed and memory problems, but it does not analyse anything | 9 |
-| Undo when a handoff is altered | It stops the work and raises an alert. It does not put the files back. | 1, 3 |
 | Memory of past mistakes | It counts patterns and tracks confidence. It does not use statistical methods. | 7 |
 | Maximum number of rounds | Limited by counters and software timers, not hardware interrupts | 6 |
 
@@ -36,12 +39,9 @@ Prepared 21 October 2026 from the software itself. For Amit to review before it 
 
 | What the filing describes | Claim |
 |---|---|
-| Giving each task to the agent whose skills fit it best | 1 |
 | Passing between agents a detailed map of the code: its structure, what depends on what, rules to follow, and records of errors | 1, 3 |
 | A map linking each piece of code back to the requirement it came from, and back again | 3 |
-| Handoffs that either fully succeed or are fully undone | 3 |
 | Training the checking agents against the code-writing agents, with a stored list of missed defects and a ramp from easy to hard cases | 4 |
-| Trying a different approach when the first one stalls | 6 |
 | A security test that follows untrusted input through the code, and sends attack inputs to the running app | 8 |
 | Estimating how slow code gets as data grows, finding memory leaks, and comparing speed between rounds | 9 |
 

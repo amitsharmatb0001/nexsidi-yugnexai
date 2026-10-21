@@ -102,3 +102,10 @@ Nothing here changes the filed paper.
 - A small invite-only beta on a Linux server is possible. It needs the platform itself packaged for a server (only a development setup exists), a front door with subdomains and HTTPS for the apps it builds, a larger Docker network pool (about 30 apps at once is the current limit), the open development ports closed, a spend cap per user, and the code pushed (137 local commits were not pushed at the time).
 - A fully open public beta is not supported by anything tested.
 - The browser used for checking is hidden by default; showing it, or recording it, is a small change that has not been built.
+
+## 10. Update, later the same day: the three quickest items were built
+
+- **All-or-nothing handoffs and restoring files** (commit b8c8521). A handoff's record and file are one unit; a corrupt handoff is refused and the project's own files are put back. Proven on the real database: two handoffs left two records, two files and one snapshot (the second changed nothing, so it was not copied again); a handoff that could not complete left no record and no stray file and the chain still verified; an altered handoff was refused, the damaged file was restored and the intruder file removed.
+- **A different approach when stuck** (commit 459240e). Six different approaches plus an optional model-written one; in the repair of newly built apps, a problem that comes back gets a new approach, never one already used. In the main fix loops the held-work report lists approaches nobody has tried; they are not tried automatically there.
+- **Assigning tasks by skill** (commit 365d893). Profiles for the three builder agents; a task moves only on strong evidence. Run on the 24 real plans on disk (335 tasks) it moved none, so it is a safety net that past plans did not need.
+- All test suites pass after the changes. Items still open are those in section 8 not listed here.

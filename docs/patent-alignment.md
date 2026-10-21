@@ -42,17 +42,17 @@ What this means for the work, from the statements alone:
 | Claim / element | Status | Evidence and gaps |
 |---|---|---|
 | 1(a) DAG task graph | Built | `pipeline/orchestrator/dag.ts` (cycle and dangling-reference detection), used in multi-agent development |
-| 1(a) capability-profile assignment | Not built | no capability profiles found; agents are assigned by fixed role |
+| 1(a) capability-profile assignment | Built 2026-10-21, narrow | `agents/arjun/src/capabilities.ts`: profiles (skills and folders) for the three generator agents; every task in a new plan is checked and moved only on strong evidence (all its files in another agent's folder, or clear skill words when it names no files); each decision stored on the plan. Moved none of the 335 tasks in 24 real plans. Other agents (QA, deploy) have no dynamic assignment |
 | 1(b) specialised agents | Built | requirements, architecture, generator agents |
-| 1(c)/3(b) SHA-256 verification with rollback | Built, minimal | `packages/context-chain`; rollback raises and escalates, it does not restore files |
+| 1(c)/3(b) SHA-256 verification with rollback | Built 2026-10-21 | `packages/context-chain`; a corrupt handoff is refused and the project's own files are restored from the last good snapshot and files added since are removed (dependencies, build output and agent histories are not touched). The snapshot copy after each handoff is best-effort: if it fails a warning is logged and the handoff goes ahead |
 | 1(c)/3(a) context objects with AST, dependency graph, metadata | Not built | contexts are the agents' outputs hashed as JSON |
 | 1(d)/2(c) three independent adversarial agents in parallel | Partly | three QA agents run in parallel; they are prompted, not "trained with error-maximisation objective functions" |
 | 1(e)/2(d)/5 isolated ephemeral containers | Built 2026-10-21, with gaps | `packages/agent-runtime/src/sandbox`: private PID/net/mount/UTS/IPC namespaces, unprivileged user, cgroup v2 CPU/memory/process limits, Docker seccomp whitelist, no network, read-only root, container removed after the run; each layer observed from inside a real container. Missing: I/O bandwidth limit, kernel user-namespace remap (daemon setting), timeouts are software timers not hardware. Wired into the build commands behind `NEXSIDI_SANDBOX_BUILDS=on` (off on Windows: much slower there) |
 | 1(f)/6(a) iterative refinement, convergence detection | Built | stuck-state detection in the fix loop |
 | 6(b) iteration limits by hardware timer | Partly | counters and software timeouts |
-| 6(c) alternative strategy generation | Not built | |
+| 6(c) alternative strategy generation | Built 2026-10-21, in two places | `pipeline/orchestrator/strategies.ts`: six different approaches plus an optional model-generated one (`NEXSIDI_STRATEGY_MODEL=on`), a record of what was tried. In the Express Build repair loop a problem that comes back gets a new approach, never one already used. In the main pipeline's fix loops the hold report lists untried approaches for the developer; they are not tried automatically there |
 | 3(c) bidirectional traceability graph | Not built | |
-| 3(d) transactional atomic handoff | Not built | |
+| 3(d) transactional atomic handoff | Built 2026-10-21 | a handoff's chain row and its file are one unit inside one database transaction; the file is written whole, read back, checked against the recorded hash and moved into place; any failure leaves neither. Proven on the real database (blocked handoff left no row and no stray file; chain still audited clean) |
 | 4 GAN training, adversarial example database, curriculum | Not built | the mistake-memory table is not an adversarial example database |
 | 7 mistake memory | Built | 511 stored patterns (6 global), injected into generator prompts; extraction is counting and confidence, not statistical analysis |
 | 8 security agent: pattern database, taint analysis, penetration payloads | Not built as claimed | no taint analysis; injection payload text appears in generator instructions only |
