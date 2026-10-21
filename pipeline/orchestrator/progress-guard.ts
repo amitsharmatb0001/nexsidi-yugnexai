@@ -20,6 +20,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join } from "node:path";
 import { recordBlocked } from "../../packages/agent-runtime/src/tools/blocked.ts";
 import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
+import { alternativesSection, readAttempts } from "./strategies.ts";
 
 export type RoundStage = "qa" | "live";
 
@@ -114,6 +115,7 @@ function writeHold(projectId: string, stage: RoundStage, verdict: Extract<GuardV
     "- If it is false: fix or retire the check that raised it. If it is true: find why the builder's fix did not hold.",
     "- Then send Retry. Nothing paid runs until you do.",
     "",
+    alternativesSection(readAttempts(dir).map((a) => a.strategyId)),
   ].join("\n");
   writeFileSync(join(dir, "HOLD.md"), body, "utf-8");
   // Tilotma's evidence ledger gets the same facts.

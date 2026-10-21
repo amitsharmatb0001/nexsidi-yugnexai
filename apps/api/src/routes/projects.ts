@@ -629,8 +629,15 @@ projectsRouter.post("/express-build", async (c) => {
           appUrl: `http://localhost:${cloneResult.ports.frontendPort}`,
           backendUrl: `http://localhost:${cloneResult.ports.backendPort}`,
         }),
-      repair: async (found) => {
-        const request = repairRequest(found);
+      // The same problem coming back after a repair gets a different approach, never one already tried.
+      alternative: async (found, tried) => {
+        const { proposeAlternative, recordAttempt } = await import("../../../../pipeline/orchestrator/strategies.ts");
+        const strategy = await proposeAlternative({ findings: found.map((x) => x.issue), tried });
+        if (strategy) recordAttempt(cloneResult.buildDir, { stage: "express-live", findings: found.map((x) => x.issue), strategyId: strategy.id, title: strategy.title });
+        return strategy;
+      },
+      repair: async (found, strategy) => {
+        const request = repairRequest(found, strategy);
         console.log(`[express-build] ${newId}: live check found ${found.length} problem(s); repairing: ${found.map((x) => x.issue.slice(0, 120)).join(" | ")}`);
         // A failed request or an error answer points at the backend as well as the screen.
         if (found.some((x) => /made a request that failed|answered HTTP [45]\d\d|\[auth-smoke\]/.test(x.issue))) {

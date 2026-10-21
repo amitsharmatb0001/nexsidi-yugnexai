@@ -87,3 +87,19 @@ test("no hold writes no report", async () => {
   await checkRoundGuard("p1", "qa", [f("[a] one")], { spend: async () => 1, opts: OPTS });
   expect(existsSync(join(dir, "p1", "HOLD.md"))).toBe(false);
 });
+
+// Patent claim 6(c): when work is held because it keeps failing, the report points at approaches nobody has tried yet.
+test("a hold report lists different approaches to try, leaving out any already tried for the project", async () => {
+  const { recordAttempt, STRATEGY_LIBRARY } = await import("./strategies.ts");
+  dir = mkdtempSync(join(tmpdir(), "guard-"));
+  process.env.BUILD_DIR = dir;
+  const f = (issue: string) => ({ file: "frontend/app/page.tsx", issue });
+  const { buildDirFor } = await import("../../packages/agent-runtime/src/build-dir.ts");
+  recordAttempt(buildDirFor("p9"), { stage: "live", findings: ["x"], strategyId: STRATEGY_LIBRARY[0]!.id, title: STRATEGY_LIBRARY[0]!.title });
+  await checkRoundGuard("p9", "live", [f("[auth-smoke] same finding")], { spend: async () => 1, opts: { roundSpendCapUsd: 20 } });
+  await checkRoundGuard("p9", "live", [f("[auth-smoke] same finding")], { spend: async () => 2, opts: { roundSpendCapUsd: 20 } });
+  const report = readFileSync(join(buildDirFor("p9"), "HOLD.md"), "utf-8");
+  expect(report).toContain("Different approaches to try");
+  expect(report).not.toContain(STRATEGY_LIBRARY[0]!.title);
+  expect(report).toContain(STRATEGY_LIBRARY[1]!.title);
+});

@@ -7,6 +7,7 @@
 // runs the same check on an Express Build, repairs what it finds, and checks again.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Strategy } from "./strategies.ts";
 
 export interface LiveFinding {
   file: string;
@@ -29,21 +30,34 @@ export function blockingFindings(findings: LiveFinding[]): LiveFinding[] {
 }
 
 /** What the editing steps are told: what testing the running app showed, page by page, with the evidence. */
-export function repairRequest(findings: LiveFinding[]): string {
+export function repairRequest(findings: LiveFinding[], strategy?: Strategy): string {
   const lines = findings.map((x, i) => `${i + 1}. ${x.issue} (in ${x.file})`);
   return [
     "Testing the running app (a real browser, a test account with sample data) found these problems. Fix each one at its cause.",
     "",
     ...lines,
     "",
+    ...(strategy
+      ? [`The previous attempt did not fix this. Use a different approach this time: ${strategy.title}. ${strategy.instruction}`, ""]
+      : []),
     "Change nothing else. Do not remove or rewrite working features to make a problem disappear.",
   ].join("\n");
 }
 
+// The same problem seen twice differs in ids that change between runs (a sample record's id, a port); this removes them.
+const stableKey = (issue: string) =>
+  issue
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<id>")
+    .replace(/localhost:\d+/g, "localhost:<port>")
+    .replace(/\s+/g, " ")
+    .trim();
+
 export interface VerifyDeps {
   liveCheck: () => Promise<LiveCheckResult>;
   /** Applies fixes for the findings to the code and redeploys. Throws when the repaired app cannot be brought up. */
-  repair: (findings: LiveFinding[]) => Promise<void>;
+  repair: (findings: LiveFinding[], strategy?: Strategy) => Promise<void>;
+  /** Asked for a different approach when the same problem comes back after a repair. `tried` are the ids already used. */
+  alternative?: (findings: LiveFinding[], tried: string[]) => Promise<Strategy | null>;
   maxRepairs?: number;
 }
 
@@ -55,18 +69,28 @@ export interface VerifyResult {
   repairError?: string;
 }
 
-/** Check, repair what is wrong, check again — up to maxRepairs times (default 2). */
+/** Check, repair what is wrong, check again — up to maxRepairs times (default 2). A problem that comes back gets a different approach. */
 export async function verifyAndRepair(deps: VerifyDeps): Promise<VerifyResult> {
   const maxRepairs = deps.maxRepairs ?? 2;
   let rounds = 0;
+  let previous = new Set<string>();
+  const tried: string[] = [];
   for (;;) {
     const result = await deps.liveCheck();
     const blocking = blockingFindings(result.findings);
     if (blocking.length === 0) return { pass: true, rounds, findings: [], notChecked: result.notChecked };
     if (rounds >= maxRepairs) return { pass: false, rounds, findings: blocking, notChecked: result.notChecked };
+    const keys = new Set(blocking.map((x) => stableKey(x.issue)));
+    const cameBack = [...keys].some((k) => previous.has(k));
+    previous = keys;
     rounds += 1;
     try {
-      await deps.repair(blocking);
+      let strategy: Strategy | undefined;
+      if (cameBack && deps.alternative) {
+        strategy = (await deps.alternative(blocking, [...tried])) ?? undefined;
+        if (strategy) tried.push(strategy.id);
+      }
+      await deps.repair(blocking, strategy);
     } catch (err) {
       return { pass: false, rounds, findings: blocking, notChecked: result.notChecked, repairError: String(err instanceof Error ? err.message : err) };
     }
