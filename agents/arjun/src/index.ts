@@ -11,6 +11,7 @@ import { run as runVanya, type DesignBrief } from "../../vanya/src/index.ts";
 import { mkdirSync } from "fs";
 import { join } from "path";
 import { assignTaskPhases, type PlanPhase } from "./phases.ts";
+import { assignBySkill, type TaskAssignment } from "./capabilities.ts";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 
 // ── Output types ──────────────────────────────────────────────────────────────
@@ -75,6 +76,8 @@ export interface BuildPlan {
   pranavTasks: GeneratorTask[];
   independenceVerified: boolean;
   buildPhases?: PlanPhase[];   // from the approved plan; builders work phase by phase (Part C)
+  // Claim 1(a): which agent each task is best suited to, with the reason, and whether it was moved from where the planner put it.
+  assignments?: TaskAssignment[];
   buildPlanHash: string;        // SHA-256 — verified by each generator before starting
 }
 
@@ -263,6 +266,19 @@ export async function run(
           `${missing.map((p) => p.path).join(", ")} — synthesizing tasks to guarantee they're built`,
       );
       plan.aanyaTasks = [...plan.aanyaTasks, ...missing.map(synthesizeTaskForPage)];
+    }
+  }
+
+  // Claim 1(a): every task is checked against the agents' capability profiles, and one that clearly belongs to another
+  // agent (all its files in that agent's folder) is moved there, before phases are assigned and the plan is hashed.
+  {
+    const skill = assignBySkill({ shubham: plan.shubhamTasks, aanya: plan.aanyaTasks, pranav: plan.pranavTasks });
+    plan.shubhamTasks = skill.groups.shubham;
+    plan.aanyaTasks = skill.groups.aanya;
+    plan.pranavTasks = skill.groups.pranav;
+    plan.assignments = skill.assignments;
+    for (const a of skill.assignments.filter((x) => x.moved)) {
+      console.warn(`[arjun] task "${a.description.slice(0, 80)}" moved ${a.from} -> ${a.to}: ${a.reason}`);
     }
   }
 
