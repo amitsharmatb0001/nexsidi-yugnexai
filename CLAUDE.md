@@ -75,18 +75,23 @@ Replit, Devin, and Claude Code.
 
 ## 10 PATENT CLAIMS
 
-| Claim | What it protects |
-|---|---|
-| 1 | SHA-256 hash chain on every inter-agent context transfer |
-| 2 | Persistent instinct memory with confidence-scoring |
-| 3 | Automatic rollback to last verified state on hash mismatch |
-| 4 | GAN-style adversarial QA — error-maximizing independent evaluator |
-| 5 | 4-tier kernel isolation sandbox |
-| 6 | DAG-based parallel task decomposition |
-| 7 | Cryptographic RSA-SHA256 signing of every agent output |
-| 8 | OTP/PIN-based user approval before code execution |
-| 9 | Hierarchical Chief AI Officer coordination pattern |
-| 10 | 100% full retest after EVERY adversarial finding |
+Corrected 2026-10-21 against the filed Form 2 provisional specification (`E:\dev doc pat\Form2_Provisional_Specification_YUGNEX.md`,
+section CLAIMS). The table that was here before listed claims that are NOT in that document (RSA signing, OTP/PIN approval,
+Chief AI Officer hierarchy, "100% full retest"); those stay product features but are not among the 10 filed claims.
+Claim-by-claim implementation status: `docs/patent-alignment.md`.
+
+| Claim | Type | What it protects (as filed) |
+|---|---|---|
+| 1 | Independent, system | Multi-agent system: DAG task graph + capability-based assignment; context objects (AST, dependency graph, metadata) with SHA-256 verification and automatic rollback; three independent adversarial review agents with error-maximizing objectives; isolated ephemeral containers (namespaces, cgroup v2, seccomp, timer-enforced timeouts); iterative refinement to convergence |
+| 2 | Independent, method | The same flow as a method, ending in deployment at zero critical errors and full test pass |
+| 3 | Independent, context protocol | Context objects, SHA-256 integrity with rollback, bidirectional traceability DAG (code artifacts to requirements), transactional atomic handoff |
+| 4 | Dependent on 1 | GAN-based training: generator/discriminator dynamics, adversarial example database of missed defects, curriculum learning |
+| 5 | Dependent on 1 | Container isolation: PID/network/mount/user/UTS/IPC namespaces, cgroup v2 CPU/memory/IO, seccomp whitelist, all network blocked, container destroyed after the test |
+| 6 | Dependent on 1 | Convergence detection, iteration limits by timer, alternative strategy generation |
+| 7 | Dependent on 1 | Mistake memory: recurring patterns across projects, statistical extraction, persistent store, prompt modification |
+| 8 | Dependent on 1 | Security agent: OWASP/CVE pattern database, taint analysis, penetration-test payloads (SQL/script injection) |
+| 9 | Dependent on 1 | Performance agent: Big-O estimation, memory-leak detection, regression detection across iterations |
+| 10 | Dependent on 3 | Hash chain: each context object contains the SHA-256 hashes of ALL predecessor objects, giving a full audit trail |
 
 ---
 
