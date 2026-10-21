@@ -23,6 +23,8 @@
 // live activity execution (same reasoning as verify-context-chain-live.ts).
 import { recordHandoff, verifyHandoff } from "./activities/context-chain-activities.ts";
 import { filterSourceManifest, buildStage4Result, getPlan } from "./activities/index.ts";
+import { buildHandoffContext } from "./activities/handoff-context.ts";
+import { buildDirFor } from "../packages/agent-runtime/src/build-dir.ts";
 import { runStage6 } from "./orchestrator/stages/stage6-deployment.ts";
 
 const projectId = process.argv[2];
@@ -33,7 +35,7 @@ if (!projectId) {
 
 const plan = getPlan(projectId);
 const stage4Result = buildStage4Result(projectId);
-const manifest = filterSourceManifest(stage4Result);
+const manifest = buildHandoffContext(buildDirFor(projectId), filterSourceManifest(stage4Result), plan);
 await recordHandoff(projectId, "qa-gan", "deploy", manifest);
 await verifyHandoff(projectId, "qa-gan", "deploy", manifest);
 console.log("[redeploy] context-chain verified — proceeding to Stage 6");

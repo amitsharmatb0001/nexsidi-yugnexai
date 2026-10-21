@@ -561,6 +561,7 @@ export async function runQAFixLoop(
             inferInstinctDomain(finding),
             summarized.trigger,
             summarized.action,
+            projectId,
           );
         }
       } catch (err) {

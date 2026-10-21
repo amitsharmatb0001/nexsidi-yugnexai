@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { buildSandboxArgs, runInSandbox, DEFAULT_LIMITS } from "./container-sandbox.ts";
+import { buildSandboxArgs, runInSandbox, DEFAULT_LIMITS, detectIoDevice, hostIsolationReport, parseDockerInfo, sandboxDefault } from "./container-sandbox.ts";
 
 // Patent claim 5: an isolated containerized execution environment — PID, network, mount, user, UTS and IPC namespace
 // isolation; cgroup v2 CPU quotas, memory limits and I/O limits; a seccomp syscall whitelist; all network ingress and
@@ -54,10 +54,82 @@ describe("buildSandboxArgs", () => {
   });
 
   test("mounts are read-only unless the caller says otherwise, and the command comes last", () => {
-    const a = buildSandboxArgs({ image: "node:22-alpine", command: ["ls"], mounts: [{ host: "E:/x", container: "/work" }, { host: "E:/y", container: "/out", readOnly: false }] }, "n");
+    const a = buildSandboxArgs({ image: "node:22-alpine", command: ["ls"], limits: { kernelTimer: false }, mounts: [{ host: "E:/x", container: "/work" }, { host: "E:/y", container: "/out", readOnly: false }] }, "n");
     expect(a).toContain("E:/x:/work:ro");
     expect(a).toContain("E:/y:/out");
     expect(a.slice(-2)).toEqual(["node:22-alpine", "ls"]);
+  });
+});
+
+// ── gaps closed 2026-10-21: I/O limit, in-container (kernel) timer, host isolation report, default on Linux ──
+describe("I/O bandwidth limit", () => {
+  test("read and write bandwidth limits are passed for the chosen device", () => {
+    const a = buildSandboxArgs({ image: "a", command: ["x"], limits: { ioMbPerSec: 20, ioDevice: "/dev/sda" } }, "n");
+    expect(a[a.indexOf("--device-read-bps") + 1]).toBe("/dev/sda:20mb");
+    expect(a[a.indexOf("--device-write-bps") + 1]).toBe("/dev/sda:20mb");
+  });
+  test("with no device known, no I/O flag is passed (the limit is reported as unavailable instead of failing the run)", () => {
+    const a = buildSandboxArgs({ image: "a", command: ["x"], limits: { ioMbPerSec: 20 } }, "n");
+    expect(a).not.toContain("--device-read-bps");
+  });
+  test("detectIoDevice returns the first candidate the daemon accepts, and null when none is accepted", async () => {
+    const tried: string[] = [];
+    const ok = async (argv: string[]) => {
+      const dev = argv[argv.indexOf("--device-write-bps") + 1]!.split(":")[0]!;
+      tried.push(dev);
+      return { exitCode: dev === "/dev/vda" ? 0 : 125, stdout: "", stderr: "", timedOut: false };
+    };
+    expect(await detectIoDevice("img", { exec: ok, candidates: ["/dev/sda", "/dev/vda", "/dev/xvda"], cache: false })).toBe("/dev/vda");
+    expect(tried).toEqual(["/dev/sda", "/dev/vda"]);
+    const none = async () => ({ exitCode: 125, stdout: "", stderr: "", timedOut: false });
+    expect(await detectIoDevice("img", { exec: none, candidates: ["/dev/sda"], cache: false })).toBeNull();
+  });
+});
+
+describe("in-container timer", () => {
+  test("the command is wrapped in the container's own timeout so the kernel timer ends it, with a host-side backstop", () => {
+    const a = buildSandboxArgs({ image: "img", command: ["sleep", "9"], limits: { timeoutSec: 30 } }, "n");
+    const i = a.indexOf("img");
+    expect(a.slice(i)).toEqual(["img", "sh", "-c", 'timeout -s KILL "$0" "$@"; exit $?', "30", "sleep", "9"]);
+  });
+  test("a fractional limit is rounded up to a whole second", () => {
+    const a = buildSandboxArgs({ image: "img", command: ["x"], limits: { timeoutSec: 0.05 } }, "n");
+    expect(a.slice(a.indexOf("img")).slice(4)).toEqual(["1", "x"]);
+  });
+  test("it can be turned off for an image without a timeout command", () => {
+    const a = buildSandboxArgs({ image: "img", command: ["x"], limits: { kernelTimer: false } }, "n");
+    expect(a.slice(-2)).toEqual(["img", "x"]);
+  });
+});
+
+describe("host isolation report", () => {
+  const info = (over: object = {}) => JSON.stringify({ SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], CgroupVersion: "2", OperatingSystem: "Docker Desktop", ...over });
+  test("parseDockerInfo reads cgroup version, seccomp, and user-namespace remapping", () => {
+    expect(parseDockerInfo(info())).toEqual({ cgroupV2: true, seccomp: true, userNamespaceRemap: false, rootless: false, os: "Docker Desktop" });
+    expect(parseDockerInfo(info({ SecurityOptions: ["name=seccomp,profile=builtin", "name=userns", "name=rootless"] }))).toMatchObject({ userNamespaceRemap: true, rootless: true });
+    expect(parseDockerInfo(info({ CgroupVersion: "1" })).cgroupV2).toBe(false);
+  });
+  test("hostIsolationReport says plainly which layers are missing on this host", async () => {
+    const exec = async () => ({ exitCode: 0, stdout: info(), stderr: "", timedOut: false });
+    const r = await hostIsolationReport({ exec });
+    expect(r.layers.find((l) => l.name === "user-namespace remap")!.active).toBe(false);
+    expect(r.layers.find((l) => l.name === "cgroup v2")!.active).toBe(true);
+    expect(r.missing).toContain("user-namespace remap");
+    expect(r.missing).not.toContain("cgroup v2");
+  });
+  test("if docker cannot be reached the report says so instead of throwing", async () => {
+    const r = await hostIsolationReport({ exec: async () => ({ exitCode: 1, stdout: "", stderr: "no docker", timedOut: false }) });
+    expect(r.reachable).toBe(false);
+  });
+});
+
+describe("sandboxDefault", () => {
+  test("an explicit on/off wins; otherwise it is on for a Linux server and off elsewhere", () => {
+    expect(sandboxDefault({ NEXSIDI_SANDBOX_BUILDS: "on" }, "win32")).toBe(true);
+    expect(sandboxDefault({ NEXSIDI_SANDBOX_BUILDS: "off" }, "linux")).toBe(false);
+    expect(sandboxDefault({}, "linux")).toBe(true);
+    expect(sandboxDefault({}, "win32")).toBe(false);
+    expect(sandboxDefault({}, "darwin")).toBe(false);
   });
 });
 
@@ -73,7 +145,7 @@ describe("runInSandbox timeout", () => {
       }
       return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
     };
-    const r = await runInSandbox({ image: "node:22-alpine", command: ["sleep", "99"], limits: { timeoutSec: 0.05 } }, { exec });
+    const r = await runInSandbox({ image: "node:22-alpine", command: ["sleep", "99"], limits: { timeoutSec: 0.05, ioMbPerSec: 0 } }, { exec, hostGraceMs: 0 });
     expect(r.timedOut).toBe(true);
     expect(calls.some((c) => c[0] === "kill")).toBe(true);
     expect(calls.some((c) => c[0] === "rm")).toBe(true);
@@ -96,7 +168,9 @@ real("a real container", () => {
 
   test("namespaces: it is PID 1 in its own process space, as an unprivileged user, with its own hostname", async () => {
     const r = await run("echo pid=$$ uid=$(id -u) host=$(hostname)");
-    expect(r.stdout).toContain("pid=1 ");
+    const pid = Number(/pid=(\d+) /.exec(r.stdout)?.[1]);
+    expect(pid).toBeGreaterThan(0);
+    expect(pid).toBeLessThan(20); // a private PID namespace: host PIDs are far larger
     expect(r.stdout).toContain("uid=65534");
     expect(r.stdout).not.toContain(`host=${process.env.COMPUTERNAME ?? "__none__"}`);
   }, 90_000);
@@ -145,6 +219,36 @@ real("a real container", () => {
     const left = spawnSync("docker", ["ps", "-a", "--filter", `name=${r.containerName}`, "--format", "{{.Names}}"], { encoding: "utf8" });
     expect(left.stdout.trim()).toBe("");
   }, 90_000);
+
+  test("I/O limit: the kernel's own io.max shows the bandwidth cap for the detected device", async () => {
+    const dev = await detectIoDevice("node:22-alpine", { cache: false });
+    if (!dev) return; // no block device the daemon accepts on this host: reported as unavailable, nothing to observe
+    const r = await runInSandbox({ image: "node:22-alpine", command: ["sh", "-c", "cat /sys/fs/cgroup/io.max"], limits: { timeoutSec: 60, ioMbPerSec: 25, ioDevice: dev } });
+    expect(r.stdout).toContain("rbps=26214400");
+    expect(r.stdout).toContain("wbps=26214400");
+  }, 120_000);
+
+  test("kernel timer: the command ends itself at the limit, reported as timed out, container gone", async () => {
+    const t0 = Date.now();
+    const r = await runInSandbox({ image: "node:22-alpine", command: ["sleep", "60"], limits: { timeoutSec: 2 } });
+    expect(r.timedOut).toBe(true);
+    expect(r.exitCode).toBe(137);
+    expect(Date.now() - t0).toBeLessThan(30_000);
+    const left = spawnSync("docker", ["ps", "-a", "--filter", `name=${r.containerName}`, "--format", "{{.Names}}"], { encoding: "utf8" });
+    expect(left.stdout.trim()).toBe("");
+  }, 90_000);
+
+  test("a command that finishes inside its limit is not reported as timed out and keeps its exit code", async () => {
+    const r = await runInSandbox({ image: "node:22-alpine", command: ["sh", "-c", "exit 3"], limits: { timeoutSec: 30 } });
+    expect(r.timedOut).toBe(false);
+    expect(r.exitCode).toBe(3);
+  }, 90_000);
+
+  test("the host isolation report reads the real daemon", async () => {
+    const r = await hostIsolationReport();
+    expect(r.reachable).toBe(true);
+    expect(r.layers.length).toBeGreaterThan(3);
+  }, 60_000);
 
   test("a read-only mounted folder can be read but not changed", async () => {
     const r = await runInSandbox({ image: "node:22-alpine", command: ["sh", "-c", "ls /work >/dev/null; echo read=$?; touch /work/new 2>/dev/null; echo write=$?"], mounts: [{ host: process.cwd().replace(/\\/g, "/"), container: "/work" }], limits: { timeoutSec: 60 } });

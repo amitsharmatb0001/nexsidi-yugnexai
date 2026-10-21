@@ -97,7 +97,12 @@ Update this instruction file to add a specific rule in the Rules section instruc
 
 // Self-execute if run directly
 if (import.meta.main) {
-  runInstinctCron().catch(err => {
+  // Patent claim 7: refresh which mistake patterns are statistically above the background rate (non-fatal).
+  import("@nexsidi/db")
+    .then(({ evaluateInstincts }) => evaluateInstincts())
+    .then((r) => console.log(`[instinct-cron] statistical evaluation: ${r.significant} of ${r.patterns} patterns significant across ${r.totalProjects} projects`))
+    .catch((err) => console.error(`[instinct-cron] statistical evaluation skipped: ${String(err)}`))
+    .then(() => runInstinctCron()).catch(err => {
     console.error("[instinct-cron] Failed running script:", err);
   });
 }

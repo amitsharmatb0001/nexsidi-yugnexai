@@ -71,8 +71,8 @@ Nothing here changes the filed paper.
 | Item | What would be built | Effort |
 |---|---|---|
 | ~~Task assignment by skills~~ | Built (section 10) | done |
-| Code map in handoffs | Before each handoff, build the code's structure and what-depends-on-what from the generated files with the TypeScript compiler, add the spec's rules and the current error records, and hash it all | 3 to 4 days |
-| Requirement-to-code map | Give each requirement an ID, link requirements to tasks, files and findings, store it, and allow questions in both directions | 3 to 4 days |
+| ~~Code map in handoffs~~ | Built (build-notes F3) | done |
+| ~~Requirement-to-code map~~ | Built (build-notes F4); links to findings not built | done |
 | ~~All-or-nothing handoffs~~ | Built (section 10) | done |
 | Training the checking agents | Software version: score each checker by confirmed defects found, keep a store of missed defects that comes back as test cases, and raise the difficulty round by round. Real model training would need data, hardware and weeks, with an uncertain result | 5 to 7 days for the software version |
 | ~~New approach when stuck~~ | Built (section 10); automatic in the repair of newly built apps only | done |
@@ -85,10 +85,10 @@ Nothing here changes the filed paper.
 | Item | What would be built | Effort |
 |---|---|---|
 | Checking agents "trained" | The scoring and missed-defect store above, so the claim has a measurable objective | about 2 days beyond the item above |
-| Locked container gaps | A disk-speed limit; user remapping (a setting for the whole Docker engine on the server); kernel-enforced time limits (these are not literally hardware timers, so the wording is for the lawyer); turn it on for builds on a Linux server and check speed | 2 to 3 days, needs a Linux server |
+| Locked container gaps | Disk-speed limit, kernel-enforced time limit and on-by-default on Linux are built (build-notes F2). Left: switch on user remapping on a Linux server and check build speed there | about 0.5 day, needs a Linux server |
 | Security agent database | A stored list of attack patterns and public vulnerability entries, filled by the existing vulnerability feed, and used by the checker | 3 to 4 days |
 | ~~Undo that restores files~~ | Built (section 10) | done |
-| Memory of mistakes with statistics | Rate of recurrence across projects compared with chance, minimum evidence, and a significance score before a pattern is kept | 2 days |
+| ~~Memory of mistakes with statistics~~ | Built (build-notes F1) | done |
 
 ### Totals and order
 
@@ -109,3 +109,12 @@ Nothing here changes the filed paper.
 - **A different approach when stuck** (commit 459240e). Six different approaches plus an optional model-written one; in the repair of newly built apps, a problem that comes back gets a new approach, never one already used. In the main fix loops the held-work report lists approaches nobody has tried; they are not tried automatically there.
 - **Assigning tasks by skill** (commit 365d893). Profiles for the three builder agents; a task moves only on strong evidence. Run on the 24 real plans on disk (335 tasks) it moved none, so it is a safety net that past plans did not need.
 - All test suites pass after the changes. Items still open are those in section 8 not listed here.
+
+## 11. Update: batch 1 of the remaining items
+
+Details for each item, with the proof and the limits, are in `docs/patent/build-notes.md` (entries F1 to F4).
+- F1 mistake memory with statistics (claim 7) built and proven on the real database.
+- F2 container: disk-speed limit, in-container timer, host report, on by default on Linux, server instructions. User remap still needs a Linux server.
+- F3 code map in the handoff (claims 1 and 3), proven on a real generated app.
+- F4 requirement-to-code traceability (claim 3), measured on 8 real projects.
+- One defect from the earlier batch was found and fixed on the way: the file list for the deploy handoff did not exclude the chain's own folder.

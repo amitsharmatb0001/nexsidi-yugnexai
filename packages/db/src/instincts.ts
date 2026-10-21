@@ -101,10 +101,14 @@ export function formatInstinctsForPrompt(instinctList: PromptInstinct[]): string
 
 // ── DB-touching functions — dynamic `db` import, needs live Postgres ───────
 
-export async function recordInstinct(agentName: string, domain: InstinctDomain, trigger: string, finding: string): Promise<void> {
+export async function recordInstinct(agentName: string, domain: InstinctDomain, trigger: string, finding: string, projectId?: string): Promise<void> {
   const { db } = await import("./client.ts");
-  const { instincts: instinctsTable } = await import("./schema.ts");
-  const { eq, and, desc } = await import("drizzle-orm");
+  const { instincts: instinctsTable, instinctOccurrences } = await import("./schema.ts");
+  const { eq, and, desc, sql } = await import("drizzle-orm");
+
+  // Patent claim 7: every sighting is logged (the pattern row below is updated in place and cannot say how many different
+  // projects saw it). evaluateInstincts() reads this log.
+  await db.insert(instinctOccurrences).values({ domain, trigger, projectId: projectId ?? null, agentName });
 
   // 2026-07-24 (P3.W3.3): escalate confidence on a repeated pattern instead
   // of inserting a flat duplicate every time. "Same pattern" = same domain
@@ -121,7 +125,7 @@ export async function recordInstinct(agentName: string, domain: InstinctDomain, 
   if (existing[0]) {
     await db
       .update(instinctsTable)
-      .set({ confidence: escalateConfidence(existing[0].confidence as Confidence), action: finding })
+      .set({ confidence: escalateConfidence(existing[0].confidence as Confidence), action: finding, occurrences: sql`${instinctsTable.occurrences} + 1` })
       .where(eq(instinctsTable.id, existing[0].id));
     return;
   }
@@ -154,7 +158,38 @@ export async function queryRecentInstincts(domain: InstinctDomain | InstinctDoma
     .select({ trigger: instinctsTable.trigger, action: instinctsTable.action, confidence: instinctsTable.confidence })
     .from(instinctsTable)
     .where(and(domainFilter, eq(instinctsTable.outcome, "mistake")))
-    .orderBy(desc(instinctsTable.createdAt))
+    // Patterns that passed the statistical test come first (claim 7), then the most recent.
+    .orderBy(desc(instinctsTable.significant), desc(instinctsTable.createdAt))
     .limit(limit);
   return rows;
+}
+
+export interface EvaluateInstinctsResult {
+  patterns: number;
+  significant: number;
+  totalProjects: number;
+}
+
+/**
+ * Patent claim 7: runs the statistical test (instinct-stats.ts) over the occurrence log and stores, on each pattern, how
+ * many projects it appeared in and whether it is above the background rate. Safe to run repeatedly; idempotent.
+ */
+export async function evaluateInstincts(): Promise<EvaluateInstinctsResult> {
+  const { db } = await import("./client.ts");
+  const { instincts: instinctsTable, instinctOccurrences, projects } = await import("./schema.ts");
+  const { and, eq, sql } = await import("drizzle-orm");
+  const { evaluatePatterns } = await import("./instinct-stats.ts");
+
+  const log = await db.select({ domain: instinctOccurrences.domain, trigger: instinctOccurrences.trigger, projectId: instinctOccurrences.projectId }).from(instinctOccurrences);
+  const [counted] = await db.select({ n: sql<number>`count(*)::int` }).from(projects);
+  const n = counted?.n ?? 0;
+  const stats = evaluatePatterns(log.map((r) => ({ ...r, projectId: r.projectId ?? "" })), { totalProjects: n });
+  const now = new Date();
+  for (const s of stats) {
+    await db
+      .update(instinctsTable)
+      .set({ occurrences: s.occurrences, projectCount: s.projectCount, significance: s.score.toFixed(3), significant: s.significant, evaluatedAt: now })
+      .where(and(eq(instinctsTable.domain, s.domain), eq(instinctsTable.trigger, s.trigger)));
+  }
+  return { patterns: stats.length, significant: stats.filter((s) => s.significant).length, totalProjects: n };
 }

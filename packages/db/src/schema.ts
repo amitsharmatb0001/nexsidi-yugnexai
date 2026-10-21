@@ -170,7 +170,26 @@ export const instincts = pgTable("instincts", {
   projectId:  varchar("project_id", { length: 64 }),
   outcome:    text("outcome").notNull(), // mistake | success
   createdAt:  timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // Patent claim 7: filled in by the statistical evaluation (instinct-stats.ts), not by the recorder.
+  occurrences:  integer("occurrences").notNull().default(1),
+  projectCount: integer("project_count").notNull().default(0),
+  significance: numeric("significance", { precision: 8, scale: 3 }), // -log10(p), null until evaluated
+  significant:  boolean("significant").notNull().default(false),
+  evaluatedAt:  timestamp("evaluated_at", { withTimezone: true }),
 });
+
+// One row per time a mistake pattern was seen (the instincts row above is one per pattern and gets updated in place,
+// so it cannot answer "in how many different projects?"). Append-only.
+export const instinctOccurrences = pgTable("instinct_occurrences", {
+  id:        uuid("id").primaryKey().defaultRandom(),
+  domain:    text("domain").notNull(),
+  trigger:   text("trigger").notNull(),
+  projectId: varchar("project_id", { length: 64 }),
+  agentName: text("agent_name").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  patternIdx: index("instinct_occ_pattern_idx").on(t.domain, t.trigger),
+}));
 
 // ─── Agent Conversations (Persistent State across Fix Iterations) ────────────
 export const agentConversations = pgTable("agent_conversations", {

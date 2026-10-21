@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { runInSandbox, type SandboxResult, type SandboxSpec } from "../../packages/agent-runtime/src/sandbox/container-sandbox.ts";
+import { runInSandbox, sandboxDefault, type SandboxResult, type SandboxSpec } from "../../packages/agent-runtime/src/sandbox/container-sandbox.ts";
 
 export interface VerifyResult {
   ran: boolean; // false when the checks could not run at all (no install, timed out)
@@ -62,7 +62,7 @@ export async function verifyDir(dir: string, commands: { command: string; timeou
   if (!existsSync(join(dir, "package.json")) || !existsSync(join(dir, "node_modules"))) {
     return { ran: false, ok: false, output: "" };
   }
-  const useSandbox = deps.sandbox ?? process.env.NEXSIDI_SANDBOX_BUILDS === "on";
+  const useSandbox = deps.sandbox ?? sandboxDefault(process.env, process.platform);
   const shell = deps.shell ?? runShell;
   const sandboxRun = deps.sandboxRun ?? runInSandbox;
   for (const c of commands) {

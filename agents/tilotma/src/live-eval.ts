@@ -124,16 +124,16 @@ export function parseLiveEvalScores(summary: string): LiveEvalScores | null {
 // no DI seam of its own) unstubbable — confirmed live: it hung an existing
 // test for 5s until timeout. One seam means a test overriding it skips
 // both the summarization AND the write in a single fast no-op.
-export type RecordDesignInstinctFn = (findingText: string) => Promise<void>;
+export type RecordDesignInstinctFn = (findingText: string, projectId?: string) => Promise<void>;
 
-async function defaultRecordDesignInstinct(findingText: string): Promise<void> {
+async function defaultRecordDesignInstinct(findingText: string, projectId?: string): Promise<void> {
   try {
     const { recordInstinct } = await import("@nexsidi/db");
     const summarized = await summarizeFindingToInstinctRule(findingText, "vanya");
     // Attributed to "vanya" (not the evaluator that found it) — same
     // convention as stage5-qa-fix-loop.ts's recordInstincts, which credits
     // the agent whose OUTPUT needs correcting, not the QA agent that caught it.
-    await recordInstinct("vanya", "design" as InstinctDomain, summarized.trigger, summarized.action);
+    await recordInstinct("vanya", "design" as InstinctDomain, summarized.trigger, summarized.action, projectId);
   } catch (err) {
     console.log(`[live-eval] recordInstinct failed (non-fatal, memory is an enrichment): ${String(err)}`);
   }
@@ -229,7 +229,7 @@ export async function runLiveEval(
   // swallows its own errors, so a memory-write failure never affects the
   // score/verdict returned to the caller.
   if (scores.designQuality < LIVE_PASS_THRESHOLD || scores.originality < LIVE_PASS_THRESHOLD) {
-    await (deps.recordDesignInstinct ?? defaultRecordDesignInstinct)(result.summary);
+    await (deps.recordDesignInstinct ?? defaultRecordDesignInstinct)(result.summary, projectId);
   }
 
   return { pass: score >= LIVE_PASS_THRESHOLD, score, scores, summary: result.summary };

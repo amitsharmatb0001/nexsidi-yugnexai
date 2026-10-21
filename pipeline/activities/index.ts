@@ -30,6 +30,7 @@ import { runStage6 } from "../orchestrator/stages/stage6-deployment.ts";
 // differently — npm install between them would make a naive full-tree
 // hash produce false-positive rollbacks).
 import { recordHandoff, verifyHandoff } from "./context-chain-activities.ts";
+import { buildHandoffContext } from "./handoff-context.ts";
 // Phase 5 (full agentic upgrade): Firecrawl's page-fetch capability existed
 // but was reachable ONLY from agents/planner/src/index.ts. Saanvi is a
 // one-shot agentChat caller, not a tool-calling agent loop (unlike
@@ -856,7 +857,9 @@ export function filterSourceManifest(stage4Result: { backendOutputDir: string; f
   // manifest — a false-positive mismatch against the pipeline's OWN
   // artifact, not tampering. .git is generated deploy output, not reviewed
   // source, exactly like node_modules/.next/dist above — same exclusion logic.
-  const EXCLUDE = /(^|\/)(node_modules|\.next|dist|\.git)(\/|$)|\.tsbuildinfo$|(^|\/)(package-lock\.json|bun\.lock|bun\.lockb|yarn\.lock|pnpm-lock\.yaml)$/;
+  // .nexsidi is the chain's own folder (handoff files and snapshots written AFTER a handoff is recorded); counting it
+  // would make a healthy project look changed between record and verify.
+  const EXCLUDE = /(^|\/)(node_modules|\.next|dist|\.git|\.nexsidi)(\/|$)|\.tsbuildinfo$|(^|\/)(package-lock\.json|bun\.lock|bun\.lockb|yarn\.lock|pnpm-lock\.yaml)$/;
   return {
     filesWritten: stage4Result.filesWritten.filter((f) => !EXCLUDE.test(f)).sort(),
   };
@@ -914,7 +917,9 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
 // a routine, expected pipeline step.
 export async function recordDeployHandoffActivity(projectId: string): Promise<void> {
   const stage4Result = buildStage4Result(projectId);
-  await recordHandoff(projectId, "qa-gan", "deploy", filterSourceManifest(stage4Result));
+  // Claims 1 and 3: the handoff carries the code map (structure, dependency graph, rules, error records), not just file names.
+  // getPlan throws if the plan is missing, on purpose: recording with no rules and checking with rules would disagree.
+  await recordHandoff(projectId, "qa-gan", "deploy", buildHandoffContext(buildDirFor(projectId), filterSourceManifest(stage4Result), getPlan(projectId)));
 }
 
 // ── Stage 6 (P1): deploy + re-run adversarial QA against the LIVE deployed
@@ -945,7 +950,7 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
     const stage4Result = buildStage4Result(projectId);
     // Patent Claim 3: verify the codebase QA just approved is exactly what
     // deploy is about to ship — before it's shipped.
-    await verifyHandoff(projectId, "qa-gan", "deploy", filterSourceManifest(stage4Result));
+    await verifyHandoff(projectId, "qa-gan", "deploy", buildHandoffContext(buildDirFor(projectId), filterSourceManifest(stage4Result), plan));
     const result = await runStage6(projectId, stage4Result, plan);
     console.log(`[activity:deploy] success=${result.success} appUrl=${result.appUrl} stuck=${result.stuck ?? false}`);
     if (result.hold) throw guardHoldFailure(result.hold);
