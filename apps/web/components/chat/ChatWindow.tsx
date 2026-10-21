@@ -47,7 +47,11 @@ export function ChatWindow() {
 
   // Load existing session on mount
   useEffect(() => {
-    fetch(`${API}/api/chat/${sessionId}`)
+    // 2026-10-21: real bug found live — without credentials:"include" the browser never sends the auth cookie on this
+    // cross-origin call (localhost:3000 -> localhost:8080), so this always 401s and the catch below swallows it
+    // silently. The visible effect: history never loads after a reload, and the signed-in user's identity is never
+    // confirmed on this request either. See the POST below for the matching, more serious half of this bug.
+    fetch(`${API}/api/chat/${sessionId}`, { credentials: "include" })
       .then((r) => r.json())
       .then((data: { messages: Message[]; phase: string; projectId: string | null }) => {
         if (data.messages.length) setMessages(data.messages);
@@ -123,8 +127,13 @@ export function ChatWindow() {
     setMessages((prev) => [...prev, { role: "assistant", content: "", ts: assistantTs }]);
 
     try {
+      // 2026-10-21: real bug found live — without credentials:"include" the auth cookie never reaches the API, so
+      // resolveOptionalUserId falls back to the anonymous account on every call regardless of who is signed in.
+      // Confirmed on a real build: a project built through this page while signed in as amit was recorded under the
+      // anonymous user, not amit — a different account would have owned it, with no sign anything went wrong.
       const res = await fetch(`${API}/api/chat`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: fullMessage, sessionId }),
       });
@@ -145,11 +154,22 @@ export function ChatWindow() {
           if (!raw) continue;
 
           try {
+            // 2026-10-21: real bug found live — the planner can send elicitation_question, plan_proposed and
+            // build_triggered (agents/planner/src/types.ts's own StreamChunk["type"] union), but this switch only
+            // ever handled token/phase_change/project_started/error. A question or a proposed plan arrived, the
+            // server-side session recorded it correctly, and the page showed nothing at all — the empty placeholder
+            // bubble just sat there forever with no visible sign the planner had replied. Confirmed live twice
+            // (two separate fresh-build attempts) before this fix. This is a plain-text rendering, not the
+            // structured multiple-choice widget ElicitationQuestion.type ("single"/"multi") is meant for — that
+            // widget does not exist yet; the backend already accepts a normal typed reply to a question shown as
+            // text, so this makes the existing flow usable without building new picker UI.
             const chunk = JSON.parse(raw) as {
               type: string;
               content?: string;
               phase?: string;
               projectId?: string;
+              elicitationQuestion?: { text: string; options: Array<{ label: string; description?: string; recommended?: boolean }> };
+              proposedPlan?: { appName: string; publicPages: Array<{ name: string }>; protectedPages: Array<{ name: string }>; apiEndpoints: Array<{ method: string; path: string }> };
             };
 
             if (chunk.type === "token" && chunk.content) {
@@ -168,6 +188,25 @@ export function ChatWindow() {
 
             if (chunk.type === "project_started" && chunk.projectId) {
               setBuild({ projectId: chunk.projectId, phase: "generate" });
+            }
+
+            if (chunk.type === "elicitation_question" && chunk.elicitationQuestion) {
+              const q = chunk.elicitationQuestion;
+              const opts = q.options.map((o) => `• ${o.label}${o.recommended ? " (recommended)" : ""}${o.description ? ` — ${o.description}` : ""}`).join("\n");
+              const text = `${q.text}\n\n${opts}\n\nReply with your answer in plain words.`;
+              setMessages((prev) => prev.map((m) => (m.ts === assistantTs ? { ...m, content: text } : m)));
+            }
+
+            if (chunk.type === "plan_proposed" && chunk.proposedPlan) {
+              const p = chunk.proposedPlan;
+              const pages = [...p.publicPages, ...p.protectedPages].map((pg) => pg.name).join(", ");
+              const text = `Plan ready for ${p.appName}.\nPages: ${pages}\nEndpoints: ${p.apiEndpoints.length}\n\nReply "looks good, build it" to start, or describe what to change.`;
+              setMessages((prev) => prev.map((m) => (m.ts === assistantTs ? { ...m, content: text } : m)));
+            }
+
+            if (chunk.type === "build_triggered" && chunk.projectId) {
+              setBuild({ projectId: chunk.projectId, phase: "building" });
+              setMessages((prev) => prev.map((m) => (m.ts === assistantTs ? { ...m, content: `Building now — track it at /build/${chunk.projectId}.` } : m)));
             }
 
             if (chunk.type === "error" && chunk.content) {
