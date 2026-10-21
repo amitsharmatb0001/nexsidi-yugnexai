@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
-  bigserial, boolean, char, check, foreignKey, index, integer, jsonb, numeric, pgTable,
+  bigserial, boolean, char, check, foreignKey, index, integer, jsonb, numeric, pgTable, primaryKey,
   text, timestamp, unique, uniqueIndex, uuid, varchar,
 } from "drizzle-orm/pg-core";
 
@@ -190,6 +190,33 @@ export const instinctOccurrences = pgTable("instinct_occurrences", {
 }, (t) => ({
   patternIdx: index("instinct_occ_pattern_idx").on(t.domain, t.trigger),
 }));
+
+// Patent claim 8: the security checker's pattern database (see packages/agent-runtime/src/security/pattern-scan.ts).
+export const securityPatterns = pgTable("security_patterns", {
+  key:         text("key").primaryKey(),
+  source:      text("source").notNull(),
+  category:    text("category").notNull(),
+  cwe:         text("cwe").notNull(),
+  severity:    text("severity").notNull(),
+  pattern:     text("pattern").notNull(),
+  flags:       text("flags"),
+  pathRegex:   text("path_regex"),
+  description: text("description").notNull(),
+  remediation: text("remediation").notNull(),
+  enabled:     boolean("enabled").notNull().default(true),
+  createdAt:   timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const securityAdvisories = pgTable("security_advisories", {
+  id:        text("id").notNull(),
+  ghsa:      text("ghsa"),
+  package:   text("package").notNull(),
+  range:     text("range").notNull(),
+  fixedIn:   text("fixed_in").notNull(),
+  severity:  text("severity").notNull(),
+  summary:   text("summary").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.id, t.package, t.range] }), index("security_advisories_package_idx").on(t.package)]);
 
 // ─── Agent Conversations (Persistent State across Fix Iterations) ────────────
 export const agentConversations = pgTable("agent_conversations", {

@@ -76,9 +76,9 @@ Nothing here changes the filed paper.
 | ~~All-or-nothing handoffs~~ | Built (section 10) | done |
 | Training the checking agents | Software version: score each checker by confirmed defects found, keep a store of missed defects that comes back as test cases, and raise the difficulty round by round. Real model training would need data, hardware and weeks, with an uncertain result | 5 to 7 days for the software version |
 | ~~New approach when stuck~~ | Built (section 10); automatic in the repair of newly built apps only | done |
-| Taint analysis | Follow untrusted input (request data) through generated code to risky places (database queries, shell commands, file paths, HTML output), in the code itself | 5 to 7 days, with false alarms to tune |
+| ~~Taint analysis~~ | Built (build-notes F6) | done |
 | Attack-input tester | Send standard attack inputs (database injection, script injection, path tricks) to every route of the running app with a test account and judge the answers | 3 to 4 days |
-| Speed and memory analysis | Estimate growth from loop nesting and queries inside loops; find leaks by hitting routes repeatedly and watching memory; compare speed and memory between rounds | 7 to 8 days |
+| ~~Speed and memory analysis~~ | Built (build-notes F7); running it automatically against a live app is not | done |
 
 ### Partly done
 
@@ -86,7 +86,7 @@ Nothing here changes the filed paper.
 |---|---|---|
 | Checking agents "trained" | The scoring and missed-defect store above, so the claim has a measurable objective | about 2 days beyond the item above |
 | Locked container gaps | Disk-speed limit, kernel-enforced time limit and on-by-default on Linux are built (build-notes F2). Left: switch on user remapping on a Linux server and check build speed there | about 0.5 day, needs a Linux server |
-| Security agent database | A stored list of attack patterns and public vulnerability entries, filled by the existing vulnerability feed, and used by the checker | 3 to 4 days |
+| ~~Security agent database~~ | Built (build-notes F5); there is no scheduled feed | done |
 | ~~Undo that restores files~~ | Built (section 10) | done |
 | ~~Memory of mistakes with statistics~~ | Built (build-notes F1) | done |
 
@@ -118,3 +118,12 @@ Details for each item, with the proof and the limits, are in `docs/patent/build-
 - F3 code map in the handoff (claims 1 and 3), proven on a real generated app.
 - F4 requirement-to-code traceability (claim 3), measured on 8 real projects.
 - One defect from the earlier batch was found and fixed on the way: the file list for the deploy handoff did not exclude the chain's own folder.
+
+## 12. Update: batch 2
+
+Details, proof and limits are in `docs/patent/build-notes.md` (F5 to F7).
+- F5 security pattern database (claim 8): stored OWASP/CWE code patterns and CVE package advisories, OSV import, scanner; checked against osv.dev.
+- F6 taint analysis (claim 8): request data followed to dangerous calls; two false reports found on real apps were fixed; a planted flaw was found.
+- F7 performance analysis (claim 9): Big-O estimate, leak patterns, a leak probe tested on two real running servers, and round-to-round regression detection.
+- Also done in this period, outside the patent list: a tool to move older projects under one account (all 40 projects are now on amit@yugnex.com).
+- Real end-to-end test of the new handoff on a copy of a real generated app: recorded, verified, build-tool rewrites did not cause a false stop, a tampered file and a stray file stopped it and were put back.

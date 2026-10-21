@@ -214,9 +214,29 @@ export async function runStage5WithAgents(
   const systemContext = plan ? buildSystemContext(plan) : undefined;
   const navyaPromise = agents.runNavya(projectId, stage4Result, systemContext, changedFiles, previousFindings?.navya);
   await sleep(staggerMs);
-  const karanPromise = agents.runKaran(projectId, stage4Result, systemContext, changedFiles, previousFindings?.karan);
+  // Patent claim 8: the security pattern database is run over the code first, and what it finds goes to Karan as leads to confirm.
+  // Never fatal: a failed scan leaves Karan's input exactly as it was.
+  let securityLeads = "";
+  try {
+    const { scanBuildDirForSecurity, formatScanForReviewer } = await import("./security-scan.ts");
+    securityLeads = formatScanForReviewer(await scanBuildDirForSecurity(buildDirFor(projectId)));
+  } catch (err) {
+    console.error(`[stage5] security pattern scan skipped: ${String(err).slice(0, 160)}`);
+  }
+  const karanContext = [systemContext, securityLeads].filter(Boolean).join("\n\n") || undefined;
+  const karanPromise = agents.runKaran(projectId, stage4Result, karanContext, changedFiles, previousFindings?.karan);
   await sleep(staggerMs);
-  const deepikaPromise = agents.runDeepika(projectId, stage4Result, systemContext, changedFiles, previousFindings?.deepika);
+  // Patent claim 9: growth estimates, leak patterns and what got worse since the last round go to Deepika as leads to confirm.
+  // This also records the round, so the next one can be compared with it. Never fatal.
+  let performanceLeads = "";
+  try {
+    const { scanBuildDirForPerformance, formatPerformanceForReviewer } = await import("./performance-scan.ts");
+    performanceLeads = formatPerformanceForReviewer(scanBuildDirForPerformance(buildDirFor(projectId)));
+  } catch (err) {
+    console.error(`[stage5] performance scan skipped: ${String(err).slice(0, 160)}`);
+  }
+  const deepikaContext = [systemContext, performanceLeads].filter(Boolean).join("\n\n") || undefined;
+  const deepikaPromise = agents.runDeepika(projectId, stage4Result, deepikaContext, changedFiles, previousFindings?.deepika);
   const [navyaResult, karanResult, deepikaResult] = await Promise.all([
     navyaPromise,
     karanPromise,

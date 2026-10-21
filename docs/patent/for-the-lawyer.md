@@ -19,6 +19,9 @@ Prepared 21 October 2026 from the software itself; updated the same day after th
 | Running code in a locked, throwaway container: separate process and network space, limits on processor, memory and number of processes, a list of allowed system calls, no network, removed after the run | 1, 2, 5 |
 | Repeating fix and check until progress stops | 1, 2, 6 |
 | A memory of past mistakes that changes later prompts, with a statistical test (across projects, against the background rate, corrected for testing many patterns, minimum evidence) deciding which patterns are put first. Weak while there are few projects | 7 |
+| A stored database of security patterns (20 code patterns tied to OWASP categories and CWE numbers; 20 package advisories with CVE ids and version ranges; import of the public OSV format), applied to the generated code and its packages and given to the security reviewer | 8 |
+| Following untrusted request data through the code to dangerous calls (SQL, shell, eval, file paths, fetched URLs, redirects, HTML sent back), with the path shown. Checked on 73 real apps; a planted flaw in a real controller was found | 8 |
+| Estimating how running time grows with data (Big-O) from the code, listing database or network calls made once per item, finding the code patterns that leak memory, and comparing each QA round with the previous one for regressions | 9 |
 | A detailed map of the code passed on with the work: for each file its structure, what it imports and exports, what depends on what, import cycles, the rules from the plan, and errors found in the code; hashed and checked like the rest of the handoff. Built for the handoff before deployment only; the receiving step does not yet use it to make decisions | 1, 3 |
 | A map linking each requirement to the tasks and files that implement it, and each file back to the requirements it serves, with the reason for each link; lists requirements with no code and files with no requirement. Links are made by matching words, so some are wrong or missing (on 8 real projects: 38 of 39 requirements and 307 of 479 files linked) | 3 |
 | Giving each task to the agent whose skills fit it best: each of the three builder agents has a profile, and a task moves only on strong evidence (its files sit wholly in another agent's folder) | 1 |
@@ -32,8 +35,8 @@ Prepared 21 October 2026 from the software itself; updated the same day after th
 |---|---|---|
 | Checking agents "trained" to find as many errors as possible | They are given instructions. They are not trained. | 1, 2 |
 | Locked container | Disk-speed limit now built. Remapping of user identities is a setting of the container engine on the server: instructions written, not switched on, not tried on a Linux server. The time limit is enforced inside the container by a kernel timer, not a hardware timer. On by default on Linux, off on the development PC | 1, 2, 5 |
-| Security checking agent | It has a list of common attack types as text and a feed of public vulnerability reports, but no stored pattern database | 8 |
-| Performance checking agent | Its instructions mention speed and memory problems, but it does not analyse anything | 9 |
+| Security checking agent: sending attack inputs to the running app | Not built | 8 |
+| Performance checking agent: measuring memory and route times of a running app | The measuring code is built and tested on real servers, but the build pipeline does not run it automatically yet | 9 |
 | Maximum number of rounds | Limited by counters and software timers, not hardware interrupts | 6 |
 
 ## Not done
@@ -41,8 +44,6 @@ Prepared 21 October 2026 from the software itself; updated the same day after th
 | What the filing describes | Claim |
 |---|---|
 | Training the checking agents against the code-writing agents, with a stored list of missed defects and a ramp from easy to hard cases | 4 |
-| A security test that follows untrusted input through the code, and sends attack inputs to the running app | 8 |
-| Estimating how slow code gets as data grows, finding memory leaks, and comparing speed between rounds | 9 |
 
 ## Work done after the filing
 

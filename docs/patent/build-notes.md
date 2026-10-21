@@ -121,3 +121,79 @@ Rule for every entry: the proof is something that was run (a test, a real databa
 **Not done:** it has NOT been applied to the real projects; that needs your go-ahead on the target account.
 
 To run it for real: `bun scripts/consolidate-projects.ts --to amit@yugnex.com --apply --confirm amit@yugnex.com`
+
+---
+
+## Batch 2
+
+### F5. Security pattern database (claim 8)
+
+**Gap:** the security checker had a list of attack types as text in its instructions and no stored pattern database.
+
+**Built**
+- `packages/agent-runtime/src/security/pattern-scan.ts`: 20 code patterns, each with its OWASP Top 10 (2021) category, CWE number, severity, regular expression and the usual fix (SQL built from text, shell commands built from variables, eval, weak hashes, low bcrypt cost, predictable tokens, secret fallbacks and hard-coded secrets, raw HTML, request-controlled file paths, URLs and redirects, open cross-origin access, disabled certificate checks, unsigned tokens, and more). A scanner applies them line by line; comments, tests, vendored library code and test scripts are skipped; a line can opt out with `nexsidi-allow <key>`.
+- Package advisories: 20 hand-entered CVE entries (lodash, minimist, express, jsonwebtoken, axios, next, and others) with affected version ranges and the fixed version, a version-range checker, a reader for package.json that prefers the installed version from `node_modules` over the written range, and `importOsv`, which turns an entry in the public OSV format into advisories.
+- Storage: tables `security_patterns` and `security_advisories` (migration 0013), `packages/db/src/security-store.ts`, and `scripts/seed-security-db.ts` (seeds the built-in lists; `--osv GHSA-...` imports live entries from osv.dev). The scan reads the database first and falls back to the built-in lists.
+- `pipeline/orchestrator/stages/security-scan.ts` runs it over a project and builds a short list of leads, worst first and capped. Stage 5 now adds those leads to the security reviewer's input, labelled as leads to confirm. A failed scan leaves the input unchanged.
+
+**Proof**
+- 22 unit tests, 5 for the project wrapper; 556 pipeline tests and the type checks pass.
+- Run over 80 real generated apps (4,573 source files) it found real problems in earlier builds: 57 secrets that fall back to a default value, and apps pinned to Next 15.1 and Express 4.18, versions with published flaws. It also showed noise, which was fixed and covered by tests: about 1,000 hits in the vendored UI library, a parameterised query reported as built SQL, and test scripts.
+- Checked against the live public database (osv.dev): 5 of my 6 sample advisories were confirmed. One was not: jsonwebtoken is listed there under CVE-2022-23539, -23540 and -23541, not the id I had entered. The ids were corrected and a test pins them. A live GHSA entry was imported through `importOsv`.
+- Seeded on the real database (20 patterns, 21 advisories; a second run added nothing). With the real database, the older app showed its two default-secret lines and the clean app showed nothing.
+
+**Does not do / limits**
+- Patterns are regular expressions on single lines. They find what looks risky; they do not follow data (that is the taint analysis, F6). Some hits will be harmless, so they are given to the reviewer as leads, not as findings.
+- The advisory list is small and hand-entered, plus whatever is imported. There is no scheduled feed: the "Neha" feed that the notes mention is a stub. Importing from osv.dev is manual (`--osv`).
+- Not gated: a hit does not fail QA by itself.
+- Only npm packages are covered.
+
+**Batch:** 2
+
+### F6. Taint analysis (claim 8)
+
+**Gap:** nothing followed untrusted data through the code. Injection was only a word in the generators' instructions and in the reviewer's.
+
+**Built** (`packages/agent-runtime/src/security/taint.ts`, using the TypeScript parser)
+- Data from the request (`req`/`request` body, query, params, headers, cookies, url, and what a route handler reads: `request.json()`, `request.nextUrl.searchParams`) is followed through assignments, destructuring, template strings, string joins, object and array literals, method calls on it, and calls to functions defined in the same file (what a function is given, and what it returns; repeated until nothing new is learned).
+- Reported where it reaches: SQL text (HIGH), a shell command (CRITICAL), `eval` or `new Function` (CRITICAL), a file path (HIGH), a URL the server fetches (HIGH), a redirect (MEDIUM), HTML sent back (MEDIUM). Each finding gives the source and its line, the sink and its line, and the variables in between.
+- Cleaned by: number conversion, schema checks (`parse`, `safeParse`, `validate*`), escaping calls, `path.basename`, a safe value assigned over it, a check against an allowed list (inside the branch, or after an early exit when the value is not in the list; a list taken from the request does not count), and a query parameter (the SQL text alone is checked). Request data in the path or query of a URL on a server-chosen host is not reported as request forgery.
+- Wired in: `pipeline/orchestrator/stages/security-scan.ts` runs it over server code and adds the traced paths to the leads given to the security reviewer, ahead of plain pattern hits.
+
+**Proof**
+- 23 unit tests. Run over the server code of 73 real generated apps (877 files, half a second): the first version reported 3 issues; reading the code showed all 3 were false (a sort direction checked against an allowed list, a query string added to a fixed API address). Both rules were added with tests; after that the real apps give 0 findings.
+- To show it still finds things on real code: a real generated controller was copied and one line changed so the sort direction is used without the allowed-list check. The analysis reported it with the exact path: from `req.query.sortOrder` through `sortOrder → orderDir → selectQuery` to `pool.query()` at line 118. The unchanged controller gave 0 findings.
+
+**Does not do / limits**
+- One file at a time; calls into other files, class methods and `this.` calls are not followed. Loops are walked once. The request object is recognised only under the names `req` and `request` (Hono's `c.req` is not).
+- Cleaning is recognised by name (`sanitize*`, `escape*`, `validate*`, `parse`), so a function with such a name that does not really clean will hide a flaw, and a real cleaning function with another name will give a false report.
+- No taint from the database or other services (stored data read back and used unsafely) and none in browser code.
+- Findings are leads for the reviewer; they do not fail QA by themselves.
+
+**Batch:** 2
+
+### F7. Performance analysis: Big-O, memory leaks, regressions (claim 9)
+
+**Gap:** the performance checker's instructions mention slow queries and memory problems, but nothing analysed code, measured memory or compared one round with the next.
+
+**Built** (`packages/agent-runtime/src/performance/`)
+- `complexity.ts`, growth estimate from the code (TypeScript parser): nested loops and array methods that take a function (map, filter, some, reduce, find ...) add a level; a sort is n log n at its level; a linear search (`includes`, `indexOf`) inside a loop adds a level; loops with a small fixed bound or over a list written out in the function do not count. Result per function: O(1), O(n), O(n log n), O(n²), O(n² log n), O(n³) or O(2^n) (two self-calls with no cache), with the reasons and lines. A database or network call made inside a loop or an array callback is listed on its own (one round trip per item, the "N+1" pattern). Route handlers are named by method and path. Capitalised functions in `.tsx` files are labelled page components.
+- `leaks.ts`, two ways to find leaks. (1) Code patterns: a list, map or set at the top of the file that functions add to and nothing trims; a listener added to a long-lived object on every request; a timer started on every call; a new connection pool or client inside a request handler; a connection taken from a pool and never released. (2) Measuring: `runLeakProbe` calls given routes with GET only, reading memory after every round, and `detectGrowth` fits a straight line (first quarter of readings ignored as warm-up) and reports a leak only if memory climbs steadily with the request count. A rise that is collected again, or a flat line with noise, is not reported.
+- `regression.ts`, comparison with the previous round: a function whose estimate went up, a new quadratic function or per-item call, a new leak pattern, a route whose 95th-percentile time rose by 25% and 50 ms, memory that began to climb. Functions are known by file and name, so moving code is not a change. Snapshots are kept in `<project>/.nexsidi/perf-history.json` (written whole, then moved into place).
+- `pipeline/orchestrator/stages/performance-scan.ts` runs all this over a project and Stage 5 now gives the result to the performance reviewer as leads (regressions first, then leaks, then server functions, then page components), and records the round.
+
+**Proof**
+- 39 unit tests in the performance folder, 5 for the wrapper; 671 pipeline tests and the type checks pass.
+- On 2,707 real functions in 73 real apps it took about 1 second. The first run flagged a seed loop over five fixed rows as a query per item, which is not one; fixed with a test (loops over lists written out in the function are bounded).
+- Code patterns on 871 real backend files found 3 maps that grow forever and are never trimmed: a rate-limit map keyed by caller, a user cache, a metrics store.
+- Measured on two real running servers (started for the test): the one that keeps every request's data showed memory rising 18.8 MB per 1000 requests (fit 0.99; 4.0 to 34.1 MB over 2,000 requests) and was reported as a leak; the one that does not stayed at 0.3 MB and was not.
+- On real apps, the performance leads for the older app showed the rate-limit map; the clean app produced nothing.
+
+**Does not do / limits**
+- The estimate reads the structure; it cannot know how large n is or what a called function costs. Page components often nest lists over short lists, so they are listed last and labelled.
+- The leak probe and the route timings are NOT run automatically by the pipeline yet: they need a running app and a way to read its memory (a container's memory, or a number the app reports). The code is tested on real servers, but it is not part of a build. Regressions in route timing and memory therefore only appear when a caller supplies those snapshots.
+- Leak patterns are per file and by name; a map trimmed in another file will still be reported.
+- A leak that comes from a library, or from data kept in the database, is not seen.
+- Leads, not findings: nothing here fails QA by itself.
+
+**Batch:** 2
