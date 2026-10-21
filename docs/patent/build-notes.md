@@ -100,3 +100,24 @@ Rule for every entry: the proof is something that was run (a test, a real databa
 - The one requirement not traced in the real projects is a test project with no tasks.
 
 **Batch:** 1 (F1 to F4)
+
+---
+
+## Other work (not a patent item)
+
+### Move older projects under one account
+
+**Need:** older projects belong to different accounts (amit@yugnex.com, amitsharma.tb0001@gmail.com, a test account), so they do not all show in one place.
+
+**Built:** `scripts/consolidate-projects.ts` (database access in `packages/db/src/project-store.ts`).
+- Ownership is one column, `projects.user_id`; everything else (build folders, lineage, costs, chain records) is keyed by project id, so changing that one column moves a project completely.
+- Dry run by default: lists the target, how many are already there, and every project to move with its current owner and status.
+- `--apply` also needs `--confirm <target email>` typed again. The old owner of every project is written to a backup file first (in `~/.local/share/nexsidi-consolidation/`); if the backup cannot be written, nothing moves. The move is one database transaction and the count is checked afterwards.
+- `--undo <backup file>` puts each project back with its old owner and leaves alone any that has been changed since.
+- `--from a@x,b@y` limits the move to named owners. An unknown or ambiguous email stops the run instead of guessing.
+
+**Proof:** 10 unit tests. On the real database the dry run showed 30 projects already on amit@yugnex.com and 10 to move (9 from amitsharma.tb0001@gmail.com, 1 from a test account). A real apply and undo cycle ran on two throwaway accounts and one throwaway project: refused without `--confirm`, refused with a wrong one, moved with the right one, undone from the backup, all throwaway rows deleted afterwards. No real project was changed.
+
+**Not done:** it has NOT been applied to the real projects; that needs your go-ahead on the target account.
+
+To run it for real: `bun scripts/consolidate-projects.ts --to amit@yugnex.com --apply --confirm amit@yugnex.com`
