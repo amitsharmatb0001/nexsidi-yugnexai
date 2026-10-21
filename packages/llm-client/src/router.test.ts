@@ -105,9 +105,9 @@ test("poolForTier: a2a uses the cheap flash-lite pool, same tier as user", () =>
 // regardless of role — a second instance of the exact same bug already
 // fixed once in agents/planner/src/index.ts, this time in the code path
 // Arjun (Temporal-driven decomposition) actually runs through.
-test("pipelineTierFor: saanvi and arjun (decide WHAT gets built) get the pro-tier plan pool", () => {
-  expect(pipelineTierFor("saanvi")).toBe("plan");
-  expect(pipelineTierFor("arjun")).toBe("plan");
+test("pipelineTierFor: saanvi and arjun (decide WHAT gets built) get the critical pool (argon first, then the pro-tier models)", () => {
+  expect(pipelineTierFor("saanvi")).toBe("critical");
+  expect(pipelineTierFor("arjun")).toBe("critical");
 });
 
 test("pipelineTierFor: pranav and riya (execute an already-made decision) stay on generation", () => {

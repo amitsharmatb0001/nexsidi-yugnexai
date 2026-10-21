@@ -43,4 +43,5 @@ test("each verdict she records is matched to its dispute; unsettled ones are lef
   expect(config.readOnly).toBe(true);
   expect(config.enableDisputeSettling).toBe(true);
   expect(config.extendStepsWhileProgressing).toBe(true);
+  expect(config.geminiTier).toBe("critical");
 });

@@ -55,6 +55,8 @@ export async function settleDisputes(
     deps.run({
       agentName: "tilotma-dispute-settler",
       model: SETTLER_MODEL,
+      // 2026-10-21: settling a disagreement between a reviewer and a builder needs the strongest reasoning available.
+      geminiTier: "critical",
       apiKey: process.env.NIM_API_KEY ?? "",
       systemPrompt: SETTLER_PROMPT,
       initialMessage: buildSettleTask(disputes, opts),

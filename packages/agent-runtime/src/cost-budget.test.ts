@@ -228,3 +228,14 @@ test("NIM and Ollama models are priced, at zero", () => {
 test("an unknown model is still charged at the safe (highest) fallback rate", () => {
   expect(computeCostUsd(1_000_000, 0, "some/new-model")).toBe(5);
 });
+
+// gemini-4-argon: general release 2026-10-13. The price comes from third-party pages (the model card gives none): $2/$10 per
+// million tokens introductory, $4/$20 after 2026-12-01, cached input 95% off. The standard rate is used throughout, so the
+// budget over-counts until the introductory period ends rather than under-counting.
+test("gemini-4-argon is priced at the standard rate, with the cache discount, and is never billed at the fallback rate", () => {
+  expect(isPricedModel("gemini-4-argon")).toBe(true);
+  const r = rateForModel("gemini-4-argon");
+  expect(r).toEqual({ inputPerMillion: 4, outputPerMillion: 20, cachedInputPerMillion: 0.2 });
+  expect(computeCostUsd(1_000_000, 100_000, "gemini-4-argon")).toBeCloseTo(4 + 2, 6);
+  expect(computeCostUsd(1_000_000, 0, "gemini-4-argon", 1_000_000)).toBeCloseTo(0.2, 6);
+});

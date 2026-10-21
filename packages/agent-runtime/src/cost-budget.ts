@@ -25,6 +25,7 @@ export interface ModelRate {
 }
 
 export type PricedModel =
+  | "gemini-4-argon"
   | "gemini-3.1-pro-preview"
   | "gemini-3.5-flash"
   | "gemini-3.6-flash"
@@ -64,7 +65,11 @@ const FLASH_3X_STANDARD: ModelRate = { inputPerMillion: 1.5, outputPerMillion: 7
 const FLASH_3X_INTRO: ModelRate = { inputPerMillion: 0.75, outputPerMillion: 3.75, cachedInputPerMillion: 0.075 };
 const FLASH_3X_INTRO_ENDS = Date.parse("2027-01-01T00:00:00Z");
 
+// 2026-10-21: gemini-4-argon. The model card gives no price; third-party pages report $2/$10 per million tokens introductory and
+// $4/$20 from 2026-12-01, cached input 95% off. NOT verified against Google. The standard rate is used from the start, so the
+// budget counts about twice the real cost until the introductory period ends instead of under-counting.
 const PRICING: Record<PricedModel, ModelRate> = {
+  "gemini-4-argon": { inputPerMillion: 4.0, outputPerMillion: 20.0, cachedInputPerMillion: 0.2 },
   "gemini-3.1-pro-preview": { inputPerMillion: 2.0, outputPerMillion: 12.0, cachedInputPerMillion: 0.2 },
   "gemini-3.5-flash": { inputPerMillion: 1.5, outputPerMillion: 9.0, cachedInputPerMillion: 0.15 },
   "gemini-3.6-flash": FLASH_3X_STANDARD,

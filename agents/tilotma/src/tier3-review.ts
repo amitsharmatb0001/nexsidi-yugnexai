@@ -226,6 +226,9 @@ export async function runTier3Review(
     runAgentEscalated({
       agentName: "tilotma-reality-checker",
       model: REALITY_CHECKER_MODEL,
+      // 2026-10-21: the final verdict on whether the app is ready is the hardest judgement in the pipeline, so it runs on the
+      // critical tier (gemini-4-argon first, the proven models behind it). The evidence collector above stays on the generation pool.
+      geminiTier: "critical",
       apiKey,
       systemPrompt: REALITY_CHECKER_PROMPT,
       initialMessage: buildRealityCheckerTask(projectId, appUrl, backendUrl, screenshotDir, stage1Findings),

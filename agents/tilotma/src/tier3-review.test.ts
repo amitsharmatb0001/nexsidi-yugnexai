@@ -223,3 +223,12 @@ test("Tilotma's reviewers work from the whole project folder, not only the front
   const source = readFileSync(new URL("./tier3-review.ts", import.meta.url), "utf-8");
   expect(source).not.toContain("sandboxDir: frontendOutputDir");
 });
+
+// 2026-10-21: only the final verdict runs on the critical tier (gemini-4-argon first); gathering evidence in the browser does not.
+test("the reality checker runs on the critical tier and the evidence collector does not", () => {
+  const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "tier3-review.ts"), "utf-8");
+  const checker = source.slice(source.indexOf('agentName: "tilotma-reality-checker"'));
+  expect(checker.slice(0, 900)).toContain('geminiTier: "critical"');
+  const collector = source.slice(source.indexOf('agentName: "tilotma-evidence-collector"'), source.indexOf('agentName: "tilotma-reality-checker"'));
+  expect(collector).not.toContain("critical");
+});

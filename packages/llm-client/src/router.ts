@@ -44,7 +44,8 @@ export function shouldUseGeminiForPipeline(agentName: AgentName): boolean {
 // Riya execute a decision already made (migrations, deploy config) — so
 // only the first two move to the pro-tier "plan" pool.
 export function pipelineTierFor(agentName: AgentName): GeminiTier {
-  return agentName === "saanvi" || agentName === "arjun" ? "plan" : "generation";
+  // 2026-10-21: the plan that decides what gets built is the hardest reasoning in the pipeline and everything after depends on it.
+  return agentName === "saanvi" || agentName === "arjun" ? "critical" : "generation";
 }
 
 // OLLAMA_ENABLED defaults to true locally; set to false on servers without a GPU.
@@ -152,7 +153,7 @@ export async function agentChat(
 // On ANY failure (429, network error, etc.) → immediately try next model in
 // pool with NO sleep/backoff. NIM is not involved.
 
-export type GeminiTier = "plan" | "design" | "qa" | "generation" | "a2a" | "user";
+export type GeminiTier = "plan" | "design" | "qa" | "generation" | "a2a" | "user" | "critical";
 
 // 2026-08-09: real gap found live, TWICE (project meridianbk1, meridianbk2)
 // — "design" was the ONLY tier missing gemini-3.5-flash as a fallback.
@@ -183,7 +184,17 @@ export type GeminiTier = "plan" | "design" | "qa" | "generation" | "a2a" | "user
 // 3.6-flash's earlier regional gap. Every model listed here MUST also be in
 // cost-budget.ts's PRICING (enforced by cost-budget.test.ts) — 3.7-flash
 // wasn't, and was billed at the Opus fallback rate for six weeks.
+// 2026-10-21: gemini-4-argon (general release 2026-10-13; 1M tokens in and out; text output; model card at gemini-4-argon.md) leads a
+// new "critical" tier, used only for the hardest reasoning work: the plan that decides what gets built (Saanvi, Arjun), the final
+// reality check, and settling disputes between a reviewer and a builder. Behind it sit the models already proven in this pool, in the
+// same order as the "plan" tier, so an argon that is unavailable, over quota, or fails answers by moving straight to the next one.
+// Not yet run live: the Google projects configured here had billing disabled on 2026-10-21, so the model has not been called from
+// this code. GEMINI_CRITICAL_ARGON=off removes it from the pool without a code change; scripts/probe-gemini-model.ts checks it first.
+const CRITICAL_FALLBACKS = ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"];
+const ARGON = "gemini-4-argon";
+
 const TIER_POOLS: Record<GeminiTier, string[]> = {
+  critical:   [ARGON, ...CRITICAL_FALLBACKS],
   plan:       ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
   design:     ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
   qa:         ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
@@ -193,6 +204,7 @@ const TIER_POOLS: Record<GeminiTier, string[]> = {
 };
 
 const TIER_THINKING_LEVEL: Record<GeminiTier, GeminiThinkingLevel> = {
+  critical:   "HIGH",
   plan:       "HIGH",
   design:     "HIGH",
   qa:         "HIGH",
@@ -209,7 +221,10 @@ const TIER_THINKING_LEVEL: Record<GeminiTier, GeminiThinkingLevel> = {
 // one model — no fallback — preserving today's override semantics; leaving
 // it unset uses the full tier pool with zero-wait fallback.
 export function poolForTier(tier: GeminiTier, explicitModel?: string): string[] {
-  return explicitModel ? [explicitModel] : TIER_POOLS[tier];
+  if (explicitModel) return [explicitModel];
+  const pool = TIER_POOLS[tier];
+  // The switch is read on every call, so it can be changed without a restart of the code that calls this.
+  return process.env.GEMINI_CRITICAL_ARGON === "off" ? pool.filter((m) => m !== ARGON) : pool;
 }
 
 /** Every model any tier pool can pick, once each — what the spend table must price. */
@@ -241,7 +256,7 @@ function stringHash(s: string): number {
 }
 
 export function rotatedPoolForAgent(tier: GeminiTier, agentName: string): string[] {
-  const pool = TIER_POOLS[tier];
+  const pool = poolForTier(tier);
   if (pool.length <= 2) return pool; // nothing to rotate among
 
   const [primary, ...fallbacks] = pool;
