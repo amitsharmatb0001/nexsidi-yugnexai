@@ -223,3 +223,28 @@ To run it for real: `bun scripts/consolidate-projects.ts --to amit@yugnex.com --
 - At most one planted defect per file per round, and the set of defects is small. It will not cover a checker's real blind spots.
 
 **Batch:** 3
+
+### Added: gemini-4-argon for the hardest reasoning work
+
+**Need:** use the new model (model card `gemini-4-argon.md`: general release 2026-10-13, 1M tokens in and out, text output) for the toughest, most reasoning-heavy and most critical work, without putting the rest of the pipeline at risk.
+
+**Built**
+- A new model tier, "critical" (`packages/llm-client/src/router.ts`): `gemini-4-argon` first, then the models already proven in this pool in the same order as the plan tier (3.1 Pro, 3.8, 3.7, 3.6, 3.5 Flash). If argon is unavailable, over quota or errors, the pool moves to the next model at once. Thinking level HIGH. No other tier uses argon. `GEMINI_CRITICAL_ARGON=off` removes it without a code change.
+- Used for: Saanvi and Arjun (the plan that decides what gets built, which everything after depends on), the reality checker's final verdict (`tilotma-reality-checker`), and the dispute settler. NOT used for the browser evidence collector, the builders, or the quality reviewers, which stay on their pools (cost: argon is about twice the price of 3.1 Pro).
+- Spend table: priced at $4 in / $20 out per million tokens, cached input $0.20, in `cost-budget.ts`, so the budget guard counts it correctly (a test requires every model in every pool to be priced).
+- `scripts/probe-gemini-model.ts`: five checks to run before relying on any Gemini model (plain answer, strict JSON, tool call, a conversation ending on a model turn, thinking level HIGH).
+
+**Proof:** 8 new router tests, 1 new price test, and the existing suites updated where they asserted the old planner tier; all suites and type checks pass.
+
+**NOT proven, and why**
+- The model has not been called from this code. On 2026-10-21 billing is disabled on every Google Cloud project configured here (`ai-nex`, `aiayug`, `nexai-asst`; the `ai-yug` key no longer exists). Every Gemini model fails the same way, including the ones the pipeline already uses. Run `bun scripts/probe-gemini-model.ts` once billing is on.
+- The price comes from third-party pages, not Google: they report $2/$10 introductory (through about 2026-11-30) and $4/$20 from 2026-12-01, with cached input 95% off. The standard rate is used from the start, so the budget over-counts by about half until then. One page also says access is a restricted preview; the model card says general release. Verify both.
+- The model's own API changes ("developers guide" link in the model card) have not been read; if thinking or tool-call parameters differ, the probe will show it.
+
+### Added: end-to-end smoke test of the running platform
+
+`scripts/e2e-smoke.ts`: signs up two throwaway accounts on localhost and checks 40 things a person depends on (sign-up, sign-in, session cookie flags, projects create/read/rename/transfer/delete, one account cannot see or change another's project, clean errors on bad input, the web pages, no internal agent names on the public page). It never calls a model. Run on 2026-10-21 against the real API and web app: 39 passed, 0 failed, plus one known gap below. The throwaway accounts and their projects were removed afterwards; the 40 real projects were checked unchanged.
+
+**Finding (known gap, a product decision):** the file tree, file contents, build plan and pipeline status routes are public so the build page works before sign-in, and approve-spec and approve-deploy are public too (`apps/api/src/app.ts`). The 12-character project id is the only key, so any caller with an id (a shared link, for example) can read that project's generated files, and can approve its deploy. The smoke test prints this on every run. Not changed: removing it would affect the anonymous build page. Options: require a signed-in owner on those routes, or give each project a separate long random key in the link.
+
+**Also noted:** a per-project transfer route already exists (`POST /api/projects/:id/transfer`, owner only, one at a time); `scripts/consolidate-projects.ts` is the bulk version.
