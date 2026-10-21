@@ -197,3 +197,29 @@ To run it for real: `bun scripts/consolidate-projects.ts --to amit@yugnex.com --
 - Leads, not findings: nothing here fails QA by itself.
 
 **Batch:** 2
+
+### F8. Adversarial training of the checkers: example database, curriculum, scoring (claim 4)
+
+**Gap:** the checking agents were given instructions only. Nothing planted known defects to see whether they were found, nothing kept the defects they missed, and nothing raised the difficulty as they improved.
+
+**Built** (`packages/agent-runtime/src/training/`)
+- `mutations.ts`, the defect planter: 11 defects at five levels, put into a copy of real code (the text is returned; no file is changed). Level 1 obvious (eval of text, a password in the code); level 2 one line (SQL built from text, MD5 instead of SHA-256); level 3 logic (the sign-in check removed from a route, a loop one past the end, a caught error swallowed); level 4 structure (a list that grows on every request, the request body used without its schema check); level 5 subtle (the owner filter dropped from a query, the role read from the request body). Every planted change is still valid code, is recorded with its line, and gets a stable id.
+- `trainer.ts`, one training round: plants at most one defect per file, runs the checker on the changed copies and on the originals, and counts a defect as caught only if the checker reported something new, within 3 lines of the planted line or in the words for that defect. The baseline run means old complaints are not credited. It also reports new findings that match no planted defect (real finds or false alarms).
+- `curriculum.ts`: starts at level 1; over the last two rounds at a level, 80% or more caught moves up, under 40% moves down, anything between stays.
+- The adversarial example database (`adversarial_examples`, `training_rounds`, migration 0014, `packages/db/src/training-store.ts`): every planted defect per checker with how many times it was caught or missed, and every round with its counts.
+- Feedback: `pipeline/orchestrator/stages/training-feedback.ts`; Stage 5 adds "defects that reviewers like you have missed before", with the example code, to the input of each of the three reviewers. Nothing is added when there is nothing missed or no database.
+- `scripts/train-checkers.ts`: runs rounds on real generated apps and records them. The built-in static checker (pattern scan, taint analysis, leak and growth checks) is free. Running a model-backed reviewer needs `--allow-model-spend`; without it the script stops.
+
+**Proof**
+- 20 unit tests for the planter, curriculum, judging, store and prompt text; 3 for the feedback; 674 pipeline tests and the type checks pass.
+- Real run on 83 real generated server files from 8 apps, written to the real database: level 1, 100% caught (12 of 12, twice); level 2, 100% (7 of 7, twice); level 3, 0% (12 planted, none caught); the curriculum moved up twice and then back down as designed. The database holds 6 rounds and 52 examples for the static checker, and the text a reviewer would be told was read back from it.
+- The loop found a real gap in my own scanner: before the fix only 80% of level 2 defects were caught (32 of 40), because a query call and its text on different lines were not recognised. After adding the two-line check and the backtick form, level 2 reached 100% (40 of 40), and the unchanged real code gave the same hits as before, so no new noise.
+- The static checker catching nothing at level 3 is expected: a missing sign-in check or a swallowed error cannot be seen by patterns. That is the work the review agents are for, and those missed examples are exactly what is stored for them.
+
+**Does not do / limits**
+- No model weights are trained. This is an adversarial loop with a store of the opponent's successes, a difficulty ramp and feedback into the prompt. Whether that is what "GAN-based training, generator/discriminator dynamics" in the filing means is for the lawyer. In particular, the defect planter is not a learned generator: it is a fixed set of 11 rules, so it cannot get better at fooling the checkers.
+- Only the static checker has been run through the loop. The three model-backed reviewers have an adapter (`--checker karan|navya|deepika`) but have NOT been trained or measured yet, because each round spends model money. Their prompts get missed examples only after such rounds are run.
+- Judging is by place and words, so a checker that reports something loosely near a planted line is credited; the 3-line window keeps that small.
+- At most one planted defect per file per round, and the set of defects is small. It will not cover a checker's real blind spots.
+
+**Batch:** 3

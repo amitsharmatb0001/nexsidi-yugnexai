@@ -212,7 +212,12 @@ export async function runStage5WithAgents(
   const deadButtonFindings = scanProjectForDeadButtons(projectId);
 
   const systemContext = plan ? buildSystemContext(plan) : undefined;
-  const navyaPromise = agents.runNavya(projectId, stage4Result, systemContext, changedFiles, previousFindings?.navya);
+  // Patent claim 4: what each reviewer missed in training rounds (defects planted in real code and not reported) is added to its
+  // next review. Never fatal: with no examples or no database the input is unchanged.
+  const { missedExamplesFor } = await import("./training-feedback.ts");
+  const [navyaMissed, karanMissed, deepikaMissed] = await Promise.all([missedExamplesFor("navya"), missedExamplesFor("karan"), missedExamplesFor("deepika")]);
+  const navyaContext = [systemContext, navyaMissed].filter(Boolean).join("\n\n") || undefined;
+  const navyaPromise = agents.runNavya(projectId, stage4Result, navyaContext, changedFiles, previousFindings?.navya);
   await sleep(staggerMs);
   // Patent claim 8: the security pattern database is run over the code first, and what it finds goes to Karan as leads to confirm.
   // Never fatal: a failed scan leaves Karan's input exactly as it was.
@@ -223,7 +228,7 @@ export async function runStage5WithAgents(
   } catch (err) {
     console.error(`[stage5] security pattern scan skipped: ${String(err).slice(0, 160)}`);
   }
-  const karanContext = [systemContext, securityLeads].filter(Boolean).join("\n\n") || undefined;
+  const karanContext = [systemContext, securityLeads, karanMissed].filter(Boolean).join("\n\n") || undefined;
   const karanPromise = agents.runKaran(projectId, stage4Result, karanContext, changedFiles, previousFindings?.karan);
   await sleep(staggerMs);
   // Patent claim 9: growth estimates, leak patterns and what got worse since the last round go to Deepika as leads to confirm.
@@ -235,7 +240,7 @@ export async function runStage5WithAgents(
   } catch (err) {
     console.error(`[stage5] performance scan skipped: ${String(err).slice(0, 160)}`);
   }
-  const deepikaContext = [systemContext, performanceLeads].filter(Boolean).join("\n\n") || undefined;
+  const deepikaContext = [systemContext, performanceLeads, deepikaMissed].filter(Boolean).join("\n\n") || undefined;
   const deepikaPromise = agents.runDeepika(projectId, stage4Result, deepikaContext, changedFiles, previousFindings?.deepika);
   const [navyaResult, karanResult, deepikaResult] = await Promise.all([
     navyaPromise,

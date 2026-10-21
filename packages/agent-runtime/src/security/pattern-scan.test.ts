@@ -161,3 +161,18 @@ test("the jsonwebtoken advisories carry the ids the public database uses", () =>
   const ids = SEED_ADVISORIES.filter((a) => a.package === "jsonwebtoken").map((a) => a.id).sort();
   expect(ids).toEqual(["CVE-2022-23539", "CVE-2022-23540", "CVE-2022-23541"]);
 });
+
+// Found by planting SQL defects in 105 real files (training run): 8 of 40 were missed because the call and its text were on different lines.
+test("a query whose text starts on the next line is still found, and reported on the line where the text is", () => {
+  const code = "const result = await pool.query(\n  `SELECT id FROM users WHERE id = ` + req.userId\n);\n";
+  const h = scanSource("a.ts", code, SEED_PATTERNS).filter((x) => x.key === "sql-string-built");
+  expect(h.length).toBe(1);
+  expect(h[0]!.line).toBe(1);
+  const safe = "const result = await pool.query(\n  `SELECT id FROM users WHERE id = $1`,\n  [id]\n);\n";
+  expect(scanSource("a.ts", safe, SEED_PATTERNS).filter((x) => x.key === "sql-string-built")).toEqual([]);
+});
+
+test("a line that matches on its own is reported once, not again by the two-line check", () => {
+  const code = 'await db.query("SELECT * FROM t WHERE id = " + id);\nconst x = 1;\n';
+  expect(scanSource("a.ts", code, SEED_PATTERNS).filter((x) => x.key === "sql-string-built").length).toBe(1);
+});

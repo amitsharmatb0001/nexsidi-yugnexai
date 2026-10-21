@@ -218,6 +218,32 @@ export const securityAdvisories = pgTable("security_advisories", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({ columns: [t.id, t.package, t.range] }), index("security_advisories_package_idx").on(t.package)]);
 
+// Patent claim 4: the adversarial example database (defects planted in test code and whether each checker caught them) and the
+// history of training rounds. See packages/agent-runtime/src/training/.
+export const adversarialExamples = pgTable("adversarial_examples", {
+  checker:     text("checker").notNull(),
+  id:          text("id").notNull(),
+  operator:    text("operator").notNull(),
+  level:       integer("level").notNull(),
+  file:        text("file").notNull(),
+  description: text("description").notNull(),
+  beforeText:  text("before_text").notNull().default(""),
+  afterText:   text("after_text").notNull().default(""),
+  hint:        text("hint").notNull(),
+  caught:      integer("caught").notNull().default(0),
+  missed:      integer("missed").notNull().default(0),
+  updatedAt:   timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.checker, t.id] })]);
+
+export const trainingRounds = pgTable("training_rounds", {
+  id:      uuid("id").primaryKey().defaultRandom(),
+  checker: text("checker").notNull(),
+  level:   integer("level").notNull(),
+  planted: integer("planted").notNull(),
+  caught:  integer("caught").notNull(),
+  ranAt:   timestamp("ran_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ─── Agent Conversations (Persistent State across Fix Iterations) ────────────
 export const agentConversations = pgTable("agent_conversations", {
   id:         uuid("id").primaryKey().defaultRandom(),

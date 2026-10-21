@@ -74,7 +74,7 @@ Nothing here changes the filed paper.
 | ~~Code map in handoffs~~ | Built (build-notes F3) | done |
 | ~~Requirement-to-code map~~ | Built (build-notes F4); links to findings not built | done |
 | ~~All-or-nothing handoffs~~ | Built (section 10) | done |
-| Training the checking agents | Software version: score each checker by confirmed defects found, keep a store of missed defects that comes back as test cases, and raise the difficulty round by round. Real model training would need data, hardware and weeks, with an uncertain result | 5 to 7 days for the software version |
+| ~~Training the checking agents~~ | Software version built (build-notes F8); real model training not built and not planned | done (software form) |
 | ~~New approach when stuck~~ | Built (section 10); automatic in the repair of newly built apps only | done |
 | ~~Taint analysis~~ | Built (build-notes F6) | done |
 | Attack-input tester | Send standard attack inputs (database injection, script injection, path tricks) to every route of the running app with a test account and judge the answers | 3 to 4 days |
@@ -84,7 +84,7 @@ Nothing here changes the filed paper.
 
 | Item | What would be built | Effort |
 |---|---|---|
-| Checking agents "trained" | The scoring and missed-defect store above, so the claim has a measurable objective | about 2 days beyond the item above |
+| ~~Checking agents "trained"~~ | The scoring and missed-defect store are built; running the three model-backed reviewers through the loop is not | partly done |
 | Locked container gaps | Disk-speed limit, kernel-enforced time limit and on-by-default on Linux are built (build-notes F2). Left: switch on user remapping on a Linux server and check build speed there | about 0.5 day, needs a Linux server |
 | ~~Security agent database~~ | Built (build-notes F5); there is no scheduled feed | done |
 | ~~Undo that restores files~~ | Built (section 10) | done |
@@ -126,4 +126,5 @@ Details, proof and limits are in `docs/patent/build-notes.md` (F5 to F7).
 - F6 taint analysis (claim 8): request data followed to dangerous calls; two false reports found on real apps were fixed; a planted flaw was found.
 - F7 performance analysis (claim 9): Big-O estimate, leak patterns, a leak probe tested on two real running servers, and round-to-round regression detection.
 - Also done in this period, outside the patent list: a tool to move older projects under one account (all 40 projects are now on amit@yugnex.com).
+- F8 adversarial training of the checkers (claim 4): defect planter, curriculum, example database and feedback into the reviewers' prompts; run on real code with the non-model checker; not yet run on the model-backed reviewers.
 - Real end-to-end test of the new handoff on a copy of a real generated app: recorded, verified, build-tool rewrites did not cause a false stop, a tampered file and a stray file stopped it and were put back.

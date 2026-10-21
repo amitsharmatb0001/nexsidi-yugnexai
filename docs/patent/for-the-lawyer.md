@@ -22,6 +22,7 @@ Prepared 21 October 2026 from the software itself; updated the same day after th
 | A stored database of security patterns (20 code patterns tied to OWASP categories and CWE numbers; 20 package advisories with CVE ids and version ranges; import of the public OSV format), applied to the generated code and its packages and given to the security reviewer | 8 |
 | Following untrusted request data through the code to dangerous calls (SQL, shell, eval, file paths, fetched URLs, redirects, HTML sent back), with the path shown. Checked on 73 real apps; a planted flaw in a real controller was found | 8 |
 | Estimating how running time grows with data (Big-O) from the code, listing database or network calls made once per item, finding the code patterns that leak memory, and comparing each QA round with the previous one for regressions | 9 |
+| An adversarial training loop for the checkers: known defects planted in copies of real code at five levels of difficulty, a stored list of the defects each checker missed, a curriculum that moves up or down by how many are caught, and the missed examples written into the checker's next review. Run on real code with the non-model checker (it caught 100% of levels 1 and 2 and 0% of level 3, and the run exposed and fixed a gap in the scanner). Not run on the model-backed reviewers yet; the defect planter is a fixed set of rules, not a learned generator; no model weights are trained | 4 |
 | A detailed map of the code passed on with the work: for each file its structure, what it imports and exports, what depends on what, import cycles, the rules from the plan, and errors found in the code; hashed and checked like the rest of the handoff. Built for the handoff before deployment only; the receiving step does not yet use it to make decisions | 1, 3 |
 | A map linking each requirement to the tasks and files that implement it, and each file back to the requirements it serves, with the reason for each link; lists requirements with no code and files with no requirement. Links are made by matching words, so some are wrong or missing (on 8 real projects: 38 of 39 requirements and 307 of 479 files linked) | 3 |
 | Giving each task to the agent whose skills fit it best: each of the three builder agents has a profile, and a task moves only on strong evidence (its files sit wholly in another agent's folder) | 1 |
@@ -33,7 +34,7 @@ Prepared 21 October 2026 from the software itself; updated the same day after th
 
 | What the filing describes | What is missing | Claim |
 |---|---|---|
-| Checking agents "trained" to find as many errors as possible | They are given instructions. They are not trained. | 1, 2 |
+| Checking agents "trained" to find as many errors as possible | They are given instructions, and now also the defects they missed in test rounds. The training loop has been run only on the built-in non-model checker; the three model-backed reviewers have not been run through it yet. No model weights are trained | 1, 2, 4 |
 | Locked container | Disk-speed limit now built. Remapping of user identities is a setting of the container engine on the server: instructions written, not switched on, not tried on a Linux server. The time limit is enforced inside the container by a kernel timer, not a hardware timer. On by default on Linux, off on the development PC | 1, 2, 5 |
 | Security checking agent: sending attack inputs to the running app | Not built | 8 |
 | Performance checking agent: measuring memory and route times of a running app | The measuring code is built and tested on real servers, but the build pipeline does not run it automatically yet | 9 |
@@ -43,7 +44,6 @@ Prepared 21 October 2026 from the software itself; updated the same day after th
 
 | What the filing describes | Claim |
 |---|---|
-| Training the checking agents against the code-writing agents, with a stored list of missed defects and a ramp from easy to hard cases | 4 |
 
 ## Work done after the filing
 

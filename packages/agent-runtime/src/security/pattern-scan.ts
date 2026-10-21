@@ -23,6 +23,8 @@ export interface SecurityPattern {
   flags?: string;
   /** Only files whose path matches this regular expression are scanned. */
   pathRegex?: string;
+  /** Also try the pattern on this line joined with the next one, for calls written over two lines. */
+  crossLine?: boolean;
   description: string;
   remediation: string;
   enabled?: boolean;
@@ -94,11 +96,11 @@ export function inRange(version: string, range: string): boolean {
 const SQL_WORDS = "(?=[^\\n]*?\\b(?:select|insert|update|delete|drop|where|from)\\b)";
 
 export const SEED_PATTERNS: SecurityPattern[] = [
-  { key: "sql-string-built", source: "owasp", category: "A03:2021 Injection", cwe: "CWE-89", severity: "HIGH",
-    pattern: `\\b(?:query|execute|raw|unsafe|queryRaw|executeRaw)\\s*\\(\\s*${SQL_WORDS}(?:\`[^\`]*\\$\\{[^\`]*\`(?!\\s*,)|(?:"[^"]*"|'[^']*')\\s*\\+)`, flags: "i",
+  { key: "sql-string-built", crossLine: true, source: "owasp", category: "A03:2021 Injection", cwe: "CWE-89", severity: "HIGH",
+    pattern: `\\b(?:query|execute|raw|unsafe|queryRaw|executeRaw)\\s*\\(\\s*${SQL_WORDS}(?:\`[^\`]*\\$\\{[^\`]*\`(?!\\s*,)|(?:"[^"]*"|'[^']*'|\`[^\`$]*\`)\\s*\\+)`, flags: "i",
     description: "A SQL statement is built by joining text with variables, so request data can change the statement.",
     remediation: "Pass values as query parameters ($1, $2) and never put them into the SQL text." },
-  { key: "shell-command-built", source: "owasp", category: "A03:2021 Injection", cwe: "CWE-78", severity: "HIGH",
+  { key: "shell-command-built", crossLine: true, source: "owasp", category: "A03:2021 Injection", cwe: "CWE-78", severity: "HIGH",
     pattern: "(?:(?<![\\w.$])|child_process\\.|cp\\.)(?:exec|execSync)\\s*\\(\\s*(?:`[^`]*\\$\\{|[A-Za-z_$][\\w$.]*\\s*\\+|\"[^\"]*\"\\s*\\+|'[^']*'\\s*\\+|req\\.)",
     description: "A shell command is built from variables, so request data can add commands.",
     remediation: "Use execFile or spawn with an argument list and no shell, and validate the values first." },
@@ -123,10 +125,10 @@ export const SEED_PATTERNS: SecurityPattern[] = [
   { key: "raw-html", source: "owasp", category: "A03:2021 Injection", cwe: "CWE-79", severity: "MEDIUM",
     pattern: "dangerouslySetInnerHTML|\\.innerHTML\\s*=(?!=)|\\bdocument\\.write\\s*\\(",
     description: "HTML is inserted without escaping, so injected script can run in the page.", remediation: "Render text through the framework, or sanitise with a trusted library first." },
-  { key: "path-from-request", source: "owasp", category: "A01:2021 Broken Access Control", cwe: "CWE-22", severity: "HIGH",
+  { key: "path-from-request", crossLine: true, source: "owasp", category: "A01:2021 Broken Access Control", cwe: "CWE-22", severity: "HIGH",
     pattern: "(?:sendFile|readFile|readFileSync|createReadStream|unlink|unlinkSync|writeFile|writeFileSync|download)\\s*\\([^\\n]*\\breq\\.(?:params|query|body)",
     description: "A file path comes straight from the request, so '../' can reach other files.", remediation: "Use path.basename or check the resolved path stays inside the allowed folder." },
-  { key: "request-url-fetch", source: "owasp", category: "A10:2021 Server-Side Request Forgery", cwe: "CWE-918", severity: "HIGH",
+  { key: "request-url-fetch", crossLine: true, source: "owasp", category: "A10:2021 Server-Side Request Forgery", cwe: "CWE-918", severity: "HIGH",
     pattern: "\\b(?:fetch|axios(?:\\.(?:get|post|put|delete|request))?|got|request)\\s*\\(\\s*req\\.(?:body|query|params)",
     description: "The server fetches a URL chosen by the caller, so it can be pointed at internal services.", remediation: "Allow only a fixed list of hosts and block private addresses." },
   { key: "open-redirect", source: "owasp", category: "A01:2021 Broken Access Control", cwe: "CWE-601", severity: "MEDIUM",
@@ -180,6 +182,12 @@ export function scanSource(file: string, source: string, patterns: SecurityPatte
       if (marker && marker[1] === p.key) continue;
       if (re.test(line)) {
         hits.push({ key: p.key, file: path, line: i + 1, severity: p.severity, category: p.category, cwe: p.cwe, remediation: p.remediation, evidence: trimmed.slice(0, 200) });
+      } else if (p.crossLine && i + 1 < lines.length) {
+        // A call written over two lines: the call on this line, its text on the next. Reported where the call starts.
+        const joined = `${trimmed} ${lines[i + 1]!.trim()}`;
+        if (/[(,]\s*$/.test(trimmed) && re.test(joined)) {
+          hits.push({ key: p.key, file: path, line: i + 1, severity: p.severity, category: p.category, cwe: p.cwe, remediation: p.remediation, evidence: joined.slice(0, 200) });
+        }
       }
     }
   }
