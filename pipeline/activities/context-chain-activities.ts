@@ -22,7 +22,7 @@
 // makes recordHandoff/verifyHandoff callable directly for live verification
 // scripts (see audit-2026-07-25.md) without a running Temporal worker.
 import { ApplicationFailure } from "@temporalio/activity";
-import { hashContext, signOutput, verifySignature } from "@nexsidi/context-chain";
+import { hashContext, signOutput, verifySignature, linkRecord, verifyChain, type ChainVerdict } from "@nexsidi/context-chain";
 
 export interface ContextChainRecordInput {
   projectId: string;
@@ -30,6 +30,10 @@ export interface ContextChainRecordInput {
   agentTo: string;
   contextHash: string;
   signature: string;
+  // Claim 10: this record's place in the project's chain, the context hashes of every earlier record, and the chain hash.
+  chainSeq?: number;
+  predecessorHashes?: string[];
+  chainHash?: string;
 }
 
 // Exact append-only insert shape (CLAUDE.md: "Append-only: no UPDATE except
@@ -43,6 +47,7 @@ export function buildContextChainRecord(input: ContextChainRecordInput) {
     contextHash: input.contextHash,
     signature: input.signature,
     verified: false,
+    ...(input.chainSeq !== undefined ? { chainSeq: input.chainSeq, predecessorHashes: input.predecessorHashes ?? [], chainHash: input.chainHash ?? "" } : {}),
   };
 }
 
@@ -146,14 +151,39 @@ export async function recordHandoff(
   context: unknown,
 ): Promise<void> {
   const { db, contextChain } = await import("@nexsidi/db");
+  const { and, asc, eq, isNotNull, sql } = await import("drizzle-orm");
   const { privateKeyPath } = keyPaths();
   const { contextHash, signature } = computeHandoffSignature(context, privateKeyPath);
-  await db
-    .insert(contextChain)
-    .values(buildContextChainRecord({ projectId, agentFrom, agentTo, contextHash, signature }));
+  // Claim 10: the record carries the hashes of ALL earlier records of the project. Builders hand off in parallel, so
+  // the read of the earlier records and the insert happen under one lock per project — two records can never both
+  // claim the same predecessors.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${projectId}))`);
+    const earlier = await tx
+      .select({ contextHash: contextChain.contextHash })
+      .from(contextChain)
+      .where(and(eq(contextChain.projectId, projectId), isNotNull(contextChain.chainSeq)))
+      .orderBy(asc(contextChain.chainSeq));
+    const link = linkRecord(earlier.map((r) => r.contextHash), contextHash);
+    await tx
+      .insert(contextChain)
+      .values(buildContextChainRecord({ projectId, agentFrom, agentTo, contextHash, signature, chainSeq: earlier.length + 1, ...link }));
+  });
   console.log(
     `[context-chain] recorded handoff ${agentFrom} -> ${agentTo} (project=${projectId}, hash=${contextHash.slice(0, 12)}...)`,
   );
+}
+
+/** Reads a project's chained records back in order and checks the whole chain (claim 10: audit trail reconstruction). */
+export async function auditProjectChain(projectId: string): Promise<ChainVerdict> {
+  const { db, contextChain } = await import("@nexsidi/db");
+  const { and, asc, eq, isNotNull } = await import("drizzle-orm");
+  const rows = await db
+    .select({ chainSeq: contextChain.chainSeq, contextHash: contextChain.contextHash, predecessorHashes: contextChain.predecessorHashes, chainHash: contextChain.chainHash })
+    .from(contextChain)
+    .where(and(eq(contextChain.projectId, projectId), isNotNull(contextChain.chainSeq)))
+    .orderBy(asc(contextChain.chainSeq));
+  return verifyChain(rows.map((r) => ({ chainSeq: r.chainSeq!, contextHash: r.contextHash, predecessorHashes: r.predecessorHashes ?? [], chainHash: r.chainHash ?? "" })));
 }
 
 // Called by the RECEIVING agent's activity, before it trusts the context it

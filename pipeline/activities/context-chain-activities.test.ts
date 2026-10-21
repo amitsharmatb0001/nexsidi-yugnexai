@@ -106,3 +106,21 @@ test("decideVerification reports valid only when both the hash matches and the s
   const row = { contextHash: "a".repeat(64), signature: "sig" };
   expect(decideVerification(row, "a".repeat(64), true)).toEqual({ outcome: "valid" });
 });
+
+// ── claim 10: the record carries the hashes of all earlier records ───────────
+test("buildContextChainRecord adds the chain fields when a record is linked to its predecessors", () => {
+  const record = buildContextChainRecord({
+    projectId: "p1",
+    agentFrom: "arjun",
+    agentTo: "shubham",
+    contextHash: "b".repeat(64),
+    signature: "sig",
+    chainSeq: 3,
+    predecessorHashes: ["a".repeat(64), "c".repeat(64)],
+    chainHash: "d".repeat(64),
+  });
+  expect(record.chainSeq).toBe(3);
+  expect(record.predecessorHashes).toEqual(["a".repeat(64), "c".repeat(64)]);
+  expect(record.chainHash).toBe("d".repeat(64));
+  expect(record.verified).toBe(false);
+});

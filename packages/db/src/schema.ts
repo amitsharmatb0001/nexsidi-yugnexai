@@ -82,6 +82,11 @@ export const contextChain = pgTable("context_chain", {
   contextHash: char("context_hash", { length: 64 }).notNull(),
   signature:   text("signature").notNull(),
   verified:    boolean("verified").notNull().default(false),
+  // Claim 10: position in the project's chain, the context hashes of ALL earlier records, and a hash over both.
+  // Null on records written before the chain was linked.
+  chainSeq:          integer("chain_seq"),
+  predecessorHashes: jsonb("predecessor_hashes").$type<string[]>(),
+  chainHash:         char("chain_hash", { length: 64 }),
   createdAt:   timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("ctx_chain_project_idx").on(t.projectId),
