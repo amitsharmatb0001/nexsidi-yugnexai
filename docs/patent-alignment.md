@@ -1,6 +1,6 @@
 # Patent alignment — what the code does against what was filed
 
-Written 2026-10-21. Internal. Not legal advice; the claim text is the one in
+Written 2026-10-21. Internal. Plain-language versions: `docs/patent/for-the-lawyer.md` and `docs/patent/conversation-record.md`. Not legal advice; the claim text is the one in
 `E:\dev doc pat\Form2_Provisional_Specification_YUGNEX.md` (the same claims are in the `.docx` of the same name).
 The PDF `Provisional Specification_Form 2.pdf` (10 Feb 2026) could not be read here; confirm with the attorney that it carries the same claims.
 
