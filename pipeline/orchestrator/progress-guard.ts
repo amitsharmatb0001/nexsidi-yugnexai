@@ -29,6 +29,15 @@ export interface RoundRecord {
   stage: RoundStage;
   findings: string[]; // normalized keys
   spendUsd: number; // the project's total spend when the round ended
+  /** A marker written when the owner sends Retry after a hold: rounds before it are not compared with rounds after it. */
+  reset?: boolean;
+}
+
+/** Rounds of a stage since the owner's last Retry (2026-10-22: Retry re-ran the review before any fix and held again). */
+function sinceLastRetry(history: RoundRecord[], stage: RoundStage): RoundRecord[] {
+  let last = -1;
+  history.forEach((h, i) => { if (h.reset) last = i; });
+  return history.slice(last + 1).filter((h) => h.stage === stage && !h.reset);
 }
 
 export type GuardVerdict = { hold: false } | { hold: true; reason: string; evidence: string[] };
@@ -54,7 +63,7 @@ export function resolveRoundSpendCapUsd(): number {
 const readable = (key: string) => key.replace(/^\|/, "");
 
 export function judgeRound(history: RoundRecord[], round: RoundRecord, opts: GuardOptions): GuardVerdict {
-  const earlier = history.filter((h) => h.stage === round.stage);
+  const earlier = sinceLastRetry(history, round.stage);
   if (earlier.length === 0) return { hold: false };
 
   const seen = new Set(earlier.flatMap((h) => h.findings));
@@ -81,8 +90,22 @@ export function judgeRound(history: RoundRecord[], round: RoundRecord, opts: Gua
 
 /** The findings that were already open in an earlier round of the same stage (what judgeRound would call a repeat). */
 export function repeatedFindings<F extends { file?: string; issue?: string; detail?: string }>(projectId: string, stage: RoundStage, findings: F[]): F[] {
-  const seen = new Set(readRounds(projectId).filter((h) => h.stage === stage).flatMap((h) => h.findings));
+  const seen = new Set(sinceLastRetry(readRounds(projectId), stage).flatMap((h) => h.findings));
   return findings.filter((f) => seen.has(findingKey(f)));
+}
+
+/**
+ * Called when the owner sends Retry after a hold. Retry re-runs the review before any fix, so without this the same unfixed
+ * findings came back and the guard held again, every time. A fix that fails again after the retry still holds.
+ */
+export function recordRetryReset(projectId: string): void {
+  try {
+    mkdirSync(buildDirFor(projectId), { recursive: true });
+    const marker: RoundRecord = { at: new Date().toISOString(), stage: "qa", findings: [], spendUsd: 0, reset: true };
+    appendFileSync(roundsFile(projectId), JSON.stringify(marker) + "\n");
+  } catch (err) {
+    console.error(`[guard] could not record the retry: ${String(err).slice(0, 160)}`);
+  }
 }
 
 function roundsFile(projectId: string): string {
@@ -167,7 +190,7 @@ export async function checkRoundGuard(
 
   mkdirSync(buildDirFor(projectId), { recursive: true });
   appendFileSync(roundsFile(projectId), JSON.stringify(record) + "\n");
-  console.log(`[guard] ${stage} round ${history.filter((h) => h.stage === stage).length + 1}: ${record.findings.length} open finding(s), spent $${record.spendUsd.toFixed(2)} — ${verdict.hold ? "HOLD" : "ok"}`);
+  console.log(`[guard] ${stage} round ${history.filter((h) => h.stage === stage && !h.reset).length + 1}: ${record.findings.length} open finding(s), spent $${record.spendUsd.toFixed(2)} — ${verdict.hold ? "HOLD" : "ok"}`);
   if (verdict.hold) writeHold(projectId, stage, verdict, record.spendUsd);
   return verdict;
 }

@@ -72,3 +72,28 @@ test("both review loops check repeats before the guard judges the round", () => 
     expect(at).toBeLessThan(src.indexOf("deps.roundGuard(", at - 2000) === -1 ? Infinity : src.indexOf("deps.roundGuard(", at));
   }
 });
+
+// Same rerun, next hold: Retry re-ran the review before any fix round, so the same unfixed findings came back and the guard
+// held again. Retry is the owner's decision to go on; the guard now compares only rounds after the last retry, so the
+// builders get a round. A fix that fails again after the retry still holds.
+test("a retry marker resets what the guard compares against", async () => {
+  const dir = await projectDir();
+  const { findingKey, judgeRound, readRounds, recordRetryReset, repeatedFindings } = await import("./progress-guard.ts");
+  writeFileSync(join(dir, "rounds.jsonl"), JSON.stringify({ at: "t1", stage: "qa", findings: [findingKey(sql)], spendUsd: 10 }) + "\n");
+  recordRetryReset(PID);
+  const history = readRounds(PID);
+  expect(history.some((r) => r.reset)).toBe(true);
+  const round = { at: "t2", stage: "qa" as const, findings: [findingKey(sql)], spendUsd: 30 };
+  expect(judgeRound(history, round, { roundSpendCapUsd: 8 })).toEqual({ hold: false });
+  expect(repeatedFindings(PID, "qa", [sql])).toEqual([]);
+  // after a round past the retry, a repeat holds again
+  const after = [...history, round];
+  expect(judgeRound(after, { ...round, at: "t3" }, { roundSpendCapUsd: 8 }).hold).toBe(true);
+});
+
+test("the retry route records the reset before it signals the workflow", () => {
+  const src = readFileSync(new URL("../../apps/api/src/routes/pipeline.ts", import.meta.url), "utf-8");
+  const route = src.slice(src.indexOf('pipelineRouter.post("/:projectId/retry"'));
+  expect(route.indexOf("recordRetryReset(projectId)")).toBeGreaterThan(-1);
+  expect(route.indexOf("recordRetryReset(projectId)")).toBeLessThan(route.indexOf("retryStageSignal"));
+});

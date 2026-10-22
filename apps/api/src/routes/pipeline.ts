@@ -342,6 +342,9 @@ pipelineRouter.post("/:projectId/retry", async (c) => {
   }
 
   try {
+    // 2026-10-22: the owner's Retry resets what the progress guard compares against (see recordRetryReset).
+    const { recordRetryReset } = await import("../../../../pipeline/orchestrator/progress-guard.ts");
+    recordRetryReset(projectId);
     await sendWorkflowSignal(projectId, "retryStageSignal", true);
     // The workflow's own state.stage will move off "await_spec_approval"-
     // style holding points once it resumes; setting "building" here closes
