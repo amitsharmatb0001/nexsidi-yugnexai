@@ -8,12 +8,14 @@ if (!projectId) {
   console.error("usage: bun --env-file=.env scripts/spend-report.ts <projectId>");
   process.exit(1);
 }
+// The scripts folder is not a workspace package, so drizzle-orm is not resolvable here; the db package's own client is.
 const { db } = await import("../packages/db/src/index.ts");
-const { sql } = await import("drizzle-orm");
-const rows = (await db.execute(sql`
-  select agent, model, calls, tokens_in, tokens_out, cached_in, cost_usd
-  from agent_spend where project_id = ${projectId} order by cost_usd desc`)) as unknown as Array<Record<string, string | number>>;
-const total = (await db.execute(sql`select total_cost_usd from token_spend where project_id = ${projectId}`)) as unknown as Array<{ total_cost_usd: string }>;
+const client = (db as unknown as { $client: { unsafe: (q: string, p: unknown[]) => Promise<unknown[]> } }).$client;
+const rows = (await client.unsafe(
+  "select agent, model, calls, tokens_in, tokens_out, cached_in, cost_usd from agent_spend where project_id = $1 order by cost_usd desc",
+  [projectId],
+)) as Array<Record<string, string | number>>;
+const total = (await client.unsafe("select total_cost_usd from token_spend where project_id = $1", [projectId])) as Array<{ total_cost_usd: string }>;
 const byAgent = rows.reduce((s, r) => s + Number(r.cost_usd), 0);
 console.log(`Project ${projectId}: total $${Number(total[0]?.total_cost_usd ?? 0).toFixed(2)}, of which $${byAgent.toFixed(2)} is broken down by agent\n`);
 for (const r of rows) {
