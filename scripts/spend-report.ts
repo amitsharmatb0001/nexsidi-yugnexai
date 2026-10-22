@@ -8,7 +8,7 @@ if (!projectId) {
   console.error("usage: bun --env-file=.env scripts/spend-report.ts <projectId>");
   process.exit(1);
 }
-const { db } = await import("@nexsidi/db");
+const { db } = await import("../packages/db/src/index.ts");
 const { sql } = await import("drizzle-orm");
 const rows = (await db.execute(sql`
   select agent, model, calls, tokens_in, tokens_out, cached_in, cost_usd
