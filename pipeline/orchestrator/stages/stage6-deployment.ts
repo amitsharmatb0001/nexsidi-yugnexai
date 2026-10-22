@@ -15,7 +15,7 @@
 // default and MUST NOT be reintroduced as the default without a comment
 // explaining why real QA coverage is being turned off again.
 import { resolveFlags } from "../flags.ts";
-import { run as runRiya, purgeVerificationArtifacts, seedSampleData, snapshotTableCounts, compareSnapshots, type DeployResult } from "../../../agents/riya/src/index.ts";
+import { run as runRiya, purgeVerificationArtifacts, seedSampleData, snapshotTableCounts, compareSnapshots, databaseNow, type DeployResult } from "../../../agents/riya/src/index.ts";
 import { agentForFile, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
@@ -255,12 +255,15 @@ async function runRealLiveRetest(
   const buildDir = buildDirFor(projectId);
   // Row counts before any test data exists; compared with the counts after the cleanup below.
   const baseline = snapshotTableCounts(buildDir);
+  // The same moment on the database's own clock: rows the testing adds to public form tables (a contact form) are removed
+  // by their time, since no account owns them.
+  const testingStartedAt = databaseNow(buildDir);
   const result = await liveRetestChecks(projectId, appUrl, backendUrl, stage4Result, plan, notChecked, changedFiles);
   // The live review signs up its own test accounts and the route sweep creates sample data under one. With
   // the data-safe redeploy they would stay in the database for good, so they are removed as soon as the
   // review ends (every account on the reserved test domain — see VERIFICATION_EMAIL_PATTERN in riya, which
   // removes everything that points at them too).
-  purgeVerificationArtifacts(buildDir);
+  purgeVerificationArtifacts(buildDir, testingStartedAt);
   // 2026-10-05 (Amit): "clean" is checked, not assumed — every table must hold no more rows than before.
   const after = snapshotTableCounts(buildDir);
   if (baseline && after) {

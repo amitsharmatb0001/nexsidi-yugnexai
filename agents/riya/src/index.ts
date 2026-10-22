@@ -142,7 +142,39 @@ export const ACCOUNT_TABLES_SQL =
   "AND EXISTS (SELECT 1 FROM information_schema.columns p WHERE p.table_schema='public' AND p.table_name=c.table_name " +
   "AND p.column_name IN ('password_hash','password','hashed_password','password_digest'))";
 
-export function purgeVerificationArtifacts(buildDir: string): void {
+// 2026-10-22 (Trailhead Gear Rentals): a public form table (contact form: an email, a created_at, no password) is not an
+// account table, so the checks' @example.com rows in it were never removed and the "no more rows than before" gate failed the
+// deploy three times, each retry adding more. These tables are cleaned too, but only for rows made since the testing began.
+export const PUBLIC_FORM_TABLES_SQL =
+  "SELECT c.table_name FROM information_schema.columns c WHERE c.table_schema='public' AND c.column_name='email' " +
+  "AND EXISTS (SELECT 1 FROM information_schema.columns t WHERE t.table_schema='public' AND t.table_name=c.table_name AND t.column_name='created_at') " +
+  "AND NOT EXISTS (SELECT 1 FROM information_schema.columns p WHERE p.table_schema='public' AND p.table_name=c.table_name " +
+  "AND p.column_name IN ('password_hash','password','hashed_password','password_digest'))";
+
+/** Test-domain rows made at or after `since` (a database timestamp). The value goes into SQL text, so only a timestamp is accepted. */
+export function testWindowCondition(since: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}(:?\d{2})?)?$/.test(since)) throw new Error(`not a timestamp: ${JSON.stringify(since.slice(0, 40))}`);
+  return `email LIKE '${VERIFICATION_EMAIL_PATTERN}' AND created_at >= '${since}'`;
+}
+
+/** The deployed database's own clock (null when it cannot be read), so the window does not depend on the host's clock. */
+export function databaseNow(buildDir: string): string | null {
+  try {
+    const composePath = join(buildDir, "docker-compose.yml");
+    if (!existsSync(composePath)) return null;
+    const sh = (cmd: string) => execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    const cid = sh(`docker compose -f "${composePath}" ps -q postgres`);
+    if (!cid) return null;
+    const user = (() => { try { return sh(`docker exec ${cid} printenv POSTGRES_USER`); } catch { return ""; } })() || "postgres";
+    const dbName = (() => { try { return sh(`docker exec ${cid} printenv POSTGRES_DB`); } catch { return ""; } })() || user;
+    const now = sh(`docker exec ${cid} psql -U ${user} -d ${dbName} -tAc "SELECT now()"`);
+    return /^\d{4}-/.test(now) ? now : null;
+  } catch {
+    return null;
+  }
+}
+
+export function purgeVerificationArtifacts(buildDir: string, since?: string | null): void {
   try {
     const composePath = join(buildDir, "docker-compose.yml");
     if (!existsSync(composePath)) return;
@@ -182,6 +214,24 @@ export function purgeVerificationArtifacts(buildDir: string): void {
     }
     if (removed > 0) {
       console.log(`[riya] purged ${removed} deploy-verification test account(s) from the delivered database — the admin bootstrap slot is free for the real owner`);
+    }
+
+    // Public form tables: only rows made since the testing began, so a customer's own rows are never touched.
+    if (since) {
+      const formWhere = testWindowCondition(since);
+      const formTables = sh(`docker exec ${cid} psql -U ${user} -d ${dbName} -tAc "${PUBLIC_FORM_TABLES_SQL}"`).split("\n").map((t) => t.trim()).filter((t) => t && !tables.includes(t));
+      let formRemoved = 0;
+      for (const table of formTables) {
+        try {
+          const count = parseInt(psql(`SELECT count(*) FROM "${table}" WHERE ${formWhere};`), 10) || 0;
+          if (count === 0) continue;
+          psql(buildPurgeStatements(table, formWhere, fks).map((s) => s + ";").join("\n"));
+          formRemoved += count;
+        } catch (e) {
+          console.warn(`[riya] could not purge test rows from "${table}" (non-fatal): ${String(e).split("\n")[0]}`);
+        }
+      }
+      if (formRemoved > 0) console.log(`[riya] purged ${formRemoved} test row(s) made during the checks from public form table(s)`);
     }
   } catch (e) {
     console.warn(`[riya] verification-artifact cleanup skipped (non-fatal): ${String(e).split("\n")[0]}`);
@@ -1903,6 +1953,8 @@ export async function run(
   // socket (docker exec — no host-TCP auth issues) and confirms the tables
   // exist, independent of whatever the agent did. Belt-and-suspenders with the
   // prompt-level requirement.
+  // Rows the checks below add to public form tables are removed again from this moment on (see PUBLIC_FORM_TABLES_SQL).
+  const verificationStartedAt = databaseNow(buildDir);
   const migrationOk = applyMigrationsToDeployedDb(buildDir);
 
   // 2026-07-12: the REAL end-to-end test — a genuine authenticated user's
@@ -1941,7 +1993,7 @@ export async function run(
   // failure would leave exactly the artifacts this exists to remove. See
   // purgeVerificationArtifacts's own header comment for why this matters
   // beyond tidiness: it also frees the one-time admin-bootstrap slot.
-  purgeVerificationArtifacts(buildDir);
+  purgeVerificationArtifacts(buildDir, verificationStartedAt);
 
   // Archive to GitHub (fire-and-forget, errors non-fatal)
   const githubRepo = await archiveToGitHub(projectId, buildDir).catch(() => null);

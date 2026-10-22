@@ -94,6 +94,36 @@ test("compareSnapshots names every table that holds more rows than before, and i
   expect(compareSnapshots({ a: 5 }, { a: 4, b: 1 })).toEqual(["b: 0 rows before the testing, 1 after the cleanup"]);
 });
 
+// 2026-10-22 (Trailhead Gear Rentals): the deploy failed three times on "contact_submissions: 16 rows before the
+// testing, 20 after the cleanup". The cleanup only looked in tables that hold accounts, but the checks also fill a
+// public form table (a contact form: an email, no password) with @example.com test rows, and each retry added more.
+// Such a table is now cleaned too, but only for rows made since the testing began, so a customer's own rows stay.
+test("public-form tables are found by an email plus a created_at column and no password column", async () => {
+  const { PUBLIC_FORM_TABLES_SQL } = await import("./index.ts");
+  expect(PUBLIC_FORM_TABLES_SQL).toContain("column_name='email'");
+  expect(PUBLIC_FORM_TABLES_SQL).toContain("column_name='created_at'");
+  expect(PUBLIC_FORM_TABLES_SQL).toContain("NOT EXISTS");
+  expect(PUBLIC_FORM_TABLES_SQL).toContain("password_hash");
+});
+
+test("the rows made since the testing began are chosen by test domain and by time", async () => {
+  const { testWindowCondition } = await import("./index.ts");
+  expect(testWindowCondition("2026-10-22 01:20:00.123456+00")).toBe(`email LIKE '%@example.com' AND created_at >= '2026-10-22 01:20:00.123456+00'`);
+  expect(testWindowCondition("2026-10-22T01:20:00.123Z")).toBe(`email LIKE '%@example.com' AND created_at >= '2026-10-22T01:20:00.123Z'`);
+  // the value goes into SQL text, so anything that is not a timestamp is refused
+  expect(() => testWindowCondition("x'; DROP TABLE users; --")).toThrow();
+  expect(() => testWindowCondition("")).toThrow();
+});
+
+test("the live review and Riya's own checks clean up public-form rows from when they began", async () => {
+  const { readFileSync } = await import("node:fs");
+  const stage6 = readFileSync(new URL("../../../pipeline/orchestrator/stages/stage6-deployment.ts", import.meta.url), "utf-8");
+  expect(stage6).toContain("databaseNow(buildDir)");
+  expect(stage6).toMatch(/purgeVerificationArtifacts\(buildDir, \w+\)/);
+  const riya = readFileSync(new URL("./index.ts", import.meta.url), "utf-8");
+  expect(riya).toMatch(/purgeVerificationArtifacts\(buildDir, \w+\)/);
+});
+
 // 2026-10-05: the cleanup removes accounts on the reserved test domain — but only from tables that hold ACCOUNTS
 // (an email plus a password hash). A customer's own clients table may hold an @example.com address as a
 // placeholder; its rows are removed only through the test account they belong to.

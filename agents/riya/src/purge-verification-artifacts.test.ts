@@ -50,7 +50,7 @@ test("cleanup targets only the verify+...@example.com shape it created", () => {
 
 test("cleanup is invoked unconditionally after CRUD verification, not only on success", () => {
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf-8");
-  const callIdx = src.indexOf("purgeVerificationArtifacts(buildDir)");
+  const callIdx = src.indexOf("purgeVerificationArtifacts(buildDir, verificationStartedAt)");
   expect(callIdx).toBeGreaterThan(-1);
   // It must not sit inside the `if (!crudCheck.ok)` / `else` branches — the
   // 400 chars before the call should contain the end of that block, not an

@@ -248,3 +248,27 @@ To run it for real: `bun scripts/consolidate-projects.ts --to amit@yugnex.com --
 **Finding (known gap, a product decision):** the file tree, file contents, build plan and pipeline status routes are public so the build page works before sign-in, and approve-spec and approve-deploy are public too (`apps/api/src/app.ts`). The 12-character project id is the only key, so any caller with an id (a shared link, for example) can read that project's generated files, and can approve its deploy. The smoke test prints this on every run. Not changed: removing it would affect the anonymous build page. Options: require a signed-in owner on those routes, or give each project a separate long random key in the link.
 
 **Also noted:** a per-project transfer route already exists (`POST /api/projects/:id/transfer`, owner only, one at a time); `scripts/consolidate-projects.ts` is the bulk version.
+
+### Real full-pipeline test: Trailhead Gear Rentals (2026-10-21 to 22)
+
+A new app (outdoor-gear rental shop) was built through the chat page in Chrome, signed in as the owner account, with every approval clicked in the UI. Project `88368631db38`, worker on `COST_BUDGET_CAP_USD=25`. Spend by the end: about $17 or more (last guard line: $16.87 at live round 4; the final round is not in that figure).
+
+**What the log and the disk show**
+- `gemini-4-argon` ran in the real build: Saanvi's spec (4809 in / 4408 out), Arjun's plan (three calls), the reality checker (about 12 iterations reading the live app and its source) and the dispute settler. One dispute was settled: Pranav said "missing index on bookings.user_id"; the settler read `db/migrations/0000_initial.sql`, found both indexes already there (lines 59-61) and dropped the finding as not true.
+- Handoffs are on disk, `.nexsidi/handoffs/0001` to `0012`, and the log shows recorded and verified lines for saanvi to arjun, arjun to the three builders, and qa-gan to deploy. The deploy handoff holds a code map (63 files, 75 dependency edges, no cycles) and a traceability graph (5 requirements, 11 tasks, 73 edges, no requirement without code). Snapshots exist for each handoff. `.nexsidi/perf-history.json` holds 5 rounds of per-function growth estimates (the data for regression detection).
+- Quality review ran 4 iterations: round findings 6, 6, 2, then 0 from all three reviewers.
+- The live retest found real defects the earlier stages did not: the pages were 109px and 189px wider than a 375px phone (header items did not fit), a text-contrast problem in the gear card, and a hotlinked photo that the browser blocks. Each was fixed by the builders and the sweep then passed (32 page visits).
+
+**NOT checked in this run** (no evidence was captured, so nothing is claimed)
+- That the security pattern leads and the Big-O/leak leads reached Karan and Deepika: the stage prints nothing on success and no "scan skipped" line appeared; the text sent to them was not captured. Karan and Deepika reported 0 findings in the last rounds.
+- That any missed-example text was added to Karan's prompt (only Karan was ever trained, and the prompt was not captured).
+- Mistake-memory statistics, the container sandbox default for generated code, predecessor hashes inside the handoff objects (claim 10 form), and the snapshot restore path (no mismatch occurred, so no restore).
+
+**The build ended in an error state, not delivered through the pipeline.** The app itself is up (frontend 3200, backend 3300, database 5435; pages, health and the gear list answer 200) but the workflow ended with `deploy_failed` after three live-retest rounds plus one automatic retry.
+
+**Platform defects found, and what was done**
+1. **Fixed:** the data-cleanliness gate failed the deploy on `contact_submissions: 16 rows before the testing, 20 after the cleanup`. The cleanup only searched tables that hold accounts (an email plus a password). A public form table has an email and no password, so the checks' `@example.com` rows in it were never removed, and every retry added more. Now such tables (email and created_at, no password column) are cleaned too, but only rows made since the testing began and only on the reserved test domain, so a customer's own rows are never touched (`agents/riya/src/index.ts`, `stage6-deployment.ts`). Proof on the real delivered database: 20 test rows removed, other tables unchanged; a control run kept a real `gmail.com` row and a 2-day-old test-domain row and removed only the new test-domain row. 190 tests across the affected suites pass. The running worker still has the old code; it needs a restart before the next deploy.
+2. **Not fixed, to decide:** the sample-data step posts booking dates the app refuses (`start_date and end_date must be valid dates in YYYY-MM-DD format`), so "bookings #1 was not created" appears on every round and the booking flow is never exercised with data.
+3. **Not fixed, to decide:** the deploy agent's configured local model cannot make tool calls, so it falls back to a hosted model (`meta/muse-glimmer-30b`); the deploy ran, but it is not the model the roster names.
+4. **Seen, transient:** the backend compile check timed out twice (`spawnSync ... ETIMEDOUT`, reported as not a compile error) and passed on rerun.
+5. **Test setup:** a Chrome tab opened earlier reported a 0x0 window, so clicks on "Approve & launch" did nothing; a fresh tab worked. Not a product bug, but the approval looks identical to a working one.

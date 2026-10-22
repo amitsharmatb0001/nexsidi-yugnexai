@@ -200,7 +200,11 @@ export function ChatWindow() {
             if (chunk.type === "plan_proposed" && chunk.proposedPlan) {
               const p = chunk.proposedPlan;
               const pages = [...p.publicPages, ...p.protectedPages].map((pg) => pg.name).join(", ");
-              const text = `Plan ready for ${p.appName}.\nPages: ${pages}\nEndpoints: ${p.apiEndpoints.length}\n\nReply "looks good, build it" to start, or describe what to change.`;
+              // The planner starts the build only on an exact phrase ("build it", "accept", "yes build it", "start building",
+              // "build now", "go build" — BUILD_TRIGGER_PHRASES in agents/planner/src/index.ts). Anything else, including
+              // "looks good, build it" or "build it." with a full stop, is read as a request to change the plan and the plan is
+              // proposed again. Found live: the first version of this text told people to type "looks good, build it".
+              const text = `Plan ready for ${p.appName}.\nPages: ${pages}\nEndpoints: ${p.apiEndpoints.length}\n\nType exactly: build it (to start), or describe what to change.`;
               setMessages((prev) => prev.map((m) => (m.ts === assistantTs ? { ...m, content: text } : m)));
             }
 
