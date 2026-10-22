@@ -341,3 +341,9 @@ Tests: 699 pass across the builders and the orchestrator.
 **Not done:** a passing live round is not yet saved for reuse by a retry (the round that was killed had not finished, so it would not have helped this time). The reviewers' tools sometimes end without submitting findings, which costs a round; not investigated yet.
 
 **Decision (Amit, 2026-10-22):** fix first, then retry the rerun with the spend cap raised from $30 to $40.
+
+### Fixed: one malformed tool call ended a 98-minute deploy step (2026-10-22, batch 8)
+
+**Found:** on the deploy retry the app was redeployed and passed its checks (sign-in, 2 sample bookings, 34 page visits, cleanup) after a live fix round; then the final reviewer called `db_query` with no query. `isReadOnlyQuery` ran `undefined.trim()`, the error escaped the agent loop (its tool dispatch had no catch) and the whole deploy step failed after 98 minutes (`TypeError: undefined is not an object (evaluating 'raw.trim')`, `deploy_activity_error`).
+
+**Fixed:** `db_query` with a missing or non-text query is a clean error result. Both agent loops (`gemini-loop.ts`, `loop.ts`) now catch any error thrown inside a tool at the dispatch and hand it to the agent as an error result, so the step goes on. Checked first: no tool throws on purpose to stop a step (the spend cap and time limits are checked outside the tools). 721 agent-runtime tests pass; type check clean.

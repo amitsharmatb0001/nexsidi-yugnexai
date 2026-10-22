@@ -15,6 +15,8 @@ const WRITE_KEYWORDS = /\b(insert|update|delete|drop|alter|create|truncate|grant
 
 // Exported for direct unit testing — the guard is the security boundary.
 export function isReadOnlyQuery(raw: string): { ok: true } | { ok: false; reason: string } {
+  // 2026-10-22: a call with no query crashed here (undefined.trim) and ended a 98-minute deploy step.
+  if (typeof raw !== "string") return { ok: false, reason: "the query argument is missing or not text" };
   const q = raw.trim().replace(/;+\s*$/, ""); // allow one trailing semicolon
   if (!q) return { ok: false, reason: "empty query" };
   if (q.includes(";")) return { ok: false, reason: "multiple statements are not allowed (single SELECT only)" };

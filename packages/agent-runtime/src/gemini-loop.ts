@@ -893,7 +893,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
 
       if (config.readOnly && READONLY_BLOCKED_TOOLS.has(toolName)) {
         result = readOnlyToolBlockedResult(toolName);
-      } else switch (toolName) {
+      } else try { switch (toolName) {
         case "write_file": {
           const r = execWriteFile(config.sandboxDir, args as { path: string; content: string }, config.writableFile);
           if (r.status === "success") filesWritten.push((args as { path: string }).path);
@@ -1140,6 +1140,11 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
             result = { status: "error", summary: `Unknown tool: ${toolName}` };
           }
         }
+      } } catch (err) {
+        // 2026-10-22: a tool that throws (its own bug, or a malformed call such as db_query with no query) used to end
+        // the whole step; on the Trailhead rerun it ended a 98-minute deploy step. The agent gets the error instead.
+        console.warn(`[${config.agentName}:gemini-agent] tool ${toolName} threw: ${String(err).slice(0, 200)}`);
+        result = { status: "error", summary: `${toolName} failed inside the tool, the step goes on: ${String(err instanceof Error ? err.message : err).slice(0, 300)}` };
       }
 
       blockedTracker.observe(result);

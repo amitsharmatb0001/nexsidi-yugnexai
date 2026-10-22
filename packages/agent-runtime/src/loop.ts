@@ -961,7 +961,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
       if (config.readOnly && READONLY_BLOCKED_TOOLS.has(toolName)) {
         result = readOnlyToolBlockedResult(toolName);
-      } else switch (toolName) {
+      } else try { switch (toolName) {
         case "write_file": {
           const writeArgs = args as { path: string; content: string };
           emitEvent({ type: "tool_call", tool: "write_file", input: { path: writeArgs.path, bytes: writeArgs.content.length } });
@@ -1231,6 +1231,11 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
             result = { status: "error", summary: `Unknown tool: ${toolName}` };
           }
         }
+      } } catch (err) {
+        // 2026-10-22: a tool that throws (its own bug, or a malformed call such as db_query with no query) used to end
+        // the whole step; on the Trailhead rerun it ended a 98-minute deploy step. The agent gets the error instead.
+        console.warn(`[${config.agentName}:agent] tool ${toolName} threw: ${String(err).slice(0, 200)}`);
+        result = { status: "error", summary: `${toolName} failed inside the tool, the step goes on: ${String(err instanceof Error ? err.message : err).slice(0, 300)}` };
       }
 
       blockedTracker.observe(result);
