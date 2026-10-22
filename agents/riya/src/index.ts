@@ -247,6 +247,24 @@ export interface SeedResult {
   notSeeded: string[];
 }
 
+/** Every `*_id` string in the payload, also inside lists and nested objects, replaced with a real id when one is found. */
+export async function resolveNestedIds(
+  value: Record<string, unknown>,
+  resolve: (field: string) => Promise<string | null | undefined>,
+): Promise<Record<string, unknown>> {
+  const walk = async (v: unknown, field?: string): Promise<unknown> => {
+    if (Array.isArray(v)) return Promise.all(v.map((x) => walk(x)));
+    if (v && typeof v === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) out[k] = await walk(x, k);
+      return out;
+    }
+    if (field?.endsWith("_id") && typeof v === "string") return (await resolve(field)) ?? v;
+    return v;
+  };
+  return (await walk(value)) as Record<string, unknown>;
+}
+
 export async function seedSampleData(buildDir: string, backendUrl: string, token: string, perResource = 2): Promise<SeedResult> {
   const created: Record<string, string[]> = {};
   const notSeeded: string[] = [];
@@ -292,15 +310,20 @@ export async function seedSampleData(buildDir: string, backendUrl: string, token
       try {
         const marker = `sample-${resource}-${i}`; // no spaces: the payload builder puts it into email addresses
         const payload = ((ep.requestType && ep.requestType !== "null" ? buildPayloadForRequestType(sharedTypesSource, ep.requestType, marker) : null) ?? { title: marker }) as Record<string, unknown>;
-        for (const [field, value] of Object.entries(payload)) {
-          if (!field.endsWith("_id") || typeof value !== "string") continue;
-          const resolved = await resolveForeignKeyId(field, endpoints, backendUrl, token);
-          if (resolved) payload[field] = resolved;
-        }
+        Object.assign(payload, await resolveNestedIds(payload, (field) => resolveForeignKeyId(field, endpoints, backendUrl, token)));
         const headers: Record<string, string> = { "content-type": "application/json" };
         if (ep.auth !== false) headers.Authorization = `Bearer ${token}`;
-        const res = await fetch(`${backendUrl}${ep.path}`, { method: "POST", headers, body: JSON.stringify(payload) });
-        const text = await res.text();
+        let res = await fetch(`${backendUrl}${ep.path}`, { method: "POST", headers, body: JSON.stringify(payload) });
+        let text = await res.text();
+        // The app validated a field more tightly than the contract says (a date format, an allowed value, a length):
+        // resend once in the shape the app named, as the CRUD check does.
+        if (res.status === 400) {
+          const repaired = repairPayloadFromValidationError(payload, text);
+          if (repaired) {
+            res = await fetch(`${backendUrl}${ep.path}`, { method: "POST", headers, body: JSON.stringify(repaired) });
+            text = await res.text();
+          }
+        }
         let json: unknown = null;
         try { json = JSON.parse(text); } catch { /* not JSON */ }
         if (!res.ok) {
@@ -671,6 +694,10 @@ export function repairPayloadFromValidationError(
   const lengthFixed = repairLengthErrors(payload, errorText);
   if (lengthFixed) return lengthFixed;
 
+  // 2026-10-22 (Trailhead Gear Rentals): "must be valid dates in YYYY-MM-DD format" — the app wants date-only values.
+  const dateFixed = repairDateOnly(payload, errorText);
+  if (dateFixed) return dateFixed;
+
   // Collect every quoted value the validator listed as acceptable.
   const expected = errorText.match(/Expected\s+((?:'[^']*'\s*\|\s*)*'[^']*')/i);
   if (!expected?.[1]) return null;
@@ -717,6 +744,18 @@ export function realisticValueFor(fieldName: string): string | null {
  * characters") — a realistic value of the right length when one fits, else
  * the sent value cut or padded. Null when the error names no length rule.
  */
+/** Timestamps sent where the app asked for YYYY-MM-DD become dates; the end of a range lands a day after its start. */
+function repairDateOnly(payload: Record<string, unknown>, errorText: string): Record<string, unknown> | null {
+  if (!/YYYY-MM-DD/i.test(errorText)) return null;
+  const isoStamp = /^\d{4}-\d{2}-\d{2}T/;
+  const keys = Object.keys(payload).filter((k) => typeof payload[k] === "string" && isoStamp.test(payload[k] as string));
+  if (keys.length === 0) return null;
+  const day = (offsetDays: number) => new Date(Date.now() + offsetDays * 86_400_000).toISOString().slice(0, 10);
+  const out = { ...payload };
+  for (const k of keys) out[k] = /^end(_|$)|_end(_|$)/i.test(k) ? day(3) : day(2);
+  return out;
+}
+
 function repairLengthErrors(payload: Record<string, unknown>, errorText: string): Record<string, unknown> | null {
   const rules = [...errorText.matchAll(/["\s,{]?(\w+)["']?\s*:?\s*(?:String )?must (?:contain|be) at (most|least) (\d+) char/gi)];
   if (rules.length === 0) return null;
@@ -769,12 +808,28 @@ function objectForType(sharedTypesSource: string, typeExpr: string, marker: stri
   return Object.fromEntries(Object.entries(obj).filter(([k]) => (keyed[1] === "Omit" ? !keys.includes(k) : keys.includes(k))));
 }
 
+/** `name: type;` fields of a type body. A ";" inside braces or brackets belongs to a nested type, not to this list. */
+function splitFields(body: string): Array<[string, string, string]> {
+  const parts: string[] = [];
+  let depth = 0, current = "";
+  for (const ch of body) {
+    if ("{<([".includes(ch)) depth++;
+    else if ("}>)]".includes(ch)) depth = Math.max(0, depth - 1);
+    if (ch === ";" && depth === 0) { parts.push(current); current = ""; } else current += ch;
+  }
+  if (current.trim()) parts.push(current);
+  const out: Array<[string, string, string]> = [];
+  for (const p of parts) {
+    const m = p.trim().match(/^(\w+)\??\s*:\s*([\s\S]+)$/);
+    if (m) out.push([p, m[1]!, m[2]!.trim()]);
+  }
+  return out;
+}
+
 function fieldsToPayload(body: string, marker: string, sharedTypesSource = "", depth = 0): Record<string, unknown> | null {
-  const fieldRegex = /(\w+)\??\s*:\s*([^;]+);/g;
   const payload: Record<string, unknown> = {};
-  let match: RegExpExecArray | null;
   let foundAny = false;
-  while ((match = fieldRegex.exec(body)) !== null) {
+  for (const match of splitFields(body)) {
     foundAny = true;
     const [, fieldName, fieldType] = match;
     if (!fieldName) continue;
@@ -1224,11 +1279,8 @@ export async function verifyLiveAuthenticatedRoundTrip(buildDir: string, backend
     // from a real GET list call first (e.g. GET /api/v1/services), never a
     // guessed value — resolveForeignKeyId does the same before the create
     // call, for every "_id" field the payload derivation produced.
-    for (const [fieldName, value] of Object.entries(createPayload)) {
-      if (!fieldName.endsWith("_id") || typeof value !== "string") continue;
-      const resolved = await resolveForeignKeyId(fieldName, endpoints, backendUrl, token);
-      if (resolved) (createPayload as Record<string, unknown>)[fieldName] = resolved;
-    }
+    // Ids nested in lists too (items: [{ gear_id }]), not only top-level ones.
+    Object.assign(createPayload, await resolveNestedIds(createPayload as Record<string, unknown>, (f) => resolveForeignKeyId(f, endpoints, backendUrl, token)));
 
     let createRes = await fetch(`${backendUrl}${createEp.path}`, {
       method: "POST",
@@ -1636,11 +1688,8 @@ export async function verifyAllResourceCrud(
       // payload and have the later update/read steps use the same shape.
       let createPayload = (dynamicPayload ?? { title: marker }) as Record<string, unknown>;
       const fkLookupToken = adminToken ?? activeToken;
-      for (const [fieldName, value] of Object.entries(createPayload)) {
-        if (!fieldName.endsWith("_id") || typeof value !== "string") continue;
-        const resolved = await resolveForeignKeyId(fieldName, endpoints, backendUrl, fkLookupToken);
-        if (resolved) createPayload[fieldName] = resolved;
-      }
+      // Ids nested in lists too (items: [{ gear_id }]), not only top-level ones.
+      createPayload = await resolveNestedIds(createPayload, (f) => resolveForeignKeyId(f, endpoints, backendUrl, fkLookupToken));
 
       let createRes = await fetch(`${backendUrl}${createEp.path}`, {
         method: "POST",

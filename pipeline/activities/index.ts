@@ -606,8 +606,9 @@ export async function runCompileCheck(
       // Direct invocation is both faster and immune to that hang.
       const localTscBin = join(dir, "node_modules", "typescript", "bin", "tsc");
       const tsc = existsSync(localTscBin)
+        // 2026-10-22: 60 s timed out twice while three builders shared the machine; see compile-timeout.test.ts.
         ? spawnSync(process.execPath, [localTscBin, "--noEmit", "--pretty", "false"], {
-            cwd: dir, encoding: "utf-8", timeout: 60_000,
+            cwd: dir, encoding: "utf-8", timeout: 180_000,
             env: { ...process.env, FORCE_COLOR: "0" },
           })
         : spawnSync(resolveNodeCommand("npx"), ["tsc", "--noEmit", "--pretty", "false"], {

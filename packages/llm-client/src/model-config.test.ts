@@ -42,7 +42,9 @@ test("exactly the NIM models that passed the live evaluation are active, each wi
 });
 
 test("NIM-path agents try the evaluated models in order; Ollama agents keep their local model first", () => {
-  expect(FALLBACK_CHAIN.riya).toEqual(["qwen2.5-coder:7b-instruct-q4_K_M", "meta/muse-glimmer-30b", "nvidia/nemotron-3-ultra-550b-a55b"]);
+  expect(FALLBACK_CHAIN.pranav).toEqual(["qwen2.5-coder:7b-instruct-q4_K_M", "meta/muse-glimmer-30b", "nvidia/nemotron-3-ultra-550b-a55b"]);
+  // 2026-10-22: the deploy agent only does tool work, which the local model cannot do (see riya-model.test.ts).
+  expect(FALLBACK_CHAIN.riya).toEqual(["meta/muse-glimmer-30b", "nvidia/nemotron-3-ultra-550b-a55b"]);
   expect(FALLBACK_CHAIN.tilotma).toEqual(["meta/muse-glimmer-30b", "nvidia/nemotron-3-ultra-550b-a55b"]);
   expect(AGENT_MODELS.tilotma).toBe("meta/muse-glimmer-30b");
 });

@@ -77,7 +77,9 @@ export const AGENT_MODELS: Record<AgentName, ModelId> = {
   vanya:   OLLAMA_MODEL,
   pranav:  OLLAMA_MODEL,
   aarav:   OLLAMA_MODEL,
-  riya:    OLLAMA_MODEL,
+  // 2026-10-22: the deploy agent's work is all tool calls, which the local model cannot make (OLLAMA_TOOL_MODELS is
+  // empty), so it was skipped on every deploy. See riya-model.test.ts.
+  riya:    NIM_PRIMARY,
   neha:    NIM_PRIMARY,
 };
 
@@ -110,7 +112,7 @@ export const FALLBACK_CHAIN: Record<AgentName, ModelId[]> = {
   vanya:   [OLLAMA_MODEL, ...NIM_CHAIN],
   pranav:  [OLLAMA_MODEL, ...NIM_CHAIN],
   aarav:   [OLLAMA_MODEL, ...NIM_CHAIN],
-  riya:    [OLLAMA_MODEL, ...NIM_CHAIN],
+  riya:    NIM_CHAIN,
   neha:    NIM_CHAIN,
 };
 
