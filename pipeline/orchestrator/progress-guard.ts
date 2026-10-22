@@ -79,6 +79,12 @@ export function judgeRound(history: RoundRecord[], round: RoundRecord, opts: Gua
   return { hold: false };
 }
 
+/** The findings that were already open in an earlier round of the same stage (what judgeRound would call a repeat). */
+export function repeatedFindings<F extends { file?: string; issue?: string; detail?: string }>(projectId: string, stage: RoundStage, findings: F[]): F[] {
+  const seen = new Set(readRounds(projectId).filter((h) => h.stage === stage).flatMap((h) => h.findings));
+  return findings.filter((f) => seen.has(findingKey(f)));
+}
+
 function roundsFile(projectId: string): string {
   return join(buildDirFor(projectId), "rounds.jsonl");
 }

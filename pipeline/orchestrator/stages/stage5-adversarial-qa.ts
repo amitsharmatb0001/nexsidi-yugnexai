@@ -249,9 +249,10 @@ export async function runStage5WithAgents(
   // This also records the round, so the next one can be compared with it. Never fatal.
   let performanceLeads = "";
   try {
-    const { scanBuildDirForPerformance, formatPerformanceForReviewer } = await import("./performance-scan.ts");
+    const { scanBuildDirForPerformance, formatPerformanceForReviewer, listExistingIndexes, formatExistingIndexes } = await import("./performance-scan.ts");
     const perf = scanBuildDirForPerformance(buildDirFor(projectId));
-    performanceLeads = formatPerformanceForReviewer(perf);
+    // 2026-10-22: the indexes that already exist go with the leads as facts (false "missing index" findings held a build).
+    performanceLeads = [formatPerformanceForReviewer(perf), formatExistingIndexes(listExistingIndexes(buildDirFor(projectId)))].filter(Boolean).join("\n\n");
     recordClaimEvidence(evidenceDir, 9, "growth estimates, leak patterns and round-to-round regressions; sent to the performance reviewer as leads", {
       filesAnalysed: perf.filesAnalysed, concerns: perf.concerns.length, leakPatterns: perf.leakPatterns.length,
       regressions: perf.regressions.length, previousRounds: perf.previousRounds, leadChars: performanceLeads.length,

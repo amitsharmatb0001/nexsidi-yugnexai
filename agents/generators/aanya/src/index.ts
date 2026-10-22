@@ -276,6 +276,10 @@ Workflow:
 4. Call task_complete with verification_passed: true only after verifying the fix actually addresses the root cause, not just silences the symptom`;
 }
 
+// 2026-10-22 (Trailhead rerun): fix rounds ran on the generic 40-step default while doing the same required live check as a
+// generation phase (tuned to 90 from real overruns); a backend fix round ran out at step 40 with its last edit unmade.
+export const FIX_MAX_STEPS = 60;
+
 export async function runFix(plan: BuildPlan, findings: string[]): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
@@ -334,7 +338,8 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     ],
     // 2026-08-10: same gate as run() above — see its comment.
     requiredEvidenceKinds: countPlannedPages(plan) > 1 ? (["visual_check"] as const) : [],
-    // 2026-07-25: reverted the maxIterations override — see run() above.
+    // 2026-10-22: own budget for fix rounds — see FIX_MAX_STEPS.
+    maxIterations: FIX_MAX_STEPS,
   });
 
   return {

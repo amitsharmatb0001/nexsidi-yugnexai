@@ -950,6 +950,11 @@ export async function runStage6(
     // 2026-10-04 (progress guard): before any fix is paid for, judge this
     // review round against the earlier ones.
     if (deps.roundGuard && Array.isArray(retest.findings) && retest.findings.length > 0) {
+      // 2026-10-22: a finding that came back is checked before the guard may hold on it (disputes.ts).
+      const { settleRepeatsBeforeGuard } = await import("../disputes.ts");
+      retest = { ...retest, findings: await settleRepeatsBeforeGuard(projectId, "live", retest.findings as never[], settleReal) };
+    }
+    if (deps.roundGuard && Array.isArray(retest.findings) && retest.findings.length > 0) {
       const verdict = await deps.roundGuard(retest.findings);
       if (verdict.hold) {
         liveHold = { reason: verdict.reason, evidence: verdict.evidence };

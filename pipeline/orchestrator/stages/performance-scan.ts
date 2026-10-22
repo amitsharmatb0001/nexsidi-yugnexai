@@ -58,6 +58,39 @@ export function scanBuildDirForPerformance(buildDir: string, opts: { record?: bo
   return { concerns, leakPatterns, regressions, filesAnalysed: files.length, previousRounds: history.length };
 }
 
+export interface ExistingIndex {
+  table: string;
+  columns: string;
+  unique: boolean;
+  file: string;
+}
+
+/**
+ * Every CREATE INDEX in the project's migration files, read in file order (2026-10-22). On both Trailhead builds the
+ * performance reviewer reported indexes as missing that a migration already created (one in a later fix file), and on the
+ * rerun the false repeat held the build. These go to the reviewer as facts.
+ */
+export function listExistingIndexes(buildDir: string): ExistingIndex[] {
+  const out: ExistingIndex[] = [];
+  const sqlFiles = walk(buildDir).filter((rel) => /(?:^|\/)migrations\/[^/]+\.sql$/.test(rel) || /^db\/[^/]+\.sql$/.test(rel)).sort();
+  const re = /create\s+(unique\s+)?index\s+(?:concurrently\s+)?(?:if\s+not\s+exists\s+)?(?:"?[\w.]+"?\s+)?on\s+(?:only\s+)?"?(?:\w+"?\.)?"?(\w+)"?\s*(?:using\s+\w+\s*)?\(([^)]*)\)/gi;
+  for (const rel of sqlFiles) {
+    let sql = "";
+    try { sql = readFileSync(join(buildDir, rel), "utf8"); } catch { continue; }
+    for (const m of sql.matchAll(re)) {
+      const columns = m[3]!.split(",").map((c) => c.trim().replace(/"/g, "")).filter(Boolean).join(", ");
+      out.push({ table: m[2]!, columns, unique: !!m[1], file: rel });
+    }
+  }
+  return out;
+}
+
+export function formatExistingIndexes(indexes: ExistingIndex[]): string {
+  if (indexes.length === 0) return "";
+  const lines = indexes.map((i) => `- ${i.table}(${i.columns})${i.unique ? " unique" : ""} — ${i.file}`);
+  return `INDEXES THAT ALREADY EXIST (read from every migration file, in order; later files apply on top of earlier ones). These are facts: do not report any of them as missing.\n${lines.join("\n")}`;
+}
+
 /** Leads for the reviewer: regressions first, then leaks, then server functions, then page components. "" when nothing was found. */
 export function formatPerformanceForReviewer(r: PerformanceScanResult, limit = 20): string {
   const lines: string[] = [];

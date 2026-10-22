@@ -34,7 +34,7 @@ import type { InstinctDomain } from "@nexsidi/db";
 import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
 import { runGeneratorWithQuotaRetry } from "../../activities/quota-retry.ts";
 import { dropCodeContradictedFindings } from "../finding-evidence.ts";
-import { dropSettledNotTrue, resolveDisputes, type SettleFn } from "../disputes.ts";
+import { dropSettledNotTrue, resolveDisputes, settleRepeatsBeforeGuard, type SettleFn } from "../disputes.ts";
 import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { join as joinPath } from "node:path";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
@@ -291,6 +291,12 @@ export async function runQAFixLoopWithDeps(
   let noImprovementStreak = 0;
   const holdIfNoProgress = async (): Promise<QAFixLoopResult | null> => {
     if (result.pass || result.findings.length === 0 || !deps.roundGuard) return null;
+    // 2026-10-22: a finding that came back is checked before the guard may hold on it (disputes.ts).
+    const kept = await settleRepeatsBeforeGuard(projectId, "qa", result.findings, deps.settleDisputes);
+    if (kept.length !== result.findings.length) {
+      result = { ...result, findings: kept, ...(kept.length === 0 ? { pass: true } : {}) };
+      if (kept.length === 0) return null;
+    }
     const verdict = await deps.roundGuard(result.findings);
     return verdict.hold ? { ...result, iterations, stuck: true, hold: { reason: verdict.reason, evidence: verdict.evidence } } : null;
   };

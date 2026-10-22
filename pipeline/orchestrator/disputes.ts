@@ -68,6 +68,51 @@ export function dropSettledNotTrue<F extends { file?: string; issue?: string; de
   return { kept, dropped };
 }
 
+/**
+ * 2026-10-22 (Trailhead rerun): before the progress guard judges a round, every finding that came back from an earlier round
+ * is checked by the settler. The guard held a build on "missing index on bookings(start_date, end_date)" while that index
+ * existed in a later migration file: a repeat is either a fix that did not hold or a false finding, and only a check can tell.
+ * Not true: dropped and remembered (settled-not-true.jsonl). True or unsettled: kept, so a real repeat still holds.
+ */
+export async function settleRepeatsBeforeGuard<F extends { file?: string; issue?: string; detail?: string }>(
+  projectId: string,
+  stage: "qa" | "live",
+  findings: F[],
+  settle: SettleFn | undefined,
+): Promise<F[]> {
+  if (!settle || findings.length === 0) return findings;
+  const { repeatedFindings } = await import("./progress-guard.ts");
+  const repeats = repeatedFindings(projectId, stage, findings);
+  if (repeats.length === 0) return findings;
+  const textOf = (f: F) => {
+    const text = f.issue ?? f.detail ?? "";
+    return f.file ? `${f.file}: ${text}` : text;
+  };
+  const disputes: Dispute[] = repeats.map((f) => ({
+    agent: "guard",
+    finding: textOf(f),
+    checked: "this finding was already raised in an earlier round and came back after the builders worked on it",
+    observed: "check the current code: is it still true?",
+    at: new Date().toISOString(),
+  }));
+  console.log(`[disputes] ${repeats.length} finding(s) came back after a fix round — Tilotma is checking them before the guard judges the round`);
+  let verdicts: DisputeVerdict[] = [];
+  try {
+    verdicts = await settle(projectId, disputes);
+  } catch (err) {
+    console.warn(`[disputes] checking the repeated findings failed, they stay open: ${String(err).slice(0, 160)}`);
+    return findings;
+  }
+  const notTrue = new Set(verdicts.filter((v) => v.verdict === "not_true").map((v) => v.dispute.finding));
+  for (const v of verdicts.filter((x) => x.verdict === "not_true")) {
+    const file = settledFile(projectId);
+    mkdirSync(join(file, ".."), { recursive: true });
+    appendFileSync(file, JSON.stringify({ finding: v.dispute.finding, evidence: v.evidence, at: new Date().toISOString() }) + "\n");
+    console.log(`[disputes] not true, dropped before the guard: ${v.dispute.finding.slice(0, 160)}`);
+  }
+  return findings.filter((f) => !notTrue.has(textOf(f)));
+}
+
 export async function resolveDisputes(
   projectId: string,
   sinceIso: string,

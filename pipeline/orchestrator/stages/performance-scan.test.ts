@@ -60,3 +60,42 @@ test("a clean project and a missing folder both give an empty string, so the rev
   expect(formatPerformanceForReviewer(scanBuildDirForPerformance(dir, { record: false }))).toBe("");
   expect(formatPerformanceForReviewer(scanBuildDirForPerformance(join(dir, "nowhere")))).toBe("");
 });
+
+// 2026-10-22 (both Trailhead builds): the performance reviewer reported "no index on bookings(start_date, end_date)" and "no
+// index on bookings(user_id)" while the indexes existed (one in 0000_initial.sql line 50, one in 0001_fix.sql); on the rerun
+// the false repeat held the whole build. The indexes already present, read from every migration file in order, now go to
+// the reviewer as facts with the other leads.
+test("existing indexes are read from every migration file, in order", async () => {
+  const { listExistingIndexes } = await import("./performance-scan.ts");
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "idx-"));
+  try {
+    mkdirSync(join(dir, "db", "migrations"), { recursive: true });
+    writeFileSync(join(dir, "db", "migrations", "0000_initial.sql"),
+      "CREATE TABLE bookings (id uuid PRIMARY KEY, user_id uuid);\nCREATE UNIQUE INDEX IF NOT EXISTS users_email_idx ON users(email);\nCREATE INDEX IF NOT EXISTS bookings_user_id_idx ON bookings(user_id);\n");
+    writeFileSync(join(dir, "db", "migrations", "0001_fix.sql"),
+      "CREATE INDEX IF NOT EXISTS bookings_start_date_end_date_idx ON bookings (start_date, end_date);\ncreate index gear_cat on public.gear using btree (category);\n");
+    const idx = listExistingIndexes(dir);
+    expect(idx).toEqual([
+      { table: "users", columns: "email", unique: true, file: "db/migrations/0000_initial.sql" },
+      { table: "bookings", columns: "user_id", unique: false, file: "db/migrations/0000_initial.sql" },
+      { table: "bookings", columns: "start_date, end_date", unique: false, file: "db/migrations/0001_fix.sql" },
+      { table: "gear", columns: "category", unique: false, file: "db/migrations/0001_fix.sql" },
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the existing indexes are given to the performance reviewer as facts", async () => {
+  const { formatExistingIndexes } = await import("./performance-scan.ts");
+  const text = formatExistingIndexes([{ table: "bookings", columns: "start_date, end_date", unique: false, file: "db/migrations/0001_fix.sql" }]);
+  expect(text).toContain("bookings(start_date, end_date)");
+  expect(text).toContain("0001_fix.sql");
+  expect(text).toContain("do not report");
+  expect(formatExistingIndexes([])).toBe("");
+  const stage = (await import("node:fs")).readFileSync(new URL("./stage5-adversarial-qa.ts", import.meta.url), "utf-8");
+  expect(stage).toContain("formatExistingIndexes(listExistingIndexes(");
+});

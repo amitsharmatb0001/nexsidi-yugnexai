@@ -348,6 +348,11 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
 // missing DB unique constraint that was the real root cause because the
 // schema was never shown to it. Root-cause reasoning is now instructed
 // explicitly and the full system context is included.
+// 2026-10-22 (Trailhead rerun): a fix round batched the booking-items insert as "(1, 2, 3, 4)" instead of
+// "($1, $2, $3, $4)", found its own bug at step 40 (the generic default) and stopped before the edit; the half-made change
+// stayed. Generation phases doing the same live check were tuned to 90 from real overruns; fix rounds now get 60.
+export const FIX_MAX_STEPS = 60;
+
 export function buildFixTask(findings: string[], plan: BuildPlan): string {
   return `A review reported the following findings about the backend code you already wrote.
 
@@ -455,6 +460,8 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // 2026-07-25: reverted the maxIterations override for the same reason
     // as run() above — see that comment. A fix task's live-verification
     // phase can be just as tool-call-heavy as a full generation's.
+    // 2026-10-22: so it gets its own budget instead of the generic 40 — see FIX_MAX_STEPS.
+    maxIterations: FIX_MAX_STEPS,
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see
