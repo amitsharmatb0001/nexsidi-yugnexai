@@ -714,6 +714,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
             undefined,
             // 2026-09-28: cache hits are billed at the cache rate — see computeCostUsd.
             response.cachedContentTokens ?? 0,
+            config.agentName,
           );
         } catch (spendErr) {
           console.error(`[${config.agentName}:qa-loop] recordSpend failed (non-fatal — this call's spend may be under-counted):`, spendErr);

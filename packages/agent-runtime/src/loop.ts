@@ -822,7 +822,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
       // activity's assertWithinBudget call either way).
       if (config.projectId) {
         try {
-          await recordSpend(config.projectId, usage.prompt_tokens, usage.completion_tokens, currentModel);
+          await recordSpend(config.projectId, usage.prompt_tokens, usage.completion_tokens, currentModel, undefined, 0, config.agentName);
         } catch (spendErr) {
           console.error(`[${config.agentName}:agent] recordSpend failed (non-fatal — this call's spend may be under-counted):`, spendErr);
         }

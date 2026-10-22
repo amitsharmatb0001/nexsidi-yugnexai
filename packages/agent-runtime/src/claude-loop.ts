@@ -286,7 +286,7 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
       // see this file's recordSpend import comment.
       if (config.projectId) {
         try {
-          await recordSpend(config.projectId, response.usage.inputTokens, response.usage.outputTokens, resolveClaudeModel());
+          await recordSpend(config.projectId, response.usage.inputTokens, response.usage.outputTokens, resolveClaudeModel(), undefined, 0, config.agentName);
         } catch (spendErr) {
           console.error(`[${config.agentName}:claude-agent] recordSpend failed (non-fatal — this call's spend may be under-counted):`, spendErr);
         }

@@ -178,6 +178,8 @@ export interface SpendTotals {
 export interface SpendStore {
   getTotals(projectId: string): Promise<SpendTotals | null>;
   addTotals(projectId: string, deltaTokensIn: number, deltaTokensOut: number, deltaCostUsd: number): Promise<void>;
+  /** 2026-10-22: the same call added to its agent's row in agent_spend (optional: test stores may leave it out). */
+  addAgentTotals?(projectId: string, agent: string, model: string, deltaTokensIn: number, deltaTokensOut: number, cachedTokensIn: number, deltaCostUsd: number): Promise<void>;
 }
 
 // Real store — dynamic import so requiring this module never requires a
@@ -228,6 +230,20 @@ const dbSpendStore: SpendStore = {
         },
       });
   },
+  async addAgentTotals(projectId, agent, model, deltaTokensIn, deltaTokensOut, cachedTokensIn, deltaCostUsd) {
+    const { db } = await import("@nexsidi/db");
+    const { sql } = await import("drizzle-orm");
+    await db.execute(sql`
+      INSERT INTO agent_spend (project_id, agent, model, calls, tokens_in, tokens_out, cached_in, cost_usd, updated_at)
+      VALUES (${projectId}, ${agent}, ${model}, 1, ${deltaTokensIn}, ${deltaTokensOut}, ${cachedTokensIn}, ${deltaCostUsd.toFixed(6)}, now())
+      ON CONFLICT (project_id, agent, model) DO UPDATE SET
+        calls = agent_spend.calls + 1,
+        tokens_in = agent_spend.tokens_in + EXCLUDED.tokens_in,
+        tokens_out = agent_spend.tokens_out + EXCLUDED.tokens_out,
+        cached_in = agent_spend.cached_in + EXCLUDED.cached_in,
+        cost_usd = agent_spend.cost_usd + EXCLUDED.cost_usd,
+        updated_at = now()`);
+  },
 };
 
 // Produces: recordSpend(projectId, tokensIn, tokensOut, model) — persists a
@@ -240,9 +256,18 @@ export async function recordSpend(
   model: string,
   store: SpendStore = dbSpendStore,
   cachedTokensIn = 0,
+  agent?: string,
 ): Promise<void> {
   const costUsd = computeCostUsd(tokensIn, tokensOut, model, cachedTokensIn);
   await store.addTotals(projectId, tokensIn, tokensOut, costUsd);
+  // The per-agent row is a breakdown of the total above; a failure here must never lose the total (or stop a build).
+  if (agent && store.addAgentTotals) {
+    try {
+      await store.addAgentTotals(projectId, agent, model, tokensIn, tokensOut, cachedTokensIn, costUsd);
+    } catch (err) {
+      console.warn(`[spend] could not add to ${agent}'s spend row (the project total is recorded): ${String(err).slice(0, 160)}`);
+    }
+  }
 }
 
 // Produces: checkBudget(projectId) — computes cost so far against the
