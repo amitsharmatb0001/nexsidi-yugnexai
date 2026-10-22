@@ -122,8 +122,9 @@ export function ChatWindow() {
     setAttachments([]);
     setStreaming(true);
 
-    // Placeholder for the assistant reply
-    const assistantTs = Date.now();
+    // Placeholder for the assistant reply. Its ts must differ from the user's: Date.now() twice in the same millisecond gave
+    // both the same ts, so every update to the reply also overwrote the user's bubble (each answer showed twice).
+    const assistantTs = userMsg.ts + 1;
     setMessages((prev) => [...prev, { role: "assistant", content: "", ts: assistantTs }]);
 
     try {
@@ -142,12 +143,15 @@ export function ChatWindow() {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
+      // An update can arrive split across two reads; the unfinished last line waits for the rest instead of being dropped.
+      let pending = "";
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const lines = decoder.decode(value).split("\n");
+        const lines = (pending + decoder.decode(value, { stream: true })).split("\n");
+        pending = lines.pop() ?? "";
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
           const raw = line.slice(6).trim();
@@ -168,6 +172,7 @@ export function ChatWindow() {
               content?: string;
               phase?: string;
               projectId?: string;
+              progress?: { type: string; query?: string };
               elicitationQuestion?: { text: string; options: Array<{ label: string; description?: string; recommended?: boolean }> };
               proposedPlan?: { appName: string; publicPages: Array<{ name: string }>; protectedPages: Array<{ name: string }>; apiEndpoints: Array<{ method: string; path: string }> };
             };
@@ -184,6 +189,16 @@ export function ChatWindow() {
 
             if (chunk.type === "phase_change" && chunk.phase === "building") {
               // Pipeline started — will get projectId from next event
+            }
+
+            // The planner researches the product first (several minutes). Show that it is working, and what it is looking up,
+            // until its real reply replaces this text.
+            if (chunk.type === "research_status" && chunk.content) {
+              setMessages((prev) => prev.map((m) => (m.ts === assistantTs ? { ...m, content: chunk.content ?? "" } : m)));
+            }
+            if (chunk.type === "research_progress" && chunk.progress?.type === "search_started" && chunk.progress.query) {
+              const query = chunk.progress.query;
+              setMessages((prev) => prev.map((m) => (m.ts === assistantTs ? { ...m, content: `Researching your product…\nLooking up: ${query}` } : m)));
             }
 
             if (chunk.type === "project_started" && chunk.projectId) {
