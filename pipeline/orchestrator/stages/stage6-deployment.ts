@@ -43,6 +43,7 @@ import { isQuotaExhaustionError } from "../../../packages/agent-runtime/src/gemi
 import { dropCodeContradictedFindings } from "../finding-evidence.ts";
 import { fixChangedCode } from "./stage5-qa-fix-loop.ts";
 import { dropSettledNotTrue, resolveDisputes, type SettleFn } from "../disputes.ts";
+import { dropOutOfScopeFindings } from "../out-of-scope.ts";
 import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { runAuthSmokeTest } from "./auth-smoke.ts";
 import { runRouteSweepReal, createReviewAccount } from "./route-sweep.ts";
@@ -84,8 +85,12 @@ export function guardLiveRetest(projectId: string, retest: LiveRetestResult): Li
   // builder's dispute (../disputes.ts) are dropped too.
   const settled = dropSettledNotTrue(projectId, code.kept);
   for (const d of settled.dropped) console.log(`[stage6] dropped finding Tilotma ruled not true: ${d.file}: ${String(d.issue ?? d.detail ?? "").slice(0, 120)}`);
-  const kept = settled.kept;
-  if (code.dropped.length + settled.dropped.length === 0) return retest;
+  // 2026-10-22: a request for an endpoint nobody asked for (not in the approved contract, not called by any page) is not a
+  // defect; on the Trailhead rerun two of these cost whole rounds before being settled not true (../out-of-scope.ts).
+  const scope = dropOutOfScopeFindings(settled.kept, projectDir);
+  for (const d of scope.dropped) console.log(`[stage6] dropped out-of-scope finding (${d.reason}): ${String(d.finding.issue ?? d.finding.detail ?? "").slice(0, 120)}`);
+  const kept = scope.kept;
+  if (code.dropped.length + settled.dropped.length + scope.dropped.length === 0) return retest;
   // The spec check's own verdict stands only while one of its findings remains.
   const specOpen = kept.some((f) => String(f.issue ?? f.detail ?? "").includes("[spec-compliance]"));
   const specCompliance = retest.specCompliance && !retest.specCompliance.pass && !specOpen
