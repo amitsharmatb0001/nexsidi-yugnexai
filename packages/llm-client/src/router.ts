@@ -408,6 +408,10 @@ export async function routeToolsWithFallback(
 
   let lastEmpty: (GeminiChatWithToolsResult & { modelUsed: string }) | null = null;
   for (const model of attemptOrder) {
+    // 2026-10-22: every attempt's time and outcome is logged — a one-pass review took 525 s for 2 calls, and nearly every
+    // call in a build said "pool[0] failed" with no reason or duration, so the time could not be traced to anything.
+    const startedAt = Date.now();
+    const took = () => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
     try {
       const result = await chat(messages, tools, {
         model,
@@ -417,6 +421,7 @@ export async function routeToolsWithFallback(
         // guaranteed fallback model is one line away in this loop.
         fastFailOn429: true,
       });
+      console.log(`[call-time:${tier}] ${opts?.agentName ?? "?"} ${model} ok in ${took()}`);
       // An answer with no text and no tool call is a failed call, not a turn (Shopbill run 4: three in a row ended
       // a whole pass having written nothing). Try the next model, as for an error.
       if (result.toolCalls.length === 0 && !result.content?.trim()) {
@@ -431,6 +436,7 @@ export async function routeToolsWithFallback(
       return { ...result, modelUsed: model };
     } catch (err) {
       const msg = String(err);
+      console.log(`[call-time:${tier}] ${opts?.agentName ?? "?"} ${model} FAILED in ${took()}: ${msg.replace(/\s+/g, " ").slice(0, 160)}`);
       // Record the throttle so the NEXT call in this run leads with a model
       // that is actually available, instead of repeating this round-trip.
       if (msg.includes("429") || /rate.?limit|RESOURCE_EXHAUSTED/i.test(msg)) {

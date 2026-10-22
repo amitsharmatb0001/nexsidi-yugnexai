@@ -347,3 +347,17 @@ Tests: 699 pass across the builders and the orchestrator.
 **Found:** on the deploy retry the app was redeployed and passed its checks (sign-in, 2 sample bookings, 34 page visits, cleanup) after a live fix round; then the final reviewer called `db_query` with no query. `isReadOnlyQuery` ran `undefined.trim()`, the error escaped the agent loop (its tool dispatch had no catch) and the whole deploy step failed after 98 minutes (`TypeError: undefined is not an object (evaluating 'raw.trim')`, `deploy_activity_error`).
 
 **Fixed:** `db_query` with a missing or non-text query is a clean error result. Both agent loops (`gemini-loop.ts`, `loop.ts`) now catch any error thrown inside a tool at the dispatch and hand it to the agent as an error result, so the step goes on. Checked first: no tool throws on purpose to stop a step (the spend cap and time limits are checked outside the tools). 721 agent-runtime tests pass; type check clean.
+
+### Measured cost of the Trailhead rerun, and the one-pass review (2026-10-22, batch 9)
+
+**Measured (1,370 model calls in the worker logs, priced with the platform's own rate table): $36.94.** Frontend builder $9.01 (330 calls, 15.2M input tokens); security reviewer $6.57 (161 calls, 10.7M); performance reviewer $5.57 (174, 12.7M); logic reviewer $4.75 (162, 8.0M); backend builder $4.51 (170, 8.4M); live browser review and verdict $5.52; everything else ~$1. The three code reviewers were 46% of the cost. The app they read is 53 files, 130,580 characters (~37K tokens). The database keeps only a total per project, so this had to be rebuilt from logs.
+
+**Why:** each reviewer read the app one 8,000-character piece at a time, ~160 calls, and every call resent the whole conversation. Builders loop the same way (each step resends ~45K tokens).
+
+**Built:** the code goes into the reviewer's first message (`buildPreloadedCode`, up to 600,000 characters, ~170K tokens; files past the budget are listed and read with tools); every included file counts as read; the step budget is 8 when everything fits.
+
+**Amit's rule (2026-10-22):** after any fix the review covers the WHOLE app, never only the changed files, because one changed function can break every page that imports it. The changed-files-only re-review is no longer used (`changedFilesSinceLastRound` is ignored). Passing reviews are still reused only for byte-identical code.
+
+**Proof on the real app:** one logic review of Trailhead: 2 model calls, ~119K input tokens (~$0.15) instead of ~160 calls and ~8M tokens; it found one real HIGH bug (the booking page drops the gear and dates passed from a gear page). 725 agent-runtime tests pass.
+
+**Found, not yet fixed:** that review still took 525 s for its 2 calls. Small calls to both models answer in 2-5 s (probe), so the time is in large or failing calls under load, and nothing recorded which: there was no per-call duration or failure reason. Every model attempt now logs its model, seconds and outcome (`[call-time:<tier>] <agent> <model> ok in Xs` or `FAILED in Xs: <reason>`), so the next build shows where the time goes.

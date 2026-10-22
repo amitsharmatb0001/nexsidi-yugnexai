@@ -499,6 +499,46 @@ const QA_TOOL_DEFS: NimToolDef[] = [
 // schema re-flagged the same false-positive finding every round because it
 // had no way to judge scale/intent, and could never report "this doesn't
 // match what was asked for."
+/** Characters of code put into a reviewer's first message (~170K tokens); covers apps several times the Trailhead size. */
+export const QA_PRELOAD_CHARS = Number(process.env.QA_PRELOAD_CHARS ?? 600_000);
+
+export interface PreloadedCode {
+  text: string;
+  included: string[];
+  omitted: string[];
+}
+
+/**
+ * 2026-10-22: every reviewable file, whole, in path order, until the budget is used; files past it are listed as omitted
+ * (never cut in half). On the Trailhead rerun each reviewer read a ~37K-token app in ~160 calls, resending the whole
+ * conversation each time (8-12M input tokens per reviewer); with the code in the first message a review takes a few calls.
+ */
+export function buildPreloadedCode(dirs: LabeledDir[], budgetChars: number): PreloadedCode {
+  const included: string[] = [];
+  const omitted: string[] = [];
+  const parts: string[] = [];
+  let used = 0;
+  for (const path of listLabeledFiles(dirs).sort()) {
+    const abs = resolveLabeledFile(dirs, path);
+    let content: string;
+    try {
+      content = abs ? readFileSync(abs, "utf-8") : "";
+    } catch {
+      omitted.push(path);
+      continue;
+    }
+    const block = `=== FILE: ${path} ===\n${content}\n=== END: ${path} ===`;
+    if (used + block.length > budgetChars) {
+      omitted.push(path);
+      continue;
+    }
+    parts.push(block);
+    included.push(path);
+    used += block.length;
+  }
+  return { text: parts.join("\n\n"), included, omitted };
+}
+
 export function buildQaInitialMessage(
   reviewFocus: string,
   systemContext: string | undefined,
@@ -509,8 +549,24 @@ export function buildQaInitialMessage(
   // always-full-explore message, byte-identical to before this feature
   // existed.
   changedFiles?: string[],
+  preload?: PreloadedCode,
 ): string {
   const contextBlock = systemContext ? `${systemContext}\n\n` : "";
+
+  // 2026-10-22: the code is in this message — review it all and submit; read with tools only what was not included.
+  if (preload && preload.included.length > 0) {
+    const rest = preload.omitted.length > 0
+      ? `\n\nThese files did NOT fit and are not included; read them with read_files before you submit:\n${preload.omitted.join("\n")}`
+      : "";
+    return (
+      `${contextBlock}Review this codebase for ${reviewFocus}. The whole codebase is included below (${preload.included.length} ` +
+      `file(s), each between "=== FILE: <path> ===" and "=== END: <path> ==="), so every included file already counts as ` +
+      `read: do not call list_files or read_file for them. Review EVERY file, including how files depend on each other ` +
+      `(a changed export can break every file that imports it). Every finding quotes, in "evidence", the exact code that ` +
+      `shows the problem, copied from the file below; it is checked against the file and a quote that is not there is ` +
+      `refused. Then call submit_findings (an empty findings array if you found nothing).${rest}\n\n${preload.text}`
+    );
+  }
 
   if (changedFiles && changedFiles.length > 0) {
     return (
@@ -580,11 +636,13 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
   // full-explore behavior) — see QAAgentConfig.changedFilesSinceLastRound's
   // comment for why an empty list is the deliberate safe default, not an
   // accidental free pass.
-  const changedFiles = config.changedFilesSinceLastRound && config.changedFilesSinceLastRound.length > 0
-    ? config.changedFilesSinceLastRound
-    : undefined;
+  // 2026-10-22 (Amit): after any fix the review covers the WHOLE app, never only the changed files — one changed function
+  // can break every page that imports it. changedFilesSinceLastRound is no longer used to narrow a review.
+  const changedFiles: string[] | undefined = undefined;
+  // 2026-10-22: the code goes into the first message (see buildPreloadedCode); included files count as read.
+  const preload = buildPreloadedCode(config.dirs, QA_PRELOAD_CHARS);
 
-  const initialMessage = buildQaInitialMessage(config.reviewFocus, config.systemContext, changedFiles);
+  const initialMessage = buildQaInitialMessage(config.reviewFocus, config.systemContext, changedFiles, preload);
   const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt, taskText: initialMessage });
   let messages: GeminiMessage[] = [
     { role: "system", content: systemPrompt },
@@ -592,6 +650,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
   ];
 
   const readFiles = new Set<string>();
+  for (const path of preload.included) readFiles.add(path);
   const errors: string[] = [];
   const recentCallSignatures: string[] = [];
   let iterations = 0;
@@ -605,7 +664,8 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
   // real savings come from the reviewer CHOOSING not to use it, not from a
   // tighter cap forcing it to stop early.
   let totalFilesListed = listLabeledFiles(config.dirs).length;
-  const effectiveMaxIterations = computeQaMaxIterations(totalFilesListed);
+  // With the whole app in the first message a review needs a few calls; the step budget covers only the files left out.
+  const effectiveMaxIterations = preload.omitted.length === 0 ? 8 : computeQaMaxIterations(preload.omitted.length);
   // Cost-control plan Task 3: undefined (falls back to the original
   // always-hit-disk path in readLabeledFile/readLabeledFiles) unless the
   // caller supplied a projectId AND the cache hasn't been disabled via
