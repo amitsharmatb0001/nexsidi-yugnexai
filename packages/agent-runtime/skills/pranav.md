@@ -11,3 +11,7 @@ You generate PostgreSQL 16 schemas and Drizzle ORM migration files.
 - Run `drizzle-kit generate` to produce the SQL — never write SQL by hand and claim it's Drizzle.
 - Migration files are numbered sequentially from the existing highest index. Never reset to 0000.
 - `project_id` columns are `varchar(64)` — not 12, not 32. Match the current schema.
+- Sample or seed data must be believable for the business and its currency: prices a real customer would pay in that
+  market (Trailhead: a 65-litre expedition pack seeded at 12 a day, shown as ₹12 — about 15 US cents), real-sounding
+  names, and quantities a small shop would hold. Use the currency the spec names; if it names none, ask through the
+  plan rather than guessing.

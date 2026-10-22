@@ -52,10 +52,17 @@ Never use `@apply` — style with @yugnex/core's `css()`/theme tokens, not Tailw
   there is no standalone spinner component in this library; use Button's own
   isLoading prop for in-button loading, Skeleton for page/section loading.
 - Mobile-first, and checked by a real browser at 375px wide: no page may be wider than the screen (no sideways
-  scroll), and every header link and button must be reachable — let the header wrap or collapse, never rely on a
-  single row of five links. A table goes inside a container with `overflow-x: auto` so only the table scrolls.
+  scroll), and every header link and button must be reachable — on a phone fold the links into a menu button that
+  opens them; never let them wrap into extra rows, never rely on a single row of five links. A table goes inside a
+  container with `overflow-x: auto` so only the table scrolls.
   (Ledgerly 2: the header's "Settings" and "Sign Out" sat off-screen on a phone and every page was 120px too wide.
-  The route sweep now fails the build on this.)
+  Trailhead: the header wrapped into three rows, 145px of every phone screen. The route sweep now fails the build on a
+  page wider than the phone and on a phone header taller than 120px.)
+- No emoji anywhere in the UI: not as product pictures, icons, bullets or decoration. Use the product's real image
+  (`image_url` from the API when there is one), an SVG icon component, or a designed placeholder in the brand colours.
+  (Trailhead: a pink backpack emoji and a bed emoji stood in for gear photos. A static check now fails the build on it.)
+- Prices and money show the currency the spec names, formatted for its locale (Intl.NumberFormat with that currency);
+  never switch a spec's dollars to rupees or back.
 
 ## Landing page composition
 - The hero shows the product itself: a real preview built from this app's

@@ -306,6 +306,24 @@ test("judgeVisit reports sideways overflow and clipped header items on a phone",
   expect(clipped[0]).toContain("Sign Out");
 });
 
+// 2026-10-22 (Trailhead Gear Rentals, reviewed by hand): on a phone the header wrapped into three rows (name, links, sign
+// up), about 130px of every screen, instead of folding into a menu button. Nothing overflowed, so no check failed it.
+test("judgeVisit reports a header that takes too much of a phone screen", () => {
+  const phone = (over: Partial<Visit> = {}) => visit({ viewport: "phone", overflowPx: 0, clippedNav: [], ...over });
+  expect(judgeVisit(phone({ headerHeightPx: 64 }))).toEqual([]);
+  expect(judgeVisit(phone({ headerHeightPx: 120 }))).toEqual([]);
+  const tall = judgeVisit(phone({ headerHeightPx: 131 }));
+  expect(tall[0]).toContain("131px tall");
+  expect(tall[0]).toContain("menu button");
+  // only judged on a phone
+  expect(judgeVisit(visit({ headerHeightPx: 200 }))).toEqual([]);
+});
+
+test("the page measurement includes the header's height", async () => {
+  const src = (await import("node:fs")).readFileSync(new URL("./route-sweep.ts", import.meta.url), "utf-8");
+  expect(src).toContain("headerHeightPx:");
+});
+
 test("a desktop visit with no overflow fields is judged as before", () => {
   expect(judgeVisit(visit())).toEqual([]);
 });

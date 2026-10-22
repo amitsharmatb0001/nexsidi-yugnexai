@@ -36,7 +36,12 @@ export interface Visit {
   overflowPx?: number;
   /** Header / nav links and buttons that sit partly or fully off-screen. */
   clippedNav?: string[];
+  /** Height of the page header (the first <header>, else the first <nav>) in pixels. */
+  headerHeightPx?: number;
 }
+
+/** Above this a phone header has wrapped into rows instead of folding into a menu button (folded headers are ~56-72px). */
+export const PHONE_HEADER_MAX_PX = 120;
 
 export const PHONE_VIEWPORT = { width: 375, height: 812 };
 export const DESKTOP_VIEWPORT = { width: 1280, height: 800 };
@@ -112,6 +117,10 @@ export function judgeVisit(v: Visit): string[] {
   const problems: string[] = [];
   if ((v.overflowPx ?? 0) > 8) problems.push(`is ${v.overflowPx}px wider than the phone screen, so the page scrolls sideways`);
   if ((v.clippedNav?.length ?? 0) > 0) problems.push(`has header items that do not fit on the screen: ${v.clippedNav!.join(", ")}`);
+  // 2026-10-22 (Trailhead): a header wrapped into three rows took ~130px of every phone screen; nothing overflowed.
+  if (v.viewport === "phone" && (v.headerHeightPx ?? 0) > PHONE_HEADER_MAX_PX) {
+    problems.push(`has a header ${v.headerHeightPx}px tall, so its links wrapped into rows; fold them into a menu button on a phone`);
+  }
   const layout = problems.length > 0 ? [`${where} ${problems.join(" and ")}`] : [];
   if (v.viewport === "phone") return layout;
   if (v.status !== null && v.status >= 400) out.push(`${where} answered HTTP ${v.status}`);
@@ -149,7 +158,7 @@ export function mergePhoneFindings(findings: Array<{ file: string; issue: string
   }
   const merged = [...groups.values()].map((g) => ({
     file: g.file,
-    issue: `[route-sweep] on a phone (375px wide), ${g.routes.length} page(s) (${g.routes.join(", ")}): the page ${g.detail}. The header is shared by these pages, so fix it once in the shared header or layout component (collapse the menu or let it wrap), and wrap any wide table in a container that scrolls sideways inside itself.`,
+    issue: `[route-sweep] on a phone (375px wide), ${g.routes.length} page(s) (${g.routes.join(", ")}): the page ${g.detail}. The header is shared by these pages, so fix it once in the shared header or layout component (on a phone, fold the links into a menu button that opens them; do not let them wrap into rows), and wrap any wide table in a container that scrolls sideways inside itself.`,
   }));
   return [...rest, ...merged];
 }
@@ -183,7 +192,8 @@ export interface RouteSweepResult {
 const PAGE_INFO_EXPRESSION =
   "/*page*/ ({ text: (document.body ? document.body.innerText : '').slice(0, 2000), links: [...document.querySelectorAll('a[href]')].map((a) => a.getAttribute('href') || ''), " +
   "overflowPx: Math.max(0, document.documentElement.scrollWidth - window.innerWidth), " +
-  "clippedNav: [...document.querySelectorAll('header a, header button, nav a, nav button')].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.right > window.innerWidth + 1 || r.left < -1); }).map((e) => (e.textContent || '').trim()).filter(Boolean) })";
+  "clippedNav: [...document.querySelectorAll('header a, header button, nav a, nav button')].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.right > window.innerWidth + 1 || r.left < -1); }).map((e) => (e.textContent || '').trim()).filter(Boolean), " +
+  "headerHeightPx: Math.round((document.querySelector('header') || document.querySelector('nav'))?.getBoundingClientRect().height || 0) })";
 
 const pageFileFor = (file: string) => `frontend/${file}`;
 const slug = (route: string) => (route === "/" ? "home" : route.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, ""));
@@ -235,10 +245,11 @@ async function visitPage(browser: BrowserLike, opts: RouteSweepOptions, route: s
     const nav = (await browser.send("navigate", { url: opts.appUrl.replace(/\/$/, "") + route })) as { status: number | null; finalUrl?: string; url?: string };
     v.status = nav?.status ?? null;
     try { v.finalPath = new URL(nav?.finalUrl ?? nav?.url ?? "", "http://x").pathname; } catch { /* keep route */ }
-    const info = ((await browser.send("evaluate", { expression: PAGE_INFO_EXPRESSION })) as any)?.value as { text?: string; links?: string[]; overflowPx?: number; clippedNav?: string[] } | null;
+    const info = ((await browser.send("evaluate", { expression: PAGE_INFO_EXPRESSION })) as any)?.value as { text?: string; links?: string[]; overflowPx?: number; clippedNav?: string[]; headerHeightPx?: number } | null;
     v.bodyText = info?.text ?? "";
     v.overflowPx = info?.overflowPx ?? 0;
     v.clippedNav = info?.clippedNav ?? [];
+    v.headerHeightPx = info?.headerHeightPx ?? 0;
     if (viewport === "desktop") for (const href of info?.links ?? []) links.push({ href, from: route });
     if (opts.screenshotDir) {
       await browser.send("screenshot", { path: join(opts.screenshotDir, `${viewport === "phone" ? "phone-" : ""}${auth}-${slug(route)}.png`), fullPage: true }).catch(() => {});

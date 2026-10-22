@@ -291,3 +291,10 @@ A new app (outdoor-gear rental shop) was built through the chat page in Chrome, 
 **Found and fixed: claim 5 was not in the full pipeline.** The container sandbox was used only by the Express Build path. The full pipeline's type check now runs inside the container when `NEXSIDI_SANDBOX_BUILDS=on` (the default on Linux; off by default on this Windows machine because folder sharing is slow). Proof: the Trailhead backend type check ran in the container on this machine, clean, in 21 s; the host report shows cgroup v2, the seccomp whitelist and private namespaces active, user-namespace remap not active (a daemon setting for the Linux server); no container was left behind.
 
 **Not done:** Navya and Deepika have still never had training rounds (they cost model money), so claim 4's evidence will show 0 characters for them.
+
+### Added: app quality rules from the hands-on review of Trailhead (2026-10-22, batch 3)
+
+Found by reviewing the delivered app by hand (screenshots at 1366 and 375 wide, a real booking through the API), not by any check:
+- **Phone header:** wrapped into three rows, 145px of every phone screen (measured with the sweep's own expression). The route sweep now measures the header's height on a phone and fails it above 120px; the fix text tells the builder to fold the links into a menu button. The frontend builder's rules say the same.
+- **Emoji as product pictures and icons:** 12 places in 4 files (backpack, bed, tent and calendar emoji). A new static check (`emoji-ui-check.ts`) runs in the review stage next to the dead-button check and fails the round with one finding per file; typographic marks (©, ™, ®, ✓) are not counted. On the real Trailhead frontend it reports exactly those 4 files and 12 lines. The frontend builder's rules now forbid emoji in the UI.
+- **Prices:** the backend seeded dollar-like prices (12 a day for a 65-litre pack) and the frontend showed them in rupees. Rules added for the backend builder (who writes the seed), the database builder and the frontend builder: one currency, from the spec, believable prices. No automatic check: a believable price cannot be judged mechanically.

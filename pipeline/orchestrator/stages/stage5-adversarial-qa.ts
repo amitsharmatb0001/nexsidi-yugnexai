@@ -210,6 +210,9 @@ export async function runStage5WithAgents(
   // gate, so a project with both a dead button AND a real logic/security
   // issue gets both fixed in the same round instead of needing two.
   const deadButtonFindings = scanProjectForDeadButtons(projectId);
+  // 2026-10-22 (Trailhead): emoji as product pictures and icons; same cheap static scan, same round. See emoji-ui-check.ts.
+  const { scanProjectForEmojiUi } = await import("./emoji-ui-check.ts");
+  const emojiFindings = scanProjectForEmojiUi(projectId);
 
   const systemContext = plan ? buildSystemContext(plan) : undefined;
   // Patent claim 4: what each reviewer missed in training rounds (defects planted in real code and not reported) is added to its
@@ -292,7 +295,7 @@ export async function runStage5WithAgents(
   // formula) directly — do not invent a second scorer for a convention
   // that already exists on their result.
   const security = scoreSecurityFindings(karanResult.findings);
-  const allPass = security.pass && navyaResult.passed && deepikaResult.passed && deadButtonFindings.length === 0;
+  const allPass = security.pass && navyaResult.passed && deepikaResult.passed && deadButtonFindings.length === 0 && emojiFindings.length === 0;
 
   // 2026-08-09: real bug found live (project meridianbk4) — this used to
   // build `findings` only inside the `!allPass` branch and return
@@ -306,6 +309,7 @@ export async function runStage5WithAgents(
   // the severity-weighted arithmetic alone already "passed" it.
   const findings: Finding[] = [
     ...deadButtonFindings,
+    ...emojiFindings,
     ...karanResult.findings.map(karanFindingToFinding),
     ...navyaResult.findings.map(navyaFindingToFinding),
     ...deepikaResult.findings.map(deepikaFindingToFinding),
