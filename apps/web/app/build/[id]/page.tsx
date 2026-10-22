@@ -1025,11 +1025,15 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       const reader  = res.body.getReader();
       const decoder = new TextDecoder();
       let assistantText = "";
+      // An update can arrive split across two reads (a question's signature, the research notes); the unfinished last
+      // line waits for the rest instead of failing to parse and being dropped. See app/build/stream-lines.test.ts.
+      let pending = "";
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const lines = decoder.decode(value).split("\n");
+        const lines = (pending + decoder.decode(value, { stream: true })).split("\n");
+        pending = lines.pop() ?? "";
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
           const data = line.slice(6).trim();
@@ -1174,7 +1178,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
     // already closes+nulls esRef before calling us. The phase-change useEffect
     // below still needs the guard for the "already in build mode on load" case,
     // but that guard is separate. Here we always open fresh.
-    const es = new EventSource(`${API}/api/pipeline/${id}/status`);
+    const es = new EventSource(`${API}/api/pipeline/${id}/status`, { withCredentials: true });
     esRef.current = es;
     es.onmessage = (e) => {
       let ev: StageEvent;
@@ -1288,7 +1292,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
 
   async function fetchResult() {
     try {
-      const r = await fetch(`${API}/api/pipeline/${id}`);
+      const r = await fetch(`${API}/api/pipeline/${id}`, { credentials: "include" });
       if (!r.ok) return;
       const data: ProjectResult = await r.json();
       setResult(data);
@@ -1301,7 +1305,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
 
   async function fetchTree() {
     try {
-      const r = await fetch(`${API}/api/artifacts/${id}/tree`);
+      const r = await fetch(`${API}/api/artifacts/${id}/tree`, { credentials: "include" });
       if (!r.ok) return;
       const data = await r.json() as { tree: ApiNode[] };
       // 2026-08-19: this used to flatten the API's already-nested tree down to
@@ -1319,7 +1323,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   async function fetchBuildPlanForModal(attempts = 6) {
     for (let i = 0; i < attempts; i++) {
       try {
-        const r = await fetch(`${API}/api/artifacts/${id}/build-plan.json`);
+        const r = await fetch(`${API}/api/artifacts/${id}/build-plan.json`, { credentials: "include" });
         if (r.ok) {
           const plan: BuildPlan = await r.json();
           setBuildPlanModal(plan);

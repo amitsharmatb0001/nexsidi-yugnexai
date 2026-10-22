@@ -69,17 +69,8 @@ async function enrich(row: ProjectRow) {
     stage = translated?.stage ?? null;
     stageMessage = translated?.message ?? "Working on it...";
     needsApproval = translated?.needsApproval ?? false;
-  } else if (row.status === "done") {
-    stage = "done";
-    stageMessage = "Your app is ready!";
-  } else if (row.status === "failed") {
-    stage = "error";
-    stageMessage = "Something went wrong. We're on it.";
-  } else if (row.status === "planning") {
-    stage = "planning";
-    stageMessage = "Working out the plan…";
   } else {
-    stageMessage = "Queued...";
+    ({ stage, stageMessage, needsApproval } = describeSettledStatus(row.status));
   }
 
   return {
@@ -98,6 +89,18 @@ async function enrich(row: ProjectRow) {
     tokensIn: spend?.tokensIn ?? 0,
     tokensOut: spend?.tokensOut ?? 0,
   };
+}
+
+/** The list message for every status other than "building" (which asks the running workflow instead). */
+export function describeSettledStatus(status: string): { stage: string | null; stageMessage: string; needsApproval: boolean } {
+  switch (status) {
+    case "done": return { stage: "done", stageMessage: "Your app is ready!", needsApproval: false };
+    case "failed": return { stage: "error", stageMessage: "Something went wrong. We're on it.", needsApproval: false };
+    case "planning": return { stage: "planning", stageMessage: "Working out the plan…", needsApproval: false };
+    // 2026-10-22 (Trailhead): a build stopped for the owner's decision was listed as "Queued...".
+    case "needs_review": return { stage: "needs_review", stageMessage: "Stopped: needs your decision", needsApproval: true };
+    default: return { stage: null, stageMessage: "Queued...", needsApproval: false };
+  }
 }
 
 function newProjectId(): string {

@@ -11,6 +11,7 @@ import { artifactsRouter } from "./routes/artifacts.ts";
 import { authRouter } from "./routes/auth.ts";
 import { attachmentsRouter } from "./routes/attachments.ts";
 import { authMiddleware } from "./middleware/auth.ts";
+import { projectAccessGuard, projectIdFromPublicPath } from "./middleware/project-access.ts";
 
 export const app = new Hono();
 
@@ -20,12 +21,20 @@ app.use("*", cors({ origin: process.env.WEB_URL ?? "http://localhost:3000", cred
 // Public routes
 app.route("/health", healthRouter);
 app.route("/webhooks", webhooksRouter);
+// A signed-in owner's live build stream answers only to that owner (see middleware/project-access.ts).
+app.use("/ws/pipeline/*", projectAccessGuard);
 app.route("/ws", wsRouter);              // Agent health WebSocket (internal — dev only)
 
 app.route("/api/auth", authRouter);
 // Protected routes
 app.use("/api/*", async (c, next) => {
   const path = c.req.path;
+  // 2026-10-22: the routes below skip sign-in so the build page works before it, but a project owned by a signed-in
+  // user answers only to that user; the project id alone is no longer a key to it (middleware/project-access.ts).
+  if (projectIdFromPublicPath(path)) {
+    const guarded = await projectAccessGuard(c, async () => {});
+    if (guarded) return guarded;
+  }
   if (/^\/api\/pipeline\/[a-f0-9]+\/status$/.test(path)) return next();
   if (/^\/api\/pipeline\/[a-f0-9]+$/.test(path)) return next();
   if (/^\/api\/artifacts\/[a-f0-9]+\/tree$/.test(path)) return next();

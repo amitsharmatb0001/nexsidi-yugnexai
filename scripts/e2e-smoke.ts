@@ -85,14 +85,11 @@ ok("the second account does not see the first one's projects", (await b.call("GE
 ok("the second account cannot read the first one's project", (await b.call("GET", `/api/projects/${id}`)).status === 404);
 ok("the second account cannot rename it", (await b.call("PATCH", `/api/projects/${id}`, { name: "stolen" })).status === 404);
 ok("the second account cannot delete it", (await b.call("DELETE", `/api/projects/${id}`)).status === 404);
-// KNOWN GAP (a product decision, not a bug found by chance): the file tree, file contents, build plan and pipeline status routes are
-// public on purpose, so the build page works before sign-in, and approve-spec / approve-deploy are public too. The 12-character
-// project id is the only key. A second signed-in account can therefore read the first one's generated files if it knows the id.
-// This is printed on every run so it is not forgotten; it does not count as a failure. See apps/api/src/app.ts.
-{
-  const other = (await b.call("GET", `/api/artifacts/${id}/tree`)).status;
-  console.log(`${other === 200 ? "KNOWN GAP" : "PASS     "}  the file tree of a project is ${other === 200 ? "readable by any account that knows its id (public by design)" : `refused to another account (status ${other})`}`);
-}
+// 2026-10-22: the build page's public routes (status, plan, file tree, build plan, chat history, approvals) used to accept
+// anyone who knew the project id. A signed-in owner's project now answers only to that owner (middleware/project-access.ts).
+ok("the second account cannot read the first one's file tree", (await b.call("GET", `/api/artifacts/${id}/tree`)).status === 404);
+ok("the second account cannot read its pipeline status", (await b.call("GET", `/api/pipeline/${id}`)).status === 404);
+ok("the second account cannot approve its deploy", (await b.call("POST", `/api/pipeline/${id}/approve-deploy`)).status === 404);
 ok("the second account cannot transfer it to itself", (await b.call("POST", `/api/projects/${id}/transfer`, { targetEmail: emailB })).status === 404);
 
 // ── transfer ──

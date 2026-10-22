@@ -1,22 +1,8 @@
-import { ChatWindow } from "@/components/chat/ChatWindow";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "YugNex — Build" };
-
-export default async function ChatPage() {
-  return (
-    <div className="flex flex-col h-screen bg-gray-950">
-      {/* Minimal header */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-gray-800 shrink-0">
-        <a href="/" className="text-lg font-bold tracking-tight">YugNex</a>
-        <a href="/dashboard" className="text-sm text-gray-400 hover:text-gray-200 transition">
-          My Projects
-        </a>
-      </header>
-
-      {/* Chat takes up remaining height */}
-      <div className="flex-1 overflow-hidden">
-        <ChatWindow />
-      </div>
-    </div>
-  );
+// 2026-10-22: /chat was an older second copy of the planner chat. It used class names for a CSS library this app does not
+// have, so it rendered unstyled; nothing linked to it; and it lacked the research and question widgets of the real chat on
+// the build page. New builds start from Projects → New project, which opens that chat.
+export default function ChatPage() {
+  redirect("/projects");
 }
