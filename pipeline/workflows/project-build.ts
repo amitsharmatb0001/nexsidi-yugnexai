@@ -98,7 +98,7 @@ const genAct = proxyActivities<typeof activities>({
 // startToCloseTimeout with a heartbeatTimeout is safe — Temporal will still
 // notice a genuinely hung activity within one missed heartbeat window.
 const orchestratorAct = proxyActivities<typeof activities>({
-  startToCloseTimeout: "2 hours",
+  startToCloseTimeout: "6 hours", // 2026-10-22: see step-limits.test.ts,
   heartbeatTimeout: "3 minutes",
   retry: { maximumAttempts: 2 },
 });
@@ -125,7 +125,7 @@ const orchestratorAct = proxyActivities<typeof activities>({
 // handles it correctly instead of two uncoordinated retry mechanisms
 // fighting each other.
 const deployRetestAct = proxyActivities<typeof activities>({
-  startToCloseTimeout: "2 hours",
+  startToCloseTimeout: "6 hours", // 2026-10-22: see step-limits.test.ts,
   heartbeatTimeout: "3 minutes",
   retry: { maximumAttempts: 1 },
 });

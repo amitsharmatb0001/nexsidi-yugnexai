@@ -331,3 +331,13 @@ Tests: 699 pass across the builders and the orchestrator.
 **Not yet proven live:** the reuse only shows when a planning step is actually retried; unit tests cover it (5 pass) and 150 tests across the activities, workflow and planner pass.
 
 **Still to do (a separate plan for approval):** run the design brief at the same time as the plan call (it needs only the spec), and plan large apps phase by phase.
+
+### Fixed: the deploy step was killed by a 2-hour clock (2026-10-22, batch 7)
+
+**Found:** the Trailhead rerun's deploy step (deploy, live review, fix, redeploy; up to three rounds of ~35-40 minutes) was killed by its fixed 2-hour `startToCloseTimeout` during round 3, after that redeploy's checks had all passed (sign-in, 2 sample bookings, 34 page visits, cleanup). The build ended as `deploy_activity_error`; claim 2 could not be shown. Round 2's three findings were the reviewers' own tools failing to submit, settled not true. Claims 1, 3-10 were shown by the evidence file; the hash chain re-check was VALID over 8 records.
+
+**Changed:** the deploy step and the pre-deploy review loop (same 2-hour clock) now have a 6-hour ceiling; both report progress every 30 seconds, so the 3-minute heartbeat still catches a dead worker, and the cost and progress guards still stop spending that goes nowhere.
+
+**Not done:** a passing live round is not yet saved for reuse by a retry (the round that was killed had not finished, so it would not have helped this time). The reviewers' tools sometimes end without submitting findings, which costs a round; not investigated yet.
+
+**Decision (Amit, 2026-10-22):** fix first, then retry the rerun with the spend cap raised from $30 to $40.
