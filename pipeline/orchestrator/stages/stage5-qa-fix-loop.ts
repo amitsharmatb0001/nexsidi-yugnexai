@@ -554,16 +554,22 @@ export async function runQAFixLoop(
     recordInstincts: async (agentName, findings) => {
       try {
         const { recordInstinct } = await import("@nexsidi/db");
+        const domains: string[] = [];
         for (const finding of findings) {
           const summarized = await summarizeFindingToInstinctRule(finding, agentName);
+          const domain = inferInstinctDomain(finding);
           await recordInstinct(
             agentName,
-            inferInstinctDomain(finding),
+            domain,
             summarized.trigger,
             summarized.action,
             projectId,
           );
+          domains.push(domain);
         }
+        // Patent claim 7: each finding is kept as a rule in the persistent store, for later builds' prompts.
+        const { recordClaimEvidence } = await import("../../../packages/agent-runtime/src/claims-evidence.ts");
+        recordClaimEvidence(buildDirFor(projectId), 7, "review findings stored as mistake rules", { reviewer: agentName, stored: domains.length, domains });
       } catch (err) {
         console.log(`[qa-fix-loop] recordInstincts failed (non-fatal, memory is an enrichment): ${String(err)}`);
       }

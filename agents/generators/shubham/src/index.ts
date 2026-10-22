@@ -2,7 +2,7 @@
 // Uses tool-calling loop: write_file → run npm install → run tsc → fix → repeat.
 // No longer does one-shot LLM generation. Agent ACTS on real tool feedback.
 
-import { resolveGeneratorRunner, isBuilderFixFile, type Escalation } from "@nexsidi/agent-runtime";
+import { resolveGeneratorRunner, isBuilderFixFile, recordClaimEvidence, type Escalation } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "fs";
 import { join, resolve } from "path";
@@ -169,7 +169,7 @@ export function autoWireRoutes(backendDir: string): string | null {
 // into stage5-qa-fix-loop.ts). Fails safe: memory is an enrichment, not a
 // hard dependency — if Postgres isn't reachable, generation proceeds
 // exactly as before this feature existed rather than blocking on it.
-async function loadKnownMistakesPrefix(): Promise<string> {
+async function loadKnownMistakesPrefix(projectId?: string): Promise<string> {
   try {
     const { queryRecentInstincts, formatInstinctsForPrompt, REACHABLE_INSTINCT_DOMAINS } = await import("@nexsidi/db");
     // 2026-07-24 (P3.W3.3): was hardcoded to "security" only — missed every
@@ -177,6 +177,8 @@ async function loadKnownMistakesPrefix(): Promise<string> {
     // queryRecentInstincts's comment for the bug this closes.
     const instincts = await queryRecentInstincts(REACHABLE_INSTINCT_DOMAINS);
     const formatted = formatInstinctsForPrompt(instincts);
+    // Patent claim 7: what the stored mistake memory added to this builder's prompt.
+    if (projectId) recordClaimEvidence(buildDirFor(projectId), 7, "stored mistake rules added to the backend builder's prompt", { rules: instincts.length, chars: formatted.length });
     return formatted ? `${formatted}\n\n` : "";
   } catch {
     return "";
@@ -216,7 +218,7 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
   // runAgentEscalated (Task 15): open-source chain first; Sonnet 5 single
   // retry only when the whole chain genuinely can't finish. See
   // packages/agent-runtime/src/claude-loop.ts.
-  const knownMistakesPrefix = await loadKnownMistakesPrefix();
+  const knownMistakesPrefix = await loadKnownMistakesPrefix(plan.projectId);
 
   const result = await resolveGeneratorRunner()({
     agentName: "shubham",
@@ -395,7 +397,7 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
   // (recordInstincts, stage5-qa-fix-loop.ts) but never read by it — the one
   // call site that most needs "you already made this mistake" had it
   // missing. Mirrors run()'s identical prefix above.
-  const knownMistakesPrefix = await loadKnownMistakesPrefix();
+  const knownMistakesPrefix = await loadKnownMistakesPrefix(plan.projectId);
 
   const result = await resolveGeneratorRunner()({
     agentName: "shubham",

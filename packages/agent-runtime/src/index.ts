@@ -1,6 +1,7 @@
 export { runAgent, MAX_ITERATIONS, type AgentRunConfig, type AgentRunResult } from "./loop.ts";
 export { runAgentWithClaude, runAgentEscalated, type AgentEscalationDeps } from "./claude-loop.ts";
 export { runAgentWithGemini } from "./gemini-loop.ts";
+export { recordClaimEvidence, readClaimEvidence, summarizeClaims, CLAIM_TITLES, type ClaimEvidence, type ClaimNumber } from "./claims-evidence.ts";
 export { resolveGeneratorRunner, type GeneratorRunner } from "./generator-tier.ts";
 export { FILE_TOOL_DEFS, execWriteFile, execReadFile, execListFiles, execEditFile } from "./tools/file.ts";
 export { COMMAND_TOOL_DEF, execRunCommand } from "./tools/command.ts";

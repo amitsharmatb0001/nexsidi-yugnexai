@@ -26,6 +26,7 @@ import { hashContext, signOutput, verifySignature, linkRecord, verifyChain, cano
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
+import { recordClaimEvidence } from "../../packages/agent-runtime/src/claims-evidence.ts";
 
 export interface ContextChainRecordInput {
   projectId: string;
@@ -128,6 +129,7 @@ export async function rollbackAndEscalate(projectId: string, reason: string): Pr
   try {
     const buildDir = buildDirFor(projectId);
     const restored = existsSync(buildDir) ? restoreSnapshot(buildDir) : null;
+    recordClaimEvidence(buildDir, 3, "rollback on a failed handoff check", { reason, restored: restored?.restored.length ?? 0, removed: restored?.removed.length ?? 0, snapshot: restored?.snapshot.id ?? null });
     if (restored) {
       reason = `${reason} (files restored from the last good state: ${restored.restored.length} put back, ${restored.removed.length} removed)`;
       console.error(`[context-chain] restored ${restored.restored.length} file(s) and removed ${restored.removed.length} from snapshot ${restored.snapshot.id}`);
@@ -177,6 +179,7 @@ export async function recordHandoff(
   const buildDir = buildDirFor(projectId);
   const hasBuildDir = existsSync(buildDir);
   let staged: StagedHandoff | null = null;
+  let evidence: Record<string, unknown> = {};
   try {
     await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${projectId}))`);
@@ -187,6 +190,7 @@ export async function recordHandoff(
         .orderBy(asc(contextChain.chainSeq));
       const link = linkRecord(earlier.map((r) => r.contextHash), contextHash);
       const seq = earlier.length + 1;
+      evidence = { seq, predecessors: link.predecessorHashes.length, chainHash: link.chainHash.slice(0, 16) };
       await tx
         .insert(contextChain)
         .values(buildContextChainRecord({ projectId, agentFrom, agentTo, contextHash, signature, chainSeq: seq, ...link }));
@@ -207,6 +211,11 @@ export async function recordHandoff(
     } catch (err) {
       console.error(`[context-chain] could not snapshot files after handoff ${agentFrom} -> ${agentTo}: ${String(err).slice(0, 160)}`);
     }
+  }
+  if (hasBuildDir) {
+    const carries = context && typeof context === "object" ? Object.keys(context as Record<string, unknown>).filter((k) => ["codeMap", "traceability"].includes(k)) : [];
+    recordClaimEvidence(buildDir, 3, "handoff recorded as one unit: chain row, signed hash, handoff file, snapshot", { from: agentFrom, to: agentTo, hash: contextHash.slice(0, 16), carries });
+    recordClaimEvidence(buildDir, 10, "handoff holds the hashes of every earlier handoff", { from: agentFrom, to: agentTo, ...evidence });
   }
   console.log(
     `[context-chain] recorded handoff ${agentFrom} -> ${agentTo} (project=${projectId}, hash=${contextHash.slice(0, 12)}...)`,
@@ -277,5 +286,6 @@ export async function verifyHandoff(
   }
 
   await db.update(contextChain).set({ verified: true }).where(eq(contextChain.id, row!.id));
+  recordClaimEvidence(buildDirFor(projectId), 1, "receiving agent checked the signature and hash before using the context", { from: agentFrom, to: agentTo });
   console.log(`[context-chain] verified handoff ${agentFrom} -> ${agentTo} (project=${projectId})`);
 }

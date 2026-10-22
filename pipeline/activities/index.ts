@@ -230,6 +230,13 @@ export async function runArjun(projectId: string, rejectionFeedback?: string): P
     await recordHandoff(projectId, "arjun", "shubham", plan);
     await recordHandoff(projectId, "arjun", "aanya", plan);
     await recordHandoff(projectId, "arjun", "pranav", plan);
+    recordClaimEvidence(buildDirFor(projectId), 1, "task graph with capability-based assignment", {
+      tasks: { backend: plan.shubhamTasks.length, frontend: plan.aanyaTasks.length, database: plan.pranavTasks.length },
+      phases: plan.buildPhases?.length ?? 0,
+      assigned: plan.assignments?.length ?? 0,
+      movedByCapability: plan.assignments?.filter((a) => a.moved).length ?? 0,
+      independenceVerified: plan.independenceVerified,
+    });
     console.log(`[activity:arjun] plan ready — ${plan.apiContract.endpoints.length} endpoints, ${plan.dbSchema.tables.length} tables`);
   } finally {
     clearInterval(hb);
@@ -424,6 +431,9 @@ import { runGeneratorWithQuotaRetry } from "./quota-retry.ts";
 import { runBuilderPhase, listBuiltFiles, type PhaseStore } from "./build-phases.ts";
 import { recordBlocked } from "../../packages/agent-runtime/src/tools/blocked.ts";
 import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
+import { recordClaimEvidence } from "../../packages/agent-runtime/src/claims-evidence.ts";
+import { verifyDir } from "../orchestrator/verify-commands.ts";
+import { sandboxDefault } from "../../packages/agent-runtime/src/sandbox/container-sandbox.ts";
 
 // ── Stage 3a–c: code generators (run in parallel from workflow) ───────────────
 export async function runShubham(projectId: string): Promise<void> {
@@ -597,6 +607,21 @@ export async function runCompileCheck(
       if (bunInstall.status !== 0) {
         console.log(`[compile-check] ${label}: bun install failed (${describeCommandFailure(bunInstall)}), proceeding to tsc anyway`);
       }
+    }
+    // Patent claim 5: with the sandbox on (NEXSIDI_SANDBOX_BUILDS=on, default on Linux) the generated code's type check runs
+    // in a throwaway container: private namespaces, cgroup limits, seccomp whitelist, no network, removed when it ends.
+    // Before 2026-10-22 only the Express Build path used it, so the full pipeline never ran generated code that way.
+    if (sandboxDefault(process.env, process.platform) && existsSync(join(dir, "node_modules", "typescript", "bin", "tsc"))) {
+      const t0 = Date.now();
+      const r = await verifyDir(dir, [{ command: "node node_modules/typescript/bin/tsc --noEmit --pretty false", timeoutMs: 300_000 }], { sandbox: true });
+      recordClaimEvidence(buildDir, 5, "generated code type-checked inside an isolated container", {
+        part: label, ran: r.ran, ok: r.ok, seconds: Math.round((Date.now() - t0) / 1000),
+        isolation: "namespaces, cgroup v2 limits (2 CPU, 2 GB, 1024 processes), seccomp whitelist, network none, removed after",
+      });
+      if (r.ok) console.log(`[compile-check] ${label}: clean ✓ (in the isolated container)`);
+      else if (!r.ran) { timedOut = true; results.push(`${label}: the type check in the isolated container did not finish (not a compile error, rerun)`); }
+      else results.push(`${label}: tsc failed in the isolated container\n${r.output.split("\n").filter((l) => l.trim()).slice(-25).join("\n")}`);
+      continue;
     }
     try {
       // Invoke the local tsc entry point directly via the runtime — bypasses
@@ -884,6 +909,9 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
     console.log(
       `[activity:qa-fix-loop] pass=${result.pass} stuck=${result.stuck ?? false} iterations=${result.iterations} findings=${result.findings.length}`,
     );
+    recordClaimEvidence(buildDirFor(projectId), 6, "review-and-fix loop ended", {
+      passed: result.pass, stuck: result.stuck ?? false, iterations: result.iterations, openFindings: result.findings.length, held: !!result.hold,
+    });
     if (result.hold) throw guardHoldFailure(result.hold);
     // 2026-08-04 (live, final838491 — 2nd occurrence, root-caused): recording
     // the handoff HERE used to cause a real, reproducible false-positive
@@ -954,6 +982,9 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
     await verifyHandoff(projectId, "qa-gan", "deploy", buildHandoffContext(buildDirFor(projectId), filterSourceManifest(stage4Result), plan));
     const result = await runStage6(projectId, stage4Result, plan);
     console.log(`[activity:deploy] success=${result.success} appUrl=${result.appUrl} stuck=${result.stuck ?? false}`);
+    recordClaimEvidence(buildDirFor(projectId), 2, result.success ? "deployed after the live checks passed" : "deploy attempt did not pass the live checks", {
+      success: result.success, appUrl: result.appUrl, stuck: result.stuck ?? false,
+    });
     if (result.hold) throw guardHoldFailure(result.hold);
     return { success: result.success, appUrl: result.appUrl, stuck: result.stuck ?? false };
   } finally {

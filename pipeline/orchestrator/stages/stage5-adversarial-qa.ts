@@ -216,6 +216,12 @@ export async function runStage5WithAgents(
   // next review. Never fatal: with no examples or no database the input is unchanged.
   const { missedExamplesFor } = await import("./training-feedback.ts");
   const [navyaMissed, karanMissed, deepikaMissed] = await Promise.all([missedExamplesFor("navya"), missedExamplesFor("karan"), missedExamplesFor("deepika")]);
+  const { recordClaimEvidence } = await import("../../../packages/agent-runtime/src/claims-evidence.ts");
+  const evidenceDir = buildDirFor(projectId);
+  // Claim 4: what each reviewer is given from its training rounds this time ("" when it was never trained).
+  recordClaimEvidence(evidenceDir, 4, "missed training examples added to each reviewer's input", {
+    navyaChars: navyaMissed.length, karanChars: karanMissed.length, deepikaChars: deepikaMissed.length,
+  });
   const navyaContext = [systemContext, navyaMissed].filter(Boolean).join("\n\n") || undefined;
   const navyaPromise = agents.runNavya(projectId, stage4Result, navyaContext, changedFiles, previousFindings?.navya);
   await sleep(staggerMs);
@@ -224,7 +230,12 @@ export async function runStage5WithAgents(
   let securityLeads = "";
   try {
     const { scanBuildDirForSecurity, formatScanForReviewer } = await import("./security-scan.ts");
-    securityLeads = formatScanForReviewer(await scanBuildDirForSecurity(buildDirFor(projectId)));
+    const scan = await scanBuildDirForSecurity(buildDirFor(projectId));
+    securityLeads = formatScanForReviewer(scan);
+    recordClaimEvidence(evidenceDir, 8, "security pattern scan and taint analysis; results sent to the security reviewer as leads", {
+      patternsUsed: scan.patternsUsed, advisoriesUsed: scan.advisoriesUsed, source: scan.source,
+      patternHits: scan.patternHits.length, dependencyHits: scan.dependencyHits.length, taintPaths: scan.taintFindings.length, leadChars: securityLeads.length,
+    });
   } catch (err) {
     console.error(`[stage5] security pattern scan skipped: ${String(err).slice(0, 160)}`);
   }
@@ -236,7 +247,12 @@ export async function runStage5WithAgents(
   let performanceLeads = "";
   try {
     const { scanBuildDirForPerformance, formatPerformanceForReviewer } = await import("./performance-scan.ts");
-    performanceLeads = formatPerformanceForReviewer(scanBuildDirForPerformance(buildDirFor(projectId)));
+    const perf = scanBuildDirForPerformance(buildDirFor(projectId));
+    performanceLeads = formatPerformanceForReviewer(perf);
+    recordClaimEvidence(evidenceDir, 9, "growth estimates, leak patterns and round-to-round regressions; sent to the performance reviewer as leads", {
+      filesAnalysed: perf.filesAnalysed, concerns: perf.concerns.length, leakPatterns: perf.leakPatterns.length,
+      regressions: perf.regressions.length, previousRounds: perf.previousRounds, leadChars: performanceLeads.length,
+    });
   } catch (err) {
     console.error(`[stage5] performance scan skipped: ${String(err).slice(0, 160)}`);
   }
@@ -248,6 +264,9 @@ export async function runStage5WithAgents(
     deepikaPromise,
   ]);
   const perAgentFindings: Stage5RawFindings = { navya: navyaResult.findings, karan: karanResult.findings, deepika: deepikaResult.findings };
+  recordClaimEvidence(evidenceDir, 1, "three independent adversarial reviewers ran (logic, security, performance)", {
+    logic: navyaResult.findings.length, security: karanResult.findings.length, performance: deepikaResult.findings.length,
+  });
 
   try {
     const { writeFileSync, mkdirSync } = await import("node:fs");
