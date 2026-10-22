@@ -316,3 +316,18 @@ The rerun (project `163c39fec924`) was held by the progress guard after review r
 
 Tests: 699 pass across the builders and the orchestrator.
 - **Retry after a hold could never pass (found on the retry).** The new repeat check worked: both repeated findings went to the settler and both were confirmed true (the broken insert, and TLS certificate checks switched off for the production database connection), so the guard held correctly. But Retry re-runs the review before any fix round; the builders never got the round-2 findings (the hold came first), so the same findings came back and the guard held again, and would every time. Now Retry writes a marker into `rounds.jsonl` and the guard compares only rounds after it, so the builders get their round; a fix that fails again after the retry still holds.
+
+### Fixed: finished planning work was thrown away on a restart (2026-10-22, batch 6)
+
+**Found (workflow history of the rerun):** Saanvi's spec took 1.5 minutes. Arjun's planning step started at 1.5 min, hit the 10-minute limit at 11.5 min while finishing (the log shows its "plan ready" just after), and was run again from zero: attempt 2 took 6.3 minutes and paid for the same ~4,600-token call to the strongest model a second time. 16 of the 17 planning minutes, 10 of them wasted. One planning pass is ~6 minutes (the plan call, then the design agent's own loop); a larger app would pass the 10-minute limit on every attempt and never finish.
+
+**Built**
+- `packages/agent-runtime/src/step-memo.ts`: a step's finished result is saved under `<build>/.nexsidi/step-results/`, keyed by an exact hash of its inputs, and a retry with the same inputs reuses it. Different inputs (a rejection note, a changed spec) always run the step again; a step that throws saves nothing; written whole then moved into place.
+- Used for Saanvi's spec and Arjun's plan. A reused plan writes its plan files again, as a run would.
+- Planning steps (spec, plan) moved off the 10-minute limit to a 45-minute ceiling; the 3-minute heartbeat still catches a dead worker.
+
+**Not changed, on purpose:** a failed review is always run again (Amit's decision of 4 Oct: a failed review is not repeatable), so only passing reviews are reused, as before.
+
+**Not yet proven live:** the reuse only shows when a planning step is actually retried; unit tests cover it (5 pass) and 150 tests across the activities, workflow and planner pass.
+
+**Still to do (a separate plan for approval):** run the design brief at the same time as the plan call (it needs only the spec), and plan large apps phase by phase.

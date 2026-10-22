@@ -61,6 +61,16 @@ const act = proxyActivities<typeof activities>({
   retry: { maximumAttempts: 3 },
 });
 
+// 2026-10-22 (Trailhead rerun): planning (spec and plan) ran under the 10-minute limit above. One planning pass took ~6
+// minutes; the first attempt hit 10 minutes while finishing, its plan was thrown away and the step ran again. A larger app
+// would hit the limit every time and never finish. Planning now gets a ceiling sized for large apps, the heartbeat still
+// catches a dead worker within 3 minutes, and a finished result is kept for a retry (step-memo.ts).
+const planAct = proxyActivities<typeof activities>({
+  startToCloseTimeout: "45 minutes",
+  heartbeatTimeout: "3 minutes",
+  retry: { maximumAttempts: 3 },
+});
+
 // Long timeout for code generation — multiple sequential NIM calls per task list
 // Ledgerly benchmark: 30 minutes per attempt was too short for a 10-page
 // frontend; the 3-minute heartbeat still catches a dead worker quickly.
@@ -497,7 +507,7 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   for (;;) {
     state.stage = "spec";
     for (;;) {
-      const saanviResult = await act.runSaanvi(
+      const saanviResult = await planAct.runSaanvi(
         projectId,
         clarificationRounds === 0 ? userRequest : undefined,
         clarificationHistory.length > 0 ? clarificationHistory.join("\n\n") : undefined,
@@ -520,7 +530,7 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
 
     // ── Stage 2: Task decomposition (includes Vanya's design brief) ───────
     state.stage = "decompose";
-    await act.runArjun(projectId, latestRejectionFeedback);
+    await planAct.runArjun(projectId, latestRejectionFeedback);
     state.designBrief = await act.getDesignBrief(projectId);
 
     // GATE 1: Spec/Plan/Design Approval — always required. A stale

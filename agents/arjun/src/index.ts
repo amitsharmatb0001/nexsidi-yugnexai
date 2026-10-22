@@ -432,7 +432,8 @@ export function sanitizeSharedTypesForPublicEndpoints(sharedTypes: string, endpo
 }
 
 // ── Write contract files so each agent can read their tasks ───────────────────
-function writePlanFiles(projectId: string, plan: Omit<BuildPlan, "buildPlanHash">): void {
+// Exported 2026-10-22: a plan reused from a saved step result (step-memo.ts) writes its files again the same way.
+export function writePlanFiles(projectId: string, plan: Omit<BuildPlan, "buildPlanHash">): void {
   const dir = getBuildDir(projectId);
   mkdirSync(dir, { recursive: true });
   const { writeFileSync } = require("fs") as typeof import("fs");

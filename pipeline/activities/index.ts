@@ -3,7 +3,8 @@
 // All TODO stubs are now replaced with real agent calls.
 
 import { run as runSaanviAgent }  from "../../agents/saanvi/src/index.ts";
-import { run as runArjunAgent, getBuildDir, pathToNextjsFile, withNormalizedDbSchema } from "../../agents/arjun/src/index.ts";
+import { run as runArjunAgent, getBuildDir, pathToNextjsFile, withNormalizedDbSchema, writePlanFiles } from "../../agents/arjun/src/index.ts";
+import { memoizeStep } from "../../packages/agent-runtime/src/step-memo.ts";
 import { run as runShubhamAgent, runFix as runShubhamFix } from "../../agents/generators/shubham/src/index.ts";
 import { run as runAanyaAgent, runFix as runAanyaFix }   from "../../agents/generators/aanya/src/index.ts";
 import { ensureClientDirectiveForStyledModules } from "../../agents/generators/aanya/src/client-directive.ts";
@@ -161,7 +162,8 @@ export async function runSaanvi(
       ? `\n\n=== CLARIFICATION (user's answer to your previous question(s)) ===\n${clarificationAnswer}\n`
       : "";
     const enrichedReq = req + attachmentsContext + urlContext + answerContext;
-    const result = await runSaanviAgent(projectId, enrichedReq);
+    // 2026-10-22: the finished spec is kept and reused by a retry with the same request (step-memo.ts).
+    const result = await memoizeStep(buildDirFor(projectId), "saanvi-spec", { projectId, enrichedReq }, () => runSaanviAgent(projectId, enrichedReq));
     if (result.status === "needs_clarification") {
       console.log(`[activity:saanvi] needs clarification for ${projectId} — ${result.questions.length} question(s)`);
       return { status: "needs_clarification", questions: result.questions };
@@ -220,7 +222,12 @@ export async function runArjun(projectId: string, rejectionFeedback?: string): P
       // No prior build-plan.json — first attempt at this project, nothing to reuse.
     }
     // 2026-09-28: normalised before it's written and hashed (see withNormalizedDbSchema).
-    const plan = withNormalizedDbSchema(await runArjunAgent(spec, { chat: agentChat }, lockedPages, plannerPlan?.authType, priorDesignBrief, rejectionFeedback, plannerPlan?.buildPhases));
+    // 2026-10-22: the finished plan is kept and reused by a retry with the same inputs (step-memo.ts); a reused plan writes
+    // its files again, as the run would have.
+    const plan = withNormalizedDbSchema(await memoizeStep(buildDirFor(projectId), "arjun-plan",
+      { spec, lockedPages, authType: plannerPlan?.authType, priorDesignBrief, rejectionFeedback, buildPhases: plannerPlan?.buildPhases },
+      () => runArjunAgent(spec, { chat: agentChat }, lockedPages, plannerPlan?.authType, priorDesignBrief, rejectionFeedback, plannerPlan?.buildPhases)));
+    writePlanFiles(projectId, plan);
 
     planCache.set(projectId, plan);
     writeCacheFile(projectId, "build-plan.json", JSON.stringify(plan, null, 2));
