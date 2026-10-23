@@ -22,8 +22,45 @@ export const TEST_DATA_RULE =
   "TEST DATA RULE — any email address you type into the app (a new sign-up, a contact form, any form) must end in " +
   "@example.com, for example review+signup1@example.com. The data you create is removed after the review.";
 
-export function reviewAccountSection(account: ReviewAccount | null, seeded: Record<string, number> = {}): string {
-  if (!account) return `
+/** One ready account per limited role (staff, admin, ...), made by the review stage (TIER3_REVIEW_ROLE_ACCOUNTS). */
+export interface RoleReviewAccount extends ReviewAccount {
+  role: string;
+}
+
+export function reviewRoleAccountsFromEnv(): RoleReviewAccount[] {
+  try {
+    const parsed = JSON.parse(process.env.TIER3_REVIEW_ROLE_ACCOUNTS ?? "[]") as unknown;
+    return Array.isArray(parsed) ? (parsed as RoleReviewAccount[]).filter((a) => a && typeof a.role === "string" && typeof a.email === "string" && typeof a.password === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+// 2026-10-24 (Brewline live review): with no staff login the reality checker hunted for one and had a sub-check overwrite
+// the real staff password. The checkers get one account per limited role and are told never to change any account.
+const ACCOUNT_RULE =
+  "ACCOUNT RULE — never change any account's password or role, never create accounts directly in the database, and " +
+  "never read passwords out of code, logs or the database. If a page needs an account you were not given, report that " +
+  "page as not checked and say which account was missing.";
+
+function roleAccountsBlock(roleAccounts: RoleReviewAccount[]): string {
+  if (roleAccounts.length === 0) return "";
+  const lines = roleAccounts.map((a) => `  ${a.role}: email ${a.email}  password ${a.password}`).join("\n");
+  return `
+
+ROLE ACCOUNTS — ready accounts for the pages limited to a role. Sign in with the one the page needs, through the app's
+own sign-in page, and walk that role's whole flow (every page it can reach, create, edit and change the status of records):
+${lines}`;
+}
+
+export function reviewAccountSection(
+  account: ReviewAccount | null,
+  seeded: Record<string, number> = {},
+  roleAccounts: RoleReviewAccount[] = reviewRoleAccountsFromEnv(),
+): string {
+  if (!account) return `${roleAccountsBlock(roleAccounts)}
+
+${ACCOUNT_RULE}
 
 ${TEST_DATA_RULE}`;
   const have = Object.entries(seeded).filter(([, n]) => n > 0).map(([name, n]) => `${n} ${name}`);
@@ -36,7 +73,9 @@ ${have.length > 0 ? `It already holds sample records (${have.join(", ")}).\n` : 
 open every list and every detail page, create a new record, edit one, change a status, delete one that you created,
 export if the app offers it, and update the settings. Every step that fails or looks wrong for this account is a
 finding — quote exactly what you did and what you saw. The data is fake and is removed after the review, so it is
-safe to change. Also test sign-up once with a NEW address (not this account) to see that registration works.
+safe to change. Also test sign-up once with a NEW address (not this account) to see that registration works.${roleAccountsBlock(roleAccounts)}
+
+${ACCOUNT_RULE}
 
 ${TEST_DATA_RULE}`;
 }

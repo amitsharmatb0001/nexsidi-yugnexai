@@ -1135,6 +1135,10 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
               projectId: config.projectId,
               enableHttpTools: config.enableHttpTools,
               enableDockerTools: config.enableDockerTools,
+              // 2026-10-24: a sub-check runs under the same limits as the agent that started it (subagent-readonly.test.ts).
+              readOnly: config.readOnly,
+              readOnlyDirs: config.readOnlyDirs,
+              writableFile: config.writableFile,
               subagentDepth: (config.subagentDepth ?? 0) + 1,
               freshStart: config.freshStart,
             });

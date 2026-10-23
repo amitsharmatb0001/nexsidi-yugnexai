@@ -16,7 +16,7 @@
 // explaining why real QA coverage is being turned off again.
 import { isOverBudget } from "../../../packages/agent-runtime/src/cost-budget.ts";
 import { resolveFlags } from "../flags.ts";
-import { run as runRiya, purgeVerificationArtifacts, seedSampleData, snapshotTableCounts, compareSnapshots, databaseNow, type DeployResult } from "../../../agents/riya/src/index.ts";
+import { run as runRiya, purgeVerificationArtifacts, seedSampleData, limitedRolesFromContract, grantTestAccountRole, snapshotTableCounts, compareSnapshots, databaseNow, type DeployResult } from "../../../agents/riya/src/index.ts";
 import { agentForFile, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
@@ -429,8 +429,36 @@ async function liveRetestChecks(
           reviewSession = { token: acct.token };
           process.env.TIER3_REVIEW_EMAIL = acct.email;
           process.env.TIER3_REVIEW_PASSWORD = acct.password;
+          // 2026-10-24 (Brewline live review): one test account per role the contract limits pages to ("(staff only)"),
+          // given its role between sign-up and sign-in so its token carries it. Without one the reality checker hunted
+          // for a staff login and had a sub-check overwrite the real staff password. These accounts are on the reserved
+          // test domain too, so the cleanup removes them with everything under them.
+          const roleAccounts: Array<{ role: string; email: string; password: string; token: string }> = [];
+          for (const role of limitedRolesFromContract(plan.apiContract.endpoints as Array<{ description?: string }>)) {
+            let grant: { ok: true } | { reason: string } = { reason: "the account was not created" };
+            const ra = await createReviewAccount({
+              backendUrl,
+              endpoints: plan.apiContract.endpoints,
+              label: role,
+              beforeLogin: (email) => { grant = grantTestAccountRole(buildDirFor(projectId), email, role); },
+            });
+            if ("reason" in ra) notChecked.push(`${role} review account: ${ra.reason}`);
+            else if ("reason" in grant) notChecked.push(`${role} review account: the role could not be given (${(grant as { reason: string }).reason})`);
+            else roleAccounts.push({ role, ...ra });
+          }
+          process.env.TIER3_REVIEW_ROLE_ACCOUNTS = JSON.stringify(roleAccounts.map(({ role, email, password }) => ({ role, email, password })));
+          if (roleAccounts.length > 0) console.log(`[stage6] Role accounts ready: ${roleAccounts.map((a) => a.role).join(", ")}`);
           if (process.env.SEED_SAMPLE_DATA !== "off") {
-            seededResult = await seedSampleData(buildDirFor(projectId), backendUrl, acct.token, 2);
+            // Each record is created by an account allowed to create it: the ordinary account first, then each role
+            // account for what it alone may add (a menu item), then the ordinary account again for what needs those
+            // (an order of a menu item). Only what no account could create is reported.
+            const created: Record<string, string[]> = {};
+            let last: { created: Record<string, string[]>; notSeeded: string[] } = { created: {}, notSeeded: [] };
+            for (const token of [acct.token, ...roleAccounts.map((a) => a.token), acct.token]) {
+              last = await seedSampleData(buildDirFor(projectId), backendUrl, token, 2, new Set(Object.keys(created)));
+              for (const [k, ids] of Object.entries(last.created)) (created[k] ??= []).push(...ids);
+            }
+            seededResult = { created, notSeeded: last.notSeeded };
             notChecked.push(...seededResult.notSeeded);
             process.env.TIER3_REVIEW_SEEDED = JSON.stringify(Object.fromEntries(Object.entries(seededResult.created).map(([k, ids]) => [k, ids.length])));
             console.log(`[stage6] Review account ready with sample data: ${process.env.TIER3_REVIEW_SEEDED}`);
@@ -516,6 +544,7 @@ async function liveRetestChecks(
     delete process.env.TIER3_REVIEW_EMAIL;
     delete process.env.TIER3_REVIEW_PASSWORD;
     delete process.env.TIER3_REVIEW_SEEDED;
+    delete process.env.TIER3_REVIEW_ROLE_ACCOUNTS;
   }
 }
 

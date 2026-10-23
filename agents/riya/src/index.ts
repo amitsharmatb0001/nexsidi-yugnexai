@@ -120,6 +120,58 @@ export function isTestAccountEmail(email: string): boolean {
   return TEST_EMAIL_SUFFIXES.some((x) => e.endsWith(x));
 }
 
+// 2026-10-24 (Brewline live review): the app had staff-only pages, but the review got only an ordinary account, so the
+// reality checker hunted for a staff login and had a sub-check overwrite the real staff password. The review stage now
+// makes one test account per limited role. The roles are the ones the contract marks, e.g. "(staff only)".
+const NOT_A_ROLE = new Set(["owner", "authenticated", "signed-in", "logged-in", "self", "user", "users", "public", "internal"]);
+export function limitedRolesFromContract(endpoints: Array<{ description?: string }>): string[] {
+  const roles = new Set<string>();
+  for (const ep of endpoints) {
+    const d = ep.description ?? "";
+    for (const m of d.matchAll(/\(\s*([a-z][a-z_-]{1,20})(?:\s+or\s+([a-z][a-z_-]{1,20}))?\s+only\s*\)/gi)) {
+      for (const r of [m[1], m[2]]) if (r) roles.add(r.toLowerCase());
+    }
+    for (const m of d.matchAll(/\b([a-z][a-z_]{1,20})-only\b/gi)) roles.add(m[1]!.toLowerCase());
+  }
+  return [...roles].filter((r) => !NOT_A_ROLE.has(r));
+}
+
+const PLAIN_ROLE = /^[a-z][a-z_-]{1,20}$/;
+const PLAIN_EMAIL = /^[A-Za-z0-9+._-]+@[A-Za-z0-9.-]+$/;
+
+/** The UPDATE that gives a test account a role. Only called with a checked table name, email and role. */
+export function roleGrantSql(table: string, email: string, role: string): string {
+  return `UPDATE "${table}" SET role = '${role}' WHERE email = '${email}'`;
+}
+
+/** Gives an account on the reserved test domain a role in the deployed app's database (the review stage's own step). */
+export function grantTestAccountRole(buildDir: string, email: string, role: string): { ok: true } | { reason: string } {
+  if (!isTestAccountEmail(email) || !PLAIN_EMAIL.test(email)) return { reason: `${email} is not a test account` };
+  if (!PLAIN_ROLE.test(role)) return { reason: `${JSON.stringify(role.slice(0, 40))} is not a plain role name` };
+  try {
+    const composePath = join(buildDir, "docker-compose.yml");
+    if (!existsSync(composePath)) return { reason: "no docker-compose.yml" };
+    const sh = (cmd: string, input?: string) => execSync(cmd, { input, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    const cid = sh(`docker compose -f "${composePath}" ps -q postgres`);
+    if (!cid) return { reason: "the database container is not running" };
+    const user = (() => { try { return sh(`docker exec ${cid} printenv POSTGRES_USER`); } catch { return ""; } })() || "postgres";
+    const dbName = (() => { try { return sh(`docker exec ${cid} printenv POSTGRES_DB`); } catch { return ""; } })() || user;
+    const psql = (sqlText: string) => sh(`docker exec -i ${cid} psql -U ${user} -d ${dbName} -tA -v ON_ERROR_STOP=1 -1 -f -`, sqlText);
+    // The account table: has email, role and a password column.
+    const table = psql(
+      "SELECT c.table_name FROM information_schema.columns c WHERE c.table_schema='public' AND c.column_name='email' " +
+      "AND EXISTS (SELECT 1 FROM information_schema.columns r WHERE r.table_schema='public' AND r.table_name=c.table_name AND r.column_name='role') " +
+      "AND EXISTS (SELECT 1 FROM information_schema.columns p WHERE p.table_schema='public' AND p.table_name=c.table_name " +
+      "AND p.column_name IN ('password_hash','password','hashed_password','password_digest')) LIMIT 1;",
+    ).split("\n")[0]?.trim();
+    if (!table) return { reason: "no account table with a role column" };
+    const out = psql(roleGrantSql(table, email, role) + ";");
+    return /UPDATE 1/.test(out) ? { ok: true } : { reason: `the role update changed no row (${out.slice(0, 80)})` };
+  } catch (err) {
+    return { reason: String(err instanceof Error ? err.message : err).split("\n")[0]!.slice(0, 200) };
+  }
+}
+
 export interface ForeignKey { child: string; childColumn: string; parent: string; parentColumn: string }
 
 /** DELETE statements that remove the rows matching `where` in `table` and every row that points at them, deepest first. */
@@ -278,7 +330,7 @@ export async function resolveNestedIds(
   return (await walk(value)) as Record<string, unknown>;
 }
 
-export async function seedSampleData(buildDir: string, backendUrl: string, token: string, perResource = 2): Promise<SeedResult> {
+export async function seedSampleData(buildDir: string, backendUrl: string, token: string, perResource = 2, skip: Set<string> = new Set()): Promise<SeedResult> {
   const created: Record<string, string[]> = {};
   const notSeeded: string[] = [];
   const contractPath = join(buildDir, "api-contract.json");
@@ -295,6 +347,8 @@ export async function seedSampleData(buildDir: string, backendUrl: string, token
   const creates = new Map<string, { path: string; requestType?: string; auth?: boolean }>();
   for (const ep of endpoints) {
     const seg = ep.path.replace(/^\/api\/v1\//, "").split("/")[0];
+    // skip: resources another test account already created (2026-10-24, one account per role).
+    if (skip.has(seg ?? "")) continue;
     if (!seg || seg === "auth" || ep.method !== "POST" || hasPathParam(ep.path) || ep.path.replace(/^\/api\/v1\//, "").includes("/")) continue;
     creates.set(seg, ep);
   }

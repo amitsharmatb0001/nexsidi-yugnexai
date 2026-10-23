@@ -1134,6 +1134,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
               enableDockerTools: config.enableDockerTools,
               geminiModel: config.geminiModel,
               geminiTier: config.geminiTier,
+              // 2026-10-24: a sub-check runs under the same limits as the agent that started it (subagent-readonly.test.ts).
+              readOnly: config.readOnly,
+              readOnlyDirs: config.readOnlyDirs,
+              writableFile: config.writableFile,
               subagentDepth: (config.subagentDepth ?? 0) + 1,
               freshStart: config.freshStart,
             });

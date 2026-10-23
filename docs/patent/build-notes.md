@@ -435,3 +435,17 @@ Measured with the per-call log in the first 30 minutes of the Brewline build (pr
 Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, llm-client); type checks clean. Applies from the next worker restart.
 
 **Integration test added (same day):** `builder-batching.integration.test.ts` runs the real builder loop with only the model replaced and checks what the model is sent: with the preload on, the first message carries the builder's own files and no dependency code; with it off, nothing is preloaded; one `read_files` call returns several files (and names the missing one) in a single turn. Checked that it catches a regression: with the preload and `read_files` handling switched off, 2 of its 3 tests fail. All 1,877 tests pass together.
+
+### Fixed: a checker's sub-check could change the app; the review had no staff account (2026-10-24, batch 17, from the Brewline resume)
+
+**Found (live review of the Brewline resume, build held by me):** the app has staff-only pages, but the review stage made only an ordinary account (and seeded no sample data: customers cannot add menu items, so no order could be made either). The reality checker, which runs read-only, spent about 20 calls and 4 sub-checks hunting for a staff login, then started a sub-check that wrote a script and overwrote the real staff account's password in the app's database. Two system faults: (1) a sub-check did not inherit its parent's read-only limits in either agent loop, so it got write and command tools; (2) the review gave no account for a limited role.
+
+**Fixed:**
+- A sub-check runs under the same limits as the agent that started it (read-only, read-only folders, the one writable file), in both agent loops.
+- The review stage reads the limited roles from the contract ("(staff only)", "admin-only"; "owner"/"authenticated" are not roles), creates one account per role on the reserved test domain, gives it its role in the app's database between sign-up and sign-in (only for test-domain addresses and plain role names), and hands all of them to the checkers.
+- Sample data is created by an account allowed to create each record: the ordinary account, then each role account, then the ordinary account again; only what no account could create is reported.
+- The checkers are told never to change any account's password or role, never to create accounts in the database and never to read passwords out of code, logs or the database; a page that needs a missing account is reported as not checked.
+
+**Proof:** the new tests failed before the fix (the sub-check wrote its file) and pass after. Live on the Brewline app: the contract gives the role `staff`; the staff test account got 200 from the staff-only orders list, an ordinary test account 403; the cleanup then removed every test account (6, including 4 left by the interrupted review), 0 left. 1,885 tests pass; type checks clean (Riya's existing rootDir notice unchanged).
+
+**Not fixed by the system (needs the owner):** the Brewline staff account's password was changed by that sub-check before the hold.

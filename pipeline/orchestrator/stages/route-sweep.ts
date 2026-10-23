@@ -200,14 +200,23 @@ const slug = (route: string) => (route === "/" ? "home" : route.replace(/[^a-z0-
 
 /** A test account on the reserved test domain (removed with everything under it when the live review ends). */
 export async function createReviewAccount(
-  opts: { backendUrl: string; endpoints: Array<{ method: string; path: string }>; fetchFn?: typeof fetch; sleep?: (ms: number) => Promise<void> },
+  opts: {
+    backendUrl: string;
+    endpoints: Array<{ method: string; path: string }>;
+    fetchFn?: typeof fetch;
+    sleep?: (ms: number) => Promise<void>;
+    /** Runs after sign-up and before sign-in, e.g. to give the account a role so the sign-in token carries it. */
+    beforeLogin?: (email: string) => Promise<void> | void;
+    /** Part of the address, so accounts made in the same millisecond differ (e.g. the role name). */
+    label?: string;
+  },
 ): Promise<{ email: string; password: string; token: string } | { reason: string }> {
   const auth = contractAuthPaths(opts.endpoints);
   if (!auth) return { reason: "the API contract has no register and login endpoints" };
   const fetchFn = opts.fetchFn ?? fetch;
   const stamp = Date.now();
   // example.com is the reserved test domain; every account on it is removed when the live review ends.
-  const email = `verify+review${stamp}@example.com`;
+  const email = `verify+${opts.label ?? "review"}${stamp}@example.com`;
   const password = `Review!${stamp}aA1x`;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   // A 429 with Retry-After is the app's own sign-in limiter (the deploy checks just used the minute's attempts):
@@ -228,6 +237,7 @@ export async function createReviewAccount(
   };
   const reg = await post(auth.registerPath, { email, password, name: "Review Account" });
   if (!reg.ok) return { reason: `could not create a test account (register answered ${reg.status}: ${(reg.json?.error ?? reg.text).toString().slice(0, 160)})` };
+  if (opts.beforeLogin) await opts.beforeLogin(email);
   const login = await post(auth.loginPath, { email, password });
   const token = login.json?.data?.token ?? login.json?.token ?? reg.json?.data?.token ?? reg.json?.token;
   if (!login.ok || typeof token !== "string") return { reason: `could not sign the test account in (login answered ${login.status})` };
