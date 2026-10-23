@@ -1,7 +1,8 @@
 // Agents that must never call Gemini (2026-10-23). Google flagged the project's Agent Platform use under its Acceptable
 // Use Policy; the security review (and training that plants bugs in copies of our own code) is the work most likely to
 // read like misuse, so it runs on NVIDIA's hosted models and everything else stays on Gemini (Amit's decision).
-// NIM_ONLY_AGENTS lists the agents (comma-separated; default "karan"; empty = none). The agent loops keep speaking the
+// NIM_ONLY_AGENTS lists the agents (comma-separated; default none). 2026-10-23 (Amit): the reviews are too important for a
+// weaker model, so no agent is NVIDIA-only by default; the setting stays for work that should be kept off Gemini. The agent loops keep speaking the
 // Gemini message format: this module translates the conversation to NVIDIA's (OpenAI-style) format and the answer back,
 // so routeToolsWithFallback / agentChat can hand these agents over without any loop changing.
 // Measured 2026-10-23: muse-glimmer-30b and nemotron-3-ultra each made a correct tool call in ~12 s; the local
@@ -14,7 +15,7 @@ export const NIM_ONLY_CHAIN: ModelId[] = ["meta/muse-glimmer-30b", "nvidia/nemot
 
 export function isNimOnlyAgent(agentName: string | undefined): boolean {
   if (!agentName) return false;
-  const list = (process.env.NIM_ONLY_AGENTS ?? "karan").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const list = (process.env.NIM_ONLY_AGENTS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
   return list.includes(agentName.toLowerCase());
 }
 

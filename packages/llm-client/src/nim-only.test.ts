@@ -11,9 +11,12 @@ import type { GeminiMessage } from "./gemini.ts";
 
 afterEach(() => { delete process.env.NIM_ONLY_AGENTS; });
 
-test("the security reviewer is NVIDIA-only by default; the list is a setting", () => {
-  expect(isNimOnlyAgent("karan")).toBe(true);
+// Same day, Amit: the reviews are too important to move to a weaker model, so by default no agent is NVIDIA-only.
+test("no agent is NVIDIA-only by default; the list is a setting", () => {
+  expect(isNimOnlyAgent("karan")).toBe(false);
   expect(isNimOnlyAgent("navya")).toBe(false);
+  process.env.NIM_ONLY_AGENTS = "karan";
+  expect(isNimOnlyAgent("karan")).toBe(true);
   expect(isNimOnlyAgent(undefined)).toBe(false);
   process.env.NIM_ONLY_AGENTS = "karan, navya";
   expect(isNimOnlyAgent("navya")).toBe(true);
