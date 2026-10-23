@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { MCPClient } from "./mcp/client.ts";
 import { nimChatWithTools, type NimToolDef, type NimMessage, type NimToolCall, RETIRED_NIM_MODELS, ACTIVE_NIM_MODELS, OLLAMA_MODELS, OLLAMA_TOOL_MODELS, ollamaChatWithTools } from "@nexsidi/llm-client";
-import { execWriteFile, execWriteFiles, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol, FILE_TOOL_DEFS } from "./tools/file.ts";
+import { execWriteFile, execWriteFiles, execReadFile, execReadFiles, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol, FILE_TOOL_DEFS } from "./tools/file.ts";
 import { initWorkspaceTransaction, commitWorkspaceTransaction } from "./tools/git.ts";
 import { compactHistory, estimateTokenCount } from "./compaction.ts";
 import { SharedTokenBucket } from "./token-bucket.ts";
@@ -163,6 +163,9 @@ export interface AgentRunConfig {
   // same tier as Shubham (backend boilerplate). Unset = "generation"
   // (unchanged behavior).
   geminiTier?: string;
+  // 2026-10-23: put the files already in sandboxDir into the first message, whole (builder-preload.ts). Builders set
+  // it for later phases and fix rounds, where the Brewline build spent 131 of 317 model calls reading one file each.
+  preloadOwnFiles?: boolean;
   // 2026-08-06: real bug found live (project bae438767bed) — Tilotma's
   // reality-checker (an EVALUATOR per D26/its own prompt: "verify Stage 1's
   // claims... call task_complete", never told to fix anything) has
@@ -995,6 +998,11 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
             emitEvent({ type: "tool_result", tool: "write_files", status: "success", path: writeArgs.files.map((f) => f.path).join(",") });
           }
           result = r;
+          break;
+        }
+        case "read_files": {
+          emitEvent({ type: "tool_call", tool: "read_files", input: { paths: (args as { paths?: string[] }).paths } });
+          result = execReadFiles(config.sandboxDir, args as { paths: string[] }, ledger, config.readOnlyDirs);
           break;
         }
         case "read_file": {

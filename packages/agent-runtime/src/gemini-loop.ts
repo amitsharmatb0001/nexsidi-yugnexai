@@ -39,7 +39,8 @@ import { appendFactLedgerEntry, compactViaRelevantContext, type FactLedgerEntry,
 import { recordSpend, isOverBudget } from "./cost-budget.ts";
 import { createStrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
-import { execWriteFile, execWriteFiles, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol } from "./tools/file.ts";
+import { execWriteFile, execWriteFiles, execReadFile, execReadFiles, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol } from "./tools/file.ts";
+import { ownFilesSection } from "./builder-preload.ts";
 import { execRunCommand } from "./tools/command.ts";
 import { execHttpRequest } from "./tools/http.ts";
 import { execDockerCompose } from "./tools/docker.ts";
@@ -420,6 +421,9 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
 
   // Phase 5 Task 6: same skills-at-runtime injection as loop.ts.
   const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt, taskText: config.initialMessage });
+  // A builder working on files that already exist gets them whole in its first message (builder-preload.ts). Kept out of
+  // taskText above so the preloaded code does not steer which skills are picked.
+  const initialMessage = config.initialMessage + (config.preloadOwnFiles ? ownFilesSection(config.sandboxDir) : "");
 
   let messages: GeminiMessage[] = [];
   let loadedFromDb = false;
@@ -469,9 +473,9 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         // that variable is declared further down, seeded from the same
         // loadedFactLedger value.
         messages = isRelevantContextSelectionEnabled()
-          ? compactViaRelevantContext(messages, config.initialMessage, loadedFactLedger, COMPACTION_THRESHOLD_TOKENS, compactionOptions())
+          ? compactViaRelevantContext(messages, initialMessage, loadedFactLedger, COMPACTION_THRESHOLD_TOKENS, compactionOptions())
           : await compactGeminiHistory(messages, undefined, LEGACY_COMPACTION_THRESHOLD_TOKENS);
-        messages.push({ role: "user", content: config.initialMessage });
+        messages.push({ role: "user", content: initialMessage });
       }
     } catch (e) {
       console.error(`[${config.agentName}:gemini-agent] Failed to load history:`, e);
@@ -485,7 +489,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   if (!loadedFromDb) {
     messages = [
       { role: "system", content: systemPrompt },
-      { role: "user", content: config.initialMessage },
+      { role: "user", content: initialMessage },
     ];
   }
 
@@ -632,7 +636,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   let cachedContentHandle: string | undefined;
   if (config.geminiModel) {
     try {
-      const handle = await geminiCreateCachedContent(systemPrompt, config.initialMessage, { model: config.geminiModel });
+      const handle = await geminiCreateCachedContent(systemPrompt, initialMessage, { model: config.geminiModel });
       cachedContentHandle = handle.name;
       console.log(`[${config.agentName}:gemini-agent] Created prompt cache: ${handle.name}`);
     } catch (err) {
@@ -679,7 +683,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
     // avoid, so disabling this lever must revert BOTH the mechanism and the
     // threshold together, not just the mechanism.
     messages = isRelevantContextSelectionEnabled()
-      ? compactViaRelevantContext(messages, config.initialMessage, factLedger, COMPACTION_THRESHOLD_TOKENS, compactionOptions())
+      ? compactViaRelevantContext(messages, initialMessage, factLedger, COMPACTION_THRESHOLD_TOKENS, compactionOptions())
       : await compactGeminiHistory(messages, undefined, LEGACY_COMPACTION_THRESHOLD_TOKENS);
 
     let response;
@@ -920,6 +924,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
             for (const f of writeArgs.files) filesWritten.push(f.path);
           }
           result = r;
+          break;
+        }
+        case "read_files": {
+          result = execReadFiles(config.sandboxDir, args as { paths: string[] }, ledger, config.readOnlyDirs);
           break;
         }
         case "read_file": {

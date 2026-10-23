@@ -218,6 +218,8 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?
     // for genuinely pathological cases.
     // Part C.3: a phase starts from its own size and is extended while it
     // keeps making progress (extendStepsWhileProgressing above).
+    // 2026-10-23: a later phase starts with the files already written, whole (builder-preload.ts).
+    preloadOwnFiles: !!phase && !phase.scaffold,
     maxIterations: phase?.maxSteps ?? 90,
   });
 
@@ -339,6 +341,8 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // 2026-08-10: same gate as run() above — see its comment.
     requiredEvidenceKinds: countPlannedPages(plan) > 1 ? (["visual_check"] as const) : [],
     // 2026-10-22: own budget for fix rounds — see FIX_MAX_STEPS.
+    // 2026-10-23: a fix round starts with the current files, whole, instead of reading them one at a time.
+    preloadOwnFiles: true,
     maxIterations: FIX_MAX_STEPS,
   });
 

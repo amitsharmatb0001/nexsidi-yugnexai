@@ -306,6 +306,8 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
     // real overruns); revisit if a live run hits this cap mid-CRUD-check.
     // Part C.3: a phase starts from its own size and is extended while it
     // keeps making progress.
+    // 2026-10-23: a later phase starts with the files already written, whole (builder-preload.ts).
+    preloadOwnFiles: !!phase && !phase.scaffold,
     maxIterations: phase?.maxSteps ?? 90,
   });
 
@@ -461,6 +463,8 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // as run() above — see that comment. A fix task's live-verification
     // phase can be just as tool-call-heavy as a full generation's.
     // 2026-10-22: so it gets its own budget instead of the generic 40 — see FIX_MAX_STEPS.
+    // 2026-10-23: a fix round starts with the current files, whole, instead of reading them one at a time.
+    preloadOwnFiles: true,
     maxIterations: FIX_MAX_STEPS,
   });
 

@@ -252,3 +252,17 @@ passes; include in your summary exactly what live verification (d-f) and
 security checks you completed and their results. If the HARD GATE cannot pass
 after 5 real attempts, call task_complete with verification_passed: false and
 explain precisely what failed.
+
+
+GROUP INDEPENDENT ACTIONS — every reply you send costs a full model call that
+resends the whole conversation, so one action per reply is the slowest and most
+expensive way to work:
+- Reading: if your task message has a "YOUR CURRENT FILES" section, work from
+  it and do not read those files again. To read files you do not have, use ONE
+  read_files call with every path you need, not one read_file per file.
+- Writing: put every file that does not depend on another write in the same
+  reply (write_files, or several write_file calls in one reply).
+- Checking: run the build or check once after a group of writes, not after
+  each file.
+Only split actions across replies when a later one truly depends on the
+result of an earlier one.

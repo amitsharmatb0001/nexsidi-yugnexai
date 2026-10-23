@@ -250,6 +250,28 @@ export function execReadFile(sandboxDir: string, args: { path: string; offset?: 
   }
 }
 
+/**
+ * Several files in one call, each whole (2026-10-23). Brewline's frontend builder spent 131 of its 317 model calls reading
+ * ONE file each (read_file also cuts at 8,000 characters, forcing more calls on long files), and every call resends the
+ * conversation. A missing or unreadable file is reported in place; the rest still come back.
+ */
+export function execReadFiles(sandboxDir: string, args: { paths: string[] }, ledger?: EvidenceLedger, readOnlyDirs?: string[]): ToolResult {
+  const paths = Array.isArray(args.paths) ? args.paths.slice(0, 40) : [];
+  if (paths.length === 0) return { status: "error", summary: "read_files needs a non-empty paths list" };
+  const parts: string[] = [];
+  let ok = 0;
+  for (const path of paths) {
+    const r = execReadFile(sandboxDir, { path, limit: 200_000 }, ledger, readOnlyDirs);
+    if (r.status === "success") {
+      ok++;
+      parts.push(`=== ${path} ===\n${r.output}`);
+    } else {
+      parts.push(`=== ${path} === (not read: ${r.summary})`);
+    }
+  }
+  return { status: "success", summary: `Read ${ok} of ${paths.length} file(s)`, output: parts.join("\n\n") };
+}
+
 export function execListFiles(sandboxDir: string, args: { dir?: string; recursive?: boolean }, readOnlyDirs?: string[]): ToolResult {
   try {
     const relDir = args.dir ?? ".";
@@ -316,6 +338,20 @@ export const FILE_TOOL_DEFS: NimToolDef[] = [
           },
         },
         required: ["files"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_files",
+      description: "Read SEVERAL files in one call, each whole — PREFER THIS over repeated read_file calls whenever you need more than one file. Every call resends the whole conversation, so one read_files call instead of five read_file calls saves four round trips.",
+      parameters: {
+        type: "object",
+        properties: {
+          paths: { type: "array", items: { type: "string" }, description: "Relative paths from project root (up to 40)" },
+        },
+        required: ["paths"],
       },
     },
   },

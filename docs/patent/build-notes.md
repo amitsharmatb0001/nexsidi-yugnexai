@@ -418,3 +418,18 @@ Measured with the per-call log in the first 30 minutes of the Brewline build (pr
 **Also measured on this build:** the one-pass reviewers cost $0.08-0.23 each, $0.47 for all three per round (the Trailhead rerun's three reviewers cost $16.89); the builders' fix rounds are now the main cost (~$2.50 per round), findings went 16 → 8 → 2 in three rounds.
 
 **Decision (Amit):** resume the Brewline build with a $20 cap.
+
+### Fixed: builders read and act one step per model call (2026-10-23, batch 16, from the Brewline test build)
+
+**Found (counted from the Brewline log):** the frontend builder made 317 model calls, every one with exactly one tool call; 131 of them read a single file. Builders had no batch-read tool (only the reviewers had their code preloaded), and every model call resends the whole conversation, so input reached 19M tokens for that one builder. Reviewers already work in one pass (all code in the first message); builders did not.
+
+**Fixed:**
+- `read_files` tool: up to 40 files in one call; a missing file is reported without failing the rest. Handled in both agent loops.
+- Own-files preload (`packages/agent-runtime/src/builder-preload.ts`): when a builder works on files that already exist (every phase after the first, and every fix round) those files go whole into its first message, up to 300k characters (`BUILDER_PRELOAD_CHARS`); files past the budget are listed for `read_files`. Dependencies, build output, lockfiles and logs are skipped. The first message is also the stable start of the conversation, which is what the provider's prompt cache rewards. Kept out of skill selection so the code does not steer which skills load.
+- Both builder skills now say: group independent actions in one reply (one `read_files` for every path needed, all independent writes together, one build check after a group of writes).
+
+**Measured on the Brewline files:** the frontend preload is 58 files / 219k characters (fits the budget), the backend 16 files / 31k.
+
+**Research the same day (how other agents keep cost down):** Claude Code keeps a fixed prefix and treats cache misses as incidents; Codex runs independent tool calls in parallel and edits with patches; Aider sends a repository map and search/replace edits instead of whole files; OpenHands/SWE-agent research found that hiding old tool output works as well as summarising it; Gemini's implicit cache needs the same prefix first and at least 4,096 tokens on 3.x models.
+
+Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, llm-client); type checks clean. Applies from the next worker restart.
