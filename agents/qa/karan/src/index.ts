@@ -222,11 +222,11 @@ Hunt for all standard OWASP issues AND the following information-disclosure defe
 - HARDCODED MISLEADING STATUS: Any badge or indicator that shows a connection/health status (e.g., "Connected", "Online") as a hardcoded string literal — where the displayed state is never computed from an actual runtime check. This misrepresents system state to users and qualifies as a logic/security integrity defect. Flag as MEDIUM.
 
 EVIDENCE RULE — the difference between a finding and an opinion:
-A finding must describe a CONCRETE failing scenario: the exact input, request, or state that triggers it, and what incorrect/exploitable behavior results. If you cannot construct a specific attack or failure case, it is not a finding.
+A finding must describe a CONCRETE failing scenario: the exact input, request, or state that triggers it, and what incorrect or unsafe behavior results. If you cannot construct a specific attack or failure case, it is not a finding.
 - Do NOT report "could be risky if...", "is fragile", "is error-prone", or "if controls are bypassed" — hypotheticals without a demonstrated path are opinions, not vulnerabilities.
 - Do NOT flag correctly parameterized SQL (values in the params array, only placeholder NUMBERS in the query text) as injection risk based on the query being built dynamically — trace the actual data flow; if user data never enters the query string, there is no injection.
 - Do NOT report design trade-offs (e.g., caching vs. no caching) as defects — both sides of a trade-off cannot be bugs.
-Severity reflects real-world impact of the DEMONSTRATED scenario: CRITICAL = exploitable now with serious impact, HIGH = real defect likely to fire in normal use, MEDIUM = real but edge-case, LOW = minor/hardening.
+Severity reflects real-world impact of the DEMONSTRATED scenario: CRITICAL = a demonstrated weakness with serious impact, HIGH = real defect likely to fire in normal use, MEDIUM = real but edge-case, LOW = minor/hardening.
 
 Whenever you cite a file, also cite the exact line number the issue is on (from read_file's output) — this is what lets the fix target that line directly instead of re-scanning the whole file.
 

@@ -369,3 +369,13 @@ The live reviewer repeatedly asked for booking cancellation and `GET /api/v1/aut
 ### Added: cost per agent recorded on every model call (2026-10-22, batch 11)
 
 `token_spend` keeps one total per project, so the rerun's breakdown had to be rebuilt from logs. New table `agent_spend` (migration 0015, expand-only: project, agent, model, calls, tokens in/out, cached, cost) is added to on every model call by all four agent loops, in the same `recordSpend` call as the project total; a failure on the agent row never loses the total. `bun --env-file=.env scripts/spend-report.ts <project>` prints the table. Proof on the real database: two recorded calls produced one agent row whose cost equals the project total ($0.0486); test rows removed. 729 agent-runtime tests pass. Applies to builds after the worker restart; the running Trailhead build's calls are in the total only.
+
+### Google flagged the project; the security reviewer's wording made defensive review read like attack tooling (2026-10-23)
+
+**What happened:** from the evening of 2026-10-22 every Gemini request on project `yug-ai-512316` (all six models, even a one-word ping) returns 403 "Request rejected in accordance with our terms of use and policies". The console shows "A potential violation of our Acceptable Use Policy has been detected": the project is using Agent Platform (Vertex) "in a manner that violates" the Service Specific Terms, with an appeal form. Amit is submitting the appeal. Decision: do not move to another Google project to get around it.
+
+**Likely contributors (our reading, not Google's statement):** the security reviewer's instructions said "You attack the code", "show the actual attack", "attack vector, what the attacker gains" and asked for "a concrete exploit request"; the training module plants SQL-injection-style bugs in copies of our own code; one build sends ~1,400 automated calls.
+
+**Changed:** the reviewer's instructions now describe what it is — an independent, skeptical, defensive code review of code the platform generated, so weaknesses are fixed before delivery — with the same OWASP Top 10 scope, severities and evidence rules (trace the data flow from the request to the weak point; file, line, how untrusted input reaches the weakness, impact if not fixed). Also reworded: the security-review skill, the logic reviewer's scope line, the QA gate tool description. A test keeps attack wording out of these instructions (code comments excluded). 887 tests pass across agent-runtime, reviewers and Tilotma.
+
+**Still open, found the same day:** a 403 terms-of-use rejection is handled as quota exhaustion (the build waits up to 2 hours polling); the test-data cleanup misses addresses the evaluator invents (`.test` domains, made-up `.com` addresses).

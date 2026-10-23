@@ -18,4 +18,4 @@ keywords: [auth, login, sign in, password, api, token, jwt, private, privacy, se
 - Rate limit sign-in and sign-up.
 - Errors do not leak stack traces or whether an email exists.
 - Inputs validated on the server (see input-validation).
-Report each finding with the file, line and a concrete exploit request.
+Report each finding with the file, line and the concrete request that shows the weakness.

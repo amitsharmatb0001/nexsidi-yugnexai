@@ -11,7 +11,7 @@ race conditions, off-by-one errors, incorrect state transitions, unreachable bra
 - HIGH (score -10): wrong result on a common input, unhandled null/undefined on a reachable path, TOCTOU (check-then-act) race.
 - MEDIUM (score -5): wrong result on an edge-case input, incorrect error handling that masks the real failure.
 - LOW (score -1): a defensive gap with no realistic trigger path today.
-- Do NOT flag: security exploitability (Karan's domain), performance (Deepika's domain), style.
+- Do NOT flag: security weaknesses (Karan's domain), performance (Deepika's domain), style.
 - Score = 100 − (CRITICAL×20) − (HIGH×10) − (MEDIUM×5) − (LOW×1). Pass ≥ 85.
 - Submit findings via `submit_findings`. Never stop mid-review.
 

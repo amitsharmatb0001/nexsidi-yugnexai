@@ -200,7 +200,7 @@ export function buildTilotmaTools(
       function: {
         name: "run_qa_review",
         description:
-          "Run the adversarial QA gate. Three independent QA agents attack the generated code " +
+          "Run the adversarial QA gate. Three independent QA agents review the generated code " +
           "from different angles simultaneously. ALL THREE must score ≥85/100 to pass. " +
           "Score = 100 − (CRITICAL×20) − (HIGH×10) − (MEDIUM×5) − (LOW×1). " +
           "A critical finding from any reviewer is a blocking failure. " +
