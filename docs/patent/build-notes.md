@@ -379,3 +379,15 @@ The live reviewer repeatedly asked for booking cancellation and `GET /api/v1/aut
 **Changed:** the reviewer's instructions now describe what it is — an independent, skeptical, defensive code review of code the platform generated, so weaknesses are fixed before delivery — with the same OWASP Top 10 scope, severities and evidence rules (trace the data flow from the request to the weak point; file, line, how untrusted input reaches the weakness, impact if not fixed). Also reworded: the security-review skill, the logic reviewer's scope line, the QA gate tool description. A test keeps attack wording out of these instructions (code comments excluded). 887 tests pass across agent-runtime, reviewers and Tilotma.
 
 **Still open, found the same day:** a 403 terms-of-use rejection is handled as quota exhaustion (the build waits up to 2 hours polling); the test-data cleanup misses addresses the evaluator invents (`.test` domains, made-up `.com` addresses).
+
+### Added: the security reviewer runs on NVIDIA, never on Gemini (2026-10-23, batch 12)
+
+**Decision (Amit, 2026-10-23):** the work most likely to read like misuse to Google's classifier (the security review, and training that plants bugs in copies of our own code) runs on NVIDIA's hosted models; everything else stays on Gemini.
+
+**Measured before choosing:** on a small tool-call task, NVIDIA `meta/muse-glimmer-30b` 12.3 s and `nvidia/nemotron-3-ultra-550b-a55b` 12.7 s, both a correct tool call; local `qwen2.5-coder:7b` 85.6 s, no tool call and empty text. No local model is used.
+
+**Built:** `packages/llm-client/src/nim-only.ts`. `NIM_ONLY_AGENTS` (default `karan`; comma-separated; empty = none) sends those agents to the NVIDIA chain (muse-glimmer, then nemotron) from both router entry points (`routeToolsWithFallback` for tool loops, `agentChat` for plain chat, which the training script uses) before any Gemini path, and never falls back to Gemini. The agent loops are unchanged: the conversation is translated to NVIDIA's format and the answer back (thought parts and images are not sent). Each call logs `[call-time:nim-only]`.
+
+**Proof:** the real security reviewer on the real Trailhead app, with Gemini blocked: one NVIDIA call, 107 s, 4 findings. Checked by hand: the login cookie is set by JavaScript without HttpOnly/Secure/SameSite (real, HIGH); three "hard-coded secrets" findings in the builder's local `backend/docker-compose.yml` are one issue reported three times and rated CRITICAL for a local development file (judgment weaker than Gemini's: duplicates, inflated severity). 118 llm-client tests pass; type check clean.
+
+**Not covered by default:** training rounds for the logic and performance reviewers also plant bugs; add them to `NIM_ONLY_AGENTS` (`karan,navya,deepika`) to keep those off Gemini too. The new project `ai-ns-yug`: its key authenticates, but the Agent Platform API is not enabled there (SERVICE_DISABLED); not switched to.

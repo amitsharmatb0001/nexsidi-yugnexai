@@ -3,6 +3,7 @@ import { ollamaChat } from "./ollama.ts";
 import { geminiChat, geminiChatWithTools, circuitKeyFor, type GeminiMessage, type GeminiToolDef, type GeminiChatWithToolsResult, type GeminiThinkingLevel } from "./gemini.ts";
 import { AGENT_MODELS, FALLBACK_CHAIN, type AgentName, type ChatMessage, type ModelId, OLLAMA_MODELS, isNimEnabled } from "./types.ts";
 import { getState } from "./circuit-breaker.ts";
+import { isNimOnlyAgent, routeToolsViaNim, chatViaNim } from "./nim-only.ts";
 
 // 2026-09-28: OLLAMA_MODELS now lives in types.ts (one registry for every model name).
 
@@ -75,6 +76,8 @@ export async function agentChat(
   apiKey: string,
   opts?: { maxTokens?: number },
 ): Promise<{ content: string; modelUsed: ModelId }> {
+  // 2026-10-23: agents kept off Gemini on purpose (nim-only.ts) go to NVIDIA first and never fall back to Gemini.
+  if (isNimOnlyAgent(agentName)) return chatViaNim(agentName, messages, opts);
   if (shouldUseGeminiForPipeline(agentName)) {
     const { content, modelUsed } = await routeWithFallback(pipelineTierFor(agentName), messages, opts);
     return { content, modelUsed: modelUsed as ModelId };
@@ -377,6 +380,8 @@ export async function routeToolsWithFallback(
   opts?: { model?: string; cachedContent?: string; agentName?: string },
   deps: { chat?: typeof geminiChatWithTools } = {},
 ): Promise<GeminiChatWithToolsResult & { modelUsed: string }> {
+  // 2026-10-23: agents kept off Gemini on purpose (nim-only.ts) go to NVIDIA and never reach the Gemini pool.
+  if (isNimOnlyAgent(opts?.agentName)) return routeToolsViaNim(messages, tools, opts!.agentName!);
   const chat = deps.chat ?? geminiChatWithTools;
   // 2026-07-28: opts.agentName rotates the FALLBACK order (see
   // rotatedPoolForAgent's header comment) so parallel callers sharing one
