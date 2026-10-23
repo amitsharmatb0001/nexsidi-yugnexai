@@ -237,6 +237,8 @@ export function isAllPoolModelsExhaustedError(err: unknown): boolean {
 // checks the same three shapes deployWithQuotaRetry does: circuit-breaker
 // state, full-pool exhaustion, and the raw Vertex 429 message.
 export function isQuotaExhaustionError(errors: string[]): boolean {
+  // 2026-10-23: a provider's terms-of-use refusal is not quota and does not clear with time; never wait on it.
+  if (errors.some((e) => /terms of use and polic|refused this request under its terms of use/i.test(e))) return false;
   return errors.some((e) => /circuit-broken|all pool models exhausted|RESOURCE_EXHAUSTED/i.test(e));
 }
 

@@ -33,7 +33,9 @@ test("reviewAccountSection gives the details and asks for the full user flow", (
   expect(s).toMatch(/create/i);
   expect(s).toMatch(/delete|remove/i);
   expect(s).toMatch(/new address|sign.?up/i);
-  expect(reviewAccountSection(null)).toBe("");
+  // 2026-10-23: with no account only the test-data rule is given (no account details).
+  expect(reviewAccountSection(null)).not.toContain("TEST ACCOUNT");
+  expect(reviewAccountSection(null)).toContain("@example.com");
 });
 
 test("all three review tasks include the account when one is given, and none when not", () => {
@@ -55,4 +57,14 @@ test("every live-review agent runs on a model that is shown the screenshots", as
   const src = readFileSync(new URL("./tier3-review.ts", import.meta.url), "utf-8");
   const collector = src.slice(src.indexOf('agentName: "tilotma-evidence-collector"'), src.indexOf('agentName: "tilotma-evidence-collector"') + 600);
   expect(collector).toContain("model: REALITY_CHECKER_MODEL");
+});
+
+// 2026-10-23 (Trailhead rerun): the live evaluator signed up as newuser9988@outdoorcamp.test and sent the contact form as
+// alex@trailtest.com; the leftovers failed the deploy's cleanliness check. Every review now carries one rule for any
+// address it types into the app, with or without a ready account.
+test("every live review is told to use @example.com for anything it types into the app", async () => {
+  const { reviewAccountSection, TEST_DATA_RULE } = await import("./review-account.ts");
+  expect(TEST_DATA_RULE).toContain("@example.com");
+  expect(reviewAccountSection(null)).toContain(TEST_DATA_RULE);
+  expect(reviewAccountSection({ email: "verify+r@example.com", password: "p" })).toContain(TEST_DATA_RULE);
 });

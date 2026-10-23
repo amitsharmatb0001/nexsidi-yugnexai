@@ -4,6 +4,7 @@ import { geminiChat, geminiChatWithTools, circuitKeyFor, type GeminiMessage, typ
 import { AGENT_MODELS, FALLBACK_CHAIN, type AgentName, type ChatMessage, type ModelId, OLLAMA_MODELS, isNimEnabled } from "./types.ts";
 import { getState } from "./circuit-breaker.ts";
 import { isNimOnlyAgent, routeToolsViaNim, chatViaNim } from "./nim-only.ts";
+import { isProviderRefusal, ProviderRefusalError } from "./provider-refusal.ts";
 
 // 2026-09-28: OLLAMA_MODELS now lives in types.ts (one registry for every model name).
 
@@ -353,6 +354,8 @@ export async function routeWithFallback(
       }
       return { content, modelUsed: model };
     } catch (err) {
+      // 2026-10-23: a terms-of-use refusal is not sent to any other model (provider-refusal.ts).
+      if (isProviderRefusal(String(err))) throw new ProviderRefusalError(String(err));
       errors.push(`${model}: ${String(err)}`);
       // Zero-wait: immediately try next model, no sleep/backoff
     }
@@ -442,6 +445,8 @@ export async function routeToolsWithFallback(
     } catch (err) {
       const msg = String(err);
       console.log(`[call-time:${tier}] ${opts?.agentName ?? "?"} ${model} FAILED in ${took()}: ${msg.replace(/\s+/g, " ").slice(0, 160)}`);
+      // 2026-10-23: a terms-of-use refusal is not sent to any other model, and nothing retries it (provider-refusal.ts).
+      if (isProviderRefusal(msg)) throw new ProviderRefusalError(msg);
       // Record the throttle so the NEXT call in this run leads with a model
       // that is actually available, instead of repeating this round-trip.
       if (msg.includes("429") || /rate.?limit|RESOURCE_EXHAUSTED/i.test(msg)) {

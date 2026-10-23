@@ -109,6 +109,17 @@ export function sanitizeGeneratedPackageJsons(buildDir: string): void {
 /** Every account a check makes lives on example.com, a reserved test domain no real person has. */
 export const VERIFICATION_EMAIL_PATTERN = "%@example.com";
 
+// 2026-10-23 (Trailhead rerun): the live evaluator signed up as newuser9988@outdoorcamp.test, which the example.com-only
+// rule missed, and the leftover account failed the deploy's cleanliness check. Every reserved test domain is a test
+// account: example.com/.net/.org and the .test, .example, .invalid and .localhost TLDs (RFC 2606/6761) — no real person
+// can hold such an address.
+const TEST_EMAIL_SUFFIXES = ["@example.com", "@example.net", "@example.org", ".test", ".example", ".invalid", ".localhost"];
+export const TEST_ACCOUNT_CONDITION = `(${TEST_EMAIL_SUFFIXES.map((x) => `email ILIKE '%${x}'`).join(" OR ")})`;
+export function isTestAccountEmail(email: string): boolean {
+  const e = email.trim().toLowerCase();
+  return TEST_EMAIL_SUFFIXES.some((x) => e.endsWith(x));
+}
+
 export interface ForeignKey { child: string; childColumn: string; parent: string; parentColumn: string }
 
 /** DELETE statements that remove the rows matching `where` in `table` and every row that points at them, deepest first. */
@@ -151,10 +162,12 @@ export const PUBLIC_FORM_TABLES_SQL =
   "AND NOT EXISTS (SELECT 1 FROM information_schema.columns p WHERE p.table_schema='public' AND p.table_name=c.table_name " +
   "AND p.column_name IN ('password_hash','password','hashed_password','password_digest'))";
 
-/** Test-domain rows made at or after `since` (a database timestamp). The value goes into SQL text, so only a timestamp is accepted. */
+/** Public-form rows made at or after `since` (a database timestamp). The value goes into SQL text, so only a timestamp is accepted. */
 export function testWindowCondition(since: string): string {
   if (!/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}(:?\d{2})?)?$/.test(since)) throw new Error(`not a timestamp: ${JSON.stringify(since.slice(0, 40))}`);
-  return `email LIKE '${VERIFICATION_EMAIL_PATTERN}' AND created_at >= '${since}'`;
+  // 2026-10-23: every public-form row made in the window, whatever address it uses — during testing the app listens only on
+  // this machine, so they come from the checks (the evaluator used alex@trailtest.com). Rows from before are never touched.
+  return `created_at >= '${since}'`;
 }
 
 /** The deployed database's own clock (null when it cannot be read), so the window does not depend on the host's clock. */
@@ -199,7 +212,7 @@ export function purgeVerificationArtifacts(buildDir: string, since?: string | nu
       return { child, childColumn, parent, parentColumn };
     });
 
-    const where = `email LIKE '${VERIFICATION_EMAIL_PATTERN}'`;
+    const where = TEST_ACCOUNT_CONDITION;
     let removed = 0;
     for (const table of tables) {
       try {

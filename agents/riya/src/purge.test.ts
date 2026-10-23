@@ -106,13 +106,25 @@ test("public-form tables are found by an email plus a created_at column and no p
   expect(PUBLIC_FORM_TABLES_SQL).toContain("password_hash");
 });
 
-test("the rows made since the testing began are chosen by test domain and by time", async () => {
+test("the rows made since the testing began are chosen by time, whatever address they use", async () => {
+  // 2026-10-23 (Trailhead rerun): the live evaluator sent the contact form as alex@trailtest.com, a made-up address on no
+  // test domain; the row stayed and failed the deploy. During testing the app listens only on this machine, so every
+  // public-form row made in the window comes from the checks. Rows from before the window are never touched.
   const { testWindowCondition } = await import("./index.ts");
-  expect(testWindowCondition("2026-10-22 01:20:00.123456+00")).toBe(`email LIKE '%@example.com' AND created_at >= '2026-10-22 01:20:00.123456+00'`);
-  expect(testWindowCondition("2026-10-22T01:20:00.123Z")).toBe(`email LIKE '%@example.com' AND created_at >= '2026-10-22T01:20:00.123Z'`);
+  expect(testWindowCondition("2026-10-22 01:20:00.123456+00")).toBe(`created_at >= '2026-10-22 01:20:00.123456+00'`);
+  expect(testWindowCondition("2026-10-22T01:20:00.123Z")).toBe(`created_at >= '2026-10-22T01:20:00.123Z'`);
   // the value goes into SQL text, so anything that is not a timestamp is refused
   expect(() => testWindowCondition("x'; DROP TABLE users; --")).toThrow();
   expect(() => testWindowCondition("")).toThrow();
+});
+
+test("test accounts on any reserved test domain are removed, real addresses are not", async () => {
+  // Same rerun: the evaluator signed up as newuser9988@outdoorcamp.test. .test, .example, .invalid and .localhost are
+  // reserved for testing (RFC 2606/6761), as are example.com/.net/.org; no real person can hold such an address.
+  const { TEST_ACCOUNT_CONDITION, isTestAccountEmail } = await import("./index.ts");
+  for (const e of ["verify+x@example.com", "a@example.net", "b@example.org", "newuser9988@outdoorcamp.test", "c@shop.example", "d@x.invalid", "e@app.localhost"]) expect({ e, ok: isTestAccountEmail(e) }).toEqual({ e, ok: true });
+  for (const e of ["real.person@gmail.com", "owner@trailheadgear.com", "x@testing.com", "y@example.co"]) expect({ e, ok: isTestAccountEmail(e) }).toEqual({ e, ok: false });
+  expect(TEST_ACCOUNT_CONDITION).toContain("ILIKE '%.test'");
 });
 
 test("the live review and Riya's own checks clean up public-form rows from when they began", async () => {
