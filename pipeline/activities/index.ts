@@ -913,6 +913,8 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
     const plan = getPlan(projectId);
     const stage4Result = buildStage4Result(projectId);
     const result = await runQAFixLoop(projectId, plan, stage4Result);
+    // 2026-10-23: the cap is checked again after the rounds, so a step that reached it stops as a budget stop, not a pass.
+    await assertWithinBudget(projectId, "qa-gan (after the rounds)");
     console.log(
       `[activity:qa-fix-loop] pass=${result.pass} stuck=${result.stuck ?? false} iterations=${result.iterations} findings=${result.findings.length}`,
     );
@@ -988,6 +990,7 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
     // deploy is about to ship — before it's shipped.
     await verifyHandoff(projectId, "qa-gan", "deploy", buildHandoffContext(buildDirFor(projectId), filterSourceManifest(stage4Result), plan));
     const result = await runStage6(projectId, stage4Result, plan);
+    await assertWithinBudget(projectId, "deploy (after the live rounds)");
     console.log(`[activity:deploy] success=${result.success} appUrl=${result.appUrl} stuck=${result.stuck ?? false}`);
     recordClaimEvidence(buildDirFor(projectId), 2, result.success ? "deployed after the live checks passed" : "deploy attempt did not pass the live checks", {
       success: result.success, appUrl: result.appUrl, stuck: result.stuck ?? false,

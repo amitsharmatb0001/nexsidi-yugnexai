@@ -36,7 +36,7 @@ import { appendFactLedgerEntry, compactViaRelevantContext, type FactLedgerEntry,
 // candidatesTokenCount was being read into the usage LOG line and then
 // discarded — see packages/llm-client/src/gemini.ts) — added there so it's
 // available here.
-import { recordSpend } from "./cost-budget.ts";
+import { recordSpend, isOverBudget } from "./cost-budget.ts";
 import { createStrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { execWriteFile, execWriteFiles, execReadFile, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol } from "./tools/file.ts";
@@ -645,6 +645,12 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   const browserToolset = config.enableBrowser ? new BrowserToolset(config.sandboxDir) : null;
   try {
   while (stepBudget.canContinue(iterations)) {
+    // 2026-10-23: the spend cap is checked before every model call, not only when a step starts (cost-budget.ts isOverBudget).
+    if (config.projectId && await isOverBudget(config.projectId)) {
+      errors.push(`budget_exceeded: the project's spend cap was reached — ${config.agentName} stopped before its next model call`);
+      console.log(`[${config.agentName}:gemini-agent] budget_exceeded — stopped before the next model call`);
+      break;
+    }
     // Ledgerly benchmark: stop at the next step once the activity was
     // cancelled or timed out (see run-abort.ts) — never keep running beside
     // a retry.

@@ -24,7 +24,7 @@ import { BudgetTracker } from "./budget-tracker.ts";
 // never did cover this. This is the real fix, at the one place in this
 // shared NIM loop where a per-call token count AND the model that served it
 // are both already in scope.
-import { recordSpend } from "./cost-budget.ts";
+import { recordSpend, isOverBudget } from "./cost-budget.ts";
 import { execRunCommand, COMMAND_TOOL_DEF } from "./tools/command.ts";
 import { execHttpRequest, HTTP_TOOL_DEF } from "./tools/http.ts";
 import { execDockerCompose, DOCKER_TOOL_DEF } from "./tools/docker.ts";
@@ -762,6 +762,12 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
   try {
   const startedAt = Date.now();
   while (stepBudget.canContinue(iterations)) {
+    // 2026-10-23: the spend cap is checked before every model call, not only when a step starts (cost-budget.ts isOverBudget).
+    if (config.projectId && await isOverBudget(config.projectId)) {
+      errors.push(`budget_exceeded: the project's spend cap was reached — ${config.agentName} stopped before its next model call`);
+      console.log(`[${config.agentName}:agent] budget_exceeded — stopped before the next model call`);
+      break;
+    }
     // Ledgerly benchmark: stop at the next step once the activity was
     // cancelled or timed out (see run-abort.ts) — never keep running beside
     // a retry.

@@ -14,6 +14,7 @@
 // callers/tests that want to bypass a real QA re-run — it is no longer the
 // default and MUST NOT be reintroduced as the default without a comment
 // explaining why real QA coverage is being turned off again.
+import { isOverBudget } from "../../../packages/agent-runtime/src/cost-budget.ts";
 import { resolveFlags } from "../flags.ts";
 import { run as runRiya, purgeVerificationArtifacts, seedSampleData, snapshotTableCounts, compareSnapshots, databaseNow, type DeployResult } from "../../../agents/riya/src/index.ts";
 import { agentForFile, type Stage4Result } from "./stage4-multi-agent-dev.ts";
@@ -949,6 +950,12 @@ export async function runStage6(
   let liveHold: { reason: string; evidence: string[] } | undefined;
 
   while (!retest.pass && fixAttempt < MAX_LIVE_FIX_ATTEMPTS) {
+    // 2026-10-23: no new live round once the spend cap is reached; the step then raises the budget stop.
+    if (await isOverBudget(projectId)) {
+      console.log(`[stage6] budget_exceeded — the spend cap was reached, no further live round`);
+      liveStuck = true;
+      break;
+    }
     fixAttempt++;
     console.log(`[stage6] Live retest failed (attempt ${fixAttempt} of ${MAX_LIVE_FIX_ATTEMPTS}) — starting agentic fix loop`);
 

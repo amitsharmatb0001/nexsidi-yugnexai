@@ -406,3 +406,15 @@ Tests: 1,633 pass across llm-client, agent-runtime, Riya, Tilotma and the orches
 Measured with the per-call log in the first 30 minutes of the Brewline build (project `ai-ns-yug`): gemini-3.1-pro 68 calls ok (avg 17.6 s), 5 failed (2 timeouts, 3 "404 Publisher model not found" from the backup region), 4.2 min lost; gemini-3.5-flash 52 ok (avg 15.4 s), none failed; gemini-3.8-flash 0 ok, 4 failed, every one a 120 s timeout, 8.0 min lost. It stayed first in line because only a rate-limit error (20 s) put a model on cooldown. A timeout now puts the model on a 10-minute cooldown, then it is tried again. 122 llm-client tests pass. Applies from the next worker restart (not during the running build).
 
 **Seen, not fixed yet:** 3.1-pro answers 404 when a call is retried in the backup region (asia-southeast1), where that model is not published; the location fallback should skip models that region does not offer.
+
+### Fixed: the spend cap did not stop spending (2026-10-23, batch 15, from the Brewline test build)
+
+**Found:** with a $10 cap the build spent $13.61 before I stopped the worker by hand. The cap was checked only when a step started (`assertWithinBudget`); the review-and-fix step started at $8.31 and ran its rounds inside the same step ($11.02, $13.22). A cap that is checked only at step boundaries is not a cap.
+
+**Fixed:** every agent loop (tool loop, NIM loop, reviewer loop) checks the cap before each model call and stops with `budget_exceeded` instead of calling; the review-and-fix loop and the live loop check it before each round; the review step and the deploy step raise the existing budget stop after their rounds, so the build pauses for the owner's decision and nothing retries. A failed read of the spend never stops a build (the step-start check still applies).
+
+**Proof (no model cost):** a real reviewer started on the Brewline project ($13.61 spent) with the cap at $10 stopped before its first model call; spend stayed at $13.61. 1,435 tests pass; type check clean.
+
+**Also measured on this build:** the one-pass reviewers cost $0.08-0.23 each, $0.47 for all three per round (the Trailhead rerun's three reviewers cost $16.89); the builders' fix rounds are now the main cost (~$2.50 per round), findings went 16 → 8 → 2 in three rounds.
+
+**Decision (Amit):** resume the Brewline build with a $20 cap.

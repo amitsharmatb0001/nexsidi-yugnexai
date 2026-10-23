@@ -30,7 +30,7 @@ import { compactGeminiHistory, estimateGeminiTokenCount } from "./compaction.ts"
 // gemini-loop.ts/claude-loop.ts — and this file's own header comment records
 // the live incident that makes it the MOST important of the four to close
 // ("a single QA round ... ran to ~7.8M tokens").
-import { recordSpend } from "./cost-budget.ts";
+import { recordSpend, isOverBudget } from "./cost-budget.ts";
 
 // 2026-07-24 (W0.3): this loop previously had NO compaction at all. 2026-
 // 07-25 (Phase 0.3): matches gemini-loop.ts's threshold — 40K was 4% of the
@@ -679,6 +679,12 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
 
   while (iterations < effectiveMaxIterations) {
     iterations++;
+    // 2026-10-23: the spend cap is checked before every model call, not only when a step starts (cost-budget.ts isOverBudget).
+    if (config.projectId && await isOverBudget(config.projectId)) {
+      errors.push(`budget_exceeded: the project's spend cap was reached — ${config.agentName} stopped before its next model call`);
+      console.log(`[${config.agentName}:qa-loop] budget_exceeded — stopped before the next model call`);
+      break;
+    }
 
     // 2026-07-24 (W0.3): proactive compaction — checked before the call it
     // protects, not reactively after (see gemini-loop.ts for the same

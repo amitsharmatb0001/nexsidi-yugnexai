@@ -282,3 +282,16 @@ export async function checkBudget(
   const spentUsd = totals?.costUsd ?? 0;
   return evaluateBudget(spentUsd, resolveBudgetCapUsd());
 }
+
+/**
+ * True when the project's recorded spend has reached its cap (2026-10-23). Checked before each model call and each review
+ * round: the cap used to be checked only when a step started, and one review step ran from $8.31 to $13.61 on a $10 cap.
+ * A failed read returns false (a database hiccup must not stop a build); the step-start check still applies.
+ */
+export async function isOverBudget(projectId: string, store: SpendStore = dbSpendStore): Promise<boolean> {
+  try {
+    return !(await checkBudget(projectId, store)).withinBudget;
+  } catch {
+    return false;
+  }
+}

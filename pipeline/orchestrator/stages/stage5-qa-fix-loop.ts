@@ -27,6 +27,7 @@
 //     "2-3 iterations is NORMAL" guidance elsewhere; a stuck-state exit is
 //     the intended common case, the cap is the backstop against a runaway
 //     loop, not the expected exit path.
+import { isOverBudget } from "../../../packages/agent-runtime/src/cost-budget.ts";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 import { groupFindingsByAgent, type Stage4Result, type Finding } from "./stage4-multi-agent-dev.ts";
 import { runStage5, type Stage5Result, type Stage5RawFindings } from "./stage5-adversarial-qa.ts";
@@ -304,6 +305,11 @@ export async function runQAFixLoopWithDeps(
   if (heldFirst) return heldFirst;
 
   while (!result.pass && iterations <= MAX_FIX_ITERATIONS) {
+    // 2026-10-23: no new round once the spend cap is reached; the step then raises the budget stop (activities/index.ts).
+    if (await isOverBudget(projectId)) {
+      console.log(`[qa-fix-loop] budget_exceeded — the spend cap was reached, no further round`);
+      return { ...result, iterations, stuck: true };
+    }
     // 2026-08-10: real bug found live (project freshtst1) — a
     // "review-incomplete" finding (a QA agent's OWN reviewer tooling
     // crashed, e.g. Deepika's fallback-parser failing on malformed model
