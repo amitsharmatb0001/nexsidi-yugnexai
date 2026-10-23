@@ -303,6 +303,13 @@ export function noteGeminiRateLimited(model: string, now = Date.now()): void {
   rateLimitedUntil.set(model, now + RATE_LIMIT_COOLDOWN_MS);
 }
 
+// 2026-10-23 (Brewline test build): on project ai-ns-yug gemini-3.8-flash answered 0 of 4 calls, each hanging until the
+// 120 s timeout (8 minutes lost in 30). A model that times out is skipped for 10 minutes, then tried again.
+const UNRESPONSIVE_COOLDOWN_MS = 10 * 60_000;
+export function noteGeminiUnresponsive(model: string, now = Date.now()): void {
+  rateLimitedUntil.set(model, now + UNRESPONSIVE_COOLDOWN_MS);
+}
+
 /** Exported for tests — clears cooldown state between cases. */
 export function clearGeminiRateLimitCooldowns(): void {
   rateLimitedUntil.clear();
@@ -451,6 +458,8 @@ export async function routeToolsWithFallback(
       // that is actually available, instead of repeating this round-trip.
       if (msg.includes("429") || /rate.?limit|RESOURCE_EXHAUSTED/i.test(msg)) {
         noteGeminiRateLimited(model);
+      } else if (/AbortError|operation was aborted|timed out/i.test(msg)) {
+        noteGeminiUnresponsive(model);
       }
       errors.push(`${model}: ${msg}`);
       // Zero-wait: immediately try next model, no sleep/backoff

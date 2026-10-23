@@ -400,3 +400,9 @@ The live reviewer repeatedly asked for booking cancellation and `GET /api/v1/aut
 **Cleanup.** The live evaluator signed up as `newuser9988@outdoorcamp.test` and sent the contact form as `alex@trailtest.com`; the example.com-only cleanup left both and the deploy failed its cleanliness check. Now: accounts on any reserved test domain are removed (example.com/.net/.org, `.test`, `.example`, `.invalid`, `.localhost`; never a real address); in public-form tables every row made during the testing window is removed whatever its address (the app listens only on this machine while it is tested; rows from before the window are never touched); every live review is told to use `@example.com` for anything it types into the app, with or without a ready account. Proof on the real Trailhead database: the `.test` account and all 6 test contact rows removed, the 9 gear rows untouched.
 
 Tests: 1,633 pass across llm-client, agent-runtime, Riya, Tilotma and the orchestrator; type checks clean.
+
+### Fixed: a model that hangs is skipped for 10 minutes (2026-10-23, batch 14, from the Brewline test build)
+
+Measured with the per-call log in the first 30 minutes of the Brewline build (project `ai-ns-yug`): gemini-3.1-pro 68 calls ok (avg 17.6 s), 5 failed (2 timeouts, 3 "404 Publisher model not found" from the backup region), 4.2 min lost; gemini-3.5-flash 52 ok (avg 15.4 s), none failed; gemini-3.8-flash 0 ok, 4 failed, every one a 120 s timeout, 8.0 min lost. It stayed first in line because only a rate-limit error (20 s) put a model on cooldown. A timeout now puts the model on a 10-minute cooldown, then it is tried again. 122 llm-client tests pass. Applies from the next worker restart (not during the running build).
+
+**Seen, not fixed yet:** 3.1-pro answers 404 when a call is retried in the backup region (asia-southeast1), where that model is not published; the location fallback should skip models that region does not offer.
