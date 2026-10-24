@@ -1,0 +1,31 @@
+@import "./fonts.css";
+@import "./theme-overrides.css";
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: var(--nx-font-size-base);
+  color: var(--nx-color-foreground);
+  background: var(--nx-color-background);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-height: 100vh;
+  background: var(--nx-color-background);
+  color: var(--nx-color-foreground);
+}
+
+a {
+  color: var(--nx-color-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}

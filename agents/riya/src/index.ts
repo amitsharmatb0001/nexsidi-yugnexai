@@ -1260,6 +1260,8 @@ async function registerAndLoginTestUser(
   backendUrl: string,
   role?: string,
   paths: AuthPaths = DEFAULT_AUTH_PATHS,
+  // 2026-10-24: runs between sign-up and sign-in (e.g. to give the account a contract role, so its token carries it).
+  beforeLogin?: (email: string) => void,
 ): Promise<{ token: string } | { error: string }> {
   const email = `verify+${role ?? "user"}+${Date.now()}@example.com`;
   const password = `StrongPass123!${Date.now()}`;
@@ -1308,6 +1310,7 @@ async function registerAndLoginTestUser(
   if (!regRes.ok) {
     return { error: `custom register failed: returned ${regRes.status}: ${(await regRes.text()).slice(0, 200)}` };
   }
+  beforeLogin?.(email);
 
   let loginRes: Response;
   try {
@@ -1672,6 +1675,7 @@ export async function verifyAllResourceCrud(
   buildDir: string,
   backendUrl: string,
   getDbRow?: (table: string, id: string) => Record<string, unknown> | null,
+  grantRole: (email: string, role: string) => { ok: true } | { reason: string } = (email, role) => grantTestAccountRole(buildDir, email, role),
 ): Promise<{ ok: boolean; findings: string[]; notChecked?: string[] }> {
   const contractPath = join(buildDir, "api-contract.json");
   if (!existsSync(contractPath)) return { ok: false, findings: ["api-contract.json not found — cannot discover endpoints"] };
@@ -1741,6 +1745,24 @@ export async function verifyAllResourceCrud(
     const adminAuth = await registerAndLoginTestUser(backendUrl, "admin", resolveAuthPaths(endpoints));
     if (!("error" in adminAuth)) adminToken = adminAuth.token;
     return adminToken;
+  }
+
+  // 2026-10-24 (Brewline): an app whose limited role is set by the app (a seeded staff account), not by sign-up. A test
+  // account is given each role the contract names before sign-in, so its token carries the role. Tried after the admin
+  // route, because an app may accept a "role" field at sign-up and still give no privilege.
+  const roleTokens: string[] = [];
+  let rolesAttempted = false;
+  async function getRoleTokens(): Promise<string[]> {
+    if (rolesAttempted) return roleTokens;
+    rolesAttempted = true;
+    for (const role of limitedRolesFromContract(endpoints as Array<{ description?: string }>)) {
+      let granted = false;
+      const auth = await registerAndLoginTestUser(backendUrl, undefined, resolveAuthPaths(endpoints), (email) => {
+        granted = "ok" in grantRole(email, role);
+      });
+      if (granted && !("error" in auth)) roleTokens.push(auth.token);
+    }
+    return roleTokens;
   }
 
   // Process resources whose create payload has the FEWEST foreign-key
@@ -1821,8 +1843,9 @@ export async function verifyAllResourceCrud(
       });
       if (createRes.status === 403) {
         const admin = await getAdminToken();
-        if (admin) {
-          activeToken = admin;
+        for (const candidate of [...(admin ? [admin] : []), ...(await getRoleTokens())]) {
+          if (createRes.status !== 403) break;
+          activeToken = candidate;
           createRes = await fetch(`${backendUrl}${createEp.path}`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${activeToken}` },
@@ -1830,7 +1853,12 @@ export async function verifyAllResourceCrud(
           });
         }
       }
-      if (createRes.status === 403) continue; // still forbidden even as admin (or no admin available) — genuinely role-gated, not broken
+      // 2026-10-24: still forbidden with every role the check could get — not checked, and said so (it used to be skipped
+      // silently while the run reported every resource as confirmed).
+      if (createRes.status === 403) {
+        findings.push(`NOT CHECKED — ${resource}: POST ${createEp.path} answered 403 for every account the check could get (a role it could not obtain)`);
+        continue;
+      }
 
       // 2026-08-27: real bug found live (project 852be5aeaef4) — this is the
       // failure that actually ended that run. The api-contract typed the
@@ -2154,8 +2182,10 @@ export async function run(
     : { ok: true, findings: [] }; // not a separate failure — roundTrip.ok already covers this case
   if (!crudCheck.ok) {
     for (const finding of crudCheck.findings) console.warn(`[riya] CRUD verification finding: ${finding}`);
+  } else if (roundTrip.ok && crudCheck.notChecked?.length) {
+    console.log(`[riya] CRUD verification: no failures; CRUD verification: not checked — ${crudCheck.notChecked.join("; ")}`);
   } else if (roundTrip.ok) {
-    console.log(`[riya] full CRUD verification OK — every resource's create/read/update/delete confirmed against the real database`);
+    console.log(`[riya] full CRUD verification OK — every resource's create/read/update/delete confirmed in the database, none skipped`);
   }
 
   // Runs unconditionally once verification is done (pass OR fail) — a FAILED

@@ -26,6 +26,23 @@ import { runAgentEscalated, readBlockedReports, type BlockedReport } from "@nexs
 import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint.ts";
 import { runWithQuotaWatchAndResume } from "../../../pipeline/activities/quota-retry.ts";
 import { reviewAccountFromEnv, reviewAccountSection, reviewSeededFromEnv, type ReviewAccount } from "./review-account.ts";
+import { planSection } from "../../../pipeline/orchestrator/chief-check.ts";
+import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
+
+// 2026-10-24 (docs/root-cause/2026-10-24-brewline.md): the reviewers had no yardstick — they were told to list "AT LEAST
+// 3-5 issues" and to default to NEEDS WORK, and every live round reported exactly 5, four of them false in the last one.
+// They now get the approved plan and every finding must name the item it breaks; the Chief AI's check uses the same list.
+export function approvedPlanBlock(projectId: string): string {
+  let section = "";
+  try {
+    section = planSection(buildDirFor(projectId));
+  } catch {
+    section = "";
+  }
+  return section
+    ? `\n\nAPPROVED PLAN — the only yardstick. Every finding starts with the item it breaks, e.g. [SC2]:\n${section}`
+    : "";
+}
 
 // 2026-07-27 (live, complex1): real gap found live — the shared default
 // MAX_ITERATIONS (40) let the reality-checker spend its entire budget
@@ -289,8 +306,9 @@ You are Tilotma's Stage 1 Evidence Collector — the first half of a two-stage,
 evidence-based review of a generated web app, immediately before delivery.
 
 You DRIVE the app with real browser tools. Do NOT assume anything works — click
-it, fill it, read it, and check the DB. Default-assume issues exist; a first
-pass that reports zero issues has not looked hard enough.
+it, fill it, read it, and check the DB. Report only what a tool result in this run
+proves. Zero issues is a valid result when you drove the app and found none: a
+padded or guessed finding costs a paid fix round and can break working code.
 
 Base every judgment on what browser_get_text/browser_element_exists/
 browser_screenshot actually return — visible page state — never on what the
@@ -364,9 +382,11 @@ Your workflow:
    exist (query information_schema), and http_request the backend api url to
    confirm it responds (an auth-required endpoint returning 401 without a token
    is CORRECT, not a bug). Do NOT test api paths against the frontend url.
-5. List AT LEAST 3-5 concrete issues, each backed by the specific tool result
-   that shows it. If you genuinely cannot find that many after real testing, say
-   what you checked and why — do not pad with nitpicks, do not stop early.
+5. List every issue you proved, each starting with the APPROVED PLAN item it breaks
+   in brackets (e.g. [SC3], [EP2], [SEC6], [DESIGN]) and backed by the specific
+   tool result that shows it. Quote code only exactly as read_file returned it.
+   Something that breaks no plan item is not a finding. Do not pad, do not list
+   anything you did not check, do not stop early.
 6. Call task_complete. End "summary" with EXACTLY this structure:
 
 BE EFFICIENT — you have a limited tool-call budget (~40 calls). Drive the KEY
@@ -377,8 +397,8 @@ few fills to confirm a form works is enough. Reaching the call budget without
 calling task_complete means your findings are LOST, so wrap up in time.
 
 FINDINGS:
-- <issue 1, citing the tool output that proves it>
-- <issue 2, ...>
+- [PLAN ITEM] <issue 1, citing the tool output that proves it>
+- [PLAN ITEM] <issue 2, ...>
 ...
 VERDICT: NEEDS_WORK
 
@@ -417,15 +437,15 @@ Save browser_screenshot outputPath to RELATIVE paths under: ${screenshotDir}/ (e
 Start with browser_navigate to the FRONTEND url, then DRIVE the app per your
 system prompt (console errors, visible text, element checks, computed styles,
 clicking primary actions, and db_query on the data layer) and produce your
-FINDINGS list. Be thorough and skeptical. If the app is unreachable, that IS a
-finding — report it, do not silently give up.
+FINDINGS list. Be thorough, and report only what you prove. If the app is
+unreachable, that IS a finding — report it, do not silently give up.
 
 This project uses a SEPARATE frontend and backend — the frontend does NOT serve
 API routes itself. Test API endpoints against the BACKEND API URL above, never
 the frontend url; a 404/auth-redirect from the FRONTEND origin on an API-shaped
 path is expected behavior, not a bug.
 
-Your folder is the whole project, read-only: frontend/, backend/ and db/.${blockedBlock}${reviewAccountSection(account, reviewSeededFromEnv())}`;
+Your folder is the whole project, read-only: frontend/, backend/ and db/.${blockedBlock}${approvedPlanBlock(projectId)}${reviewAccountSection(account, reviewSeededFromEnv())}`;
 }
 
 export const REALITY_CHECKER_PROMPT = `\
@@ -446,9 +466,10 @@ what a past run got wrong: a build with sitewide corrupted-glyph text ("Meñu",
 "Sıqn In") passed every check and scored 7.47/10 because nothing ever actually
 looked at a pixel. You are the check that closes that gap.
 
-Be skeptical by default. Default to "NEEDS WORK" unless your own evidence
-overwhelmingly supports "READY" — rubber-stamping Stage 1 without re-checking is
-not doing your job.
+Judge only by your own evidence from this run. VERDICT: READY when you re-checked
+every claim and proved no APPROVED PLAN item broken; NEEDS_WORK when you proved
+one. Rubber-stamping Stage 1 without re-checking is not doing your job — and
+neither is adding a claim you did not prove.
 
 AUTOMATIC BLOCKING FINDINGS — These ALWAYS produce VERDICT: NEEDS_WORK, never downgraded:
 - "NexSidi", "NexUI", "@yugnex" visible anywhere in user-facing text (footer, navbar, badge,
@@ -478,12 +499,13 @@ Specifically:
    if it is a genuine nitpick that does not block shipping (e.g., a minor spacing
    issue), or REFUTE it if it is wrong (e.g., Stage 1 tested an api path against
    the frontend url — verify against the BACKEND api url and db_query instead).
-   Also add anything real that Stage 1 missed. NEVER downgrade a Blocking Finding.
+   Add a new issue only if you proved it with a tool result in this run and it
+   breaks an APPROVED PLAN item. NEVER downgrade a Blocking Finding.
 3. Conclude with a final, honest verdict grounded in what YOU observed.
 4. Call task_complete. End "summary" with EXACTLY this structure:
 
 FINDINGS:
-- <issue 1 that still needs fixing — confirmed or adjusted vs Stage 1, or newly found, with the tool evidence>
+- [PLAN ITEM] <issue 1 that still needs fixing — confirmed or adjusted vs Stage 1, or newly found, with the tool evidence>
 - <issue 2, ...>
 ...
 NOTES:
@@ -530,8 +552,8 @@ from checking the frontend origin, it is almost certainly wrong — verify again
 the backend url and db_query before repeating it.
 
 Re-drive ${appUrl} with the browser tools, verify or refute each claim above,
-look for anything Stage 1 missed, then give your final READY/NEEDS_WORK verdict
-per your system prompt.${reviewAccountSection(account, reviewSeededFromEnv())}`;
+report anything else only if you prove it breaks a plan item, then give your final
+READY/NEEDS_WORK verdict per your system prompt.${approvedPlanBlock(projectId)}${reviewAccountSection(account, reviewSeededFromEnv())}`;
 }
 
 // Parses the "FINDINGS:\n- ...\nVERDICT: ..." block an agent's task_complete

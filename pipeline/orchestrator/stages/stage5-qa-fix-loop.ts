@@ -39,6 +39,7 @@ import { dropSettledNotTrue, resolveDisputes, settleRepeatsBeforeGuard, type Set
 import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { join as joinPath } from "node:path";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
+import { chiefCheck, defaultChiefChat, isMachineFinding, isReviewerFailure, prepareForChief, type ChiefChat } from "../chief-check.ts";
 
 export interface QAFixLoopResult extends Stage5Result {
   iterations: number; // total QA passes run (initial + retests)
@@ -62,6 +63,9 @@ const MAX_FIX_ITERATIONS = 5; // retest cycles after the initial QA pass
 const STUCK_THRESHOLD = 2; // consecutive no-improvement fix cycles before giving up
 
 export interface QAFixDeps {
+  // 2026-10-24: the Chief AI's one-call check of the reviewers' findings before any fix (../chief-check.ts). Absent in
+  // tests that build their own deps, so their findings pass unchanged; the real loop always has it.
+  chiefChat?: ChiefChat | null;
   // F5 (agent-autonomy-assessment): plan is optional third arg so existing
   // stubs (which ignore it) keep working — the real entry point always
   // passes it.
@@ -274,6 +278,36 @@ export function applyEvidenceGate(result: Stage5Result, projectId?: string): Sta
   return { ...result, findings, pass: score >= 85 };
 }
 
+// 2026-10-24 (docs/root-cause/2026-10-24-brewline.md): 30% of Brewline's findings were outside the approved plan (an admin
+// role the spec does not have, performance nits for one coffee shop) and each started a fix round. The reviewers'
+// findings now go through the Chief AI's one call before any fix: only those that break a named plan item are fixed;
+// the rest are kept for later (later.jsonl) or recorded as not true. Reviewer failures and machine findings (emoji, dead
+// button) are untouched here: the first never reach a builder (see routableFindings), the second are proven by code.
+export async function gateQaFindings(projectId: string, result: Stage5Result, chat: ChiefChat | null | undefined): Promise<Stage5Result> {
+  if (!chat || result.pass || result.findings.length === 0) return result;
+  const isMeta = (f: Finding) => f.issue.includes("review-incomplete") || isKaranMetaFinding(f.issue) || isReviewerFailure(f.issue);
+  const model = result.findings.filter((f) => !isMeta(f) && !isMachineFinding(f.issue));
+  if (model.length === 0) return result;
+  const projectDir = buildDirFor(projectId);
+  const prepared = prepareForChief(projectDir, model.map((f) => `\`${f.file}\` ${f.issue}`));
+  const checked = await chiefCheck(projectDir, prepared, chat);
+  const keepTexts = new Map(checked.fix.map((x) => [x.original, x.text.match(/^\[([A-Z]+\d*)\]/)?.[1] ?? ""]));
+  const kept = result.findings.filter((f) => {
+    if (isMeta(f) || isMachineFinding(f.issue)) return true;
+    const idx = model.indexOf(f);
+    return idx >= 0 && keepTexts.has(prepared[idx]!.text);
+  }).map((f) => {
+    const idx = model.indexOf(f);
+    const item = idx >= 0 ? keepTexts.get(prepared[idx]!.text) : "";
+    return item ? { ...f, issue: `[${item}] ${f.issue}` } : f;
+  });
+  console.log(`[qa-fix-loop] Chief AI check: ${checked.fix.length} to fix, ${checked.later.length} outside the plan (kept for later), ${checked.notTrue.length} not true${checked.checked ? "" : " (check failed — all kept)"}`);
+  if (kept.length === result.findings.length) return result;
+  const blocking = kept.some((f) => severityOf(f) === "CRITICAL" || severityOf(f) === "HIGH" || isMeta(f));
+  const score = 100 - kept.reduce((sum, f) => sum + (PENALTY[severityOf(f) ?? ""] ?? 0), 0);
+  return { ...result, findings: kept, pass: kept.length === 0 || (!blocking && score >= 85) };
+}
+
 /**
  * Pure orchestration core — DI-testable, no live LLM calls. Runs QA, and on
  * failure, fixes the fault-isolated agent's code and retests, up to
@@ -285,7 +319,7 @@ export async function runQAFixLoopWithDeps(
   stage4Result: Stage4Result,
   deps: QAFixDeps,
 ): Promise<QAFixLoopResult> {
-  let result = applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan), projectId);
+  let result = await gateQaFindings(projectId, applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan), projectId), deps.chiefChat);
 
   let iterations = 1;
   let previousFindingCount = result.findings.length;
@@ -480,7 +514,7 @@ export async function runQAFixLoopWithDeps(
     const changedFiles = changedFilesThisRound.size > 0 ? [...changedFilesThisRound] : undefined;
     const previousFindings = changedFiles ? extractPreviousFindings(result) : undefined;
 
-    result = applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan, changedFiles, previousFindings), projectId);
+    result = await gateQaFindings(projectId, applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan, changedFiles, previousFindings), projectId), deps.chiefChat);
     iterations++;
     const held = await holdIfNoProgress();
     if (held) return held;
@@ -542,6 +576,7 @@ export async function runQAFixLoop(
       return { success: r.success, filesWritten: r.filesWritten };
     },
     roundGuard: (findings) => checkRoundGuard(projectId, "qa", findings),
+    chiefChat: defaultChiefChat,
     settleDisputes: async (pid, disputes) => {
       const { settleDisputes } = await import("../../../agents/tilotma/src/settle-disputes.ts");
       return settleDisputes(pid, disputes, { reviewRoot: buildDirFor(pid) });

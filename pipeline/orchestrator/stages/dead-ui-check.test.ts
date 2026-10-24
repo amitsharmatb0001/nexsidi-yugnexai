@@ -104,3 +104,13 @@ test("ignores a <button> mention inside a // line comment", () => {
   const source = `// don't forget to style the <button> nicely\nconst x = 1;`;
   expect(findDeadButtons("x.tsx", source).length).toBe(0);
 });
+
+// 2026-10-24 (Brewline rounds 0 and 1): a deliberate "Sold out" button, always disabled, was reported as dead UI twice
+// and cost a fix round. An always-disabled button is meant to do nothing; one disabled only under a condition and with
+// no handler is still dead when it is enabled.
+test("an always-disabled button is not dead UI; a conditionally disabled one with no handler still is", () => {
+  const always = `<Button variant="outline" disabled style={{ width: "100%" }}>Sold out</Button>\n<button disabled={true}>Closed</button>`;
+  expect(findDeadButtons("frontend/components/menu/MenuGrid.tsx", always)).toEqual([]);
+  const conditional = `<Button disabled={!item.isAvailable}>Add to order</Button>`;
+  expect(findDeadButtons("frontend/components/menu/MenuGrid.tsx", conditional).length).toBe(1);
+});

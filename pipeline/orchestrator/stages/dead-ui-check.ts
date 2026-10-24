@@ -97,7 +97,10 @@ export function findDeadButtons(filePath: string, rawSource: string): Finding[] 
     const hasHref = /\bhref\s*=/.test(attrsText);
     const hasSubmitType = /\btype\s*=\s*["']submit["']/.test(attrsText);
     const isAsChild = /\basChild\b/.test(attrsText);
-    if (hasOnClick || hasHref || hasSubmitType || isAsChild) continue;
+    // 2026-10-24 (Brewline): an always-disabled button ("Sold out") is meant to do nothing. `disabled={cond}` is not
+    // skipped: with no handler it is dead whenever it is enabled.
+    const alwaysDisabled = /\bdisabled(?!\s*=)|\bdisabled\s*=\s*\{\s*true\s*\}/.test(attrsText);
+    if (hasOnClick || hasHref || hasSubmitType || isAsChild || alwaysDisabled) continue;
 
     const lineNumber = source.slice(0, match.index).split("\n").length;
     const preview = attrsText.length > 80 ? attrsText.slice(0, 80) + "…" : attrsText;

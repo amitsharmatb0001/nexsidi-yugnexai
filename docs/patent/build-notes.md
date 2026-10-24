@@ -471,3 +471,17 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Proof:** 4 new tests, one running the real builder loop with a fake model: both edits applied in the first call. With the loop's handler switched off, 2 of them fail. 1,892 tests pass; type checks clean.
 
 **Also found while checking the second live round:** 3 of its 5 findings contradict the code (rate limiting exists in `auth.routes.ts`; CORS is limited to the frontend origin in `app.ts`; the cited `orders.ts` lines and status list do not exist) and a fourth was the review's own leftover sample data (fixed in batch 18). The live stage has no check that a finding's cited file and code exist (the only filter handles import claims, in the code review only), so false findings go straight to a paid fix round.
+
+### Fixed: false alarms reach builders (2026-10-24, batch 20, from docs/root-cause/2026-10-24-brewline.md)
+
+**Found:** of Brewline's 53 findings 30% were outside the approved plan, 6% contradicted the code and 23% came from the system itself; the live reviewers were told to "List AT LEAST 3-5 concrete issues" (every live round reported exactly 5) and to "Default to NEEDS WORK"; nothing checked a live finding against the code; the Chief AI looked at a finding only when a builder disputed it.
+
+**Fixed:**
+- **Proof gate** (`pipeline/orchestrator/finding-proof.ts`, no model call): a finding is flagged when the project proves part of it false and nothing in it checks out — it quotes code that is in no project file, every source file it cites is missing, or every API path it names is outside the contract and never called by the app. Quotes written as absences, conditions, suggestions, examples, response bodies, URLs, paths, settings values and shortened code are not checked.
+- **Chief AI check** (`pipeline/orchestrator/chief-check.ts`): one call per round, no tools, sees the approved plan items (success criteria, contract endpoints, roles, approved design, an 8-rule security baseline), every model-written finding with the gate's flag, and the real code of the cited files; answers fix (with the plan item, restated with the real code) / later (`later.jsonl`, handed to the owner) / false (`settled-not-true.jsonl`, so a repeat is dropped). Machine findings skip it. If the call fails, every finding is kept.
+- **Reviewer instructions:** the quota and "default to NEEDS WORK" are gone; the live reviewers and the three code reviewers get the approved plan and must start each finding with the item it breaks; zero findings is a valid answer.
+- **Reviewer failures** in the live stage are no longer app findings: the review alone is run again once (no fix, no redeploy).
+- **Dead-button check** no longer flags an always-disabled button ("Sold out"); a conditionally disabled one with no handler still counts.
+- **CRUD check** tries the contract's own roles (a test account given the role before sign-in) after the admin route, and reports what it still cannot do as not checked instead of "every resource confirmed".
+
+**Proof (no model cost):** replayed against the exact code each round reviewed (the build folders' own git snapshots): 0 of 84 findings flagged across Trailhead (both builds) and Ledgerly; Brewline round 11 — all 5 flagged (4 false, 1 with false details); round 10 — the 4 real findings kept, the 1 that misquoted the header flagged (its true half goes to the Chief AI with the real code). 30 new tests; 861 pass across pipeline and Riya; type checks clean.

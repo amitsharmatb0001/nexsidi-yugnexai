@@ -214,7 +214,10 @@ export async function runStage5WithAgents(
   const { scanProjectForEmojiUi } = await import("./emoji-ui-check.ts");
   const emojiFindings = scanProjectForEmojiUi(projectId);
 
-  const systemContext = plan ? buildSystemContext(plan) : undefined;
+  // 2026-10-24: the approved plan is the yardstick — a finding must break one of its items (../chief-check.ts checks it).
+  const { planSection } = await import("../chief-check.ts");
+  const planRule = `\n\nAPPROVED PLAN — the only yardstick. Report a finding only if it breaks one of these items, and start its description with the item in brackets, e.g. [SC2] or [SEC1]. Something that breaks no item here is not a finding:\n${planSection(buildDirFor(projectId))}`;
+  const systemContext = plan ? buildSystemContext(plan) + planRule : undefined;
   // Patent claim 4: what each reviewer missed in training rounds (defects planted in real code and not reported) is added to its
   // next review. Never fatal: with no examples or no database the input is unchanged.
   const { missedExamplesFor } = await import("./training-feedback.ts");

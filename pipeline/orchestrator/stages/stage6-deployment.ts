@@ -45,6 +45,7 @@ import { dropCodeContradictedFindings } from "../finding-evidence.ts";
 import { fixChangedCode } from "./stage5-qa-fix-loop.ts";
 import { dropSettledNotTrue, resolveDisputes, type SettleFn } from "../disputes.ts";
 import { dropOutOfScopeFindings } from "../out-of-scope.ts";
+import { chiefCheck, defaultChiefChat, isMachineFinding, isReviewerFailure, prepareForChief, type ChiefChat } from "../chief-check.ts";
 import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { runAuthSmokeTest } from "./auth-smoke.ts";
 import { runRouteSweepReal, createReviewAccount } from "./route-sweep.ts";
@@ -101,6 +102,43 @@ export function guardLiveRetest(projectId: string, retest: LiveRetestResult): Li
   return { ...retest, findings: kept, specCompliance, pass: kept.length === 0 && othersPass };
 }
 
+// 2026-10-24 (docs/root-cause/2026-10-24-brewline.md): after the checks above, before anything is fixed.
+//   - A reviewer's own failure (a timeout, a crash) is not an app finding: it is taken out and the review is run again
+//     (Brewline rounds 6 and 7 sent "Navya's review did not complete" to the frontend builder twice).
+//   - Machine findings (page sweep, colour check, sign-in check, ...) are proven by code and pass unchanged.
+//   - Model-written findings go through the proof gate and the Chief AI's one call (../chief-check.ts); only those it
+//     confirms against the approved plan and the real code are fixed, restated with the real code.
+export async function gateLiveFindings(projectId: string, retest: LiveRetestResult, chat: ChiefChat | null | undefined): Promise<LiveRetestResult> {
+  if (retest.pass || !Array.isArray(retest.findings) || retest.findings.length === 0) return retest;
+  type F = { file?: string; issue?: string; detail?: string };
+  const all = retest.findings as F[];
+  const textOf = (f: F) => String(f.issue ?? f.detail ?? "");
+  const failures = all.filter((f) => isReviewerFailure(textOf(f)));
+  const machine = all.filter((f) => !isReviewerFailure(textOf(f)) && isMachineFinding(textOf(f)));
+  let model = all.filter((f) => !isReviewerFailure(textOf(f)) && !isMachineFinding(textOf(f)));
+  if (chat && model.length > 0) {
+    const projectDir = buildDirFor(projectId);
+    const prepared = prepareForChief(projectDir, model.map((f) => (f.file ? `\`${f.file}\` ${textOf(f)}` : textOf(f))));
+    const result = await chiefCheck(projectDir, prepared, chat);
+    model = result.fix.map((x) => {
+      const original = model[prepared.findIndex((p) => p.text === x.original)] ?? {};
+      return { ...original, issue: x.text };
+    });
+    console.log(`[stage6] Chief AI check: ${result.fix.length} to fix, ${result.later.length} outside the plan (kept for later), ${result.notTrue.length} not true${result.checked ? "" : " (check failed — all kept)"}`);
+  }
+  for (const f of failures) console.log(`[stage6] a reviewer did not finish — not an app finding, the review runs again: ${textOf(f).slice(0, 160)}`);
+  const kept = [...machine, ...model];
+  const othersPass = retest.liveEval?.pass !== false && retest.specCompliance?.pass !== false;
+  const notChecked = [...(retest.notChecked ?? []), ...failures.map((f) => `review did not finish: ${textOf(f).slice(0, 200)}`)];
+  return {
+    ...retest,
+    findings: kept,
+    notChecked,
+    reviewIncomplete: failures.length > 0 && kept.length === 0,
+    pass: kept.length === 0 && failures.length === 0 && othersPass,
+  };
+}
+
 export interface LiveRetestResult {
   pass: boolean;
   findings: unknown;
@@ -115,6 +153,8 @@ export interface LiveRetestResult {
   // 2026-10-03 (evidence-only plan, T3): required checks that could not run,
   // with why. Never routed to a builder; the delivery is not verified.
   notChecked?: string[];
+  // 2026-10-24: a reviewer's own failure (timeout, crash) — never an app finding; the review is run again instead.
+  reviewIncomplete?: boolean;
 }
 
 // 2026-09-29: real bug (project a034f90ba50e). A failed live design review
@@ -588,6 +628,9 @@ export interface Stage6Deps {
   // 2026-10-03 (evidence-only plan): Tilotma settles findings a builder
   // disputed. The real entry point checks them on the running app.
   settleDisputes?: SettleFn;
+  // 2026-10-24: the Chief AI's one-call check of model-written findings before any fix (../chief-check.ts). Absent in
+  // tests that build their own deps, so their findings pass unchanged; the real stage always has it.
+  chiefChat?: ChiefChat | null;
   // 2026-10-04 (progress guard): judges each finished live review round; a
   // hold stops the loop before any fix is paid for. Optional so DI tests keep
   // working; the real entry point wires the real guard.
@@ -796,6 +839,7 @@ export async function runStage6(
       liveRetestFn: (pid, appUrl, backendUrl, changed) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result, plan, changed),
       dbCheckFn: checkNexsidiDbReachable,
       roundGuard: (findings) => checkRoundGuard(projectId, "live", findings as never),
+      chiefChat: defaultChiefChat,
     };
   }
 
@@ -968,7 +1012,7 @@ export async function runStage6(
     };
   }
 
-  let retest = guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl));
+  let retest = await gateLiveFindings(projectId, guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl)), deps.chiefChat);
   changedSinceReview.clear(); // the first review reads everything, so earlier changes are already covered
   let prevFindingsSig = "";
   let fixAttempt = 0;
@@ -977,12 +1021,24 @@ export async function runStage6(
   // failure as progress and re-runs the whole stage.
   let liveStuck = false;
   let liveHold: { reason: string; evidence: string[] } | undefined;
+  let reviewRetries = 0;
 
   while (!retest.pass && fixAttempt < MAX_LIVE_FIX_ATTEMPTS) {
     // 2026-10-23: no new live round once the spend cap is reached; the step then raises the budget stop.
     if (await isOverBudget(projectId)) {
       console.log(`[stage6] budget_exceeded — the spend cap was reached, no further live round`);
       liveStuck = true;
+      break;
+    }
+    // 2026-10-24: only a reviewer failed (nothing to fix in the app): run the review again — no fix, no redeploy — once.
+    if (retest.reviewIncomplete && reviewRetries < 1) {
+      reviewRetries++;
+      console.log(`[stage6] a reviewer did not finish and nothing else is open — running the review again (no fix, no redeploy)`);
+      retest = await gateLiveFindings(projectId, guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl)), deps.chiefChat);
+      continue;
+    }
+    if (retest.reviewIncomplete) {
+      console.log(`[stage6] the review could not finish twice — stopping without routing anything to a builder`);
       break;
     }
     fixAttempt++;
@@ -1064,7 +1120,7 @@ export async function runStage6(
 
       const changedForReview = [...changedSinceReview];
       changedSinceReview.clear();
-      retest = guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl, changedForReview.length > 0 ? changedForReview : undefined));
+      retest = await gateLiveFindings(projectId, guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl, changedForReview.length > 0 ? changedForReview : undefined)), deps.chiefChat);
     } else {
       console.warn(`[stage6] No BuildPlan provided — cannot invoke agent fixes. Exiting fix loop.`);
       break;

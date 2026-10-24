@@ -1,0 +1,124 @@
+{
+  "baseUrl": "http://localhost:3001",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/sign-up",
+      "description": "Create a new user account with email and password and return a JWT token and user profile.",
+      "auth": false,
+      "requestType": "{ email: string; password: string }",
+      "responseType": "{ token: string; user: { id: string; email: string; role: string } }",
+      "errorCodes": [
+        400,
+        409,
+        500
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/sign-in",
+      "description": "Authenticate an existing user (customer or staff) with email and password and return a JWT token and user profile.",
+      "auth": false,
+      "requestType": "{ email: string; password: string }",
+      "responseType": "{ token: string; user: { id: string; email: string; role: string } }",
+      "errorCodes": [
+        400,
+        401,
+        500
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/menu",
+      "description": "List all menu items (drinks and pastries) with prices, categories, and availability status.",
+      "auth": false,
+      "requestType": "{}",
+      "responseType": "{ items: MenuItem[] }",
+      "errorCodes": [
+        500
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/menu",
+      "description": "Add a new drink or pastry item to the menu catalog (staff only).",
+      "auth": true,
+      "requestType": "{ name: string; description?: string; price: number; is_available: boolean; category: string }",
+      "responseType": "{ item: MenuItem }",
+      "errorCodes": [
+        400,
+        401,
+        403,
+        500
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/menu/:id",
+      "description": "Update an existing menu item's details, price, or availability / out-of-stock status (staff only).",
+      "auth": true,
+      "requestType": "{ name?: string; description?: string; price?: number; is_available?: boolean; category?: string }",
+      "responseType": "{ item: MenuItem }",
+      "errorCodes": [
+        400,
+        401,
+        403,
+        404,
+        500
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/orders",
+      "description": "Place a new pre-order with selected available menu items, quantities, optional notes, and pickup time (authenticated customer only; paid in-store at pickup).",
+      "auth": true,
+      "requestType": "{ pickup_time: string; items: { menu_item_id: string; quantity: number; notes?: string }[] }",
+      "responseType": "{ order: Order }",
+      "errorCodes": [
+        400,
+        401,
+        500
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/orders/me",
+      "description": "List the currently authenticated customer's active and past pre-orders with itemized details.",
+      "auth": true,
+      "requestType": "{}",
+      "responseType": "{ orders: Order[] }",
+      "errorCodes": [
+        401,
+        500
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/orders",
+      "description": "List all incoming and active customer pre-orders with customer email and itemized line items for the barista dashboard (staff only).",
+      "auth": true,
+      "requestType": "{}",
+      "responseType": "{ orders: (Order & { customer_email: string })[] }",
+      "errorCodes": [
+        401,
+        403,
+        500
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/orders/:id/status",
+      "description": "Update the status of a pre-order, e.g. pending, preparing, ready, completed, or cancelled (staff only).",
+      "auth": true,
+      "requestType": "{ status: string }",
+      "responseType": "{ order: Order }",
+      "errorCodes": [
+        400,
+        401,
+        403,
+        404,
+        500
+      ]
+    }
+  ]
+}
