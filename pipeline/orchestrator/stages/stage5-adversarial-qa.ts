@@ -245,7 +245,9 @@ export async function runStage5WithAgents(
   } catch (err) {
     console.error(`[stage5] security pattern scan skipped: ${String(err).slice(0, 160)}`);
   }
-  const karanContext = [systemContext, securityLeads, karanMissed].filter(Boolean).join("\n\n") || undefined;
+  // 2026-10-24: the scan results change every round, so they go after the code (qa-loop.ts joinRoundNotes) and the cache keeps the rest.
+  const { joinRoundNotes } = await import("../../../packages/agent-runtime/src/qa-loop.ts");
+  const karanContext = joinRoundNotes([systemContext, karanMissed].filter(Boolean).join("\n\n"), [securityLeads]);
   const karanPromise = agents.runKaran(projectId, stage4Result, karanContext, changedFiles, previousFindings?.karan);
   await sleep(staggerMs);
   // Patent claim 9: growth estimates, leak patterns and what got worse since the last round go to Deepika as leads to confirm.
@@ -263,7 +265,7 @@ export async function runStage5WithAgents(
   } catch (err) {
     console.error(`[stage5] performance scan skipped: ${String(err).slice(0, 160)}`);
   }
-  const deepikaContext = [systemContext, performanceLeads, deepikaMissed].filter(Boolean).join("\n\n") || undefined;
+  const deepikaContext = joinRoundNotes([systemContext, deepikaMissed].filter(Boolean).join("\n\n"), [performanceLeads]);
   const deepikaPromise = agents.runDeepika(projectId, stage4Result, deepikaContext, changedFiles, previousFindings?.deepika);
   const [navyaResult, karanResult, deepikaResult] = await Promise.all([
     navyaPromise,

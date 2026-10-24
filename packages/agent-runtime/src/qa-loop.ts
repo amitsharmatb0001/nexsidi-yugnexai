@@ -509,16 +509,30 @@ export interface PreloadedCode {
 }
 
 /**
- * 2026-10-22: every reviewable file, whole, in path order, until the budget is used; files past it are listed as omitted
- * (never cut in half). On the Trailhead rerun each reviewer read a ~37K-token app in ~160 calls, resending the whole
- * conversation each time (8-12M input tokens per reviewer); with the code in the first message a review takes a few calls.
+ * 2026-10-22: every reviewable file, whole, until the budget is used; files past it are listed as omitted (never cut in
+ * half). On the Trailhead rerun each reviewer read a ~37K-token app in ~160 calls, resending the whole conversation each
+ * time (8-12M input tokens per reviewer); with the code in the first message a review takes a few calls.
+ * 2026-10-24: least recently changed first. The model's cache reuses a request only up to its first changed character;
+ * in path order Brewline's last fix (backend/src/app.ts, the first file) left 0.4% of the code block identical, oldest
+ * first 74.8% (measured on its real files).
  */
 export function buildPreloadedCode(dirs: LabeledDir[], budgetChars: number): PreloadedCode {
   const included: string[] = [];
   const omitted: string[] = [];
   const parts: string[] = [];
   let used = 0;
-  for (const path of listLabeledFiles(dirs).sort()) {
+  const changedAt = (path: string): number => {
+    try {
+      const abs = resolveLabeledFile(dirs, path);
+      return abs ? statSync(abs).mtimeMs : 0;
+    } catch {
+      return 0;
+    }
+  };
+  const ordered = listLabeledFiles(dirs).map((path) => ({ path, at: changedAt(path) }))
+    .sort((a, b) => a.at - b.at || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    .map((f) => f.path);
+  for (const path of ordered) {
     const abs = resolveLabeledFile(dirs, path);
     let content: string;
     try {
@@ -539,6 +553,30 @@ export function buildPreloadedCode(dirs: LabeledDir[], budgetChars: number): Pre
   return { text: parts.join("\n\n"), included, omitted };
 }
 
+// 2026-10-24: a reviewer's context has a part that stays the same all build (plan, rules, training examples) and a part
+// that changes every round (the security and performance scan results). The changing part goes after the code, so the
+// cache keeps everything before it.
+const ROUND_NOTES_SEPARATOR = "\n\n=== THIS ROUND'S SCAN RESULTS ===\n";
+
+export function joinRoundNotes(stable: string | undefined, roundNotes: string[]): string | undefined {
+  const round = roundNotes.filter(Boolean).join("\n\n");
+  if (!round) return stable || undefined;
+  return `${stable ?? ""}${ROUND_NOTES_SEPARATOR}${round}`;
+}
+
+export function splitRoundNotes(context: string | undefined): { stable: string | undefined; round: string | undefined } {
+  if (!context) return { stable: undefined, round: undefined };
+  const at = context.indexOf(ROUND_NOTES_SEPARATOR);
+  if (at < 0) return { stable: context, round: undefined };
+  return { stable: context.slice(0, at) || undefined, round: context.slice(at + ROUND_NOTES_SEPARATOR.length) || undefined };
+}
+
+/** What a reviewer's skills are matched against: its focus and the build's stable context — never the code or this
+ * round's results, which would change the instructions (the start of every request) between rounds. */
+export function qaSkillMatchText(reviewFocus: string, systemContext: string | undefined): string {
+  return [reviewFocus, splitRoundNotes(systemContext).stable].filter(Boolean).join("\n\n");
+}
+
 export function buildQaInitialMessage(
   reviewFocus: string,
   systemContext: string | undefined,
@@ -555,16 +593,20 @@ export function buildQaInitialMessage(
 
   // 2026-10-22: the code is in this message — review it all and submit; read with tools only what was not included.
   if (preload && preload.included.length > 0) {
+    const { stable, round } = splitRoundNotes(systemContext);
+    const stableBlock = stable ? `${stable}\n\n` : "";
     const rest = preload.omitted.length > 0
       ? `\n\nThese files did NOT fit and are not included; read them with read_files before you submit:\n${preload.omitted.join("\n")}`
       : "";
+    const roundBlock = round ? `\n\n${ROUND_NOTES_SEPARATOR.trim()}\n${round}` : "";
     return (
-      `${contextBlock}Review this codebase for ${reviewFocus}. The whole codebase is included below (${preload.included.length} ` +
+      `${stableBlock}Review this codebase for ${reviewFocus}. The whole codebase is included below (${preload.included.length} ` +
       `file(s), each between "=== FILE: <path> ===" and "=== END: <path> ==="), so every included file already counts as ` +
       `read: do not call list_files or read_file for them. Review EVERY file, including how files depend on each other ` +
       `(a changed export can break every file that imports it). Every finding quotes, in "evidence", the exact code that ` +
       `shows the problem, copied from the file below; it is checked against the file and a quote that is not there is ` +
-      `refused. Then call submit_findings (an empty findings array if you found nothing).${rest}\n\n${preload.text}`
+      `refused.${round ? " This round's scan results come after the code." : ""} Then call submit_findings (an empty ` +
+      `findings array if you found nothing).${rest}\n\n${preload.text}${roundBlock}`
     );
   }
 
@@ -643,7 +685,7 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
   const preload = buildPreloadedCode(config.dirs, QA_PRELOAD_CHARS);
 
   const initialMessage = buildQaInitialMessage(config.reviewFocus, config.systemContext, changedFiles, preload);
-  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt, taskText: initialMessage });
+  const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt, taskText: qaSkillMatchText(config.reviewFocus, config.systemContext) });
   let messages: GeminiMessage[] = [
     { role: "system", content: systemPrompt },
     { role: "user", content: initialMessage },

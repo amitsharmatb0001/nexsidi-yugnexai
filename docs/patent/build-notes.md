@@ -558,3 +558,11 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - **Hold-page wording** (`apps/web/components/ide/IdeWorkspace.tsx`): the reasons say what happened and what Retry does, with no guesses; a test fails on guessing words.
 
 **Proof:** exit-check tests (6 pass) and the hold-page test (7 pass); builder, stage and runtime suites 1,176 pass, 0 fail. **Not measured yet:** effect on a real build.
+
+## Batch 27 — reviewer requests that the cache can reuse (2026-10-24)
+
+**Found (measured on Brewline's real files):** reviewers got 24-28% of their input from the model's cache, which reuses a request only up to its first changed character. (1) The code went in path order; Brewline's last fix changed `backend/src/app.ts`, the first file, so 0.4% of the 198K-character code block stayed identical. (2) The security and performance scan results, which change every round, came before the code. (3) A reviewer's skills were matched against the whole message, code included, so a code change could change its instructions, the very start of every request; on Brewline this also pulled the India-currency and invoice-numbering guides into the logic review of a US-dollar coffee shop.
+
+**Built** (`packages/agent-runtime/src/qa-loop.ts`, `pipeline/orchestrator/stages/stage5-adversarial-qa.ts`): least recently changed files first (74.8% of the code block identical on the same round); this round's scan results after the code (`joinRoundNotes` / `splitRoundNotes`); skills matched on the reviewer's focus and the build's stable context only (`qaSkillMatchText`). Same review content: every file is still included and reviewed.
+
+**Proof:** 8 reviewer-message tests (order, scan results after the code, two rounds sharing everything before the fixed file, skill text without code or scan results); runtime, orchestrator and reviewer suites 1,483 pass. Skills on Brewline's plan: logic money-exact, review-money-logic, data-isolation; security unchanged; performance unchanged. **Not measured yet:** the cache rate on a real build.
