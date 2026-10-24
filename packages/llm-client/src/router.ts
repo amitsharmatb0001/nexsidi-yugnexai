@@ -259,11 +259,19 @@ function stringHash(s: string): number {
   return Math.abs(h);
 }
 
+// 2026-10-24 (Amit: "separate all agents to separate models so they do their work parallel"): agents that run at the same
+// time each start on their own model, taken in the tier's own order (so a reordered pool moves them too). The three
+// reviewers run together; the two builders are on different tiers already. A sub-check ("karan-subcheck") follows its
+// parent. Every model stays in the pool as a fallback.
+const PARALLEL_FIRST_MODEL_INDEX: Record<string, number> = { navya: 0, karan: 1, deepika: 2 };
+
 export function rotatedPoolForAgent(tier: GeminiTier, agentName: string): string[] {
   const pool = poolForTier(tier);
   if (pool.length <= 2) return pool; // nothing to rotate among
 
-  const [primary, ...fallbacks] = pool;
+  const index = PARALLEL_FIRST_MODEL_INDEX[agentName.split("-")[0]!];
+  const first = index !== undefined && index < pool.length ? pool[index]! : pool[0]!;
+  const [primary, ...fallbacks] = [first, ...pool.filter((m) => m !== first)];
   const offset = stringHash(agentName) % fallbacks.length;
   const rotatedFallbacks = [...fallbacks.slice(offset), ...fallbacks.slice(0, offset)];
   return primary ? [primary, ...rotatedFallbacks] : rotatedFallbacks;

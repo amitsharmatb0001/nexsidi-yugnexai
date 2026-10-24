@@ -224,6 +224,31 @@ export function shouldStopCompileRepair(failures: number, maximum: number): bool
 // (runDeployWithLiveRetest, recordDeployHandoffActivity) and loads its own
 // state from disk/cache, so no workflow-local `plan` value needs to be
 // reconstructed for this to work.
+// 2026-10-24 (docs/root-cause/2026-10-24-brewline.md): both builders used to finish phase N before either started N+1;
+// the backend builder sat idle 54 of its 86 minutes on Brewline. Each builder now runs its own phases straight through.
+// Two waits stay because something really depends on them: the backend's phase 2 waits for the database step (as
+// before), and the frontend's LAST phase — the only one with the whole-app browser check — waits for the finished
+// backend. Pure (only the functions passed in do work), so it is deterministic workflow code.
+export async function runBuildPhases(
+  phaseCount: number,
+  run: { aanya: (phase: number) => Promise<void>; shubham?: (phase: number) => Promise<void>; pranav?: () => Promise<void> },
+): Promise<void> {
+  const database = run.pranav ? run.pranav() : Promise.resolve();
+  const backend = (async () => {
+    if (!run.shubham) return;
+    for (let phase = 1; phase <= phaseCount; phase++) {
+      if (phase === 2) await database;
+      await run.shubham(phase);
+    }
+  })();
+  const frontend = (async () => {
+    for (let phase = 1; phase < phaseCount; phase++) await run.aanya(phase);
+    await backend;
+    await run.aanya(phaseCount);
+  })();
+  await Promise.all([database, backend, frontend]);
+}
+
 export async function projectBuildWorkflow(projectId: string, userRequest?: string, resumeFromDeploy?: boolean): Promise<void> {
   const state: PipelineState = {
     projectId,
@@ -585,6 +610,14 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     // one-shot path below.
     const phaseCount = patched("generation-phases-v1") ? await act.getBuildPhaseCount(projectId) : 0;
     try {
+      if (phaseCount > 0 && patched("independent-build-phases-v1")) {
+        await runBuildPhases(phaseCount, {
+          aanya: (phase) => genAct.runAanyaPhase(projectId, phase),
+          ...(needs.shubham ? { shubham: (phase: number) => genAct.runShubhamPhase(projectId, phase) } : {}),
+          ...(needs.pranav ? { pranav: () => genAct.runPranav(projectId) } : {}),
+        });
+        break;
+      }
       if (phaseCount > 0) {
         for (let phase = 1; phase <= phaseCount; phase++) {
           console.log(`[workflow] build phase ${phase} of ${phaseCount}`);

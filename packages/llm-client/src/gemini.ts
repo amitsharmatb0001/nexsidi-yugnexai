@@ -78,7 +78,8 @@ export async function fetchGeminiWithLocationFallback(
   callerFastFailOn429?: boolean,
 ): Promise<{ res: Response; location: string }> {
   const fallbackLocation = resolveGeminiFallbackLocation();
-  const hasFallback = fallbackLocation !== undefined && fallbackLocation !== primaryLocation;
+  const hasFallback =
+    fallbackLocation !== undefined && fallbackLocation !== primaryLocation && !modelsMissingInLocation.has(`${fallbackLocation}|${model}`);
 
   const primaryRes = await fetchGeminiWithRetry(
     endpointFor(model, primaryLocation, "generateContent"),
@@ -99,7 +100,27 @@ export async function fetchGeminiWithLocationFallback(
     logPrefix,
     { fastFailOn429: callerFastFailOn429 },
   );
+  // 2026-10-24 (Brewline): the backup region does not publish every model (3.1-pro, 3.6-flash and 3.8-flash answered 404
+  // there 36 times). Remember it, and retry this request on the primary with backoff — Google's guidance for a 429 —
+  // instead of losing the call; this model is not sent to that region again.
+  if (fallbackRes.status === 404) {
+    modelsMissingInLocation.add(`${fallbackLocation}|${model}`);
+    console.log(`[${logPrefix}] ${model} is not published in "${fallbackLocation}" — retrying on "${primaryLocation}" with backoff; not using that region for this model again`);
+    const retried = await fetchGeminiWithRetry(
+      endpointFor(model, primaryLocation, "generateContent"),
+      { method: "POST", headers, body: JSON.stringify(body), signal },
+      logPrefix,
+      { fastFailOn429: callerFastFailOn429 },
+    );
+    return { res: retried, location: primaryLocation };
+  }
   return { res: fallbackRes, location: fallbackLocation! };
+}
+
+const modelsMissingInLocation = new Set<string>();
+/** For tests: forget which models were found missing in which region. */
+export function clearModelsMissingInLocation(): void {
+  modelsMissingInLocation.clear();
 }
 
 // 2026-08-05: 50 was carried over from NIM's per-model limit with no direct
@@ -122,6 +143,15 @@ export function resolveGeminiRpmLimit(): number {
 }
 
 const GEMINI_TIMEOUT_MS = 120_000;
+
+// 2026-10-24 (Brewline): one 120 s limit for every call cut off 43 calls (86 min) — mostly the one-pass review, whose request
+// carries up to 600,000 characters; successful review calls reached 119.1 s. A large request needs longer to read and
+// answer, so the limit is about 1.8 s per 1,000 tokens sent (4 characters a token), never under 120 s, at most 6
+// minutes: a builder call (~60k tokens) keeps 120 s, the one-pass review (~150k tokens) gets 270 s.
+export function geminiTimeoutMsFor(requestChars: number): number {
+  const tokens = requestChars / 4;
+  return Math.min(360_000, Math.max(GEMINI_TIMEOUT_MS, Math.round(tokens * 1.8)));
+}
 
 export function circuitKeyFor(model: string): string {
   return `gemini:${model}`;
@@ -446,7 +476,7 @@ export async function geminiChat(
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), geminiTimeoutMsFor(JSON.stringify(body).length));
 
   try {
     const token = await getAccessToken();
@@ -550,7 +580,7 @@ export async function geminiChatWithTools(
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), geminiTimeoutMsFor(JSON.stringify(body).length));
 
   try {
     const token = await getAccessToken();
@@ -662,7 +692,7 @@ export async function geminiCreateCachedContent(
   };
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), geminiTimeoutMsFor(JSON.stringify(body).length));
   try {
     const token = await getAccessToken();
     const res = await fetch(cachedContentsEndpoint(location), {

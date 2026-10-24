@@ -157,10 +157,20 @@ test("shouldSkipGeminiModel is true once a model's circuit breaker has tripped O
 // over an hour partly because of this collision. rotatedPoolForAgent keeps
 // the same quality-tier primary first but rotates the FALLBACK order
 // per-agent, deterministically (not randomly, so it's reproducible/testable).
-test("rotatedPoolForAgent keeps the same primary model first for every agent", () => {
-  expect(rotatedPoolForAgent("qa", "navya")[0]).toBe("gemini-3.1-pro-preview");
-  expect(rotatedPoolForAgent("qa", "karan")[0]).toBe("gemini-3.1-pro-preview");
-  expect(rotatedPoolForAgent("qa", "deepika")[0]).toBe("gemini-3.1-pro-preview");
+// 2026-10-24 (Amit: "separate all agents to separate models so they do their work parallel"): the three reviewers run at
+// the same time, so each now starts on its own model, taken in the tier's own order — logic review on the first (pro),
+// security on the second, performance on the third. Every model stays in each reviewer's pool as a fallback.
+test("rotatedPoolForAgent gives each parallel reviewer its own first model, in the tier's order", () => {
+  const pool = poolForTier("qa");
+  expect(rotatedPoolForAgent("qa", "navya")[0]).toBe(pool[0]);
+  expect(rotatedPoolForAgent("qa", "karan")[0]).toBe(pool[1]);
+  expect(rotatedPoolForAgent("qa", "deepika")[0]).toBe(pool[2]);
+  expect(new Set(["navya", "karan", "deepika"].map((a) => rotatedPoolForAgent("qa", a)[0])).size).toBe(3);
+});
+
+test("an agent not on the list keeps the tier's first model; a sub-check of a reviewer follows its parent", () => {
+  expect(rotatedPoolForAgent("qa", "tilotma-reality-checker")[0]).toBe(poolForTier("qa")[0]);
+  expect(rotatedPoolForAgent("qa", "karan-subcheck")[0]).toBe(poolForTier("qa")[1]);
 });
 
 test("rotatedPoolForAgent gives at least two of navya/karan/deepika DIFFERENT first-fallback models", () => {

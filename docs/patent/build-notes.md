@@ -498,3 +498,17 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - The brief records its source; the approval page and the exported plan say when it came from the spec or is the fallback.
 
 **Proof:** 5 new design tests (Brewline's real spec text gives exactly #FAF6F0, #F3ECE1, #2C1E18, #C87D55, #D46A4E with their names), 2 loop tests through the real agent loop (with the flag the brief is accepted on the first call; without it the rule still applies), 1 approval-page test. Not checked on screen: the approval page needs a build paused at approval.
+
+### Faster: builders stop waiting for each other; fewer lost model calls (2026-10-24, batch 22)
+
+**Found (Brewline, measured):** the backend builder sat idle 54 of 86 minutes waiting at phase ends for the frontend builder; 36 calls failed with 404 because after a 429 the router retried in a backup region that does not publish 3.1-pro, 3.6-flash or 3.8-flash (13 min); 43 calls died at the fixed 120 s limit (86 min) — successful review calls had a median of 42.6 s, p90 102 s and a slowest of 119.1 s, so the limit cut off calls that needed a little longer; the three reviewers all started on the same model.
+
+**Fixed:**
+- **Phases** (`runBuildPhases` in the workflow, behind `patched("independent-build-phases-v1")` so running builds keep the old order): each builder runs its own phases straight through. The backend's phase 2 still waits for the database step and the frontend's last phase (the only one with the whole-app browser check) waits for the finished backend.
+- **Backup region:** a 404 there is remembered per model; the same request is retried on the primary with backoff (Google's guidance for a 429), so the call is not lost, and that model is not sent to that region again.
+- **Timeout by size:** about 1.8 s per 1,000 tokens sent, never under 120 s, at most 6 minutes — a builder call (~60k tokens) keeps 120 s, the one-pass review (~150k tokens) gets 270 s.
+- **Separate first models for parallel reviewers** (Amit's request): logic review starts on the review tier's 1st model, security on the 2nd, performance on the 3rd; every model stays as a fallback.
+
+**Not changed (Amit's decision, 2026-09-28):** the builder tier still starts on gemini-3.8-flash. Measured on Brewline: 3.5-flash 98% of calls ok (median 6.8 s), 3.6-flash 95% (5.6 s; its failures were the backup-region 404s fixed above), 3.8-flash 73% (20.3 s), 3.7-flash 75% (30.1 s), 3.1-pro 78% (9.6 s), argon 96% (14.9 s).
+
+**Proof:** phase-order tests with fake builders (the frontend reaches phase 3 before the backend finishes phase 2; its last phase starts after the backend's; the backend's phase 2 after the database); backup-region tests (the 404 call succeeds on the primary, the region is skipped next time; a model the region has still falls over); timeout values; reviewer first models. 127 llm-client and 41 workflow tests pass; type checks clean.
