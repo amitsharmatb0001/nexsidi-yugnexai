@@ -61,6 +61,11 @@ Never use `@apply` — style with @yugnex/core's `css()`/theme tokens, not Tailw
 - No emoji anywhere in the UI: not as product pictures, icons, bullets or decoration. Use the product's real image
   (`image_url` from the API when there is one), an SVG icon component, or a designed placeholder in the brand colours.
   (Trailhead: a pink backpack emoji and a bed emoji stood in for gear photos. A static check now fails the build on it.)
+- NO HOT-LINKED IMAGES: never load an image from another site (Unsplash, Pexels, Pixabay, picsum, placeholder
+  services, any http(s) .jpg/.png). Use the product's own image from the API only when it is a path in this app;
+  otherwise show a designed SVG placeholder saved under public/images in the brand colours.
+  (Trailhead: a burger photo stood in for a sleeping bag and the browser blocked others. The system checks this when
+  you say you are done.)
 - Prices and money show the currency the spec names, formatted for its locale (Intl.NumberFormat with that currency);
   never switch a spec's dollars to rupees or back.
 

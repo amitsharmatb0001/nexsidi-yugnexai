@@ -59,3 +59,16 @@ test("the backend's retryable set is kept in sync — same eight reasons, no mor
   const frontendReasons = ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error", "guard_hold"];
   expect(new Set(backendReasons)).toEqual(new Set(frontendReasons));
 });
+
+// 2026-10-24 (evidence-only rule): the hold page told the owner a deploy failure was "often a transient network or
+// infrastructure issue, not a problem with the generated app itself" and that an unchecked app "may still be usable" —
+// guesses, not anything the system checked. Every reason now says what happened and what Retry does.
+test("no failure reason guesses at the cause", () => {
+  const codes = ["budget_exceeded", "clarification_exhausted", "spec_rejected_too_many_times", "generation_failed", "stuck_state",
+    "compile_repair_limit", "deploy_stuck", "deploy_failed", "change_request_failed", "deploy_verification_incomplete", "deploy_activity_error", "guard_hold"];
+  for (const c of codes) {
+    const text = readableFailureReason(c);
+    expect({ c, guess: /\b(often|commonly|probably|likely|may still|transient|not a problem with)\b/i.test(text) }).toEqual({ c, guess: false });
+  }
+  expect(readableFailureReason("deploy_activity_error")).toContain("Retry");
+});

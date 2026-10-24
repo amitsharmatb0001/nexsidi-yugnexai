@@ -11,6 +11,13 @@ import { buildSystemContext } from "../../../arjun/src/index.ts";
 import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-files.ts";
 
+// 2026-10-24: the backend builder's own checks before it may finish (no hot-linked images in code or seed files) —
+// run by the system at task_complete, same as the frontend's. Dynamic import: the checks live in the pipeline package.
+async function backendExitChecksFor(projectId: string): Promise<string[]> {
+  const { backendExitChecks } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
+  return backendExitChecks(projectId);
+}
+
 export interface GeneratorResult {
   success: boolean;
   projectId: string;
@@ -318,7 +325,8 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
     preloadOwnFiles: !!phase && !phase.scaffold,
     maxIterations: phase?.maxSteps ?? 90,
     // 2026-10-24: a team step's settings win (helpers: flash, own files only, type check only; lead: pro, plan-vs-code check).
-    ...teamRunOverrides(phase, outputDir, { taskFiles: plan.shubhamTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: undefined, runBackendTests: true }),
+    exitChecks: !phase || phase.isLast ? () => backendExitChecksFor(plan.projectId) : undefined,
+    ...teamRunOverrides(phase, outputDir, { taskFiles: plan.shubhamTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: !phase || phase.isLast ? () => backendExitChecksFor(plan.projectId) : undefined, runBackendTests: true }),
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see
@@ -477,7 +485,8 @@ export async function runFix(plan: BuildPlan, findings: string[], team?: { role?
     // 2026-10-23: a fix round starts with the current files, whole, instead of reading them one at a time.
     preloadOwnFiles: true,
     maxIterations: FIX_MAX_STEPS,
-    ...teamRunOverrides(team, outputDir, { taskFiles: [], baseExitChecks: undefined, runBackendTests: true }),
+    exitChecks: () => backendExitChecksFor(plan.projectId),
+    ...teamRunOverrides(team, outputDir, { taskFiles: [], baseExitChecks: () => backendExitChecksFor(plan.projectId), runBackendTests: true }),
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see

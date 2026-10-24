@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { frontendExitChecks } from "./builder-exit-checks.ts";
+import { frontendExitChecks, externalImageUrls, backendExitChecks } from "./builder-exit-checks.ts";
 
 // 2026-10-24 (Brewline root cause): 8 emoji findings and the missing-colour findings were raised in review, after the
 // frontend builder had said "done" — its instructions said "no emoji", and the checks existed, but they only ran later.
@@ -67,4 +67,32 @@ test("the backend builder's middle phases need a passing build, not a live check
   expect(src).toContain('requiredEvidenceKinds: phase && !phase.isLast ? [] : ["http_check"]');
   const phases = readFileSync(new URL("../../activities/build-phases.ts", import.meta.url), "utf-8");
   expect(phases).not.toContain("test THIS phase's endpoints against your running API");
+});
+
+
+// 2026-10-24: generated apps hot-linked stock photos — on Trailhead a burger photo stood in for a sleeping bag, and the
+// browser blocked others (net::err_blocked_by_orb). External image URLs in the frontend, the backend or the database
+// seed files are now reported at the builder's "done"; a designed placeholder in the app, or no image, is used instead.
+test("external image URLs are found in source and seed files; embedded images and app paths are not", () => {
+  project("i1", {
+    "frontend/components/GearCard.tsx": 'const src = "https://images.unsplash.com/photo-1568901346375?w=800"; const ok = "/images/tent.svg";\n',
+    "frontend/components/Logo.tsx": 'const logo = "data:image/png;base64,iVBORw0KGgo"; const svg = "https://example.com/logo.png";\n',
+    "backend/src/db/seed.ts": "image_url: 'https://picsum.photos/400/300'\n",
+    "db/migrations/0001_seed.sql": "INSERT INTO gear (name, image_url) VALUES ('Tent', 'https://cdn.pixabay.com/photo/tent.jpg');\n",
+  }, "A gear rental shop.");
+  const front = externalImageUrls(join(root, "i1", "frontend"));
+  expect(front.map((f) => f.url).sort()).toEqual(["https://example.com/logo.png", "https://images.unsplash.com/photo-1568901346375?w=800"]);
+  const back = backendExitChecks("i1");
+  expect(back.some((f) => f.includes("picsum.photos"))).toBe(true);
+  expect(back.some((f) => f.includes("pixabay"))).toBe(true);
+  expect(frontendExitChecks("i1").some((f) => f.includes("images.unsplash.com"))).toBe(true);
+});
+
+test("both builders are told the rule, and the backend lead runs the backend check", () => {
+  const aanya = readFileSync(new URL("../../../packages/agent-runtime/skills/aanya/00-identity-and-visual-doctrine.md", import.meta.url), "utf-8");
+  const shubham = readFileSync(new URL("../../../packages/agent-runtime/skills/shubham/20-critical-rules-and-verification.md", import.meta.url), "utf-8");
+  expect(aanya).toContain("NO HOT-LINKED IMAGES");
+  expect(shubham).toContain("NO HOT-LINKED IMAGES");
+  const src = readFileSync(new URL("../../../agents/generators/shubham/src/index.ts", import.meta.url), "utf-8");
+  expect(src).toContain("backendExitChecksFor(plan.projectId)");
 });

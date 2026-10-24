@@ -548,3 +548,13 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - **Repaired on the way:** an earlier Perl edit had double-encoded every non-ASCII character in `loop.ts` (101 dashes); found by a failing test, repaired byte-exactly, all changed files scanned clean.
 
 **Proof:** team runner tests (shared files first; three helpers overlapped; lead after all; failed helper retried then handed to the lead; foundation tasks to the lead; single-task and teams-off paths unchanged), write-rule tests, a rollback refused through the real loop, fix-team tests, review split/merge tests, model order tests. Brewline's real plan: frontend split into 3 helpers, backend foundation to the lead and 3 endpoint helpers, review criteria 3/3/2. 2,306 tests pass; type checks clean. **Not measured yet:** the time and cost effect needs a paid build.
+
+## Batch 26 — no hot-linked images, honest hold-page wording (2026-10-24)
+
+**Found:** generated apps hot-linked stock photos (Trailhead: a burger photo stood in for a sleeping bag; the browser blocked others). Two hold-page reasons guessed at the cause ("often a transient network issue").
+
+**Built:**
+- **Image check at the builder's "done"** (`pipeline/orchestrator/stages/builder-exit-checks.ts`): `externalImageUrls` finds http(s) image URLs and stock or placeholder hosts in source and seed files (embedded images and app paths are not reported). The frontend builder's checks include it; a new `backendExitChecks` scans the backend code and the database files, run by the system when the backend builder finishes (last phase, team lead, fix rounds). Both builders' instructions carry the rule.
+- **Hold-page wording** (`apps/web/components/ide/IdeWorkspace.tsx`): the reasons say what happened and what Retry does, with no guesses; a test fails on guessing words.
+
+**Proof:** exit-check tests (6 pass) and the hold-page test (7 pass); builder, stage and runtime suites 1,176 pass, 0 fail. **Not measured yet:** effect on a real build.

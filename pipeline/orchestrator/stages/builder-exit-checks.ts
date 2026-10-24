@@ -53,8 +53,50 @@ export function missingSpecColours(projectId: string): string[] {
   return colours.filter((c) => !text.includes(c.hex.toUpperCase())).map((c) => `${c.name} ${c.hex}`);
 }
 
+// 2026-10-24: generated apps hot-linked stock photos — on Trailhead a burger photo stood in for a sleeping bag and the
+// browser blocked others (net::err_blocked_by_orb). An image the app shows must live in the app (a designed placeholder
+// under public/) or not be shown. Found: an http(s) URL ending in an image type, or on a stock-photo/placeholder host.
+const EXTERNAL_IMAGE = /https?:\/\/(?:[^\s"'`)<>]+\.(?:jpe?g|png|webp|gif|avif|svg)(?:\?[^\s"'`)<>]*)?|(?:images\.unsplash\.com|source\.unsplash\.com|plus\.unsplash\.com|images\.pexels\.com|cdn\.pixabay\.com|picsum\.photos|placehold\.co|via\.placeholder\.com|loremflickr\.com)[^\s"'`)<>]*)/gi;
+
+export function externalImageUrls(dir: string): Array<{ file: string; url: string }> {
+  const out: Array<{ file: string; url: string }> = [];
+  const walk = (d: string, rel: string) => {
+    let names: string[];
+    try {
+      names = readdirSync(d);
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      if (SKIP.has(n)) continue;
+      const full = join(d, n);
+      const r = rel ? `${rel}/${n}` : n;
+      try {
+        if (statSync(full).isDirectory()) walk(full, r);
+        else if (/\.(tsx?|jsx?|css|sql|json)$/i.test(n) && n !== "package.json" && n !== "package-lock.json") {
+          for (const m of readFileSync(full, "utf-8").matchAll(EXTERNAL_IMAGE)) out.push({ file: r, url: m[0] });
+        }
+      } catch {
+        // unreadable: skipped
+      }
+    }
+  };
+  walk(dir, "");
+  return out;
+}
+
+const imageFindings = (where: string, found: Array<{ file: string; url: string }>) =>
+  found.map((f) => `${where}${f.file}: the image ${f.url} is loaded from another site — use a designed placeholder saved in the app (an SVG under public/images) or no image`);
+
+/** The backend builder's own checks before it may finish: no hot-linked images in its code or the database seed files. */
+export function backendExitChecks(projectId: string): string[] {
+  const dir = buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds");
+  return [...imageFindings("backend/", externalImageUrls(join(dir, "backend", "src"))), ...imageFindings("db/", externalImageUrls(join(dir, "db")))];
+}
+
 export function frontendExitChecks(projectId: string): string[] {
   const out: string[] = [];
+  out.push(...imageFindings("", externalImageUrls(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend"))));
   for (const f of scanProjectForEmojiUi(projectId)) out.push(`${f.file}: ${f.issue}`);
   for (const f of scanProjectForDeadButtons(projectId)) out.push(`${f.file}: ${f.issue}`);
   const missing = missingSpecColours(projectId);

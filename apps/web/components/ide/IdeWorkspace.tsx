@@ -244,12 +244,13 @@ const FAILURE_REASON_TEXT: Record<string, string> = {
   // 2026-08-27: written by Riya when the containers came up but post-deploy
   // verification didn't finish (commonly a transient LLM/network failure, not
   // a broken app) — the app itself may well be running and usable.
-  deploy_verification_incomplete: "The app deployed and started, but the final automated checks didn't finish — so it hasn't been confirmed working end to end. It may still be usable.",
+  deploy_verification_incomplete: "The app deployed and started, but the final automated checks didn't finish, so it is not confirmed working. Retry runs the checks again.",
   // 2026-08-30: see project-build.ts's own header comment on this catch
   // block for the live incident — an orphaned/hung deploy-stage call
   // (Temporal's "Activity task timed out") used to propagate uncaught and
   // silently discard a project that had already passed QA and compile-check.
-  deploy_activity_error: "Something in the deploy step failed unexpectedly (often a transient network or infrastructure issue, not a problem with the generated app itself).",
+  // 2026-10-24: says what happened, not a guess at why (the old text called it "often a transient network issue").
+  deploy_activity_error: "The deploy step stopped with an error before it finished. What happened is in the build log; Retry runs the deploy step again.",
   guard_hold: "The work was paused on purpose because it stopped making progress — the same problem kept coming back, or a round cost more without fixing anything. Nothing more is spent until you decide. The reason and evidence are in HOLD.md in the build folder.",
 };
 
