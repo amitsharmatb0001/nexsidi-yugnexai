@@ -77,7 +77,7 @@ function phaseHeader(
     ? "This is the LAST phase: when your tasks are done, run the full end-of-build checks your instructions describe for the whole app."
     : builder === "aanya"
       ? "Not the last phase: get `npx tsc --noEmit` and `npx next build` passing for what you wrote. The click-through and visual checks run in the last phase, when every page exists."
-      : "Not the last phase: get `npx tsc --noEmit` and `npm run build` passing, and test THIS phase's endpoints against your running API.";
+      : "Not the last phase: get `npx tsc --noEmit` and `npm run build` passing for what you wrote. The live endpoint checks run in the last phase, when every endpoint exists.";
   return [
     `BUILD PHASE ${n} of ${phases.length} — ${ph.name}: ${ph.goal}`,
     "You build ONLY this phase's tasks, listed below. Stay focused on them.",

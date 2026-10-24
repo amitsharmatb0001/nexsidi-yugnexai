@@ -6,26 +6,42 @@ import { readFileSync } from "node:fs";
 // stay because something really depends on them: the backend's phase 2 waits for the database step (as before), and the
 // frontend's LAST phase — the only one with the whole-app browser check — waits for the finished backend.
 
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// No timing: the backend's phases finish only when the test releases them, so the order is checked exactly.
+const settle = async () => {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+};
 
 test("each builder runs its phases without waiting for the other; only the frontend's last phase waits for the backend", async () => {
   const { runBuildPhases } = await import("./project-build.ts") as unknown as {
     runBuildPhases: (n: number, run: { aanya: (p: number) => Promise<void>; shubham?: (p: number) => Promise<void>; pranav?: () => Promise<void> }) => Promise<void>;
   };
   const log: string[] = [];
-  await runBuildPhases(4, {
-    // a fast frontend and a slow backend, as on Brewline
-    aanya: async (p) => { log.push(`aanya ${p} start`); await delay(5); log.push(`aanya ${p} end`); },
-    shubham: async (p) => { log.push(`shubham ${p} start`); await delay(20); log.push(`shubham ${p} end`); },
-    pranav: async () => { log.push("pranav start"); await delay(2); log.push("pranav end"); },
+  const release: Array<() => void> = [];
+  let releaseDb: () => void = () => {};
+  const done = runBuildPhases(4, {
+    aanya: async (p) => { log.push(`aanya ${p}`); },
+    shubham: (p) => new Promise<void>((resolve) => { log.push(`shubham ${p} start`); release[p] = () => { log.push(`shubham ${p} end`); resolve(); }; }),
+    pranav: () => new Promise<void>((resolve) => { releaseDb = () => { log.push("pranav end"); resolve(); }; }),
   });
-  const at = (s: string) => log.indexOf(s);
-  // The frontend reaches its phase 3 long before the backend finishes phase 2 — no lockstep.
-  expect(at("aanya 3 end")).toBeLessThan(at("shubham 2 end"));
-  // The frontend's last phase starts only after the whole backend is done.
-  expect(at("aanya 4 start")).toBeGreaterThan(at("shubham 4 end"));
-  // The backend's phase 2 still starts after the database step.
-  expect(at("shubham 2 start")).toBeGreaterThan(at("pranav end"));
+  await settle();
+  // The backend is still on phase 1, yet the frontend has done phases 1-3: no lockstep.
+  expect(log).toEqual(["shubham 1 start", "aanya 1", "aanya 2", "aanya 3"]);
+  release[1]!();
+  await settle();
+  // The backend's phase 2 waits for the database step.
+  expect(log.includes("shubham 2 start")).toBe(false);
+  releaseDb();
+  await settle();
+  expect(log.includes("shubham 2 start")).toBe(true);
+  release[2]!();
+  await settle();
+  release[3]!();
+  await settle();
+  // The frontend's last phase still waits for the whole backend.
+  expect(log.includes("aanya 4")).toBe(false);
+  release[4]!();
+  await done;
+  expect(log.indexOf("aanya 4")).toBeGreaterThan(log.indexOf("shubham 4 end"));
 });
 
 test("a frontend-only build runs its phases in order", async () => {

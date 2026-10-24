@@ -17,6 +17,12 @@ import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
 import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
+// 2026-10-24: the system's own frontend checks (pipeline/orchestrator/stages/builder-exit-checks.ts), loaded when used.
+async function frontendExitChecksFor(projectId: string): Promise<string[]> {
+  const { frontendExitChecks } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
+  return frontendExitChecks(projectId);
+}
+
 export function getOutputDir(projectId: string): string {
   return join(buildDirFor(projectId), "frontend");
 }
@@ -220,6 +226,8 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?
     // keeps making progress (extendStepsWhileProgressing above).
     // 2026-10-23: a later phase starts with the files already written, whole (builder-preload.ts).
     preloadOwnFiles: !!phase && !phase.scaffold,
+    // 2026-10-24: emoji, dead buttons and missing spec colours are checked by the system before the last phase may finish.
+    exitChecks: !phase || phase.isLast ? () => frontendExitChecksFor(plan.projectId) : undefined,
     maxIterations: phase?.maxSteps ?? 90,
   });
 
@@ -343,6 +351,8 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // 2026-10-22: own budget for fix rounds — see FIX_MAX_STEPS.
     // 2026-10-23: a fix round starts with the current files, whole, instead of reading them one at a time.
     preloadOwnFiles: true,
+    // 2026-10-24: the same system checks before a fix round may finish.
+    exitChecks: () => frontendExitChecksFor(plan.projectId),
     maxIterations: FIX_MAX_STEPS,
   });
 

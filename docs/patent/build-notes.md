@@ -512,3 +512,15 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Not changed (Amit's decision, 2026-09-28):** the builder tier still starts on gemini-3.8-flash. Measured on Brewline: 3.5-flash 98% of calls ok (median 6.8 s), 3.6-flash 95% (5.6 s; its failures were the backup-region 404s fixed above), 3.8-flash 73% (20.3 s), 3.7-flash 75% (30.1 s), 3.1-pro 78% (9.6 s), argon 96% (14.9 s).
 
 **Proof:** phase-order tests with fake builders (the frontend reaches phase 3 before the backend finishes phase 2; its last phase starts after the backend's; the backend's phase 2 after the database); backup-region tests (the 404 call succeeds on the primary, the region is skipped next time; a model the region has still falls over); timeout values; reviewer first models. 127 llm-client and 41 workflow tests pass; type checks clean.
+
+### Each builder checks its own work; fewer model-driven checks (2026-10-24, batch 23)
+
+**Found (7 builds measured):** 28–73% of builder model calls were step-by-step checks (start containers, call an endpoint, click a page — one action per call), and the backend builder had to prove live HTTP checks in every phase. Meanwhile cheap checks that would have caught 8 of Brewline's findings (emoji) and its colour findings ran only in the review, after the builder said "done".
+
+**Fixed:**
+- `exitChecks` on the agent config, honoured by all three agent loops: when the agent calls task_complete the system runs them, and what they find goes back to the agent to fix before it may finish.
+- The frontend builder uses it in its last phase and every fix round: emoji in the UI, dead buttons, and every colour the approved spec names present in the frontend (`pipeline/orchestrator/stages/builder-exit-checks.ts`). Pure file reads, no model call.
+- The backend builder's middle phases need a passing type check and build; the live per-endpoint check runs once, in its last phase (as the frontend builder already did). The phase text says so.
+- The phase-order test was rewritten without timing (explicit hand-offs), so it is exact under load.
+
+**Proof:** check tests on fixture projects (emoji, a dead button and a missing spec colour are reported; a clean frontend and a spec without colours pass); a loop test (finishing refused once while a problem is open, then allowed); wiring checks. 2,160 tests pass across agent-runtime, agents, pipeline and llm-client; type checks clean. One older stage-5 timing test failed once under full load and passes alone (not touched here).

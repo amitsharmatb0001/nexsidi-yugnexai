@@ -274,7 +274,9 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
     // specifically tested the auth boundary (any successful call satisfies
     // it), but closes the observed failure mode of zero live verification
     // happening at all.
-    requiredEvidenceKinds: ["http_check"],
+    // 2026-10-24: middle phases need a passing type check and build (requiredVerificationCommands); the live endpoint
+    // check runs once, in the last phase, when every endpoint exists — it used to run in every phase, one action per call.
+    requiredEvidenceKinds: phase && !phase.isLast ? [] : ["http_check"],
     // 2026-08-10: real gap found live (user request) — "≥1 http_request
     // total" is satisfied by testing ONE endpoint, leaving every other
     // resource's CRUD chain unverified at generation time (the exact
