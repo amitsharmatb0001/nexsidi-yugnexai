@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAgentPrompt, buildAgentTask, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui, execVendorCommand, NEXUI_CONFIRMED_COMPONENTS, countPlannedPages, writeStaticScaffold } from "./index.ts";
+import { buildAgentPrompt, buildAgentTask, buildCustomEnvLocal, buildScaffoldTsconfig, buildScaffoldNextConfig, buildFixTask, vendorNexui, execVendorCommand, NEXUI_CONFIRMED_COMPONENTS, countPlannedPages, writeStaticScaffold, vendorYugnexLogo } from "./index.ts";
 import type { VendorExecFn } from "./index.ts";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { FALLBACK_BRIEF } from "../../../vanya/src/index.ts";
@@ -675,8 +675,28 @@ test("buildAgentPrompt instructs adding the real YugNex logo + watermark text to
   expect(prompt).toContain("YUGNEX WATERMARK");
   expect(prompt).toContain("Developed & Managed by YugNex™");
   expect(prompt).toContain("YugNex™ is a trademark of YugNex Technology (OPC) Private Limited.");
-  expect(prompt).toContain("data:image/png;base64,");
+  expect(prompt).toContain('src="/yugnex-logo.png"');
   expect(prompt).toContain("alt=\"YugNex\"");
+});
+
+// 2026-10-24 (Brewline): the builder was told to copy a 5,432-character base64 logo verbatim; in 2 of 10 builds it
+// retyped it wrong (Brewline's copy differs from character 370) and the footer showed a broken image. The system now
+// writes the logo file into the app and the builder writes only its path.
+test("the scaffold writes the YugNex logo file; the builder is given only its path, never the encoded image", () => {
+  const prompt = effectivePrompt("preview");
+  expect(prompt).not.toContain("data:image/png;base64,");
+  const dir = mkdtempSync(join(tmpdir(), "logo-"));
+  try {
+    vendorYugnexLogo(dir);
+    const written = readFileSync(join(dir, "public", "yugnex-logo.png"));
+    const asset = readFileSync(new URL("../../../../packages/agent-runtime/assets/yugnex-logo.png", import.meta.url));
+    expect(written.equals(asset)).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf-8");
+  const scaffold = src.slice(src.indexOf("export function writeStaticScaffold"));
+  expect(scaffold).toContain("vendorYugnexLogo(outputDir);");
 });
 
 // 2026-08-10: real bug found live (project freshtst1) — the watermark's

@@ -566,3 +566,19 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Built** (`packages/agent-runtime/src/qa-loop.ts`, `pipeline/orchestrator/stages/stage5-adversarial-qa.ts`): least recently changed files first (74.8% of the code block identical on the same round); this round's scan results after the code (`joinRoundNotes` / `splitRoundNotes`); skills matched on the reviewer's focus and the build's stable context only (`qaSkillMatchText`). Same review content: every file is still included and reviewed.
 
 **Proof:** 8 reviewer-message tests (order, scan results after the code, two rounds sharing everything before the fixed file, skill text without code or scan results); runtime, orchestrator and reviewer suites 1,483 pass. Skills on Brewline's plan: logic money-exact, review-money-logic, data-isolation; security unchanged; performance unchanged. **Not measured yet:** the cache rate on a real build.
+
+## Batch 28 — several browser actions in one call (2026-10-24)
+
+**Found:** on Brewline the live reviewers drove the app one browser action per model call (~16 min a round), each call resending the whole conversation.
+
+**Built:** `browser_steps` (`packages/agent-runtime/src/tools/browser.ts`): a list of up to 20 browser actions (navigate, click, fill, screenshot, get_text, console_errors, computed_style, element_exists, current_url) runs in one call, in order, on the same page; every result comes back together, every screenshot is attached (both loops, `screenshotImagePathsFor`), and it stops at the first failed step and names it. Each action keeps its own checks (localhost only, screenshot path inside the evidence folder). The live reviewers' instructions (`agents/tilotma/src/tier3-review.ts`) start every page with one such call and group every action whose input they already know.
+
+**Proof:** browser tests (order, results and screenshot returned, stop at the failed step keeping earlier screenshots, refusals: empty, over 20, unknown action, outside URL), image-attachment test; live on Brewline in a real browser: 7 actions in one call in 9.95 s, screenshot saved and checked. All suites 2,415 pass. **Not measured yet:** the round time on a real build.
+
+## Batch 29 — the footer logo is a file, not retyped (2026-10-24)
+
+**Found** (from the screenshot above): Brewline's footer showed a broken YugNex logo. The builder's instructions held the logo as a 5,432-character encoded image to copy exactly; Brewline's copy differs from character 370, and 2 of the 10 builds on disk have a wrong copy. My earlier "logo fixed" was wrong: I had checked the code, not the rendered page.
+
+**Built:** the frontend scaffold writes `public/yugnex-logo.png` (byte-identical to `packages/agent-runtime/assets/yugnex-logo.png`) into every app; the builder writes only `<img src="/yugnex-logo.png" ...>`; the encoded image is gone from the instructions (5.4K characters less in every frontend call). The builder's done-check reports a YugNex logo that does not use the file, or a missing file.
+
+**Proof:** scaffold test (file written, identical bytes, called by the scaffold; instructions contain the path and no encoded image), exit-check tests (embedded copy reported, missing file reported, correct footer passes); the check flags Brewline's real footer. All suites 2,415 pass.

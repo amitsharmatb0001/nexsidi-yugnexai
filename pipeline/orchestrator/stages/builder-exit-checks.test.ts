@@ -96,3 +96,21 @@ test("both builders are told the rule, and the backend lead runs the backend che
   const src = readFileSync(new URL("../../../agents/generators/shubham/src/index.ts", import.meta.url), "utf-8");
   expect(src).toContain("backendExitChecksFor(plan.projectId)");
 });
+
+// 2026-10-24 (Brewline): the footer's YugNex logo was a retyped copy of a 5,432-character encoded image and showed as a
+// broken image. The system now puts the logo file in the app; the builder's check reports a footer logo that does not
+// use that file, or a missing file.
+test("a footer logo that is not the app's own logo file, or a missing logo file, is reported", () => {
+  project("l1", {
+    "frontend/components/layout/Footer.tsx": '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIkAAABgCAMAAAAes" alt="YugNex" width="69" height="48" />\n',
+    "frontend/public/yugnex-logo.png": "png",
+  }, "A coffee shop.");
+  expect(frontendExitChecks("l1").some((f) => f.includes("yugnex-logo.png"))).toBe(true);
+  project("l2", { "frontend/components/layout/Footer.tsx": '<img src="/yugnex-logo.png" alt="YugNex" width="69" height="48" />\n' }, "A coffee shop.");
+  expect(frontendExitChecks("l2").some((f) => f.includes("public/yugnex-logo.png is missing"))).toBe(true);
+  project("l3", {
+    "frontend/components/layout/Footer.tsx": '<img src="/yugnex-logo.png" alt="YugNex" width="69" height="48" />\n',
+    "frontend/public/yugnex-logo.png": "png",
+  }, "A coffee shop.");
+  expect(frontendExitChecks("l3")).toEqual([]);
+});

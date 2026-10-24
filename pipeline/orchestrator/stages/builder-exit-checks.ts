@@ -94,9 +94,46 @@ export function backendExitChecks(projectId: string): string[] {
   return [...imageFindings("backend/", externalImageUrls(join(dir, "backend", "src"))), ...imageFindings("db/", externalImageUrls(join(dir, "db")))];
 }
 
+// 2026-10-24 (Brewline): the footer's YugNex logo was a retyped copy of a 5,432-character encoded image and showed as a
+// broken image. The scaffold now saves the logo as public/yugnex-logo.png; every YugNex logo must use that file.
+const YUGNEX_IMG = /<img\b[^>]*\balt=["']YugNex["'][^>]*>/gi;
+
+export function attributionLogoFindings(frontendDir: string): string[] {
+  const out: string[] = [];
+  let usesFile = false;
+  const walk = (d: string, rel: string) => {
+    let names: string[];
+    try {
+      names = readdirSync(d);
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      if (SKIP.has(n) || n === "public") continue;
+      const full = join(d, n);
+      const r = rel ? `${rel}/${n}` : n;
+      try {
+        if (statSync(full).isDirectory()) walk(full, r);
+        else if (/\.(tsx|jsx)$/i.test(n)) {
+          for (const m of readFileSync(full, "utf-8").matchAll(YUGNEX_IMG)) {
+            if (/\bsrc=["']\/yugnex-logo\.png["']/.test(m[0])) usesFile = true;
+            else out.push(`${r}: the YugNex logo must be <img src="/yugnex-logo.png" ...> (the system saved the file in public/); an embedded or retyped image shows as broken`);
+          }
+        }
+      } catch {
+        // unreadable: skipped
+      }
+    }
+  };
+  walk(frontendDir, "");
+  if (usesFile && !existsSync(join(frontendDir, "public", "yugnex-logo.png"))) out.push("frontend: public/yugnex-logo.png is missing, so the footer logo is broken — do not delete it");
+  return out;
+}
+
 export function frontendExitChecks(projectId: string): string[] {
   const out: string[] = [];
   out.push(...imageFindings("", externalImageUrls(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend"))));
+  out.push(...attributionLogoFindings(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend")));
   for (const f of scanProjectForEmojiUi(projectId)) out.push(`${f.file}: ${f.issue}`);
   for (const f of scanProjectForDeadButtons(projectId)) out.push(`${f.file}: ${f.issue}`);
   const missing = missingSpecColours(projectId);
