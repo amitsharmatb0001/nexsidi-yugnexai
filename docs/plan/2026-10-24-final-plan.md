@@ -70,8 +70,37 @@ plainly). Our own data: 13 real app bugs were found only by review. Some would f
 role and sign-in redirect ones); the visual and edge-case ones would not, and stay with review. Generating tests from
 the contract costs no model calls and replaces model-driven clicking — it reduces calls, it does not add them.
 
-**Sub-agent-per-task development:** not for writing code (15× tokens, conflicting decisions — see section 2). Kept for
-read-only work only.
+**Builder teams — a builder splits its own work across helpers (Amit, 2026-10-24: "Aanya can launch 2 sub-agents …
+they divide the work … finish fast … then test … all follow the user-approved plan").**
+
+Today (checked): a `spawn_subagent` tool exists and is offered to every agent, but in four builds no builder used it. A
+helper gets 12,910 characters of instructions against Aanya's 56,431 (none of her design and component rules), no
+approved plan, contract or design, and two helpers run one after the other, not in parallel (`for … of
+response.toolCalls` awaits each). Used as it is, it would be slower and worse.
+
+Design, with the approved plan as the only source:
+1. **Split from the plan, not by guess.** Arjun's plan already gives every task its own files with no overlap (Brewline:
+   10 frontend tasks, e.g. the menu page owns `app/menu/page.tsx`, `MenuGrid.tsx`, `MenuFilter.tsx`; 4 backend tasks,
+   e.g. orders own `orders.routes.ts`, `orders.controller.ts`). The system groups the tasks into at most 3 helpers.
+2. **Shared files first.** The lead builder writes what every task uses — layout, header and footer, the theme with the
+   approved colours, the API client and types (backend: app, middleware, database pool) — then the helpers start.
+3. **Helpers run in parallel**, each with the builder's full instructions, the approved plan items, the contract, the
+   design, the shared files already loaded, its own tasks — and permission to write only its own files (the existing
+   write guard). Each starts on a different model (the rate-limit pool is per model).
+4. **Each helper tests its own work:** unit tests for its logic (controller rules, form validation, price and date
+   helpers), its type check passing, before it reports done.
+5. **The lead integrates and compares code to plan:** the build passes; a plan-vs-code check finds every task's files,
+   every planned page's route, every contract endpoint's handler and the approved colours; then the integration tests the
+   system writes from the contract (section 3) run against the running API — the frontend's final check waits for the
+   finished backend, as the phases already do. A failure goes back to the helper that owns the file.
+6. **Fix rounds use the same split:** each finding goes to the owner of its file, owners fix in parallel.
+
+Why this can work where parallel writers usually conflict (Cognition, section 2): no two helpers share a file, all of
+them build on the same shared files and the same plan, and one lead integrates and tests.
+
+Expected (an estimate to be measured, not a promise): Brewline's frontend builder spent ~44 min on 175 model calls one
+after another; shared files plus 2–3 parallel helpers should bring that near 15–20 min. Cost should stay close: each
+helper re-sends the instructions (~14k tokens), cached at a 90% discount after its first call.
 
 ---
 
@@ -121,7 +150,7 @@ Explicit (paid) caches are not available on gemini-4-argon; implicit caching is 
 |---|---|---|---|
 | 1 | Security A1–A7 | `docs/plan/2026-10-24-security-for-live-server.md`; A1 is live on this laptop | Your go (A1 restarts the dev stack for ~1 min) |
 | 2 | One paid test build to measure everything above | Nothing in sections 1 and 4 is measured in a full build yet | Your cap |
-| 3 | Tests from the approved plan (section 3) | 13 real bugs found only by review; 28–73% of calls are checks | — |
+| 3 | Tests from the approved plan, and builder teams (section 3) | 13 real bugs found only by review; 28–73% of calls are checks; the frontend builder's 175 calls ran one after another | Your go (new feature) |
 | 4 | K1 reviewer cache order, K3 browser batch, K4 compaction | Section 4 table | — |
 | 5 | One live review round after the fixes, then deliver with a known-issues list | The open-ended review never converged in any build (e.g. Trailhead 2: 4, 7, 8, 6, 6 findings) | Your decision: it changes what "done" means |
 | 6 | Builder model order | Measured: 3.5-flash 98% ok / 6.8 s, 3.6-flash 95% / 5.6 s, 3.8-flash 73% / 20.3 s, 3.7-flash 75% / 30.1 s; 3.8-flash leads by your 2026-09-28 request | Your decision |
