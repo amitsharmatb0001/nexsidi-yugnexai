@@ -237,7 +237,8 @@ export async function runBuildPhases(
   const backend = (async () => {
     if (!run.shubham) return;
     for (let phase = 1; phase <= phaseCount; phase++) {
-      if (phase === 2) await database;
+      // phase 2 waits for the database step; a single team pass (one phase) waits before it starts.
+      if (phase === Math.min(2, phaseCount)) await database;
       await run.shubham(phase);
     }
   })();

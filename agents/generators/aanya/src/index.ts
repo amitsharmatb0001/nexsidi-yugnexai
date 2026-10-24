@@ -16,6 +16,7 @@ import { inHouseFontFaceCss, vendorInHouseFonts } from "./fonts.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
 import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
+import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-files.ts";
 
 // 2026-10-24: the system's own frontend checks (pipeline/orchestrator/stages/builder-exit-checks.ts), loaded when used.
 async function frontendExitChecksFor(projectId: string): Promise<string[]> {
@@ -79,6 +80,11 @@ export interface GeneratorPhaseRun {
   scaffold: boolean;
   isLast: boolean;
   maxSteps: number;
+  // 2026-10-24: builder teams (pipeline/activities/build-phases.ts) — which team step this run is; see teamRunOverrides.
+  role?: "shared" | "helper" | "integrate";
+  ownFiles?: string[];
+  avoidFiles?: string[];
+  helperIndex?: number;
 }
 
 export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?: GeneratorPhaseRun): Promise<GeneratorResult> {
@@ -229,6 +235,8 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?
     // 2026-10-24: emoji, dead buttons and missing spec colours are checked by the system before the last phase may finish.
     exitChecks: !phase || phase.isLast ? () => frontendExitChecksFor(plan.projectId) : undefined,
     maxIterations: phase?.maxSteps ?? 90,
+    // 2026-10-24: a team step's settings win (helpers: flash, own files only, type check only; lead: pro, plan-vs-code check).
+    ...teamRunOverrides(phase, outputDir, { taskFiles: plan.aanyaTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: !phase || phase.isLast ? () => frontendExitChecksFor(plan.projectId) : undefined }),
   });
 
   return {
@@ -290,7 +298,8 @@ Workflow:
 // generation phase (tuned to 90 from real overruns); a backend fix round ran out at step 40 with its last edit unmade.
 export const FIX_MAX_STEPS = 60;
 
-export async function runFix(plan: BuildPlan, findings: string[]): Promise<GeneratorResult> {
+// 2026-10-24: `team` set = one helper or the lead of a fix round run as a team (pipeline/orchestrator/team-fix.ts).
+export async function runFix(plan: BuildPlan, findings: string[], team?: { role?: "helper" | "integrate"; ownFiles?: string[]; helperIndex?: number }): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
   // F7 (agent-autonomy-assessment): mirrors Shubham's identical fix — see
@@ -354,6 +363,7 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // 2026-10-24: the same system checks before a fix round may finish.
     exitChecks: () => frontendExitChecksFor(plan.projectId),
     maxIterations: FIX_MAX_STEPS,
+    ...teamRunOverrides(team, outputDir, { taskFiles: [], baseExitChecks: () => frontendExitChecksFor(plan.projectId) }),
   });
 
   return {

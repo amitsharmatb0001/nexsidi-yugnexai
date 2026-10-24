@@ -202,7 +202,10 @@ const TIER_POOLS: Record<GeminiTier, string[]> = {
   plan:       ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
   design:     ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
   qa:         ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-  generation: ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+  // 2026-10-24 (Amit: "for builder use all flash models"): all four flash models, ordered by Brewline's measurements —
+  // 3.5-flash 98% of calls ok (median 6.8 s), 3.6-flash 95% (5.6 s), 3.8-flash 73% (20.3 s), 3.7-flash 75% (30.1 s).
+  // Parallel builder helpers each start on a different one (poolStartingAt), so all four are used.
+  generation: ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"],
   a2a:        ["gemini-2.5-flash-lite", "gemini-3.5-flash"],
   user:       ["gemini-2.5-flash-lite", "gemini-3.5-flash"],
 };
@@ -264,6 +267,14 @@ function stringHash(s: string): number {
 // reviewers run together; the two builders are on different tiers already. A sub-check ("karan-subcheck") follows its
 // parent. Every model stays in the pool as a fallback.
 const PARALLEL_FIRST_MODEL_INDEX: Record<string, number> = { navya: 0, karan: 1, deepika: 2 };
+
+/** The tier's pool starting at its Nth model (wrapping), the rest after it in order: helper N of a builder team. */
+export function poolStartingAt(tier: GeminiTier, index: number): string[] {
+  const pool = poolForTier(tier);
+  if (pool.length === 0) return pool;
+  const i = ((index % pool.length) + pool.length) % pool.length;
+  return [...pool.slice(i), ...pool.slice(0, i)];
+}
 
 export function rotatedPoolForAgent(tier: GeminiTier, agentName: string): string[] {
   const pool = poolForTier(tier);
@@ -395,7 +406,7 @@ export async function routeToolsWithFallback(
   tier: GeminiTier,
   messages: GeminiMessage[],
   tools: GeminiToolDef[],
-  opts?: { model?: string; cachedContent?: string; agentName?: string },
+  opts?: { model?: string; cachedContent?: string; agentName?: string; firstModelIndex?: number },
   deps: { chat?: typeof geminiChatWithTools } = {},
 ): Promise<GeminiChatWithToolsResult & { modelUsed: string }> {
   // 2026-10-23: agents kept off Gemini on purpose (nim-only.ts) go to NVIDIA and never reach the Gemini pool.
@@ -409,9 +420,11 @@ export async function routeToolsWithFallback(
   // existing override semantics unchanged).
   const pool = opts?.model
     ? poolForTier(tier, opts.model)
-    : opts?.agentName
-      ? rotatedPoolForAgent(tier, opts.agentName)
-      : poolForTier(tier);
+    : opts?.firstModelIndex !== undefined
+      ? poolStartingAt(tier, opts.firstModelIndex)
+      : opts?.agentName
+        ? rotatedPoolForAgent(tier, opts.agentName)
+        : poolForTier(tier);
   const thinkingLevel = thinkingLevelForTier(tier);
   const errors: string[] = [];
 

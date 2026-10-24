@@ -58,3 +58,21 @@ test("the workflow uses it behind a version marker, so builds already running ke
   expect(src).toContain('patched("independent-build-phases-v1")');
   expect(src).toContain("await runBuildPhases(phaseCount,");
 });
+
+test("a single team pass: the backend starts after the database step", async () => {
+  const { runBuildPhases } = await import("./project-build.ts") as unknown as {
+    runBuildPhases: (n: number, run: { aanya: (p: number) => Promise<void>; shubham?: (p: number) => Promise<void>; pranav?: () => Promise<void> }) => Promise<void>;
+  };
+  const log: string[] = [];
+  let releaseDb: () => void = () => {};
+  const done = runBuildPhases(1, {
+    aanya: async () => { log.push("aanya"); },
+    shubham: async () => { log.push("shubham"); },
+    pranav: () => new Promise<void>((r) => { releaseDb = () => { log.push("db"); r(); }; }),
+  });
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  expect(log).toEqual([]); // the frontend's only (last) phase waits for the backend, the backend for the database
+  releaseDb();
+  await done;
+  expect(log).toEqual(["db", "shubham", "aanya"]);
+});

@@ -435,7 +435,7 @@ export async function assertWithinBudget(projectId: string, agentName: string): 
 // retry behavior without index.ts <-> stage5-qa-fix-loop.ts becoming a
 // circular import (index.ts already imports runQAFixLoop from there).
 import { runGeneratorWithQuotaRetry } from "./quota-retry.ts";
-import { runBuilderPhase, listBuiltFiles, type PhaseStore } from "./build-phases.ts";
+import { runBuilderPhase, listBuiltFiles, builderTeamsOn, collapsePhasesForTeam, type PhaseStore } from "./build-phases.ts";
 import { recordBlocked } from "../../packages/agent-runtime/src/tools/blocked.ts";
 import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 import { recordClaimEvidence } from "../../packages/agent-runtime/src/claims-evidence.ts";
@@ -497,7 +497,24 @@ function phaseStore(projectId: string): PhaseStore {
 /** How many build phases the approved plan has (0 = no phases: the old one-shot generation). */
 export async function getBuildPhaseCount(projectId: string): Promise<number> {
   const plan = getPlan(projectId) as BuildPlan & { buildPhases?: unknown[] };
-  return Array.isArray(plan.buildPhases) ? plan.buildPhases.length : 0;
+  const count = Array.isArray(plan.buildPhases) ? plan.buildPhases.length : 0;
+  // 2026-10-24: with builder teams the whole app is one team pass (see collapsePhasesForTeam). Decided here, once per
+  // build, and recorded, so a build that already started with several phases keeps them (runPhaseFor reads the record).
+  if (count > 1 && builderTeamsOn()) {
+    writeCacheFile(projectId, TEAM_PASS_FILE, JSON.stringify({ phasesInPlan: count, at: new Date().toISOString() }));
+    return 1;
+  }
+  return count;
+}
+
+const TEAM_PASS_FILE = "team-pass.json";
+function isTeamPass(projectId: string): boolean {
+  try {
+    readCacheFile<unknown>(projectId, TEAM_PASS_FILE);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phase: number): Promise<void> {
@@ -507,7 +524,8 @@ async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phas
     await assertWithinBudget(projectId, builder);
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", builder, plan);
-    const normalized = withNormalizedDbSchema(plan);
+    const schemaReady = withNormalizedDbSchema(plan);
+    const normalized = isTeamPass(projectId) ? collapsePhasesForTeam(schemaReady as never) as typeof schemaReady : schemaReady;
     const outputDir = join(buildDirFor(projectId), builder === "aanya" ? "frontend" : "backend");
     await runBuilderPhase({
       projectId,

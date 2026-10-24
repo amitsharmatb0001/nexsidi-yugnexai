@@ -61,8 +61,10 @@ test("poolForTier returns the QA pool led by the pro-thinking model, not flash",
 // better agentic-task performance per Google's own docs (see router.ts).
 // 2026-09-28: gemini-3.8-flash added ahead of 3.7 (Amit's request) — same
 // published price as 3.6/3.7 flash, verified live on this project (global).
-test("poolForTier returns the generation pool led by gemini-3.8-flash", () => {
-  expect(poolForTier("generation")).toEqual(["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
+// 2026-10-24: reordered by measured reliability at Amit's instruction ("for builder use all flash models") — see
+// builder-models.test.ts for the numbers. All four stay.
+test("poolForTier returns the generation pool with all four flash models, the most reliable first", () => {
+  expect(poolForTier("generation")).toEqual(["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"]);
 });
 
 test("poolForTier returns the user/status pool led by the cheapest flash-lite model", () => {

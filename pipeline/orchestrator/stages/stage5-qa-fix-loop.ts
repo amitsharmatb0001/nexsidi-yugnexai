@@ -39,6 +39,7 @@ import { dropSettledNotTrue, resolveDisputes, settleRepeatsBeforeGuard, type Set
 import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { join as joinPath } from "node:path";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
+import { runFixAsTeam } from "../team-fix.ts";
 import { chiefCheck, defaultChiefChat, isMachineFinding, isReviewerFailure, prepareForChief, type ChiefChat } from "../chief-check.ts";
 
 export interface QAFixLoopResult extends Stage5Result {
@@ -564,11 +565,13 @@ export async function runQAFixLoop(
     // path already had (pipeline/activities/index.ts's runShubham/runAanya/
     // runPranav) — see quota-retry.ts's header comment for the full trace.
     fixShubham: async (p, findings) => {
-      const r = await runGeneratorWithQuotaRetry(() => fixShubhamReal(p, findings));
+      // 2026-10-24: a fix round with findings in several files runs as a team (../team-fix.ts).
+      const r = await runGeneratorWithQuotaRetry(() => runFixAsTeam("shubham", p, findings, (pp, ff, team) => fixShubhamReal(pp, ff, team)));
       return { success: r.success, escalations: r.escalations, filesWritten: r.filesWritten };
     },
     fixAanya: async (p, findings) => {
-      const r = await runGeneratorWithQuotaRetry(() => fixAanyaReal(p, findings));
+      // 2026-10-24: a fix round with findings in several files runs as a team (../team-fix.ts).
+      const r = await runGeneratorWithQuotaRetry(() => runFixAsTeam("aanya", p, findings, (pp, ff, team) => fixAanyaReal(pp, ff, team)));
       return { success: r.success, escalations: r.escalations, filesWritten: r.filesWritten };
     },
     fixPranav: async (p, findings) => {

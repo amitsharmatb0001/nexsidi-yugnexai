@@ -354,6 +354,8 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
 
       if (config.readOnly && READONLY_BLOCKED_TOOLS.has(toolName)) {
         result = readOnlyToolBlockedResult(toolName);
+      } else if (config.blockedTools?.includes(toolName)) {
+        result = { status: "error", summary: `${toolName} is not available in this run: you work at the same time as other helpers in the same folder, and this tool would affect their work. Do your own task; the lead handles the rest.` };
       } else switch (toolName) {
         case "write_file": {
           const writeArgs = args as { path: string; content: string };

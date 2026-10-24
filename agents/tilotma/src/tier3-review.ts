@@ -29,6 +29,40 @@ import { reviewAccountFromEnv, reviewAccountSection, reviewSeededFromEnv, type R
 import { planSection } from "../../../pipeline/orchestrator/chief-check.ts";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 
+// 2026-10-24 (Amit: split the work in the review too, to bring its time down). The evidence collector drove the whole
+// app alone, one browser action per model call (~16 min a round on Brewline). Up to 3 collectors now run at the same
+// time, each covering its share of the approved plan's success criteria in its own browser (each run has its own
+// session) and screenshot folder; their findings are merged and the reality checker verifies them once. Fewer than 3
+// criteria, or NEXSIDI_REVIEW_TEAMS=off: one collector, as before.
+const MAX_COLLECTORS = 3;
+export function reviewAreas(criteria: Array<{ id: string; text: string }>): Array<Array<{ id: string; text: string }>> {
+  if (process.env.NEXSIDI_REVIEW_TEAMS === "off" || criteria.length < 3) return [criteria];
+  const n = Math.min(MAX_COLLECTORS, criteria.length);
+  const areas: Array<Array<{ id: string; text: string }>> = Array.from({ length: n }, () => []);
+  criteria.forEach((c, i) => areas[i % n]!.push(c));
+  return areas;
+}
+
+export function reviewAreaBlock(area: Array<{ id: string; text: string }>, index: number, total: number): string {
+  if (total <= 1) return "";
+  return (
+    `\n\nYOUR AREA — you are collector ${index + 1} of ${total}; the others check the rest of the app at the same time in ` +
+    `their own browsers. Check only these success criteria (drive every flow they describe, as a real user):\n` +
+    area.map((c) => `[${c.id}] ${c.text}`).join("\n") +
+    (index === 0 ? "\nYou also check the landing page, sign-up and sign-in." : "\nDo not re-check the landing page, sign-up or sign-in — collector 1 does.")
+  );
+}
+
+export function mergeCollectorRuns(runs: Array<{ success: boolean; summary: string; errors?: string[] }>): { success: boolean; summary: string; errors: string[] } {
+  if (runs.length === 1) return { success: runs[0]!.success, summary: runs[0]!.summary, errors: runs[0]!.errors ?? [] };
+  const findings = runs.flatMap((r) => parseFindings(r.summary));
+  return {
+    success: runs.every((r) => r.success),
+    summary: `FINDINGS:\n${findings.map((f) => `- ${f}`).join("\n")}\nVERDICT: NEEDS_WORK`,
+    errors: runs.flatMap((r) => r.errors ?? []),
+  };
+}
+
 // 2026-10-24 (docs/root-cause/2026-10-24-brewline.md): the reviewers had no yardstick — they were told to list "AT LEAST
 // 3-5 issues" and to default to NEEDS WORK, and every live round reported exactly 5, four of them false in the last one.
 // They now get the approved plan and every finding must name the item it breaks; the Chief AI's check uses the same list.
@@ -188,29 +222,46 @@ export async function runTier3Review(
   // comment in pipeline/activities/quota-retry.ts) — re-running this exact
   // call is always safe (no partial state to lose), so "picking up where it
   // left off" is just re-invoking it once models are confirmed healthy.
-  const stage1 = await runWithQuotaWatchAndResume(() =>
-    runAgentEscalated({
-      agentName: "tilotma-evidence-collector",
-      // 2026-10-05: a model that is shown the screenshots it takes. On the NIM text model they were saved and never
-      // seen, and when NIM timed out the run fell back and looped (Ledgerly run 4, final review).
-      model: REALITY_CHECKER_MODEL,
-      apiKey,
-      systemPrompt: EVIDENCE_COLLECTOR_PROMPT,
-      initialMessage: buildEvidenceCollectorTask(projectId, appUrl, backendUrl, screenshotDir, blockedReports),
-      sandboxDir: reviewRoot,
-      projectId,
-      enableBrowser: true,   // 2026-07-11: real interactive QA (navigate/click/fill/console-errors/computed-style) via the Node browser worker — replaces the single-shot screenshot tool
-      enableHttpTools: true,
-      enableDbQuery: true,   // read-only data-round-trip verification
-      maxIterations,
-      // 2026-08-06: see readOnly's definition in loop.ts — this is Stage 1 of
-      // a two-stage EVIDENCE review, not a fix pass. Without this, write_file/
-      // run_command are silently available (loop.ts grants them to every
-      // agent unconditionally) and nothing in this prompt forbids using them.
-      readOnly: true,
-      freshStart: true,
-    }),
-  );
+  // 2026-10-24: up to 3 collectors at the same time, each on its share of the approved plan's success criteria, its own
+  // browser, its own first model and its own screenshot folder (see reviewAreas); one collector when there are few.
+  let criteria: Array<{ id: string; text: string }> = [];
+  try {
+    const { planItemsFor } = await import("../../../pipeline/orchestrator/chief-check.ts");
+    criteria = planItemsFor(reviewRoot).filter((i) => /^SC\d+$/.test(i.id));
+  } catch {
+    criteria = [];
+  }
+  const areas = reviewAreas(criteria);
+  const areaRuns = await Promise.all(areas.map((area, i) =>
+    runWithQuotaWatchAndResume(() =>
+      runAgentEscalated({
+        agentName: "tilotma-evidence-collector",
+        // 2026-10-05: a model that is shown the screenshots it takes. On the NIM text model they were saved and never
+        // seen, and when NIM timed out the run fell back and looped (Ledgerly run 4, final review).
+        model: REALITY_CHECKER_MODEL,
+        apiKey,
+        systemPrompt: EVIDENCE_COLLECTOR_PROMPT,
+        initialMessage:
+          buildEvidenceCollectorTask(projectId, appUrl, backendUrl, areas.length > 1 ? `${screenshotDir}/area-${i + 1}` : screenshotDir, i === 0 ? blockedReports : []) +
+          reviewAreaBlock(area, i, areas.length),
+        sandboxDir: reviewRoot,
+        projectId,
+        enableBrowser: true,   // 2026-07-11: real interactive QA (navigate/click/fill/console-errors/computed-style) via the Node browser worker — replaces the single-shot screenshot tool
+        enableHttpTools: true,
+        enableDbQuery: true,   // read-only data-round-trip verification
+        maxIterations: areas.length > 1 ? Math.max(25, Math.ceil(maxIterations * 0.6)) : maxIterations,
+        // 2026-08-06: see readOnly's definition in loop.ts — this is Stage 1 of
+        // a two-stage EVIDENCE review, not a fix pass. Without this, write_file/
+        // run_command are silently available (loop.ts grants them to every
+        // agent unconditionally) and nothing in this prompt forbids using them.
+        readOnly: true,
+        freshStart: true,
+        firstModelIndex: i,
+        ...(areas.length > 1 ? { conversationKey: `tilotma-evidence-collector-area-${i + 1}` } : {}),
+      }),
+    ),
+  ));
+  const stage1 = mergeCollectorRuns(areaRuns);
 
   const stage1Findings = parseFindings(stage1.summary);
 

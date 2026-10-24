@@ -696,7 +696,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       // when set — poolForTier collapses to that single model, no pool
       // fallback. cachedContentHandle (Phase 0.4) is passed through so a
       // cache hit is possible on every turn, not just the first.
-      response = await routeToolsWithFallback(tier, messages, tools, { model: config.geminiModel, cachedContent: cachedContentHandle, agentName: config.agentName });
+      response = await routeToolsWithFallback(tier, messages, tools, { model: config.geminiModel, cachedContent: cachedContentHandle, agentName: config.agentName, firstModelIndex: config.firstModelIndex });
       if (iterations === 1) {
         console.log(`[${config.agentName}:gemini-agent] model=${response.modelUsed}`);
       }
@@ -906,6 +906,8 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
 
       if (config.readOnly && READONLY_BLOCKED_TOOLS.has(toolName)) {
         result = readOnlyToolBlockedResult(toolName);
+      } else if (config.blockedTools?.includes(toolName)) {
+        result = { status: "error", summary: `${toolName} is not available in this run: you work at the same time as other helpers in the same folder, and this tool would affect their work. Do your own task; the lead handles the rest.` };
       } else try { switch (toolName) {
         case "write_file": {
           const r = execWriteFile(config.sandboxDir, args as { path: string; content: string }, config.writableFile);

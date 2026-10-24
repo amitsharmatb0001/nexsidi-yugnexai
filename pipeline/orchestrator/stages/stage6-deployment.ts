@@ -45,6 +45,7 @@ import { dropCodeContradictedFindings } from "../finding-evidence.ts";
 import { fixChangedCode } from "./stage5-qa-fix-loop.ts";
 import { dropSettledNotTrue, resolveDisputes, type SettleFn } from "../disputes.ts";
 import { dropOutOfScopeFindings } from "../out-of-scope.ts";
+import { runFixAsTeam } from "../team-fix.ts";
 import { chiefCheck, defaultChiefChat, isMachineFinding, isReviewerFailure, prepareForChief, type ChiefChat } from "../chief-check.ts";
 import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { runAuthSmokeTest } from "./auth-smoke.ts";
@@ -865,11 +866,13 @@ export async function runStage6(
 
   const fixShubhamReal = deps.fixShubham ?? (async (p, f) => {
     const { runFix } = await import("../../../agents/generators/shubham/src/index.ts");
-    return runFix(p, f);
+    // 2026-10-24: a fix round with findings in several files runs as a team (../team-fix.ts).
+    return runFixAsTeam("shubham", p, f, (pp, ff, team) => runFix(pp, ff, team));
   });
   const fixAanyaReal = deps.fixAanya ?? (async (p, f) => {
     const { runFix } = await import("../../../agents/generators/aanya/src/index.ts");
-    return runFix(p, f);
+    // 2026-10-24: a fix round with findings in several files runs as a team (../team-fix.ts).
+    return runFixAsTeam("aanya", p, f, (pp, ff, team) => runFix(pp, ff, team));
   });
   const fixPranavReal = deps.fixPranav ?? (async (p, f) => {
     const { runFix } = await import("../../../agents/generators/pranav/src/index.ts");

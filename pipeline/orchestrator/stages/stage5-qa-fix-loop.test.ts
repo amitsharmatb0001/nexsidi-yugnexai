@@ -24,8 +24,9 @@ const source = readFileSync(new URL("./stage5-qa-fix-loop.ts", import.meta.url),
 // path) since exercising the real dynamic-imported agent modules end to
 // end would need mocking three separate module imports.
 test("runQAFixLoop wraps all three fix calls (Shubham, Aanya, Pranav) with runGeneratorWithQuotaRetry", () => {
-  expect(source).toContain("runGeneratorWithQuotaRetry(() => fixShubhamReal(p, findings))");
-  expect(source).toContain("runGeneratorWithQuotaRetry(() => fixAanyaReal(p, findings))");
+  // 2026-10-24: the retry wraps the fix team (../team-fix.ts), which calls each builder's own runFix.
+  expect(source).toContain('runGeneratorWithQuotaRetry(() => runFixAsTeam("shubham", p, findings, (pp, ff, team) => fixShubhamReal(pp, ff, team)))');
+  expect(source).toContain('runGeneratorWithQuotaRetry(() => runFixAsTeam("aanya", p, findings, (pp, ff, team) => fixAanyaReal(pp, ff, team)))');
   expect(source).toContain("runGeneratorWithQuotaRetry(() => fixPranavReal(p, findings))");
 });
 

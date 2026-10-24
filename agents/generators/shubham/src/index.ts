@@ -9,6 +9,7 @@ import { join, resolve } from "path";
 import type { BuildPlan, GeneratorTask } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
 import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
+import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-files.ts";
 
 export interface GeneratorResult {
   success: boolean;
@@ -194,6 +195,11 @@ export interface GeneratorPhaseRun {
   scaffold: boolean;
   isLast: boolean;
   maxSteps: number;
+  // 2026-10-24: builder teams (pipeline/activities/build-phases.ts) — which team step this run is; see teamRunOverrides.
+  role?: "shared" | "helper" | "integrate";
+  ownFiles?: string[];
+  avoidFiles?: string[];
+  helperIndex?: number;
 }
 
 export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<GeneratorResult> {
@@ -311,6 +317,8 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
     // 2026-10-23: a later phase starts with the files already written, whole (builder-preload.ts).
     preloadOwnFiles: !!phase && !phase.scaffold,
     maxIterations: phase?.maxSteps ?? 90,
+    // 2026-10-24: a team step's settings win (helpers: flash, own files only, type check only; lead: pro, plan-vs-code check).
+    ...teamRunOverrides(phase, outputDir, { taskFiles: plan.shubhamTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: undefined, runBackendTests: true }),
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see
@@ -399,7 +407,8 @@ Workflow:
 4. Call task_complete with verification_passed: true only after verifying the fix actually addresses the root cause, not just silences the symptom`;
 }
 
-export async function runFix(plan: BuildPlan, findings: string[]): Promise<GeneratorResult> {
+// 2026-10-24: `team` set = one helper or the lead of a fix round run as a team (pipeline/orchestrator/team-fix.ts).
+export async function runFix(plan: BuildPlan, findings: string[], team?: { role?: "helper" | "integrate"; ownFiles?: string[]; helperIndex?: number }): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
   // F7 (agent-autonomy-assessment): instincts were written by the fix loop
@@ -468,6 +477,7 @@ export async function runFix(plan: BuildPlan, findings: string[]): Promise<Gener
     // 2026-10-23: a fix round starts with the current files, whole, instead of reading them one at a time.
     preloadOwnFiles: true,
     maxIterations: FIX_MAX_STEPS,
+    ...teamRunOverrides(team, outputDir, { taskFiles: [], baseExitChecks: undefined, runBackendTests: true }),
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see

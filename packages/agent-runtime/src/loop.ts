@@ -115,6 +115,12 @@ export interface AgentRunConfig {
   extendStepsWhileProgressing?: boolean;
   enableScreenshot?: boolean;  // visual QA
   enableBrowser?: boolean;     // interactive live-app QA (navigate/click/fill/console-errors/computed-style) — Tilotma Tier 3
+  // 2026-10-24 (builder teams): helpers of one builder run at the same time; helper N starts on the Nth model of its tier
+  // (llm-client poolStartingAt) so they do not queue on one model. Every model stays as a fallback.
+  firstModelIndex?: number;
+  // 2026-10-24 (builder teams): tools this run may not use — helpers working in the same folder at the same time must not
+  // roll the whole folder back, start containers or start nested sub-agents.
+  blockedTools?: string[];
   enableDbQuery?: boolean;     // read-only DB verification (data-round-trip checks) — Tilotma Tier 3
   // 2026-07-12: per-role Gemini model. Generators set this to the pro thinking
   // model (code quality); high-volume tool-driving agents (Tier 3, QA) leave
@@ -977,6 +983,8 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
 
       if (config.readOnly && READONLY_BLOCKED_TOOLS.has(toolName)) {
         result = readOnlyToolBlockedResult(toolName);
+      } else if (config.blockedTools?.includes(toolName)) {
+        result = { status: "error", summary: `${toolName} is not available in this run: you work at the same time as other helpers in the same folder, and this tool would affect their work. Do your own task; the lead handles the rest.` };
       } else try { switch (toolName) {
         case "write_file": {
           const writeArgs = args as { path: string; content: string };
