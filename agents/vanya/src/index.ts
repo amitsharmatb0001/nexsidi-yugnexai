@@ -51,6 +51,9 @@ export interface DesignBrief {
   palette: Array<{ name: string; hex: string }>;
   typography: { display: string; body: string };
   layoutConcept: string;
+  // 2026-10-24: where the brief came from, shown on the approval page — the design agent, the approved spec's own design
+  // text, or the fixed fallback (no design text anywhere).
+  source?: "designer" | "spec" | "fallback";
 }
 
 export interface VanyaDeps {
@@ -102,19 +105,62 @@ export async function run(
       // writes project files (Aanya implements the brief, not Vanya).
       readOnly: true,
       maxIterations: VANYA_MAX_ITERATIONS,
+      // 2026-10-24 (Brewline): the builders' completion gate ("no verification evidence this run") rejected this agent's
+      // finished brief twice; it rewrote it as prose and the brief was lost. Its answer IS the brief, validated below.
+      skipEvidenceGate: true,
     });
   } catch (err) {
-    console.log(`[vanya] agent run failed (${String(err)}) — using fallback brief, not blocking generation on this`);
-    return FALLBACK_BRIEF;
+    console.log(`[vanya] agent run failed (${String(err)}) — taking the brief from the approved spec instead`);
+    return briefWhenDesignerFailed(spec);
   }
 
-  const rawResult = parseJson(result.summary);
-  if (rawResult === undefined) {
-    console.log(`[vanya] could not parse a brief from the agent's output — using fallback brief, not blocking generation on this`);
-    return FALLBACK_BRIEF;
+  // The model sometimes hands the brief back as a JSON object rather than text.
+  const summary: unknown = result.summary;
+  const rawResult = typeof summary === "string" ? parseJson(summary) : summary;
+  if (!validateDesignBrief(rawResult)) {
+    console.log(`[vanya] no valid brief in the agent's output — taking the brief from the approved spec instead`);
+    return briefWhenDesignerFailed(spec);
   }
+  return withSpecColours({ ...withInHouseFonts(rawResult), source: "designer" }, spec);
+}
 
-  return validateDesignBrief(rawResult) ? withInHouseFonts(rawResult) : FALLBACK_BRIEF;
+// 2026-10-24: the approved spec is the source of truth. When it names colours ("oat cream #FAF6F0 backgrounds"), they
+// are the brief's colours, in the spec's order, before anything the designer added; when the designer produced nothing
+// usable, the brief is built from the spec's own design text. Only a spec with no design text gets the fixed fallback.
+const COLOUR_FILLER = new Set(["and", "with", "featuring", "plus", "or", "the", "a", "an", "in", "for", "of"]);
+export function specColours(spec: ProjectSpec): Array<{ name: string; hex: string }> {
+  const text = spec.description ?? "";
+  const out: Array<{ name: string; hex: string }> = [];
+  for (const m of text.matchAll(/((?:[A-Za-z-]+\s+){0,3})(#[0-9A-Fa-f]{6})\b/g)) {
+    const hex = m[2]!.toUpperCase();
+    if (out.some((c) => c.hex === hex)) continue;
+    const words = m[1]!.trim().split(/\s+/).filter((w) => w && !COLOUR_FILLER.has(w.toLowerCase()));
+    out.push({ name: words.join(" ").toLowerCase() || `colour ${out.length + 1}`, hex });
+  }
+  return out;
+}
+
+export function withSpecColours(brief: DesignBrief, spec: ProjectSpec): DesignBrief {
+  const fromSpec = specColours(spec);
+  if (fromSpec.length === 0) return brief;
+  const rest = brief.palette.filter((c) => !fromSpec.some((s) => s.hex === c.hex.toUpperCase()));
+  return { ...brief, palette: [...fromSpec, ...rest] };
+}
+
+export function briefFromSpec(spec: ProjectSpec): DesignBrief | null {
+  const colours = specColours(spec);
+  if (colours.length < 3) return null;
+  const text = spec.description ?? "";
+  const direction = (text.match(/visual direction:\s*([^]*)$/i)?.[1] ?? text).trim();
+  const display = direction.match(/([A-Z][A-Za-z]+(?:\s[A-Z][A-Za-z]+)?)\s+display/)?.[1] ?? FALLBACK_BRIEF.typography.display;
+  const body = direction.match(/([A-Z][A-Za-z]+(?:\s[A-Z][A-Za-z]+)?)\s+body/)?.[1] ?? FALLBACK_BRIEF.typography.body;
+  const mood = (direction.split(/,\s*featuring|;|\.\s/)[0] ?? direction).slice(0, 200);
+  const layout = direction.match(/([^,]*\blayouts?\b[^.]*)/i)?.[1]?.trim() ?? direction.slice(0, 200);
+  return { ...withInHouseFonts({ mood, palette: colours, typography: { display, body }, layoutConcept: layout }), source: "spec" };
+}
+
+function briefWhenDesignerFailed(spec: ProjectSpec): DesignBrief {
+  return briefFromSpec(spec) ?? { ...FALLBACK_BRIEF, source: "fallback" };
 }
 
 // Approved 2 Oct 2026: in-house NexUI fonts only. Any other typeface the

@@ -5,7 +5,7 @@ import { plan as s, methodColor } from "./PlanPreview.styles";
 import DesignMockupPreview from "./DesignMockupPreview";
 import { Button } from "@/components/nexui/button";
 import { IconCopy, IconDownload } from "./IdeIcons";
-import { planToMarkdown, planMarkdownFilename } from "./planToMarkdown";
+import { planToMarkdown, planMarkdownFilename, DESIGN_SOURCE_NOTE } from "./planToMarkdown";
 
 interface Task {
   description: string;
@@ -28,6 +28,7 @@ export interface BuildPlan {
     palette?: Array<{ name: string; hex: string }>;
     typography?: { display?: string; body?: string };
     layoutConcept?: string;
+    source?: "designer" | "spec" | "fallback";
   };
   features?: Array<{ name: string; description: string; userStories?: string[] }>;
   apiContract?: {
@@ -175,6 +176,7 @@ export default function PlanPreview({ plan }: { plan: BuildPlan }) {
 
       {design && (design.mood || design.palette?.length || design.layoutConcept) ? (
         <Section n={++n} title="Design Direction">
+          {(design.source === "spec" || design.source === "fallback") && <p className={s.prose}><em>{DESIGN_SOURCE_NOTE[design.source]}</em></p>}
           {design.mood && <p className={s.prose}>{design.mood}</p>}
           {design.palette?.length ? (
             <div className={s.palette}>

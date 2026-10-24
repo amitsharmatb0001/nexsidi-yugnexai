@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { planToMarkdown, planMarkdownFilename } from "./planToMarkdown.ts";
+import { planToMarkdown, planMarkdownFilename, DESIGN_SOURCE_NOTE } from "./planToMarkdown.ts";
 import type { BuildPlan } from "./PlanPreview.tsx";
 
 // Real feature request, verbatim: "add a copy buutn in the plan window & a
@@ -69,4 +69,13 @@ test("planMarkdownFilename slugifies the app name into a safe filename", () => {
 
 test("planMarkdownFilename falls back to a generic name when appName is empty", () => {
   expect(planMarkdownFilename({ appName: "   ", appDescription: "" })).toBe("project-plan.md");
+});
+
+// 2026-10-24 (Brewline): the approval page showed a silent generic fallback as if it were the designed brief. Where the
+// design came from is now stated whenever it did not come from the design step.
+test("says when the design was taken from the spec text or is the fixed fallback", () => {
+  const base = { appName: "Brewline", appDescription: "", designBrief: { mood: "warm", palette: [{ name: "oat cream", hex: "#FAF6F0" }] } };
+  expect(planToMarkdown({ ...base, designBrief: { ...base.designBrief, source: "spec" } } as never)).toContain(DESIGN_SOURCE_NOTE.spec);
+  expect(planToMarkdown({ ...base, designBrief: { ...base.designBrief, source: "fallback" } } as never)).toContain(DESIGN_SOURCE_NOTE.fallback);
+  expect(planToMarkdown({ ...base, designBrief: { ...base.designBrief, source: "designer" } } as never)).not.toContain(DESIGN_SOURCE_NOTE.fallback);
 });

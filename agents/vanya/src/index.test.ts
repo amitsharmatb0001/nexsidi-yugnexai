@@ -81,7 +81,7 @@ test("an agent run that throws falls back to FALLBACK_BRIEF instead of propagati
     runAgent: async () => { throw new Error("all pool models exhausted"); },
   };
   const brief = await run(TEST_SPEC, deps);
-  expect(brief).toEqual(FALLBACK_BRIEF);
+  expect(brief).toEqual({ ...FALLBACK_BRIEF, source: "fallback" }); // a spec with no design text; marked for the approval page
 });
 
 test("an unparseable summary falls back to FALLBACK_BRIEF instead of throwing", async () => {
@@ -89,7 +89,7 @@ test("an unparseable summary falls back to FALLBACK_BRIEF instead of throwing", 
     runAgent: async () => agentResult("I looked at some sites but ran out of budget before producing a brief."),
   };
   const brief = await run(TEST_SPEC, deps);
-  expect(brief).toEqual(FALLBACK_BRIEF);
+  expect(brief).toEqual({ ...FALLBACK_BRIEF, source: "fallback" }); // a spec with no design text; marked for the approval page
 });
 
 test("a malformed JSON response (wrong shape) falls back to FALLBACK_BRIEF rather than propagating a broken brief", async () => {
@@ -97,7 +97,7 @@ test("a malformed JSON response (wrong shape) falls back to FALLBACK_BRIEF rathe
     runAgent: async () => agentResult(JSON.stringify({ mood: "ok" })),
   };
   const brief = await run(TEST_SPEC, deps);
-  expect(brief).toEqual(FALLBACK_BRIEF);
+  expect(brief).toEqual({ ...FALLBACK_BRIEF, source: "fallback" }); // a spec with no design text; marked for the approval page
 });
 
 test("run() passes enableWebSearch and readOnly to the agent config", async () => {
@@ -235,4 +235,49 @@ test("run() gives Vanya the project's build folder as its workspace, never the w
     if (prior === undefined) delete process.env.BUILD_DIR; else process.env.BUILD_DIR = prior;
     rmSync(base, { recursive: true, force: true });
   }
+});
+
+// 2026-10-24 (Brewline root cause, docs/root-cause/2026-10-24-brewline.md): the design agent produced the café brief, but
+// the builders' completion gate rejected it twice ("no verification evidence"), it rewrote its answer as prose, nothing
+// could read it, and the system silently used FALLBACK_BRIEF ("a technical product", green, Inter) — the approval page
+// showed that and the site rendered stock purple, while the approved spec text said oat cream #FAF6F0, Fraunces.
+const BREWLINE_SPEC: ProjectSpec = {
+  ...TEST_SPEC,
+  name: "Brewline",
+  description:
+    "A neighborhood coffee shop pre-order app. Visual direction: warm, simple, cozy coffee shop aesthetic optimized for mobile screens, featuring soft oat cream #FAF6F0 backgrounds, warm alabaster #F3ECE1 cards, espresso brown #2C1E18 typography, roasted caramel #C87D55 and terracotta #D46A4E accents, Fraunces display headings paired with DM Sans body text, and tactile card-based layouts with no cold corporate styling or purple gradients.",
+};
+
+test("the design agent is not held to the builders' evidence rule (its answer is the brief itself)", async () => {
+  let config: Record<string, unknown> = {};
+  await run(TEST_SPEC, { runAgent: async (c) => { config = c as never; return agentResult(JSON.stringify(VALID_BRIEF)); } });
+  expect(config.skipEvidenceGate).toBe(true);
+});
+
+test("a brief handed back as a JSON object (not text) is read, not thrown away", async () => {
+  const brief = await run(TEST_SPEC, { runAgent: async () => ({ ...agentResult(""), summary: VALID_BRIEF as unknown as string }) });
+  expect(brief.mood).toBe("Confident and technical");
+  expect(brief.source).toBe("designer");
+});
+
+test("with no usable brief, the brief is taken from the approved spec's own design text — not a generic fallback", async () => {
+  const brief = await run(BREWLINE_SPEC, { runAgent: async () => agentResult("I verified the spec's visual direction.") });
+  expect(brief.source).toBe("spec");
+  expect(brief.palette.map((c) => c.hex)).toEqual(["#FAF6F0", "#F3ECE1", "#2C1E18", "#C87D55", "#D46A4E"]);
+  expect(brief.palette[0]!.name).toContain("oat cream");
+  expect(brief.mood).toContain("cozy coffee shop");
+  expect(validateDesignBrief(brief)).toBe(true);
+});
+
+test("colours the spec names are always in the brief, first", async () => {
+  const brief = await run(BREWLINE_SPEC, { runAgent: async () => agentResult(JSON.stringify(VALID_BRIEF)) });
+  expect(brief.source).toBe("designer");
+  expect(brief.palette.slice(0, 5).map((c) => c.hex)).toEqual(["#FAF6F0", "#F3ECE1", "#2C1E18", "#C87D55", "#D46A4E"]);
+  expect(brief.palette.some((c) => c.hex === "#3A6EA5")).toBe(true);
+});
+
+test("a spec with no design text still gets the fixed fallback, marked as such for the approval page", async () => {
+  const brief = await run(TEST_SPEC, { runAgent: async () => agentResult("nothing") });
+  expect(brief.source).toBe("fallback");
+  expect(brief.palette).toEqual(FALLBACK_BRIEF.palette);
 });

@@ -1065,7 +1065,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           // (enforce/auto-checks.ts) — a finished job is not thrown away
           // for a check nobody ran.
           const autoCheckFailures = await runMissingRequiredChecks(config.sandboxDir, ledger, config.requiredVerificationCommands);
-          const check = checkCompletion(
+          const check = config.skipEvidenceGate ? ({ allowed: true } as const) : checkCompletion(
             ledger,
             { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed },
             config.requiredVerificationCommands,

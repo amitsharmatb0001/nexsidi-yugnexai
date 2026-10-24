@@ -166,6 +166,9 @@ export interface AgentRunConfig {
   // 2026-10-23: put the files already in sandboxDir into the first message, whole (builder-preload.ts). Builders set
   // it for later phases and fix rounds, where the Brewline build spent 131 of 317 model calls reading one file each.
   preloadOwnFiles?: boolean;
+  // 2026-10-24: an agent whose answer is the summary itself (the design agent) is not held to the builders' "show your
+  // verification evidence" rule; its caller validates the answer. Brewline lost its approved design to that rule.
+  skipEvidenceGate?: boolean;
   // 2026-08-06: real bug found live (project bae438767bed) — Tilotma's
   // reality-checker (an EVALUATOR per D26/its own prompt: "verify Stage 1's
   // claims... call task_complete", never told to fix anything) has
@@ -1212,7 +1215,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           // (enforce/auto-checks.ts) — a finished job is not thrown away
           // for a check nobody ran.
           const autoCheckFailures = await runMissingRequiredChecks(config.sandboxDir, ledger, config.requiredVerificationCommands);
-          const check = checkCompletion(
+          const check = config.skipEvidenceGate ? ({ allowed: true } as const) : checkCompletion(
             ledger,
             { summary: a.summary, filesWritten: a.files_written ?? [], verificationPassed: a.verification_passed },
             config.requiredVerificationCommands,

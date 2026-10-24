@@ -3,6 +3,13 @@ import type { BuildPlan } from "./PlanPreview";
 // Pure and exported for direct unit testing — mirrors PlanPreview.tsx's own
 // section order and field fallbacks (name ?? tableName, fields ?? columns)
 // exactly, so the exported document always matches what's on screen.
+// 2026-10-24 (Brewline): a design that did not come from the design step is labelled, so a fallback is never approved
+// as if it were designed for this app.
+export const DESIGN_SOURCE_NOTE = {
+  spec: "Taken from the colours and fonts in your request (the design step did not return a brief).",
+  fallback: "Standard fallback design: neither the design step nor your request gave colours. Ask for changes if it does not fit.",
+} as const;
+
 export function planToMarkdown(plan: BuildPlan): string {
   const lines: string[] = [];
   const design = plan.designBrief;
@@ -19,6 +26,7 @@ export function planToMarkdown(plan: BuildPlan): string {
 
   if (design && (design.mood || design.palette?.length || design.layoutConcept)) {
     lines.push(`## ${String(++n).padStart(2, "0")}. Design Direction`, "");
+    if (design.source === "spec" || design.source === "fallback") lines.push(`> ${DESIGN_SOURCE_NOTE[design.source]}`, "");
     if (design.mood) lines.push(design.mood, "");
     if (design.palette?.length) {
       lines.push("| Token | Hex |", "|---|---|");

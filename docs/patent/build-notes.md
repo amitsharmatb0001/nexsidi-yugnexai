@@ -485,3 +485,16 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - **CRUD check** tries the contract's own roles (a test account given the role before sign-in) after the admin route, and reports what it still cannot do as not checked instead of "every resource confirmed".
 
 **Proof (no model cost):** replayed against the exact code each round reviewed (the build folders' own git snapshots): 0 of 84 findings flagged across Trailhead (both builds) and Ledgerly; Brewline round 11 — all 5 flagged (4 false, 1 with false details); round 10 — the 4 real findings kept, the 1 that misquoted the header flagged (its true half goes to the Chief AI with the real code). 30 new tests; 861 pass across pipeline and Riya; type checks clean.
+
+### Fixed: the approved design never reached the builders (2026-10-24, batch 21)
+
+**Found (Brewline):** the design agent's first answer was the café brief; the builders' completion gate ("no verification evidence this run") rejected it twice; it rewrote the answer as prose, the parser could not read it, and the system silently used the fixed fallback ("a technical product", green, Inter). The approval page showed that fallback as the design while the spec text said oat cream #FAF6F0, Fraunces; the site rendered the library's purple, and the live colour check then cost a round.
+
+**Fixed:**
+- `skipEvidenceGate` on the agent config, honoured by all three agent loops; the design agent sets it (its answer is the brief, which is validated). Builders are unchanged.
+- A brief handed back as a JSON object is read.
+- No silent fallback: with no valid brief, the brief is built from the approved spec's own design text (colours with their names in the spec's order, display/body fonts, mood, layout); only a spec with no colours gets the fixed fallback.
+- Colours the spec names are always in the brief, first, even when the designer's brief left them out.
+- The brief records its source; the approval page and the exported plan say when it came from the spec or is the fallback.
+
+**Proof:** 5 new design tests (Brewline's real spec text gives exactly #FAF6F0, #F3ECE1, #2C1E18, #C87D55, #D46A4E with their names), 2 loop tests through the real agent loop (with the flag the brief is accepted on the first call; without it the rule still applies), 1 approval-page test. Not checked on screen: the approval page needs a build paused at approval.
