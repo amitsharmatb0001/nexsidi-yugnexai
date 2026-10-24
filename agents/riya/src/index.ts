@@ -2080,7 +2080,10 @@ export async function run(
   // docker-compose prompt so backend and frontend never end up trusting
   // different secrets (see jwt-secret.test.ts for the live evidence of
   // what happens when they don't).
-  const jwtSecret = generateJwtSecret();
+  // 2026-10-24: an app that already has a secret keeps it (a new one signs every user out, and writing it in made the
+  // agent edit the compose file on every redeploy).
+  const composeNow = existsSync(join(buildDir, "docker-compose.yml")) ? readFileSync(join(buildDir, "docker-compose.yml"), "utf-8") : "";
+  const jwtSecret = existingJwtSecret(composeNow) ?? generateJwtSecret();
   const frontendEnvPath = join(buildDir, "frontend", ".env.local");
   writeFileSync(frontendEnvPath, `NEXT_PUBLIC_API_URL=http://localhost:${backendPort}\nJWT_SECRET=${jwtSecret}\n`, "utf-8");
   console.log(`[riya-orchestrator] Pre-wrote frontend .env.local with NEXT_PUBLIC_API_URL=http://localhost:${backendPort}`);
@@ -2114,7 +2117,12 @@ export async function run(
   // accumulated 166 messages across many manual interventions tonight,
   // a plausible confound) — rather than keep guessing at a third candidate
   // with the same unverified-assumption risk that caused this exact bug.
-  const result = await runAgentEscalated({
+  // 2026-10-24: a running app is rebuilt and health-checked by the system (redeployRunningApp); the agent runs only when
+  // that fails, or for a first deploy.
+  const fastPath = existingDeployment ? await redeployRunningApp(buildDir, appUrl, backendUrl) : null;
+  if (fastPath?.ok) console.log(`[riya-orchestrator] ${projectId} redeployed by the system (rebuilt and answering) — no deploy agent needed`);
+  else if (fastPath) console.log(`[riya-orchestrator] redeploying without the agent did not work (${fastPath.reason}) — the deploy agent takes over`);
+  const result: { success: boolean; errors: string[] } = fastPath?.ok ? { success: true, errors: [] } : await runAgentEscalated({
     agentName: "riya",
     // 2026-09-28: kimi-k2.6 / mistral-nemotron were retired (see llm-client
     // RETIRED_NIM_MODELS); Riya's chain now comes from the model registry.
@@ -2583,6 +2591,46 @@ export async function ensureProjectRunning(
     ports: portsAfterStart,
     ...(portsAfterStart ? {} : { error: "ran docker compose up but containers are still not reachable on their expected ports" }),
   };
+}
+
+// 2026-10-24 (Brewline root cause): every redeploy after a fix round ran the deploy agent again (19 model calls re-reading
+// the same Dockerfiles and compose file) and generated a NEW JWT secret it then wrote into the compose file — the value
+// reached the logs, and on a real app a new secret signs every user out. A running app keeps its secret and is rebuilt by
+// the system; the agent runs only when this fails, or for a first deploy.
+export function existingJwtSecret(compose: string): string | null {
+  return compose.match(/JWT_SECRET\s*[:=]\s*["']?([^"'\s#]+)/)?.[1] ?? null;
+}
+
+export async function redeployRunningApp(
+  buildDir: string,
+  appUrl: string,
+  backendUrl: string,
+  deps: { exec?: (cmd: string) => string; pollMs?: number; waitMs?: number } = {},
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const composePath = join(buildDir, "docker-compose.yml");
+  if (!existsSync(composePath)) return { ok: false, reason: "no docker-compose.yml" };
+  const exec = deps.exec ?? ((cmd: string) => execSync(cmd, { encoding: "utf-8", timeout: 900_000, stdio: ["pipe", "pipe", "pipe"] }));
+  try {
+    try { stripRestartPoliciesInFile(composePath); } catch { /* best effort */ }
+    exec(`docker compose -f "${composePath}" up -d --build`);
+  } catch (err) {
+    return { ok: false, reason: `docker compose up --build failed: ${String(err instanceof Error ? err.message : err).slice(0, 300)}` };
+  }
+  const pollMs = deps.pollMs ?? 3_000;
+  const deadline = Date.now() + (deps.waitMs ?? 120_000);
+  const answers = async (url: string) => {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+      return res.status < 500;
+    } catch {
+      return false;
+    }
+  };
+  while (Date.now() < deadline) {
+    if ((await answers(`${backendUrl}/health`)) && (await answers(appUrl))) return { ok: true };
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return { ok: false, reason: `rebuilt, but the app did not answer within ${Math.round((deps.waitMs ?? 120_000) / 1000)} s (${backendUrl}/health, ${appUrl})` };
 }
 
 // Exported (with an injectable exec) for testing the .gitignore ordering.

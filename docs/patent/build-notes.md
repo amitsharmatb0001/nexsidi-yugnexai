@@ -524,3 +524,11 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - The phase-order test was rewritten without timing (explicit hand-offs), so it is exact under load.
 
 **Proof:** check tests on fixture projects (emoji, a dead button and a missing spec colour are reported; a clean frontend and a spec without colours pass); a loop test (finishing refused once while a problem is open, then allowed); wiring checks. 2,160 tests pass across agent-runtime, agents, pipeline and llm-client; type checks clean. One older stage-5 timing test failed once under full load and passes alone (not touched here).
+
+### Redeploys without the deploy agent; the app keeps its secret (2026-10-24, batch 24)
+
+**Found (Brewline):** every redeploy after a fix round ran the deploy agent again (11–19 model calls re-reading the same Dockerfiles and compose file) and every deploy generated a NEW JWT secret that the agent wrote into the compose file — the value is in Brewline's log six times, and on a real app a new secret signs every user out.
+
+**Fixed:** an app that already has a secret keeps it; a running app is rebuilt by the system (`docker compose up -d --build`, then `/health` and the frontend must answer); the agent runs only if that fails, or for a first deploy. The deterministic database, round-trip and CRUD checks after it are unchanged.
+
+**Proof:** 4 tests (secret read and kept; rebuild and health check without the agent; a failed build or an app that does not answer is reported with the reason so the agent takes over; wiring). Live on Brewline: redeployed by the system in 104 s with no model call, menu API 200. Brewline's later agent redeploys took 1.7–3.5 min, so the time gain is modest (the docker build dominates); the gain is the model calls and the secret.
