@@ -449,3 +449,15 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Proof:** the new tests failed before the fix (the sub-check wrote its file) and pass after. Live on the Brewline app: the contract gives the role `staff`; the staff test account got 200 from the staff-only orders list, an ordinary test account 403; the cleanup then removed every test account (6, including 4 left by the interrupted review), 0 left. 1,885 tests pass; type checks clean (Riya's existing rootDir notice unchanged).
 
 **Not fixed by the system (needs the owner):** the Brewline staff account's password was changed by that sub-check before the hold.
+
+### Brewline resume result and fix: sample records without an owner were left behind (2026-10-24, batch 18)
+
+**Run (cap $28, owner's decision; staff password reset first at the owner's request):** the role-account fix worked live — the staff test account was made, 2 menu items were seeded with it, and the reality checker tested the staff flows with that account instead of hunting for a login; no checker wrote anything. The first live round found 5 issues; the frontend builder fixed them in 23 steps, reading about 10 files in 3 batched calls (2 single reads), but still making one edit per model call (9 edits). The second live round found new issues (a footer image path that 404s, duplicate menu items, no rate limit on sign-in, open CORS, order status can move backwards). The cap stopped the build at $28.11 during the second fix; not delivered. This resume cost $5.94: two live review rounds about $2.50 each, the builder fix under $1 — the live review is now the main cost, not the builders.
+
+**Found:** the "duplicate menu items" were the review's own sample data: menu items have no owner, so the cleanup (test accounts and everything pointing at them) left them — 4 sample rows in the delivered database.
+
+**Fixed:** every sample record the seeder creates is written to `.nexsidi/seeded-records.json` in the build folder, across rounds; the cleanup removes exactly those rows in any table with an id column, with what points at them, and clears the list only when every removal succeeded. Only plain ids are used in the SQL.
+
+**Proof:** tests first (3 new); live on Brewline the 4 leftover sample rows were recorded and the cleanup removed them; 1 real menu item untouched. 1,888 tests pass; type check clean.
+
+**Next:** an edit tool that applies several edits in one call; the browser checker still takes one action per model call.

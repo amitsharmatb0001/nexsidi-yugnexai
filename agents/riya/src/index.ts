@@ -239,6 +239,38 @@ export function databaseNow(buildDir: string): string | null {
   }
 }
 
+// 2026-10-24 (Brewline resume): records a role account creates (a menu item) have no owner, so the account cleanup
+// missed them and they stayed in the delivered database. Every sample record the seeder creates is written down here
+// and the cleanup removes exactly those rows.
+const SEEDED_RECORDS_FILE = join(".nexsidi", "seeded-records.json");
+const PLAIN_ID = /^[A-Za-z0-9-]{1,64}$/;
+
+export function readSeededRecords(buildDir: string): string[] {
+  try {
+    const ids = JSON.parse(readFileSync(join(buildDir, SEEDED_RECORDS_FILE), "utf-8")) as unknown;
+    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string" && PLAIN_ID.test(x)) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function recordSeededRecords(buildDir: string, created: Record<string, string[]>): void {
+  const ids = new Set(readSeededRecords(buildDir));
+  for (const list of Object.values(created)) for (const id of list) if (PLAIN_ID.test(id)) ids.add(id);
+  mkdirSync(join(buildDir, ".nexsidi"), { recursive: true });
+  writeFileSync(join(buildDir, SEEDED_RECORDS_FILE), JSON.stringify([...ids]));
+}
+
+export function clearSeededRecords(buildDir: string): void {
+  try { writeFileSync(join(buildDir, SEEDED_RECORDS_FILE), "[]"); } catch { /* nothing recorded */ }
+}
+
+/** The WHERE condition for the recorded sample records (null when there are none). Only plain ids are used. */
+export function seededRecordCondition(ids: string[]): string | null {
+  const safe = ids.filter((id) => PLAIN_ID.test(id));
+  return safe.length > 0 ? `id::text IN (${safe.map((id) => `'${id}'`).join(", ")})` : null;
+}
+
 export function purgeVerificationArtifacts(buildDir: string, since?: string | null): void {
   try {
     const composePath = join(buildDir, "docker-compose.yml");
@@ -279,6 +311,27 @@ export function purgeVerificationArtifacts(buildDir: string, since?: string | nu
     }
     if (removed > 0) {
       console.log(`[riya] purged ${removed} deploy-verification test account(s) from the delivered database — the admin bootstrap slot is free for the real owner`);
+    }
+
+    // Sample records the seeder created (see readSeededRecords), in every table with an id column, with what points at them.
+    const seededWhere = seededRecordCondition(readSeededRecords(buildDir));
+    if (seededWhere) {
+      const idTables = sh(`docker exec ${cid} psql -U ${user} -d ${dbName} -tAc "SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='id'"`).split("\n").map((t) => t.trim()).filter(Boolean);
+      let seededRemoved = 0;
+      let seededFailed = false;
+      for (const table of idTables) {
+        try {
+          const count = parseInt(psql(`SELECT count(*) FROM "${table}" WHERE ${seededWhere};`), 10) || 0;
+          if (count === 0) continue;
+          psql(buildPurgeStatements(table, seededWhere, fks).map((s) => s + ";").join("\n"));
+          seededRemoved += count;
+        } catch (e) {
+          seededFailed = true;
+          console.warn(`[riya] could not remove sample records from "${table}" (non-fatal): ${String(e).split("\n")[0]}`);
+        }
+      }
+      if (!seededFailed) clearSeededRecords(buildDir);
+      if (seededRemoved > 0) console.log(`[riya] removed ${seededRemoved} sample record(s) the checks created`);
     }
 
     // Public form tables: only rows made since the testing began, so a customer's own rows are never touched.
@@ -404,6 +457,7 @@ export async function seedSampleData(buildDir: string, backendUrl: string, token
           continue;
         }
         (created[resource] ??= []).push(obj.id);
+        recordSeededRecords(buildDir, { [resource]: [obj.id] });
       } catch (err) {
         notSeeded.push(`sample data: ${resource} #${i} failed: ${String(err).slice(0, 160)}`);
         break;
