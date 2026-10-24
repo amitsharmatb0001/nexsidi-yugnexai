@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { discoverRoutes, routeMatches, linkTargetsMissing, judgeVisit, runRouteSweep, type Visit } from "./route-sweep.ts";
+import { discoverRoutes, routeMatches, linkTargetsMissing, judgeVisit, runRouteSweep, mergeBrokenImageFindings, PAGE_INFO_EXPRESSION, type Visit } from "./route-sweep.ts";
 
 // 2026-10-05 (Ledgerly run 4): the live review's agents only visit the pages they choose to click through.
 // A wrong route, a dead link, a failing request or a console error on a page nobody opened was invisible to
@@ -373,4 +373,21 @@ test("the same phone problem on many pages becomes one finding that points at th
   expect(phone.issue).toContain("/clients");
   expect(phone.issue).toContain("shared header");
   expect(merged.some((f) => f.issue.includes("HTTP 500"))).toBe(true);
+});
+
+// 2026-10-24 (Brewline): the footer's YugNex logo showed as a broken image on every page. The reviewer's finding about
+// it cited code that was not in the file, so it was rightly refused — and the real broken image shipped. The sweep now
+// reads, in the browser, every image that finished loading without a picture; one finding per image, naming its pages.
+test("a broken image is reported once, with every page it is on", () => {
+  const broken = ["YugNex — data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIkAAABg"];
+  expect(judgeVisit(visit({ route: "/", auth: "signed-out", brokenImages: broken }))).toEqual([`/ (signed-out) shows a broken image: ${broken[0]}`]);
+  expect(judgeVisit(visit({ route: "/", viewport: "phone", brokenImages: broken }))).toEqual([]); // judged once, on the desktop visit
+  const merged = mergeBrokenImageFindings([
+    { file: "frontend/app/page.tsx", issue: `[route-sweep] / (signed-out) shows a broken image: ${broken[0]}` },
+    { file: "frontend/app/menu/page.tsx", issue: `[route-sweep] /menu (signed-out) shows a broken image: ${broken[0]}` },
+    { file: "frontend/app/menu/page.tsx", issue: "[route-sweep] /menu (signed-out) answered HTTP 500" },
+  ]);
+  expect(merged.length).toBe(2);
+  expect(merged.some((f) => f.issue.includes("2 page(s) (/, /menu)") && f.issue.includes("YugNex"))).toBe(true);
+  expect(PAGE_INFO_EXPRESSION).toContain("naturalWidth === 0");
 });

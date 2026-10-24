@@ -38,6 +38,8 @@ export interface Visit {
   clippedNav?: string[];
   /** Height of the page header (the first <header>, else the first <nav>) in pixels. */
   headerHeightPx?: number;
+  /** Images that finished loading without a picture: "alt text — start of src". */
+  brokenImages?: string[];
 }
 
 /** Above this a phone header has wrapped into rows instead of folding into a menu button (folded headers are ~56-72px). */
@@ -138,7 +140,28 @@ export function judgeVisit(v: Visit): string[] {
     if (v.auth === "signed-out" && (r.status === 401 || r.status === 403)) continue;
     out.push(`${where} made a request that failed: ${r.method} ${r.url} -> ${r.status || r.failure || "no response"}`);
   }
+  // 2026-10-24 (Brewline): the footer logo was broken on every page; the reviewer's finding cited the wrong code and was
+  // refused, so the broken image shipped. What the browser itself reports needs no reviewer.
+  for (const b of v.brokenImages ?? []) out.push(`${where} shows a broken image: ${b}`);
   return [...out, ...layout];
+}
+
+/** A broken image in a shared part of the page (header, footer) shows on every page: one finding naming them all. */
+export function mergeBrokenImageFindings(findings: Array<{ file: string; issue: string }>): Array<{ file: string; issue: string }> {
+  const groups = new Map<string, { file: string; routes: string[] }>();
+  const rest: Array<{ file: string; issue: string }> = [];
+  for (const f of findings) {
+    const m = f.issue.match(/^\[route-sweep\] (\S+) \((?:signed-in|signed-out)\) shows a broken image: (.*)$/);
+    if (!m) { rest.push(f); continue; }
+    const g = groups.get(m[2]!) ?? { file: f.file, routes: [] };
+    if (!g.routes.includes(m[1]!)) g.routes.push(m[1]!);
+    groups.set(m[2]!, g);
+  }
+  const merged = [...groups.entries()].map(([image, g]) => ({
+    file: g.file,
+    issue: `[route-sweep] ${g.routes.length} page(s) (${g.routes.join(", ")}) show a broken image: ${image}. The browser loaded it and got no picture; if it is in the header or footer, fix it once there.`,
+  }));
+  return [...rest, ...merged];
 }
 
 /**
@@ -189,11 +212,12 @@ export interface RouteSweepResult {
   seeded: Record<string, string[]>;
 }
 
-const PAGE_INFO_EXPRESSION =
+export const PAGE_INFO_EXPRESSION =
   "/*page*/ ({ text: (document.body ? document.body.innerText : '').slice(0, 2000), links: [...document.querySelectorAll('a[href]')].map((a) => a.getAttribute('href') || ''), " +
   "overflowPx: Math.max(0, document.documentElement.scrollWidth - window.innerWidth), " +
   "clippedNav: [...document.querySelectorAll('header a, header button, nav a, nav button')].filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && (r.right > window.innerWidth + 1 || r.left < -1); }).map((e) => (e.textContent || '').trim()).filter(Boolean), " +
-  "headerHeightPx: Math.round((document.querySelector('header') || document.querySelector('nav'))?.getBoundingClientRect().height || 0) })";
+  "headerHeightPx: Math.round((document.querySelector('header') || document.querySelector('nav'))?.getBoundingClientRect().height || 0), " +
+  "brokenImages: [...document.images].filter((i) => i.complete && i.naturalWidth === 0 && !!i.getAttribute('src')).map((i) => (i.getAttribute('alt') || '(no alt text)') + ' — ' + (i.getAttribute('src') || '').slice(0, 60)) })";
 
 const pageFileFor = (file: string) => `frontend/${file}`;
 const slug = (route: string) => (route === "/" ? "home" : route.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, ""));
@@ -255,11 +279,12 @@ async function visitPage(browser: BrowserLike, opts: RouteSweepOptions, route: s
     const nav = (await browser.send("navigate", { url: opts.appUrl.replace(/\/$/, "") + route })) as { status: number | null; finalUrl?: string; url?: string };
     v.status = nav?.status ?? null;
     try { v.finalPath = new URL(nav?.finalUrl ?? nav?.url ?? "", "http://x").pathname; } catch { /* keep route */ }
-    const info = ((await browser.send("evaluate", { expression: PAGE_INFO_EXPRESSION })) as any)?.value as { text?: string; links?: string[]; overflowPx?: number; clippedNav?: string[]; headerHeightPx?: number } | null;
+    const info = ((await browser.send("evaluate", { expression: PAGE_INFO_EXPRESSION })) as any)?.value as { text?: string; links?: string[]; overflowPx?: number; clippedNav?: string[]; headerHeightPx?: number; brokenImages?: string[] } | null;
     v.bodyText = info?.text ?? "";
     v.overflowPx = info?.overflowPx ?? 0;
     v.clippedNav = info?.clippedNav ?? [];
     v.headerHeightPx = info?.headerHeightPx ?? 0;
+    v.brokenImages = info?.brokenImages ?? [];
     if (viewport === "desktop") for (const href of info?.links ?? []) links.push({ href, from: route });
     if (opts.screenshotDir) {
       await browser.send("screenshot", { path: join(opts.screenshotDir, `${viewport === "phone" ? "phone-" : ""}${auth}-${slug(route)}.png`), fullPage: true }).catch(() => {});
@@ -374,7 +399,7 @@ export async function runRouteSweep(opts: RouteSweepOptions): Promise<RouteSweep
     findings.push({ file, issue: `[route-sweep] a link to ${m.href} (on ${m.from.join(", ")}) matches no page or route of the app` });
   }
 
-  const merged = mergePhoneFindings(findings);
+  const merged = mergeBrokenImageFindings(mergePhoneFindings(findings));
   return { ran: true, pass: merged.length === 0, findings: merged, notChecked, visited, seeded };
 }
 

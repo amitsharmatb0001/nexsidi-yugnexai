@@ -582,3 +582,11 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Built:** the frontend scaffold writes `public/yugnex-logo.png` (byte-identical to `packages/agent-runtime/assets/yugnex-logo.png`) into every app; the builder writes only `<img src="/yugnex-logo.png" ...>`; the encoded image is gone from the instructions (5.4K characters less in every frontend call). The builder's done-check reports a YugNex logo that does not use the file, or a missing file.
 
 **Proof:** scaffold test (file written, identical bytes, called by the scaffold; instructions contain the path and no encoded image), exit-check tests (embedded copy reported, missing file reported, correct footer passes); the check flags Brewline's real footer. All suites 2,415 pass.
+
+## Batch 30 — the page sweep reports broken images (2026-10-24)
+
+**Found:** Brewline's broken footer logo was reported by a reviewer with a cause that was not in the code, so the proof check refused it and the real broken image shipped. The system's own page sweep opens every page in a real browser but did not look at images.
+
+**Built** (`pipeline/orchestrator/stages/route-sweep.ts`): the sweep reads every image that finished loading without a picture (`complete && naturalWidth === 0`), reports it with its alt text and the start of its address, and merges one image seen on several pages into one finding naming them (a shared header or footer). Images still loading are not reported.
+
+**Proof:** sweep tests (finding, phone visit not double-counted, merge across pages, the page reading includes the check); live in a real browser: Brewline's logo is reported on /, /menu and /about; Trailhead 2 (valid logo) reports nothing. Root-cause doc corrected (the logo finding moved from "false" to "caused by the system").
