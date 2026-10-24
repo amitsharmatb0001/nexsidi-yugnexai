@@ -7,6 +7,7 @@ import {
   isAllPoolModelsExhaustedError,
   isQuotaExhaustionError,
   screenshotImagePathFor,
+  screenshotImagePathsFor,
   isRelevantContextSelectionEnabled,
   summarizeToolInput,
   summarizeThinking,
@@ -431,4 +432,11 @@ test("triage compaction is off unless TRIAGE_COMPACTION_ENABLED is exactly \"tru
     if (previous === undefined) delete process.env.TRIAGE_COMPACTION_ENABLED;
     else process.env.TRIAGE_COMPACTION_ENABLED = previous;
   }
+});
+
+// 2026-10-24: browser_steps can take several screenshots in one call; every one is attached, also when a later step failed.
+test("screenshotImagePathsFor returns every screenshot of a browser_steps call", () => {
+  expect(screenshotImagePathsFor("browser_steps", { status: "error", images: ["/a.png", "/b.png"] })).toEqual(["/a.png", "/b.png"]);
+  expect(screenshotImagePathsFor("browser_screenshot", { status: "success", output: "/c.png" })).toEqual(["/c.png"]);
+  expect(screenshotImagePathsFor("read_file", { status: "success", output: "/c.png" })).toEqual([]);
 });

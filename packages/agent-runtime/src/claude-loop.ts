@@ -36,7 +36,7 @@ import { runAgent, buildToolList, MAX_ITERATIONS, READONLY_BLOCKED_TOOLS, readOn
 import { isNimEnabled } from "@nexsidi/llm-client";
 import { join } from "path";
 import { readFileSync } from "node:fs";
-import { runAgentWithGemini, screenshotImagePathFor } from "./gemini-loop.ts";
+import { runAgentWithGemini, screenshotImagePathsFor } from "./gemini-loop.ts";
 import { execWriteFile, execReadFile, execListFiles, execEditFile, execEditFiles, execReadFiles, execDeleteFile } from "./tools/file.ts";
 import { execRunCommand } from "./tools/command.ts";
 import { execHttpRequest } from "./tools/http.ts";
@@ -552,23 +552,22 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
       // not a bare string — see ToolResultBlockParam.content in the SDK.
       blockedTracker.observe(result);
       if (isProgressStep(toolName, result, args, config.requiredVerificationCommands)) stepBudget.noteProgress(iterations);
-      const imagePath = screenshotImagePathFor(toolName, result);
-      if (imagePath) {
-        try {
-          const imageBytes = readFileSync(imagePath);
-          toolResultBlocks.push({
-            type: "tool_result",
-            tool_use_id: call.id,
-            content: [
-              { type: "text", text: JSON.stringify(result) },
-              { type: "image", source: { type: "base64", media_type: "image/png", data: imageBytes.toString("base64") } },
-            ],
-          });
-          imagesSeen++;
-        } catch (err) {
-          console.error(`[${config.agentName}:claude-agent] Failed to read screenshot for vision attachment (${imagePath}): ${String(err)}`);
-          toolResultBlocks.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) });
+      const imagePaths = screenshotImagePathsFor(toolName, result);
+      if (imagePaths.length > 0) {
+        const imageBlocks: Array<{ type: "image"; source: { type: "base64"; media_type: "image/png"; data: string } }> = [];
+        for (const imagePath of imagePaths) {
+          try {
+            imageBlocks.push({ type: "image", source: { type: "base64", media_type: "image/png", data: readFileSync(imagePath).toString("base64") } });
+            imagesSeen++;
+          } catch (err) {
+            console.error(`[${config.agentName}:claude-agent] Failed to read screenshot for vision attachment (${imagePath}): ${String(err)}`);
+          }
         }
+        toolResultBlocks.push({
+          type: "tool_result",
+          tool_use_id: call.id,
+          content: imageBlocks.length > 0 ? [{ type: "text", text: JSON.stringify(result) }, ...imageBlocks] : JSON.stringify(result),
+        });
       } else {
         toolResultBlocks.push({ type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) });
       }

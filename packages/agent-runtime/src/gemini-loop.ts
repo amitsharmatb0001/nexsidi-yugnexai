@@ -259,6 +259,14 @@ export function screenshotImagePathFor(toolName: string, result: Record<string, 
   return typeof result?.output === "string" ? result.output : null;
 }
 
+/** Every image a tool call produced: one for a screenshot tool, each screenshot of a browser_steps call (also those
+ * taken before a later step failed). */
+export function screenshotImagePathsFor(toolName: string, result: Record<string, any>): string[] {
+  if (Array.isArray(result?.images)) return result.images.filter((p: unknown): p is string => typeof p === "string");
+  const one = screenshotImagePathFor(toolName, result);
+  return one ? [one] : [];
+}
+
 // Compact, display-safe summary of a tool call's input for the UI event feed
 // (events.jsonl -> /ws/pipeline/:projectId -> activity cards).
 //
@@ -1201,8 +1209,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       // this call, in the same turn — a text-only "Screenshot saved to X"
       // result is exactly what let a visually-broken build pass QA before
       // (see screenshotImagePathFor's header comment).
-      const imagePath = screenshotImagePathFor(toolName, result);
-      if (imagePath) {
+      for (const imagePath of screenshotImagePathsFor(toolName, result)) {
         try {
           const imageBytes = readFileSync(imagePath);
           responseParts.push({ inlineData: { mimeType: "image/png", data: imageBytes.toString("base64") } });

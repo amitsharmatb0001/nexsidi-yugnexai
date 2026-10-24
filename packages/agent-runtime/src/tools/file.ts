@@ -11,6 +11,8 @@ export interface ToolResult {
   summary: string;
   output?: string;
   next_actions?: string[];
+  /** Screenshots a tool took (browser_steps can take several); the loops attach each image for the model to see. */
+  images?: string[];
 }
 
 // Guard: all file operations must stay within the sandbox output directory.

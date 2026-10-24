@@ -28,21 +28,59 @@ function guardLocalhost(url: string): string | null {
 // A per-run holder: the session (and its Node worker + Chromium) is only
 // spawned on the first browser tool call, so agents that never touch the
 // browser pay nothing.
+// 2026-10-24 (Brewline): the live reviewers drove the app one browser action per model call (~16 min a round), each call
+// resending the whole conversation. browser_steps runs a list of these in one call, in order, on the same page.
+const STEP_ACTIONS = new Set(["navigate", "click", "fill", "screenshot", "get_text", "console_errors", "computed_style", "element_exists", "current_url"]);
+const MAX_STEPS = 20;
+
 export class BrowserToolset {
   private session: BrowserSession | null = null;
 
   // The agent's own workspace — screenshots go under its evidence folder
   // (see screenshot.ts's resolveEvidencePath), never the worker's cwd.
-  constructor(private readonly workspace: string = process.cwd()) {}
+  constructor(
+    private readonly workspace: string = process.cwd(),
+    private readonly makeSession: () => BrowserSession = () => new BrowserSession(),
+  ) {}
 
   private ensure(): BrowserSession {
-    if (!this.session) this.session = new BrowserSession();
+    if (!this.session) this.session = this.makeSession();
     return this.session;
+  }
+
+  private async runSteps(args: Record<string, unknown>, ledger?: EvidenceLedger): Promise<ToolResult> {
+    const steps = Array.isArray(args.steps) ? (args.steps as Array<Record<string, unknown>>) : [];
+    if (steps.length === 0) return { status: "error", summary: "browser_steps needs a non-empty steps list" };
+    if (steps.length > MAX_STEPS) return { status: "error", summary: `browser_steps takes at most ${MAX_STEPS} steps; got ${steps.length}` };
+    const unknown = steps.findIndex((s) => !STEP_ACTIONS.has(String(s?.action ?? "")));
+    if (unknown >= 0) {
+      return { status: "error", summary: `step ${unknown + 1}: unknown action "${String(steps[unknown]?.action)}"; use one of ${[...STEP_ACTIONS].join(", ")}` };
+    }
+    const lines: string[] = [];
+    const images: string[] = [];
+    for (let i = 0; i < steps.length; i++) {
+      const { action, ...stepArgs } = steps[i]!;
+      const r = await this.exec(`browser_${String(action)}`, stepArgs, ledger);
+      const shown = action === "screenshot" || action === "navigate" ? "" : r.output ? `\n${r.output}` : "";
+      lines.push(`${i + 1}. ${String(action)}: ${r.summary}${shown}`);
+      if (action === "screenshot" && r.status === "success" && r.output) images.push(r.output);
+      if (r.status === "error") {
+        return {
+          status: "error",
+          summary: `step ${i + 1} (${String(action)}) failed: ${r.summary}; steps after it did not run`,
+          output: lines.join("\n\n"),
+          ...(images.length > 0 ? { images } : {}),
+        };
+      }
+    }
+    return { status: "success", summary: `${steps.length} browser step(s) done`, output: lines.join("\n\n"), ...(images.length > 0 ? { images } : {}) };
   }
 
   async exec(name: string, args: Record<string, unknown>, ledger?: EvidenceLedger): Promise<ToolResult> {
     try {
       switch (name) {
+        case "browser_steps":
+          return await this.runSteps(args, ledger);
         case "browser_navigate": {
           const url = String(args.url ?? "");
           const bad = guardLocalhost(url);
@@ -117,7 +155,7 @@ export class BrowserToolset {
 export const BROWSER_TOOL_NAMES = new Set([
   "browser_navigate", "browser_screenshot", "browser_click", "browser_fill",
   "browser_get_text", "browser_console_errors", "browser_computed_style",
-  "browser_element_exists", "browser_current_url",
+  "browser_element_exists", "browser_current_url", "browser_steps",
 ]);
 
 const strParam = (description: string) => ({ type: "string", description });
@@ -193,6 +231,35 @@ export const BROWSER_TOOL_DEFS: NimToolDef[] = [
       name: "browser_current_url",
       description: "Return the current page URL. Use after a click to confirm navigation/redirect went where expected and there is no 404.",
       parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_steps",
+      description: `Run several browser actions in ONE call, in order, on the same page (at most ${MAX_STEPS}). Each step is {action, ...that action's fields}: navigate {url}, click {selector}, fill {selector, value}, screenshot {outputPath}, get_text {limit}, console_errors, computed_style {selector, props}, element_exists {selector}, current_url. Returns every step's result and attaches every screenshot. Stops at the first step that fails and says which. Use it whenever you know the next few actions, e.g. navigate + console_errors + get_text + screenshot for one page, or fill + fill + click + current_url for a form.`,
+      parameters: {
+        type: "object",
+        properties: {
+          steps: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                action: { type: "string", enum: [...STEP_ACTIONS] },
+                url: strParam("navigate: localhost URL"),
+                selector: strParam("click / fill / computed_style / element_exists: CSS or Playwright text selector"),
+                value: strParam("fill: value to type"),
+                outputPath: strParam("screenshot: relative PNG path"),
+                limit: { type: "number", description: "get_text: max chars (default 8000)" },
+                props: { type: "array", items: { type: "string" }, description: "computed_style: CSS properties to read" },
+              },
+              required: ["action"],
+            },
+          },
+        },
+        required: ["steps"],
+      },
     },
   },
 ];

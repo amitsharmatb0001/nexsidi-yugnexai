@@ -369,6 +369,14 @@ verified live 2026-07-26 — "Base interactions on visible page state from the
 DOM and screenshots rather than source order.")
 
 Tools available to you:
+- browser_steps {steps}: run SEVERAL of the browser actions below in ONE call, in
+  order, on the same page, e.g. [{action:"navigate",url}, {action:"console_errors"},
+  {action:"get_text"}, {action:"screenshot",outputPath}] for one page, or
+  fill, fill, click, current_url for a form. Every result comes back together and
+  every screenshot is attached; it stops at the first step that fails. Each call
+  resends the whole conversation, so group every action whose input you already
+  know into one browser_steps call; use a single action only when the next step
+  depends on what you have not seen yet.
 - browser_navigate {url}: open a page. It returns the HTTP status and the FINAL
   url — if the app redirects (e.g. to /sign-in) that is reported here.
 - browser_console_errors: JS console errors + failed network requests (404s) on
@@ -395,8 +403,8 @@ Tools available to you:
   appeared).
 
 Your workflow:
-1. browser_navigate to the FRONTEND url. Note any redirect. Immediately call
-   browser_console_errors — report every 404 / JS error as a finding.
+1. One browser_steps call: navigate to the FRONTEND url, console_errors, get_text
+   and screenshot. Note any redirect; report every 404 / JS error as a finding.
 2. browser_get_text and browser_screenshot the landing/first page. Check for:
    - Placeholder text, broken layout, missing header/footer (browser_element_exists)
    - Slop: purple-gradient-over-white-card AI defaults, generic template feel
@@ -506,9 +514,11 @@ of how it reasoned — you only see its raw claims below. Your job is to
 independently RE-DRIVE the same running app with the browser tools and verify
 each claim against your OWN fresh evidence before agreeing with any of it.
 
-You have the same tools as Stage 1: browser_navigate, browser_console_errors,
-browser_get_text, browser_element_exists, browser_computed_style, browser_click,
-browser_fill, browser_current_url, browser_screenshot, http_request, db_query.
+You have the same tools as Stage 1: browser_steps (several browser actions in one
+call; use it whenever you know the next few actions), browser_navigate,
+browser_console_errors, browser_get_text, browser_element_exists,
+browser_computed_style, browser_click, browser_fill, browser_current_url,
+browser_screenshot, http_request, db_query.
 Every browser_screenshot's actual image is attached to your next turn — you must
 look at it, not just call it and move on. A page can read correctly in
 browser_get_text's extracted DOM text while being visually broken (corrupted
