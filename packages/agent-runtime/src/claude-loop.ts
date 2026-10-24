@@ -37,7 +37,7 @@ import { isNimEnabled } from "@nexsidi/llm-client";
 import { join } from "path";
 import { readFileSync } from "node:fs";
 import { runAgentWithGemini, screenshotImagePathFor } from "./gemini-loop.ts";
-import { execWriteFile, execReadFile, execListFiles, execEditFile, execDeleteFile } from "./tools/file.ts";
+import { execWriteFile, execReadFile, execListFiles, execEditFile, execEditFiles, execReadFiles, execDeleteFile } from "./tools/file.ts";
 import { execRunCommand } from "./tools/command.ts";
 import { execHttpRequest } from "./tools/http.ts";
 import { execDockerCompose } from "./tools/docker.ts";
@@ -364,6 +364,10 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
           result = r;
           break;
         }
+        case "read_files": {
+          result = execReadFiles(config.sandboxDir, args as { paths: string[] }, ledger, config.readOnlyDirs);
+          break;
+        }
         case "read_file": {
           emitEvent({ type: "tool_call", tool: "read_file", input: { path: (args as { path: string }).path } });
           result = execReadFile(config.sandboxDir, args as { path: string; offset?: number; limit?: number }, ledger, config.readOnlyDirs);
@@ -371,6 +375,12 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         }
         case "list_files": {
           result = execListFiles(config.sandboxDir, args as { dir?: string; recursive?: boolean }, config.readOnlyDirs);
+          break;
+        }
+        case "edit_files": {
+          const r = execEditFiles(config.sandboxDir, args as { edits: Array<{ path: string; old_str: string; new_str: string }> }, config.writableFile);
+          for (const path of r.paths) trackWrittenFile(filesWritten, "edit_file", { path }, "success");
+          result = r;
           break;
         }
         case "edit_file": {

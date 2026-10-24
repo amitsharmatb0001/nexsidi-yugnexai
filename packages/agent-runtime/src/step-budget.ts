@@ -60,7 +60,7 @@ export class StepBudget {
   }
 }
 
-const WRITE_TOOLS = new Set(["write_file", "write_files", "edit_file", "delete_file"]);
+const WRITE_TOOLS = new Set(["write_file", "write_files", "edit_file", "edit_files", "delete_file"]);
 
 /** A step that moved the work forward: a file written, or a required check passing. */
 export function isProgressStep(

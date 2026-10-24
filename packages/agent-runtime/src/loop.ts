@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { MCPClient } from "./mcp/client.ts";
 import { nimChatWithTools, type NimToolDef, type NimMessage, type NimToolCall, RETIRED_NIM_MODELS, ACTIVE_NIM_MODELS, OLLAMA_MODELS, OLLAMA_TOOL_MODELS, ollamaChatWithTools } from "@nexsidi/llm-client";
-import { execWriteFile, execWriteFiles, execReadFile, execReadFiles, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol, FILE_TOOL_DEFS } from "./tools/file.ts";
+import { execWriteFile, execWriteFiles, execReadFile, execReadFiles, execListFiles, execEditFile, execEditFiles, execDeleteFile, execRollbackWorkspace, execQuerySymbol, FILE_TOOL_DEFS } from "./tools/file.ts";
 import { initWorkspaceTransaction, commitWorkspaceTransaction } from "./tools/git.ts";
 import { compactHistory, estimateTokenCount } from "./compaction.ts";
 import { SharedTokenBucket } from "./token-bucket.ts";
@@ -201,6 +201,7 @@ export const READONLY_BLOCKED_TOOLS = new Set([
   "write_file",
   "write_files",
   "edit_file",
+  "edit_files",
   "delete_file",
   "run_command",
   "docker_compose",
@@ -1013,6 +1014,16 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         }
         case "list_files": {
           result = execListFiles(config.sandboxDir, args as { dir?: string; recursive?: boolean }, config.readOnlyDirs);
+          break;
+        }
+        case "edit_files": {
+          const r = execEditFiles(config.sandboxDir, args as { edits: Array<{ path: string; old_str: string; new_str: string }> }, config.writableFile);
+          emitEvent({ type: "tool_call", tool: "edit_files", input: { paths: r.paths } });
+          if (r.paths.length > 0) {
+            commitWorkspaceTransaction(config.sandboxDir, `Edited ${r.paths.join(", ")}`);
+            for (const path of r.paths) trackWrittenFile(filesWritten, "edit_file", { path }, "success");
+          }
+          result = r;
           break;
         }
         case "edit_file": {

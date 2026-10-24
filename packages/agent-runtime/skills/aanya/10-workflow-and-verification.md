@@ -85,6 +85,8 @@ expensive way to work:
   read_files call with every path you need, not one read_file per file.
 - Writing: put every file that does not depend on another write in the same
   reply (write_files, or several write_file calls in one reply).
+- Editing: make every independent change in ONE edit_files call (any number
+  of edits, in any files), not one edit_file per change.
 - Checking: run the build or check once after a group of writes, not after
   each file.
 Only split actions across replies when a later one truly depends on the

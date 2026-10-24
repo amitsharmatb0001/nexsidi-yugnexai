@@ -461,3 +461,13 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Proof:** tests first (3 new); live on Brewline the 4 leftover sample rows were recorded and the cleanup removed them; 1 real menu item untouched. 1,888 tests pass; type check clean.
 
 **Next:** an edit tool that applies several edits in one call; the browser checker still takes one action per model call.
+
+### Fixed: builders made one edit per model call (2026-10-24, batch 19)
+
+**Found (Brewline resume fix round):** reads were batched (about 10 files in 3 calls) but the builder still made 9 edits in 9 model calls. The skill rule alone did not change that; the tool set had no way to send several edits at once.
+
+**Fixed:** `edit_files` applies up to 40 edits, in any files, in one call. Each edit follows edit_file's rule (old_str must match exactly once); a failed edit is reported with the start of its old_str and the others still apply. It counts as a write for the step budget and the files-written list, is blocked for read-only agents, and is handled in all three agent loops. Both builder skills now say to put every independent change in one edit_files call. Also found and fixed: the Claude loop had no `read_files` handler from batch 16.
+
+**Proof:** 4 new tests, one running the real builder loop with a fake model: both edits applied in the first call. With the loop's handler switched off, 2 of them fail. 1,892 tests pass; type checks clean.
+
+**Also found while checking the second live round:** 3 of its 5 findings contradict the code (rate limiting exists in `auth.routes.ts`; CORS is limited to the frontend origin in `app.ts`; the cited `orders.ts` lines and status list do not exist) and a fourth was the review's own leftover sample data (fixed in batch 18). The live stage has no check that a finding's cited file and code exist (the only filter handles import claims, in the code review only), so false findings go straight to a paid fix round.

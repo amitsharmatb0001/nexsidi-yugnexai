@@ -147,6 +147,32 @@ export function execEditFile(sandboxDir: string, args: { path: string; old_str: 
   }
 }
 
+// 2026-10-24 (Brewline resume): the builder made 9 edits in 9 model calls, each resending the whole conversation.
+// edit_files applies many edits, across files, in one call. Each edit stands alone: one that does not match is
+// reported and the others still apply (same rules as edit_file: old_str must match exactly once).
+export function execEditFiles(
+  sandboxDir: string,
+  args: { edits: Array<{ path: string; old_str: string; new_str: string }> },
+  writableFile?: WritableFile,
+): ToolResult & { paths: string[] } {
+  const edits = Array.isArray(args.edits) ? args.edits.slice(0, 40) : [];
+  if (edits.length === 0) return { status: "error", summary: "edit_files needs a non-empty edits list", paths: [] };
+  const lines: string[] = [];
+  const paths: string[] = [];
+  let ok = 0;
+  edits.forEach((e, i) => {
+    const r = execEditFile(sandboxDir, e, writableFile);
+    if (r.status === "success") {
+      ok++;
+      if (!paths.includes(e.path)) paths.push(e.path);
+      lines.push(`${i + 1}. ${e.path}: applied`);
+    } else {
+      lines.push(`${i + 1}. ${e.path}: NOT applied — ${r.summary} (old_str began: ${JSON.stringify(String(e.old_str ?? "").slice(0, 60))})`);
+    }
+  });
+  return { status: ok > 0 ? "success" : "error", summary: `Applied ${ok} of ${edits.length} edit(s)`, output: lines.join("\n"), paths };
+}
+
 // Real 2026-07-07 stress-test bug: no delete_file tool existed. An agent
 // needing to remove a wrongly-created file tried `rm` via run_command
 // (blocked — not in command.ts's ALLOWED_COMMANDS), then burned ~15
@@ -368,6 +394,32 @@ export const FILE_TOOL_DEFS: NimToolDef[] = [
           limit: { type: "number", description: "Max characters to return (default 8000)" },
         },
         required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "edit_files",
+      description: "Apply several exact replacements, in one or more files, in ONE call — use this instead of several edit_file calls. Each edit follows edit_file's rule (old_str must match exactly once); an edit that does not match is reported and the others still apply. Up to 40 edits.",
+      parameters: {
+        type: "object",
+        properties: {
+          edits: {
+            type: "array",
+            description: "The edits, applied in order",
+            items: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Relative path from project root" },
+                old_str: { type: "string", description: "Exact text to find — must match exactly once in the file" },
+                new_str: { type: "string", description: "Text to replace it with" },
+              },
+              required: ["path", "old_str", "new_str"],
+            },
+          },
+        },
+        required: ["edits"],
       },
     },
   },

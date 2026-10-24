@@ -39,7 +39,7 @@ import { appendFactLedgerEntry, compactViaRelevantContext, type FactLedgerEntry,
 import { recordSpend, isOverBudget } from "./cost-budget.ts";
 import { createStrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
-import { execWriteFile, execWriteFiles, execReadFile, execReadFiles, execListFiles, execEditFile, execDeleteFile, execRollbackWorkspace, execQuerySymbol } from "./tools/file.ts";
+import { execWriteFile, execWriteFiles, execReadFile, execReadFiles, execListFiles, execEditFile, execEditFiles, execDeleteFile, execRollbackWorkspace, execQuerySymbol } from "./tools/file.ts";
 import { ownFilesSection } from "./builder-preload.ts";
 import { execRunCommand } from "./tools/command.ts";
 import { execHttpRequest } from "./tools/http.ts";
@@ -958,6 +958,12 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
         case "list_files": {
           result = execListFiles(config.sandboxDir, args as { dir?: string; recursive?: boolean }, config.readOnlyDirs);
+          break;
+        }
+        case "edit_files": {
+          const r = execEditFiles(config.sandboxDir, args as { edits: Array<{ path: string; old_str: string; new_str: string }> }, config.writableFile);
+          for (const path of r.paths) trackWrittenFile(filesWritten, "edit_file", { path }, "success");
+          result = r;
           break;
         }
         case "edit_file": {
