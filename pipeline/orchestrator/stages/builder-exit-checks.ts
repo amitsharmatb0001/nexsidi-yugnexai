@@ -10,6 +10,7 @@ import { scanProjectForEmojiUi } from "./emoji-ui-check.ts";
 import { scanProjectForDeadButtons } from "./dead-ui-check.ts";
 import { specColours } from "../../../agents/vanya/src/index.ts";
 import { contractRouteFindings, type ContractEndpoint } from "./contract-route-check.ts";
+import { migrationFindings } from "./migration-check.ts";
 
 const SKIP = new Set(["node_modules", ".next", "dist", "build", ".git"]);
 
@@ -223,4 +224,12 @@ export async function backendContractFindings(projectId: string): Promise<string
   if (statSync(dist).mtimeMs < newestSource) return [];
   const r = await contractRouteFindings(join(dir, "backend"), endpoints);
   return r.findings.map((f) => `backend (API contract): ${f}`);
+}
+
+/** Every migration applied, in order, to an empty PostgreSQL 16, as a customer's first `docker compose up` does (migration-check.ts). */
+export async function backendFreshStartFindings(projectId: string): Promise<string[]> {
+  const dir = buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds");
+  const r = await migrationFindings(dir);
+  if (!r.ran && r.note) console.warn(`[exit-checks] ${r.note}`);
+  return r.findings;
 }

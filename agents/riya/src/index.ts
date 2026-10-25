@@ -2119,7 +2119,16 @@ export async function run(
   // with the same unverified-assumption risk that caused this exact bug.
   // 2026-10-24: a running app is rebuilt and health-checked by the system (redeployRunningApp); the agent runs only when
   // that fails, or for a first deploy.
-  const fastPath = existingDeployment ? await redeployRunningApp(buildDir, appUrl, backendUrl) : null;
+  // 2026-10-24: a first deploy writes the standard compose file itself and starts and checks it with the same code.
+  let composeTemplated = false;
+  if (!existingDeployment) {
+    let appName = projectId;
+    try { appName = String((JSON.parse(readFileSync(join(buildDir, "build-plan.json"), "utf-8")) as { appName?: string }).appName || projectId); } catch { /* the project id names the database */ }
+    const written = composeFromTemplate(buildDir, appName, { frontendPort, backendPort, dbPort, jwtSecret });
+    composeTemplated = written.written;
+    console.log(written.written ? `[riya-orchestrator] ${projectId}: wrote the standard docker-compose.yml` : `[riya-orchestrator] ${projectId}: no standard compose file (${written.reason}) — the deploy agent writes it`);
+  }
+  const fastPath = existingDeployment || composeTemplated ? await redeployRunningApp(buildDir, appUrl, backendUrl) : null;
   if (fastPath?.ok) console.log(`[riya-orchestrator] ${projectId} redeployed by the system (rebuilt and answering) — no deploy agent needed`);
   else if (fastPath) console.log(`[riya-orchestrator] redeploying without the agent did not work (${fastPath.reason}) — the deploy agent takes over`);
   const result: { success: boolean; errors: string[] } = fastPath?.ok ? { success: true, errors: [] } : await runAgentEscalated({
@@ -2130,7 +2139,7 @@ export async function run(
     fallbackModels: FALLBACK_CHAIN.riya,
     apiKey: process.env.NIM_API_KEY ?? "",
     systemPrompt: "",
-    initialMessage: buildAgentTask(projectId, buildDir, frontendPort, backendPort, dbPort, jwtSecret),
+    initialMessage: buildAgentTask(projectId, buildDir, frontendPort, backendPort, dbPort, jwtSecret, composeTemplated),
     sandboxDir: buildDir,
     writableFile: isDeployFile,
     projectId,
@@ -2302,6 +2311,115 @@ export function generateJwtSecret(): string {
   return randomBytes(32).toString("hex");
 }
 
+// 2026-10-24 (final plan item 5; measured on Brewline): the deploy agent's first compose file already had the structure of
+// the final one, and all 5 later edits changed only the JWT secret. The file is fully determined by the app's name, three
+// ports and the secret, so the system writes it (same shape, same loopback-only ports); the agent runs only when the
+// system's own start-and-health-check fails, and then edits what fails instead of writing from scratch.
+export function renderComposeFile(o: { dbName: string; frontendPort: number; backendPort: number; dbPort: number; jwtSecret: string }): string {
+  let db = o.dbName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (!db) db = "app";
+  else if (/^[0-9]/.test(db)) db = `app_${db}`;
+  return `services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:${o.dbPort}:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ${db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - app-net
+
+  backend:
+    build: ./backend
+    ports:
+      - "127.0.0.1:${o.backendPort}:3001"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/${db}
+      CORS_ORIGIN: http://localhost:${o.frontendPort}
+      JWT_SECRET: ${o.jwtSecret}
+      PORT: 3001
+    networks:
+      - app-net
+    depends_on:
+      - postgres
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:${o.frontendPort}:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:${o.backendPort}
+    networks:
+      - app-net
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+
+networks:
+  app-net:
+`;
+}
+
+// Variables the standard compose file sets; any other variable the backend needs a value for stops the template.
+const COMPOSE_SETS = new Set(["DATABASE_URL", "JWT_SECRET", "CORS_ORIGIN", "PORT", "NODE_ENV"]);
+// The backend rules say a seed account's email and password are optional (a missing password is generated and logged once).
+const SEED_ACCOUNT_VAR = /^(ADMIN|STAFF|SEED|OWNER|MANAGER)_(EMAIL|PASSWORD|NAME)$/;
+
+/** Names of the process.env variables the backend reads, and those read with no fallback value on that line. */
+export function backendEnvNames(buildDir: string): { all: string[]; needsValue: string[] } {
+  const all = new Set<string>();
+  const needsValue = new Set<string>();
+  const walk = (d: string) => {
+    let entries: import("fs").Dirent[];
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name === "node_modules" || e.name === "dist") continue;
+      const full = join(d, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (/\.(ts|js)$/.test(e.name) && !/\.test\./.test(e.name)) {
+        for (const line of readFileSync(full, "utf-8").split("\n")) {
+          for (const m of line.matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) {
+            const name = m[1]!;
+            all.add(name);
+            const after = line.slice((m.index ?? 0) + m[0].length);
+            if (!COMPOSE_SETS.has(name) && !SEED_ACCOUNT_VAR.test(name) && !/^\s*(\|\||\?\?)/.test(after) && !/^\s*\)?\s*(\|\||\?\?)/.test(after)) needsValue.add(name);
+          }
+        }
+      }
+    }
+  };
+  walk(join(buildDir, "backend", "src"));
+  return { all: [...all].sort(), needsValue: [...needsValue].sort() };
+}
+
+/** Writes the standard docker-compose.yml when the app is a standard one; otherwise says why not (the agent writes it). */
+export function composeFromTemplate(
+  buildDir: string,
+  appName: string,
+  o: { frontendPort: number; backendPort: number; dbPort: number; jwtSecret: string },
+): { written: true } | { written: false; reason: string } {
+  const composePath = join(buildDir, "docker-compose.yml");
+  if (existsSync(composePath)) return { written: false, reason: "a docker-compose.yml already exists" };
+  for (const need of ["backend/Dockerfile", "frontend/Dockerfile", "db/migrations"]) {
+    if (!existsSync(join(buildDir, need))) return { written: false, reason: `${need} is missing` };
+  }
+  const unknown = backendEnvNames(buildDir).needsValue;
+  if (unknown.length > 0) return { written: false, reason: `the backend reads ${unknown.join(", ")}, which the standard compose file does not set` };
+  writeFileSync(composePath, renderComposeFile({ dbName: appName, ...o }), "utf-8");
+  return { written: true };
+}
+
 export function buildAgentTask(
   projectId: string,
   buildDir: string,
@@ -2309,6 +2427,7 @@ export function buildAgentTask(
   backendPort: number,
   dbPort: number,
   jwtSecret: string,
+  composeWritten = false,
 ): string {
   return `Deploy the project in this directory: ${buildDir}
 
@@ -2332,7 +2451,9 @@ authenticated request:
 
 Project ID: ${projectId}
 
-Start by writing docker-compose.yml, then run docker compose up.
+${composeWritten
+    ? "docker-compose.yml is already written by the system with exactly the ports and secret above, and the system's own start and health check of it did not succeed. Run docker compose up, read the logs, and change only what the logs show is wrong; do not rewrite the file or change the secret."
+    : "Start by writing docker-compose.yml, then run docker compose up."}
 Health check backend at http://localhost:${backendPort}/health
 Health check frontend at http://localhost:${frontendPort}`;
 }

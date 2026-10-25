@@ -14,8 +14,12 @@ import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-fi
 // 2026-10-24: the backend builder's own checks before it may finish (no hot-linked images in code or seed files) —
 // run by the system at task_complete, same as the frontend's. Dynamic import: the checks live in the pipeline package.
 async function backendExitChecksFor(projectId: string): Promise<string[]> {
-  const { backendExitChecks, backendContractFindings } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
-  return [...backendExitChecks(projectId), ...(await contractRouteFindingsFor(backendContractFindings, projectId))];
+  const { backendExitChecks, backendContractFindings, backendFreshStartFindings } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
+  return [
+    ...backendExitChecks(projectId),
+    ...(await contractRouteFindingsFor(backendContractFindings, projectId)),
+    ...(await contractRouteFindingsFor(backendFreshStartFindings, projectId)),
+  ];
 }
 
 // 2026-10-24: the approved API contract against the compiled backend, never fatal: a check that cannot run adds nothing.
