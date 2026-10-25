@@ -31,6 +31,9 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
     mkdirSync(dirname(migrationPath), { recursive: true });
     writeFileSync(migrationPath, migrationSql, "utf-8");
     filesWritten.push("migrations/0000_initial.sql");
+    // 2026-10-25: order history survives a deleted catalog row — the system rewrites a line table's catalog reference to RESTRICT.
+    const { keepHistoryInMigrations } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
+    for (const change of keepHistoryInMigrations(dirname(outputDir))) console.log(`[pranav] history kept by the system: ${change}`);
 
     // Static config files
     for (const { path: relPath, content } of buildStaticFiles(plan)) {

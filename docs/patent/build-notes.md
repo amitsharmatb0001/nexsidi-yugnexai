@@ -716,3 +716,14 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - `pipeline/build-report.ts` and `build-report-cli.ts` (`bun pipeline/build-report-cli.ts <projectId> [out.md]`): the build's timeline from the workflow's own step times, each step split into one window per review round (from `rounds.jsonl`), each call assigned to the window it ended in, and per window and agent: calls answered and failed, models, tokens, cache share, cost, call time, time wasted on failed calls and first-to-last span; then every failed call with its reason, totals by agent and by model, and a reconciliation with `agent_spend`.
 
 **Proof:** tests for the ledger (success, failure, context, concurrency, an unwritable ledger, test isolation), the activity context and the report arithmetic (windows tile the timeline, per-agent sums, totals equal the rows, unattributed and out-of-window calls kept); the report tool run on Brewline 2's real workflow history gives its exact step and round windows (no call rows: it predates the ledger); all suites pass. **First real report:** the build running now (Brewline 3).
+
+## Batch 44 — the system keeps order history safe in the database folder, the backend builder is no longer asked to (2026-10-25)
+
+**Found (brewline3, stopped at "generation failed"):** the history check added in batch 41 told the backend builder to change `ON DELETE CASCADE` to `RESTRICT` in `db/migrations/0000_initial.sql`. That folder belongs to the database builder and the backend builder cannot write it, so every finish attempt was refused, the team gave up after a retry and the build escalated to a human. My check was applied to the wrong owner.
+
+**Built:**
+- `builder-exit-checks.ts`: `keepHistoryInMigrations(projectDir)` rewrites, in a line table (order/invoice/booking/purchase/sale parent column plus a catalog reference), the catalog reference to `ON DELETE RESTRICT`; the reference to its own parent order keeps its cascade; a table later changed by `ALTER TABLE` is left alone; a second pass changes nothing. The history check is no longer part of the backend builder's finish gate. The `ALTER TABLE` matcher in `historyIntegrityFindings` had a lost backslash (matched the letter s); fixed.
+- `shubham/src/index.ts`: the system runs the rewrite before the backend finish check (covers a build already past the database step); `pranav/src/index.ts`: and right after the migration is written for new builds.
+- A missing price column is not rewritten by the system (the right column cannot be guessed); it stays with the reviewers and the Chief AI check (INT1/INT2).
+
+**Proof:** a test that the rewrite changes only the catalog reference, keeps the parent cascade, leaves non-line tables alone, is idempotent, and that the backend finish check no longer reports it; all our suites pass (the 3 failures are in the untracked third-party `ref repo/`).

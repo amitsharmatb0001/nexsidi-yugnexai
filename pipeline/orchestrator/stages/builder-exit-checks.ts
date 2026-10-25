@@ -3,7 +3,7 @@
 // instructions said "no emoji" and the checks existed, but they ran only in the review stage. The same checks now run,
 // by the system, when the builder calls task_complete (last phase and fix rounds), and what they find is handed back to
 // it first. Pure file reads; no model call.
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 import { scanProjectForEmojiUi } from "./emoji-ui-check.ts";
@@ -99,7 +99,6 @@ export function backendExitChecks(projectId: string): string[] {
     ...starterContentFindings(dir),
     ...roleFromRequestFindings(join(dir, "backend", "src")),
     ...staffAccountFindings(dir),
-    ...historyIntegrityFindings(dir),
   ];
 }
 
@@ -342,7 +341,7 @@ export function historyIntegrityFindings(projectDir: string): string[] {
     const columns = m[2]!.split("\n").map((l) => l.trim()).filter(Boolean);
     if (!columns.some((c) => PARENT_COLUMN.test(c))) continue;
     if (!columns.some((c) => /^\s*"?\w+_id"?\s[^,]*REFERENCES/i.test(c) && !PARENT_COLUMN.test(c))) continue;
-    if (new RegExp(`ALTER\s+TABLE\s+"?${table}"?`, "i").test(sql)) continue;
+    if (new RegExp(`ALTER\\s+TABLE\\s+"?${table}"?`, "i").test(sql)) continue;
     for (const c of columns) {
       if (/REFERENCES[^,]*ON\s+DELETE\s+CASCADE/i.test(c) && !PARENT_COLUMN.test(c)) {
         const col = c.match(/^"?(\w+)"?/)?.[1] ?? "?";
@@ -354,4 +353,41 @@ export function historyIntegrityFindings(projectDir: string): string[] {
     }
   }
   return out;
+}
+
+// 2026-10-25 (brewline3): the cascade half of the history rule is fixed by the system, not asked of the backend builder.
+// db/migrations belongs to the database builder and the backend builder cannot write it, so a finish check that demanded the
+// change deadlocked the build. A line table's reference to its catalog row becomes ON DELETE RESTRICT (the reference to its own
+// parent order keeps its cascade). Returns one line per changed column; a missing price column is left to the reviewers and the
+// Chief AI check (INT1/INT2), which can hand it to the database builder.
+export function keepHistoryInMigrations(projectDir: string): string[] {
+  const dir = join(projectDir, "db", "migrations");
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".sql")).sort();
+  } catch {
+    return [];
+  }
+  const sqlOf = (n: string) => readFileSync(join(dir, n), "utf-8");
+  const all = names.map(sqlOf).join("\n");
+  const changed: string[] = [];
+  for (const name of names) {
+    const original = sqlOf(name);
+    const rewritten = original.replace(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w+)"?\s*\(([\s\S]*?)\n\s*\)\s*;/gi, (whole, table: string, body: string) => {
+      const lines = body.split("\n");
+      const columns = lines.map((l) => l.trim()).filter(Boolean);
+      if (!columns.some((c) => PARENT_COLUMN.test(c))) return whole;
+      if (!columns.some((c) => /^\s*"?\w+_id"?\s[^,]*REFERENCES/i.test(c) && !PARENT_COLUMN.test(c))) return whole;
+      if (new RegExp(`ALTER\\s+TABLE\\s+"?${table}"?`, "i").test(all)) return whole;
+      const fixed = lines.map((line) => {
+        if (PARENT_COLUMN.test(line) || !/REFERENCES[^,]*ON\s+DELETE\s+CASCADE/i.test(line)) return line;
+        const col = line.trim().match(/^"?(\w+)"?/)?.[1] ?? "?";
+        changed.push(`db/migrations/${name}: ${table}.${col} ON DELETE CASCADE -> ON DELETE RESTRICT`);
+        return line.replace(/ON\s+DELETE\s+CASCADE/i, "ON DELETE RESTRICT");
+      });
+      return whole.replace(body, fixed.join("\n"));
+    });
+    if (rewritten !== original) writeFileSync(join(dir, name), rewritten, "utf-8");
+  }
+  return changed;
 }

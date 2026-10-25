@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { frontendExitChecks, externalImageUrls, backendExitChecks } from "./builder-exit-checks.ts";
+import { frontendExitChecks, externalImageUrls, backendExitChecks, historyIntegrityFindings, keepHistoryInMigrations } from "./builder-exit-checks.ts";
 
 // 2026-10-24 (Brewline root cause): 8 emoji findings and the missing-colour findings were raised in review, after the
 // frontend builder had said "done" — its instructions said "no emoji", and the checks existed, but they only ran later.
@@ -203,19 +203,49 @@ test("a line table that cascades from its catalog row, or keeps no price, is rep
     ");",
   ].join("\n");
   project("h1", { "db/migrations/0000_initial.sql": bad }, "A coffee shop.");
-  const found = backendExitChecks("h1");
+  const found = historyIntegrityFindings(join(root, "h1"));
   expect(found.some((f) => f.includes("order_items") && f.includes("ON DELETE CASCADE"))).toBe(true);
   expect(found.some((f) => f.includes("order_items") && f.includes("price"))).toBe(true);
   const good = bad.replace("menu_item_id UUID NOT NULL REFERENCES menu_items(id) ON DELETE CASCADE", "menu_item_id UUID NOT NULL REFERENCES menu_items(id) ON DELETE RESTRICT").replace("quantity INTEGER", "unit_price NUMERIC(10,2) NOT NULL,\n    quantity INTEGER");
   project("h2", { "db/migrations/0000_initial.sql": good }, "A coffee shop.");
-  expect(backendExitChecks("h2").some((f) => f.includes("order_items"))).toBe(false);
+  expect(historyIntegrityFindings(join(root, "h2")).some((f) => f.includes("order_items"))).toBe(false);
   // a table that is not a line table is not judged
   project("h3", { "db/migrations/0000_initial.sql": "CREATE TABLE sessions (id UUID, user_id UUID REFERENCES users(id) ON DELETE CASCADE);\n" }, "A coffee shop.");
-  expect(backendExitChecks("h3").some((f) => f.includes("sessions"))).toBe(false);
+  expect(historyIntegrityFindings(join(root, "h3")).some((f) => f.includes("sessions"))).toBe(false);
 });
 
 test("the backend and database builders are told history is kept", () => {
   const read = (rel: string) => readFileSync(new URL(`../../../packages/agent-runtime/skills/${rel}`, import.meta.url), "utf-8");
   expect(read("shubham/20-critical-rules-and-verification.md")).toContain("HISTORY IS KEPT");
   expect(read("pranav.md")).toContain("HISTORY IS KEPT");
+});
+
+// 2026-10-25 (brewline3): the backend builder was asked to fix ON DELETE CASCADE in db/migrations, a folder that belongs to the
+// database builder and that it cannot write, so the build stopped with "generation failed". The system now rewrites the key
+// itself, and the backend builder's finish check no longer asks it to.
+test("the system turns CASCADE from a catalog row into RESTRICT, keeps the parent cascade, and the backend builder is no longer asked to", () => {
+  const sql = [
+    "CREATE TABLE order_items (",
+    "    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),",
+    "    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,",
+    "    menu_item_id UUID NOT NULL REFERENCES menu_items(id) ON DELETE CASCADE,",
+    "    price_at_time NUMERIC(10,2) NOT NULL",
+    ");",
+  ].join("\n");
+  project("n1", { "db/migrations/0000_initial.sql": sql }, "A coffee shop.");
+  const dir = join(root, "n1");
+  expect(backendExitChecks("n1").some((f) => f.includes("order_items"))).toBe(false);
+  const changed = keepHistoryInMigrations(dir);
+  expect(changed.length).toBe(1);
+  expect(changed[0]).toContain("order_items.menu_item_id");
+  const after = readFileSync(join(dir, "db/migrations/0000_initial.sql"), "utf-8");
+  expect(after).toContain("menu_item_id UUID NOT NULL REFERENCES menu_items(id) ON DELETE RESTRICT");
+  expect(after).toContain("order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE");
+  expect(historyIntegrityFindings(dir)).toEqual([]);
+  // nothing left to change on a second pass
+  expect(keepHistoryInMigrations(dir)).toEqual([]);
+  // a table that is not a line table keeps its cascade
+  project("n2", { "db/migrations/0000_initial.sql": "CREATE TABLE sessions (\n  id UUID,\n  user_id UUID REFERENCES users(id) ON DELETE CASCADE\n);\n" }, "A coffee shop.");
+  expect(keepHistoryInMigrations(join(root, "n2"))).toEqual([]);
+  expect(readFileSync(join(root, "n2", "db/migrations/0000_initial.sql"), "utf-8")).toContain("ON DELETE CASCADE");
 });
