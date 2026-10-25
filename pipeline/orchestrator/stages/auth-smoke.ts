@@ -149,8 +149,14 @@ async function fillAndSubmit(browser: BrowserLike, email: string, password: stri
   return null;
 }
 
-async function signIn(fetchFn: typeof fetch, url: string, email: string, password: string): Promise<Response> {
-  return fetchFn(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+/** A 429 is the app's own limiter working: wait for its Retry-After (a minute when it gives none) and repeat, up to 3 tries. */
+export async function signInWaitingOutRateLimit(fetchFn: typeof fetch, url: string, email: string, password: string, sleep: (ms: number) => Promise<void>): Promise<Response> {
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetchFn(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+    if (res.status !== 429 || attempt >= 3) return res;
+    const seconds = Number(res.headers.get("retry-after"));
+    await sleep((Number.isFinite(seconds) && seconds > 0 ? seconds : 60) * 1000 + 1000);
+  }
 }
 
 export async function runAuthSmokeTest(opts: AuthSmokeOptions): Promise<AuthSmokeResult> {
@@ -180,10 +186,10 @@ export async function runAuthSmokeTest(opts: AuthSmokeOptions): Promise<AuthSmok
     // judged a working form broken during a redeploy, all night. Wait for the
     // account (up to 30 s); if it never appears, report what the browser's own
     // request did — the verdict comes from that, not from timing.
-    let login = await signIn(fetchFn, backendUrl + auth.loginPath, email, password);
+    let login = await signInWaitingOutRateLimit(fetchFn, backendUrl + auth.loginPath, email, password, sleep);
     for (let waited = 0; [401, 403, 404].includes(login.status) && waited < 30_000; waited += 2000) {
       await sleep(2000);
-      login = await signIn(fetchFn, backendUrl + auth.loginPath, email, password);
+      login = await signInWaitingOutRateLimit(fetchFn, backendUrl + auth.loginPath, email, password, sleep);
     }
     if ([401, 403, 404].includes(login.status)) {
       const seen = ((await browser.send("requests")) as { requests?: Array<{ method: string; url: string; status: number }> } | undefined)?.requests;

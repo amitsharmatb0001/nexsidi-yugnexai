@@ -167,3 +167,18 @@ test("a form that sent no sign-up request says so", async () => {
   const r = await runAuthSmokeTest({ ...BASE, browser: fakeBrowser({ requests: [] }), fetchFn: loginRejected });
   expect(r.findings[0]).toContain("sent no request");
 });
+
+// 2026-10-25 (brewline2): the smoke test's sign-in call gave up on a 429 from the app's own limiter ("login API answered 429 —
+// cannot judge the sign-up form"), so the sign-up form went unchecked. A 429 is waited out for the Retry-After and the call repeated.
+test("sign-in waits out a 429 for the time the app says, then goes on", async () => {
+  const { signInWaitingOutRateLimit } = await import("./auth-smoke.ts");
+  const waits: number[] = [];
+  const answers = [new Response("{}", { status: 429, headers: { "retry-after": "5" } }), new Response("{}", { status: 200 })];
+  const res = await signInWaitingOutRateLimit((async () => answers.shift()!) as unknown as typeof fetch, "http://x/login", "a@example.com", "pw", async (ms) => { waits.push(ms); });
+  expect(res.status).toBe(200);
+  expect(waits).toEqual([6000]);
+  let n = 0;
+  const always = await signInWaitingOutRateLimit((async () => { n++; return new Response("{}", { status: 429 }); }) as unknown as typeof fetch, "http://x/login", "a", "b", async () => {});
+  expect(always.status).toBe(429);
+  expect(n).toBe(3);
+});

@@ -1256,6 +1256,26 @@ export function resolveAuthPaths(endpoints: Array<{ method: string; path: string
   };
 }
 
+/**
+ * 2026-10-25 (brewline2): POSTs JSON; a 429 (the app's own sign-up/sign-in limiter, whose window the earlier checks of the
+ * same deploy had already used) is waited out for the Retry-After the app gives (a minute when it gives none) and the
+ * request repeated, up to 3 tries. Any other answer is returned at once; a network error is thrown to the caller.
+ */
+export async function postJsonWaitingOutRateLimit(
+  url: string,
+  body: unknown,
+  deps: { fetchFn?: (url: string, init?: RequestInit) => Promise<Response>; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<Response> {
+  const fetchFn = deps.fetchFn ?? ((u: string, i?: RequestInit) => fetch(u, i));
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetchFn(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (res.status !== 429 || attempt >= 3) return res;
+    const seconds = Number(res.headers.get("retry-after"));
+    await sleep((Number.isFinite(seconds) && seconds > 0 ? seconds : 60) * 1000 + 1000);
+  }
+}
+
 async function registerAndLoginTestUser(
   backendUrl: string,
   role?: string,
@@ -1299,11 +1319,7 @@ async function registerAndLoginTestUser(
   // exception) and killing the whole workflow execution outright.
   let regRes: Response;
   try {
-    regRes = await fetch(`${backendUrl}${paths.registerPath}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(role ? { email, password, name, role } : { email, password, name }),
-    });
+    regRes = await postJsonWaitingOutRateLimit(`${backendUrl}${paths.registerPath}`, role ? { email, password, name, role } : { email, password, name });
   } catch (err) {
     return { error: `could not reach backend to register: ${String(err)}` };
   }
@@ -1314,11 +1330,7 @@ async function registerAndLoginTestUser(
 
   let loginRes: Response;
   try {
-    loginRes = await fetch(`${backendUrl}${paths.loginPath}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
+    loginRes = await postJsonWaitingOutRateLimit(`${backendUrl}${paths.loginPath}`, { email, password });
   } catch (err) {
     return { error: `could not reach backend to login: ${String(err)}` };
   }
