@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { frontendExitChecks, externalImageUrls, backendExitChecks, historyIntegrityFindings, keepHistoryInMigrations, metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings, schemaMigrationSyncFindings, projectHygieneFindings, checklistFor, checklistFindings } from "./builder-exit-checks.ts";
+import { frontendExitChecks, externalImageUrls, backendExitChecks, historyIntegrityFindings, keepHistoryInMigrations, metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings, schemaMigrationSyncFindings, projectHygieneFindings, dedupeAgainstHygiene, checklistFor, checklistFindings } from "./builder-exit-checks.ts";
 
 // 2026-10-24 (Brewline root cause): 8 emoji findings and the missing-colour findings were raised in review, after the
 // frontend builder had said "done" — its instructions said "no emoji", and the checks existed, but they only ran later.
@@ -412,4 +412,25 @@ test("a hygiene finding is recognised as a machine finding (no model call decide
   expect(read("pipeline/orchestrator/chief-check.ts")).toContain("hygiene");
   expect(read("pipeline/orchestrator/stages/stage5-adversarial-qa.ts")).toContain("projectHygieneFindings");
   expect(read("pipeline/orchestrator/stages/stage6-deployment.ts")).toContain("projectHygieneFindings");
+});
+
+// 2026-10-26 (brewline3, live round 4): the hygiene findings and the reviewers' own findings described the same five problems, so 11
+// findings went to the builders for 5 problems and the round cost about twice what it needed. A reviewer finding that restates a hygiene
+// finding (same file, same problem) is dropped; a different problem in the same file, or the same words in another file, is kept.
+test("a reviewer finding that restates a hygiene finding is dropped; a different problem or another file is kept", () => {
+  const hygiene = [
+    { file: "backend/src/db/seedStaff.ts", issue: "[hygiene] backend/src/db/seedStaff.ts:29: a password, secret or token value is written to a log" },
+    { file: "frontend/app/layout.tsx", issue: "[hygiene] frontend/app/layout.tsx: the page description (metadata) is 825 characters long and copied from the internal brief" },
+    { file: "backend/docker-compose.yml", issue: "[hygiene] backend/docker-compose.yml: a compose file inside the source folder with test secrets in it" },
+  ];
+  const others = [
+    { file: "backend/src/db/seedstaff.ts", issue: "[SEC4] in `backend/src/db/seedStaff.ts:29`, console.log writes the generated staff password" },
+    { file: "frontend/app/layout.tsx", issue: "[SEC8] in `frontend/app/layout.tsx:10`, export const metadata sets description to the internal brief/spec text" },
+    { file: "backend/docker-compose.yml", issue: "[SEC4] verify backend/docker-compose.yml and remove any hard-coded secrets or passwords" },
+    { file: "backend/src/db/seedStaff.ts", issue: "[SC3] the seed creates the staff account after the server starts listening, so the first request can fail" },
+    { file: "backend/src/routes/orders.ts", issue: "[SEC4] a password is compared in plain text" },
+  ];
+  const { kept, dropped } = dedupeAgainstHygiene(hygiene, others);
+  expect(dropped.length).toBe(3);
+  expect(kept.map((f) => f.issue)).toEqual([others[3]!.issue, others[4]!.issue]);
 });

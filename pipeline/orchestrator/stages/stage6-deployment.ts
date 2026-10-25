@@ -57,7 +57,7 @@ import { reviewDbUrl } from "../../../packages/agent-runtime/src/tools/compose-p
 import { resetAppRateLimits } from "./limiter-reset.ts";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 import { liveBudgetMs, minutesSince } from "../time-budget.ts";
-import { projectHygieneFindings } from "./shipping-hygiene.ts";
+import { projectHygieneFindings, dedupeAgainstHygiene } from "./shipping-hygiene.ts";
 export { isQuotaExhaustionError };
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
@@ -93,9 +93,11 @@ export function withHygieneFindings(projectId: string, retest: LiveRetestResult)
     console.error(`[stage6] hygiene checks skipped: ${String(err).slice(0, 160)}`);
   }
   if (found.length === 0) return retest;
-  const existing = Array.isArray(retest.findings) ? (retest.findings as unknown[]) : [];
-  console.log(`[stage6] ${found.length} hygiene finding(s) from the project files join the live review`);
-  return { ...retest, findings: [...found, ...existing], pass: false };
+  const existing = Array.isArray(retest.findings) ? (retest.findings as Array<{ file?: string; issue?: string; detail?: string }>) : [];
+  // A reviewer's restatement of a hygiene finding is dropped: it is proven by code and already goes to the owner of the file.
+  const { kept, dropped } = dedupeAgainstHygiene(found, existing);
+  console.log(`[stage6] ${found.length} hygiene finding(s) from the project files join the live review${dropped.length > 0 ? ` (${dropped.length} reviewer finding(s) that restate them are dropped)` : ""}`);
+  return { ...retest, findings: [...found, ...kept], pass: false };
 }
 
 export function guardLiveRetest(projectId: string, retest: LiveRetestResult): LiveRetestResult {

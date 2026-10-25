@@ -25,6 +25,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import { identifyFaultAgent, type Finding, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import { scanProjectForDeadButtons } from "./dead-ui-check.ts";
+import { dedupeAgainstHygiene } from "./shipping-hygiene.ts";
 import { clearSharedFileReadCache } from "../../../packages/agent-runtime/src/qa-loop.ts";
 import { getOutputDir as getPranavOutputDir } from "../../../agents/generators/pranav/src/index.ts";
 import {
@@ -339,9 +340,12 @@ export async function runStage5WithAgents(
     ...emojiFindings,
     ...freshStartFindings,
     ...hygieneFindings,
-    ...karanResult.findings.map(karanFindingToFinding),
-    ...navyaResult.findings.map(navyaFindingToFinding),
-    ...deepikaResult.findings.map(deepikaFindingToFinding),
+    // a reviewer's restatement of a hygiene finding is dropped: it is proven by code and already goes to the owner of the file
+    ...dedupeAgainstHygiene(hygieneFindings, [
+      ...karanResult.findings.map(karanFindingToFinding),
+      ...navyaResult.findings.map(navyaFindingToFinding),
+      ...deepikaResult.findings.map(deepikaFindingToFinding),
+    ]).kept,
   ];
 
   if (!allPass) {

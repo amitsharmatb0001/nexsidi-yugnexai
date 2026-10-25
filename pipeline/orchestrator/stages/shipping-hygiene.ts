@@ -205,3 +205,33 @@ export function projectHygieneFindings(projectDir: string): HygieneFinding[] {
     return { file, issue: `[hygiene] ${line}` };
   });
 }
+
+// What each hygiene finding is about, so a reviewer's restatement of it can be recognised: the same file and the same problem words.
+const PROBLEM_WORDS: Array<[RegExp, RegExp]> = [
+  [/written to a log/i, /password|secret|token|log/i],
+  [/page description|metadata/i, /description|metadata|brief|spec/i],
+  [/compose file|environment file/i, /compose|secret|password|env/i],
+  [/secure flag|cookie/i, /cookie|secure/i],
+  [/drizzle schema|schema file/i, /schema|migration|name_at_time|column/i],
+];
+
+/**
+ * Splits `others` into those that restate a hygiene finding (same file, same problem words) and the rest. A hygiene finding is proven by
+ * code and already goes to the owner of the file, so a reviewer's second description of it would only be fixed twice.
+ */
+export function dedupeAgainstHygiene<T extends { file?: string; issue?: string; detail?: string }>(hygiene: HygieneFinding[], others: T[]): { kept: T[]; dropped: T[] } {
+  const kept: T[] = [];
+  const dropped: T[] = [];
+  for (const o of others) {
+    const text = String(o.issue ?? o.detail ?? "");
+    const file = String(o.file ?? "").toLowerCase();
+    const restates = hygiene.some((h) => {
+      const hf = h.file.toLowerCase();
+      if (!hf || (file !== hf && !text.toLowerCase().includes(hf))) return false;
+      const words = PROBLEM_WORDS.find(([kind]) => kind.test(h.issue))?.[1];
+      return words ? words.test(text) : false;
+    });
+    (restates ? dropped : kept).push(o);
+  }
+  return { kept, dropped };
+}
