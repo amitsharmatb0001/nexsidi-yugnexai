@@ -13,6 +13,10 @@ import { join, dirname } from "path";
 import { execSync } from "child_process";
 import * as activities from "./activities/index.ts";
 import { abortSignalInterceptors } from "./abort-interceptor.ts";
+import { installLogTimestamps } from "./log-timestamps.ts";
+
+// Time on every log line, before anything below logs (see log-timestamps.ts).
+installLogTimestamps();
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
 const TASK_QUEUE       = process.env.TEMPORAL_TASK_QUEUE ?? "nexsidi-pipeline";
