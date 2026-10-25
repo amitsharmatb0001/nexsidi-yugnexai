@@ -284,6 +284,11 @@ export function applyEvidenceGate(result: Stage5Result, projectId?: string): Sta
 // findings now go through the Chief AI's one call before any fix: only those that break a named plan item are fixed;
 // the rest are kept for later (later.jsonl) or recorded as not true. Reviewer failures and machine findings (emoji, dead
 // button) are untouched here: the first never reach a builder (see routableFindings), the second are proven by code.
+/** A notice that a reviewer did not finish (not a finding about the code). */
+const isReviewerNotice = (f: Finding) => f.issue.includes("review-incomplete") || isKaranMetaFinding(f.issue) || isReviewerFailure(f.issue);
+/** How many times a review whose only result is "a reviewer did not finish" is run again before the loop stops. */
+const REVIEWER_RERUNS = 2;
+
 export async function gateQaFindings(projectId: string, result: Stage5Result, chat: ChiefChat | null | undefined): Promise<Stage5Result> {
   if (!chat || result.pass || result.findings.length === 0) return result;
   const isMeta = (f: Finding) => f.issue.includes("review-incomplete") || isKaranMetaFinding(f.issue) || isReviewerFailure(f.issue);
@@ -325,6 +330,7 @@ export async function runQAFixLoopWithDeps(
   let iterations = 1;
   let previousFindingCount = result.findings.length;
   let noImprovementStreak = 0;
+  let reviewerReruns = 0;
   const holdIfNoProgress = async (): Promise<QAFixLoopResult | null> => {
     if (result.pass || result.findings.length === 0 || !deps.roundGuard) return null;
     // 2026-10-22: a finding that came back is checked before the guard may hold on it (disputes.ts).
@@ -377,6 +383,17 @@ export async function runQAFixLoopWithDeps(
     const shubhamFindings = groups.get("shubham");
     const aanyaFindings = groups.get("aanya");
     const pranavFindings = groups.get("pranav");
+
+    // 2026-10-25 (brewline2): when the only findings left are notices that a reviewer did not finish, the code has nothing
+    // left to fix, but the review is not done either (a missing review is not a pass). Run the review again, up to
+    // REVIEWER_RERUNS times, instead of stopping as "stuck" and paging a human over a build whose real findings are fixed.
+    if (!shubhamFindings && !aanyaFindings && !pranavFindings && result.findings.length > 0 && result.findings.every(isReviewerNotice) && reviewerReruns < REVIEWER_RERUNS) {
+      reviewerReruns++;
+      console.log(`[qa-fix-loop] a reviewer did not finish — running the review again (${reviewerReruns} of ${REVIEWER_RERUNS})`);
+      result = await gateQaFindings(projectId, applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan), projectId), deps.chiefChat);
+      iterations++;
+      continue;
+    }
 
     // 2026-07-24 (P3.W3.4): pranav findings now have a real fix path
     // (deps.fixPranav) when the caller wires one — only stop if there is

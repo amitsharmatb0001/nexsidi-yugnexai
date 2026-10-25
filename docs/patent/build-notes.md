@@ -624,3 +624,13 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Built:** `portReservations` (`agents/riya/src/index.ts`): a port a build picks is held for it for 45 minutes in a shared file in the builds folder, checked and taken in one step after the host check; a damaged file counts as empty. The design-score agent's instructions include the grouped browser call.
 
 **Proof:** tests (two builds picking at the same moment get 3200 and 3201; own hold ignored, expired hold free; damaged file; the three picks use it); Riya suite 155 pass. **Not checked:** two real builds at the same time; the web UI screens other than the failure texts; the planner on other kinds of spec.
+
+## Batch 35 — a reviewer that did not finish is run again, not escalated (2026-10-25)
+
+**Found (brewline2, the first build on the new system, started from the web app):** round 1 sent one real finding to a builder; round 2 had only a notice that Karan's review "did not complete" (two of its model calls timed out at 120 s). The loop removed the notice before routing (right, no builder can fix it), found nothing routable and returned "stuck" at once, which escalated to a human (`stuck_state`) 28 minutes into a build whose real findings were all fixed. The earlier rule that reviewer failures never reach a builder worked; the missing half was running the review again.
+
+**Built** (`pipeline/orchestrator/stages/stage5-qa-fix-loop.ts`): when the only findings left are reviewer-did-not-finish notices, the review is run again, up to 2 times; a clean re-run passes without paging anyone; a reviewer that keeps failing stops the loop with the notice still in the report (default-FAIL unchanged).
+
+**Proof:** 2 new tests (fail, then clean: 3 reviews, one builder fix, pass, not stuck; always failing: 3 reviews, no builder asked, stuck with the notice kept); the 42 earlier loop tests still pass; all suites pass.
+
+**Recorded for the full trace after this build, not changed:** Karan's one-pass review calls on gemini-3.8-flash and gemini-3.1-pro both aborted at the 120 s floor of the size-based timeout while gemini-3.7-flash answered in 43 s; a later gemini-3.6-flash answer ended without submitting findings.

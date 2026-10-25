@@ -892,6 +892,53 @@ test("a Karan-worded meta-finding ('review did not complete', no hyphen) is neve
   expect(result.findings[0]?.issue).toContain("review did not complete");
 });
 
+// 2026-10-25 (brewline2, first build on the new system): round 1 had one real finding, the builder fixed it, and in round 2
+// Karan's model calls timed out (two models, 120 s each) and its review "did not complete" — the only finding left. The loop
+// removed that notice before routing (right: no builder can fix it), found nothing routable and returned "stuck" at once,
+// which paged a human over a build whose real findings were all fixed. A reviewer that did not finish is run again, up to
+// twice; only if it keeps failing does the loop stop, and then with the notice still in the report (default-FAIL stays).
+const KARAN_FAILED: Stage5Result = {
+  pass: false,
+  findings: [{ file: "", issue: "[security/CRITICAL] Karan's review did not complete: it ended without submitting its findings" }],
+};
+const CLEAN: Stage5Result = { pass: true, findings: [] };
+
+test("a reviewer that did not finish is run again, and a clean second run passes without paging anyone", async () => {
+  const rounds: Stage5Result[] = [
+    { pass: false, findings: [{ file: "frontend/lib/api.ts", issue: "[logic/high] sign-in response mismatch" }] },
+    KARAN_FAILED,
+    CLEAN,
+  ];
+  let stage5Calls = 0;
+  let aanyaFixes = 0;
+  const deps: QAFixDeps = {
+    runStage5: async () => rounds[Math.min(stage5Calls++, rounds.length - 1)]!,
+    fixShubham: async () => ({ success: true }),
+    fixAanya: async () => { aanyaFixes++; return { success: true, filesWritten: ["lib/api.ts"] }; },
+  };
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+  expect(stage5Calls).toBe(3);
+  expect(aanyaFixes).toBe(1); // the reviewer's failure never reached a builder
+  expect(result.pass).toBe(true);
+  expect(result.stuck).toBe(false);
+});
+
+test("a reviewer that keeps failing is run again twice, then the loop stops with the notice still in the report", async () => {
+  let stage5Calls = 0;
+  let fixCalled = false;
+  const deps: QAFixDeps = {
+    runStage5: async () => { stage5Calls++; return KARAN_FAILED; },
+    fixShubham: async () => { fixCalled = true; return { success: true }; },
+    fixAanya: async () => { fixCalled = true; return { success: true }; },
+  };
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+  expect(stage5Calls).toBe(3); // the first review plus two re-runs
+  expect(fixCalled).toBe(false);
+  expect(result.pass).toBe(false);
+  expect(result.stuck).toBe(true);
+  expect(result.findings[0]?.issue).toContain("review did not complete");
+});
+
 // ── Round-scoped QA re-scan (token-waste-reduction plan, Task 1, 2026-08-16) ─
 // Every round after the first re-explored the ENTIRE codebase, even when a
 // fix pass only touched one or two files. This loop is where round N's
