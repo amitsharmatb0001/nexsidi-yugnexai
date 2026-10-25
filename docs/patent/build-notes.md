@@ -762,3 +762,7 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Found (brewline3, stopped "stuck" after round 5):** one finding ("order lines show the menu item's current name") cycled for 3 rounds. The backend builder wrote it up as a missing database column and escalated it to the database builder, who had already added `order_items.name_at_time` and disputed it; Tilotma ruled the finding true (the backend never reads the column), and the system sent it back to the disputer, the database builder, who had nothing to change. The backend builder, who needed to act, never got it with Tilotma's evidence.
 
 **Changed:** `disputes.ts`: a confirmed finding goes to the owner of the file it names (backend/ Shubham, frontend/ Aanya, db/ Pranav); with no path it goes back to whoever disputed it, as before. Proof: a test with three disputes by path.
+
+## Batch 50 — the migration check, still not running inside the worker after the direct docker start (2026-10-25)
+
+**Found:** after batch 47 the worker (restarted onto it) still reported "spawnSync docker ETIMEDOUT [ETIMEDOUT]" while the same call from a shell took 0.7 s. A blocking start also stops the whole worker for as long as it waits. **Changed:** `migration-check.ts` runs docker through the asynchronous `execFile` (own timer, nothing blocked); the injected `exec` may return a promise. Proof: existing tests, and a run on brewline3's real migrations (ran, nothing found, 4 s). Whether it runs inside the worker is confirmed at the next restart.

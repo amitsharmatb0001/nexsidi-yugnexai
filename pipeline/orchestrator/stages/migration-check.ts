@@ -4,7 +4,7 @@
 // stops during start-up. The delivered compose file mounts db/migrations as Postgres's init directory, so every file runs
 // in name order on first start and the first error stops it. This does the same in a throwaway PostgreSQL 16 container
 // and reports the first file that fails, with the database's own message. No model call.
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -15,7 +15,7 @@ export interface MigrationCheckResult {
 }
 
 export interface MigrationCheckDeps {
-  exec?: (cmd: string) => string;
+  exec?: (cmd: string) => string | Promise<string>;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -26,8 +26,11 @@ export function dockerArgs(cmd: string): string[] {
   return args;
 }
 
-// Docker is started directly, with no cmd.exe in between: inside the worker the shell start ended at once with ETIMEDOUT (brewline3).
-const defaultExec = (cmd: string): string => execFileSync("docker", dockerArgs(cmd), { encoding: "utf-8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
+// Docker is started directly, with no cmd.exe, and without blocking the worker: inside the worker the blocking shell start ended with ETIMEDOUT every time (brewline3).
+const defaultExec = (cmd: string): Promise<string> =>
+  new Promise((resolve, reject) => {
+    execFile("docker", dockerArgs(cmd), { encoding: "utf-8", timeout: 120_000, windowsHide: true }, (err, stdout, stderr) => (err ? reject(Object.assign(err, { stderr, stdout })) : resolve(stdout)));
+  });
 
 const errText = (err: unknown): string => {
   const e = err as { stderr?: unknown; stdout?: unknown; message?: unknown; code?: unknown };
@@ -43,7 +46,7 @@ export async function migrationFindings(projectDir: string, deps: MigrationCheck
 
   const name = `migcheck-${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
   try {
-    exec(`docker run -d --name ${name} -e POSTGRES_PASSWORD=check postgres:16-alpine`);
+    await exec(`docker run -d --name ${name} -e POSTGRES_PASSWORD=check postgres:16-alpine`);
   } catch (err) {
     return { ran: false, findings: [], note: `migration check not run: docker could not start a PostgreSQL 16 container (${errText(err).trim().split("\n")[0]?.slice(0, 160)})` };
   }
@@ -52,7 +55,7 @@ export async function migrationFindings(projectDir: string, deps: MigrationCheck
     let ready = 0;
     for (let i = 0; i < 60 && ready < 2; i++) {
       try {
-        exec(`docker exec ${name} pg_isready -U postgres`);
+        await exec(`docker exec ${name} pg_isready -U postgres`);
         ready++;
       } catch {
         ready = 0;
@@ -60,10 +63,10 @@ export async function migrationFindings(projectDir: string, deps: MigrationCheck
       if (ready < 2) await sleep(1000);
     }
     if (ready < 2) return { ran: false, findings: [], note: "migration check not run: the PostgreSQL 16 container did not become ready in 60 s" };
-    exec(`docker cp "${migrations}/." ${name}:/m`);
+    await exec(`docker cp "${migrations}/." ${name}:/m`);
     for (const file of files) {
       try {
-        exec(`docker exec ${name} psql -U postgres -v ON_ERROR_STOP=1 -f /m/${file}`);
+        await exec(`docker exec ${name} psql -U postgres -v ON_ERROR_STOP=1 -f /m/${file}`);
       } catch (err) {
         const text = errText(err);
         const error = text.match(/ERROR:\s+([^\n]+)/)?.[1]?.trim() ?? text.trim().split("\n")[0] ?? "failed";
@@ -76,6 +79,6 @@ export async function migrationFindings(projectDir: string, deps: MigrationCheck
     }
     return { ran: true, findings: [] };
   } finally {
-    try { exec(`docker rm -f ${name}`); } catch { /* nothing left to remove */ }
+    try { await exec(`docker rm -f ${name}`); } catch { /* nothing left to remove */ }
   }
 }
