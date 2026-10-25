@@ -46,7 +46,7 @@ test("a helper's rollback_workspace is refused and nobody's files are touched", 
     active = false;
     rmSync(dir, { recursive: true, force: true });
   }
-});
+}, 30_000); // runs the real agent loop; took 5.7 s on a busy machine, over bun's default 5 s
 
 test("helpers and the shared step have rollback, containers and sub-agents blocked; the lead does not", () => {
   const helper = teamRunOverrides({ role: "helper", ownFiles: [] }, ".", { taskFiles: [] });
