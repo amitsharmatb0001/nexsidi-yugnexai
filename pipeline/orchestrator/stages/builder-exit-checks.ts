@@ -9,6 +9,7 @@ import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 import { scanProjectForEmojiUi } from "./emoji-ui-check.ts";
 import { scanProjectForDeadButtons } from "./dead-ui-check.ts";
 import { specColours } from "../../../agents/vanya/src/index.ts";
+import { contractRouteFindings, type ContractEndpoint } from "./contract-route-check.ts";
 
 const SKIP = new Set(["node_modules", ".next", "dist", "build", ".git"]);
 
@@ -139,4 +140,40 @@ export function frontendExitChecks(projectId: string): string[] {
   const missing = missingSpecColours(projectId);
   if (missing.length > 0) out.push(`frontend theme: the approved spec's colours are not used anywhere in the frontend: ${missing.join(", ")} — put them in the theme (app/theme-overrides.css)`);
   return out;
+}
+
+/**
+ * The approved API contract against the compiled backend (contract-route-check.ts). Not run when the contract or the
+ * build is missing, or when the compiled app is older than the source (it would answer for code that has since changed).
+ */
+export async function backendContractFindings(projectId: string): Promise<string[]> {
+  const dir = buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds");
+  const contractFile = join(dir, "api-contract.json");
+  const dist = join(dir, "backend", "dist", "app.js");
+  if (!existsSync(contractFile) || !existsSync(dist)) return [];
+  let endpoints: ContractEndpoint[];
+  try {
+    endpoints = (JSON.parse(readFileSync(contractFile, "utf-8")) as { endpoints?: ContractEndpoint[] }).endpoints ?? [];
+  } catch {
+    return [];
+  }
+  if (endpoints.length === 0) return [];
+  let newestSource = 0;
+  const walk = (d: string) => {
+    for (const n of readdirSync(d)) {
+      if (SKIP.has(n)) continue;
+      const full = join(d, n);
+      const st = statSync(full);
+      if (st.isDirectory()) walk(full);
+      else if (/\.(ts|js|json)$/.test(n)) newestSource = Math.max(newestSource, st.mtimeMs);
+    }
+  };
+  try {
+    walk(join(dir, "backend", "src"));
+  } catch {
+    return [];
+  }
+  if (statSync(dist).mtimeMs < newestSource) return [];
+  const r = await contractRouteFindings(join(dir, "backend"), endpoints);
+  return r.findings.map((f) => `backend (API contract): ${f}`);
 }

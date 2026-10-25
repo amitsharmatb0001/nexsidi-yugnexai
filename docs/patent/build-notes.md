@@ -590,3 +590,11 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Built** (`pipeline/orchestrator/stages/route-sweep.ts`): the sweep reads every image that finished loading without a picture (`complete && naturalWidth === 0`), reports it with its alt text and the start of its address, and merges one image seen on several pages into one finding naming them (a shared header or footer). Images still loading are not reported.
 
 **Proof:** sweep tests (finding, phone visit not double-counted, merge across pages, the page reading includes the check); live in a real browser: Brewline's logo is reported on /, /menu and /about; Trailhead 2 (valid logo) reports nothing. Root-cause doc corrected (the logo finding moved from "false" to "caused by the system").
+
+## Batch 31 — the approved API contract checked against the compiled backend (2026-10-24)
+
+**Found:** the plan's section 5 item 1: the contract was only a text the builders were told to follow. Nothing in the system called each endpoint and compared what the backend answered.
+
+**Built** (`pipeline/orchestrator/stages/contract-route-check.ts`, run in its own Node process by `contract-route-runner.cjs`): when the backend builder says it is done, the system loads the compiled app (`dist/app.js`, no database) and calls every contract endpoint. It reports: a route that answers 404 (not mounted; a 404 on an `:id` route is a missing record, not reported), a protected route that does not answer 401/403 with no token, and a route the contract itself calls staff-only that a signed-in customer token can call. Not run (and says so) when the contract or build is missing or the compiled app is older than the source. Never fatal. Frontend unit tests are still not built; this item covers the backend contract only.
+
+**Proof:** 5 tests (matching backend passes, each of the three defects found, no build = not run, wired into the builder's finish check); live on Brewline's real compiled backend: 9 endpoints, 4 staff-only, 0.8 s, no findings (its backend does match its contract). All suites pass.
