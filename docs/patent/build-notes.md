@@ -766,3 +766,9 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 ## Batch 50 — the migration check, still not running inside the worker after the direct docker start (2026-10-25)
 
 **Found:** after batch 47 the worker (restarted onto it) still reported "spawnSync docker ETIMEDOUT [ETIMEDOUT]" while the same call from a shell took 0.7 s. A blocking start also stops the whole worker for as long as it waits. **Changed:** `migration-check.ts` runs docker through the asynchronous `execFile` (own timer, nothing blocked); the injected `exec` may return a promise. Proof: existing tests, and a run on brewline3's real migrations (ran, nothing found, 4 s). Whether it runs inside the worker is confirmed at the next restart.
+
+## Batch 51 — the backend builder gets the migrations in its task text, word for word (2026-10-25)
+
+**Found (brewline3, retry after batch 49):** in the fix round the backend builder tried `dir ..\db\migrations`, `ls ../db/migrations` and list_files on `../db` (shell and parent folder, both refused), never read `../db/migrations/0001_fix.sql`, reported "blocked", and the round stopped with "stuck". The task text only said the migrations could be read; the database builder had already added the column the finding was about.
+
+**Changed:** `shubham/src/index.ts`: `migrationsNoteFor(projectId)` puts every migration file, in order and word for word (capped at 16,000 characters), into both the build task and the fix task. Proof: a test that the fix task contains a later migration's `ADD COLUMN`.

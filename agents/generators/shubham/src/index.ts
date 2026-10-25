@@ -66,6 +66,25 @@ them before writing or fixing any query, and match them exactly — e.g. an
 ON CONFLICT (a, b) needs a real UNIQUE (a, b) there. If the schema itself is
 wrong, call escalate_finding(target_agent: "pranav", ...) or report_blocked.`;
 
+// 2026-10-25 (brewline3): in a fix round the builder tried `ls ../db/migrations` and list_files on `../db` (both refused), never found out
+// that the database builder had already added the column a finding was about, reported itself blocked, and the finding looped. The
+// migrations are put into the task text word for word (capped), so finding them is not left to the builder.
+const MIGRATIONS_TEXT_CAP = 16_000;
+export function migrationsNoteFor(projectId: string): string {
+  const dir = join(buildDirFor(projectId), "db", "migrations");
+  let text = "";
+  try {
+    for (const f of readdirSync(dir).filter((n) => n.endsWith(".sql")).sort()) text += `-- ${f}\n${readFileSync(join(dir, f), "utf-8")}\n`;
+  } catch {
+    return MIGRATIONS_NOTE;
+  }
+  if (!text) return MIGRATIONS_NOTE;
+  return `${MIGRATIONS_NOTE}
+
+THE MIGRATIONS TODAY (every file, in order, word for word — a later file can add a column an earlier one lacks):
+${text.slice(0, MIGRATIONS_TEXT_CAP)}`;
+}
+
 // 2026-08-10: real gap found live (user request) — Shubham's self-check
 // mechanical gate ("requiredEvidenceKinds: ['http_check']") is satisfied by
 // testing ONE endpoint, leaving every other resource's CRUD chain
@@ -397,7 +416,7 @@ export function buildFixTask(findings: string[], plan: BuildPlan): string {
 
 ${buildSystemContext(plan)}
 
-${MIGRATIONS_NOTE}
+${migrationsNoteFor(plan.projectId)}
 
 FINDINGS TO CHECK:
 ${findings.map((f, i) => `${i + 1}. ${f}`).join("\n")}
@@ -595,7 +614,7 @@ ${JSON.stringify(plan.dbSchema, null, 2)}
 SHARED TYPES (frontend and backend must agree on these):
 ${plan.sharedTypes ?? ""}
 
-${MIGRATIONS_NOTE}
+${migrationsNoteFor(plan.projectId)}
 
 PLANNED BACKEND FILES (you MUST implement every file listed here — this is
 the complete, exhaustive manifest; nothing outside this workflow's plan is
