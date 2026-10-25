@@ -210,7 +210,9 @@ const TIER_POOLS: Record<GeminiTier, string[]> = {
   // 2026-10-24 (Amit: "for builder use all flash models"): all four flash models, ordered by Brewline's measurements —
   // 3.5-flash 98% of calls ok (median 6.8 s), 3.6-flash 95% (5.6 s), 3.8-flash 73% (20.3 s), 3.7-flash 75% (30.1 s).
   // Parallel builder helpers each start on a different one (poolStartingAt), so all four are used.
-  generation: ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"],
+  // 2026-10-25 (brewline3): 3.8-flash moved last: 12 calls, median 58.7 s against 8.1 s for 3.5-flash on the same size of input, even for
+  // a 97-token answer (the wait is the model queue, not the writing); the third parallel helper started on it and sat a minute per step.
+  generation: ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"],
   a2a:        ["gemini-2.5-flash-lite", "gemini-3.5-flash"],
   user:       ["gemini-2.5-flash-lite", "gemini-3.5-flash"],
 };

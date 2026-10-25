@@ -738,3 +738,9 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - `shubham/src/index.ts`: the history-key rewrite from batch 44 is now actually wired in front of the backend finish check (the earlier edit had not applied; the build was saved by the database builder's own rewrite).
 
 **Proof:** tests for the alarms, the check moving, and the wiring of both rewrites; all our suites pass except one timing test that passes on its own (flaky under full-suite load) and 3 tests in the untracked third-party `ref repo/`.
+
+## Batch 46 — why the builder calls were slow: the third helper started on the slowest model (2026-10-25)
+
+**Measured (brewline3 ledger, 153 calls):** median call time on the same size of input (about 40–60K tokens in): 3.1-pro-preview 6.3 s, 3.5-flash 8.1 s, 3.6-flash 3.4 s, **3.8-flash 58.7 s** (12 calls, max 147 s). Even a 97-token answer on 3.8-flash took 75 s, so the wait is the model's queue, not the writing. Parallel helpers start on different models of the builder pool; the third started on 3.8-flash and sat about a minute per step.
+
+**Changed:** `router.ts` builder pool is now 3.5, 3.6, 3.7, 3.8 (all four kept, 3.8 last, as a fallback); tests updated. Takes effect when the worker next restarts.

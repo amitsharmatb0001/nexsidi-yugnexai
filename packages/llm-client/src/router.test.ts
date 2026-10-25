@@ -64,7 +64,7 @@ test("poolForTier returns the QA pool led by the two strongest models, with the 
 // 2026-10-24: reordered by measured reliability at Amit's instruction ("for builder use all flash models") — see
 // builder-models.test.ts for the numbers. All four stay.
 test("poolForTier returns the generation pool with all four flash models, the most reliable first", () => {
-  expect(poolForTier("generation")).toEqual(["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash"]);
+  expect(poolForTier("generation")).toEqual(["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"]);
 });
 
 test("poolForTier returns the user/status pool led by the cheapest flash-lite model", () => {
