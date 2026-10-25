@@ -153,8 +153,9 @@ CRITICAL RULES:
     seeded staff account.)
 
 19. HISTORY IS KEPT. An order, invoice or booking records what was sold: its lines
-    copy the item's name and unit price when the order is placed (a unit_price
-    column on the line), and the line's reference to the catalog row is ON DELETE
+    copy the item's name and unit price when the order is placed (columns
+    name_at_time and unit_price on the line, which the database builder creates;
+    write both on insert and read both back, never join to the catalog for them), and the line's reference to the catalog row is ON DELETE
     RESTRICT (or SET NULL), never CASCADE. Deleting or editing a menu item or
     product must not change or delete what past orders show, so the delete
     endpoint refuses (409) or archives the item when history refers to it. Check

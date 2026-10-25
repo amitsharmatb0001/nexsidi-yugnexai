@@ -256,3 +256,15 @@ test("both database-folder rewrites are wired: the database builder runs it afte
   expect(pranav).toContain("keepHistoryInMigrations");
   expect(shubham).toContain("keepHistoryInMigrations");
 });
+
+// 2026-10-25 (brewline3): the backend rule said "copy the item's name and unit price into the line", the database rule said only
+// "a unit_price"; the migration had a price column and no name column, the backend builder cannot write the database, and one finding
+// ("old orders show the item's current name") went round for 8 review rounds. Both rules now name both columns.
+test("the backend and database rules ask for the same two line columns: the name and the unit price", () => {
+  const read = (rel: string) => readFileSync(new URL(`../../../packages/agent-runtime/skills/${rel}`, import.meta.url), "utf-8");
+  const section = (text: string) => text.slice(text.indexOf("HISTORY IS KEPT"), text.indexOf("HISTORY IS KEPT") + 700);
+  for (const s of [section(read("shubham/20-critical-rules-and-verification.md")), section(read("pranav.md"))]) {
+    expect(s).toMatch(/name_at_time/);
+    expect(s).toMatch(/unit_price/);
+  }
+});

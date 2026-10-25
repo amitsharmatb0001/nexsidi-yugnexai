@@ -772,3 +772,9 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Found (brewline3, retry after batch 49):** in the fix round the backend builder tried `dir ..\db\migrations`, `ls ../db/migrations` and list_files on `../db` (shell and parent folder, both refused), never read `../db/migrations/0001_fix.sql`, reported "blocked", and the round stopped with "stuck". The task text only said the migrations could be read; the database builder had already added the column the finding was about.
 
 **Changed:** `shubham/src/index.ts`: `migrationsNoteFor(projectId)` puts every migration file, in order and word for word (capped at 16,000 characters), into both the build task and the fix task. Proof: a test that the fix task contains a later migration's `ADD COLUMN`.
+
+## Batch 52 — the two builders were given different rules for order history (2026-10-25)
+
+**Found (brewline3, the cost question):** one finding, "old orders show the menu item's current name", appeared in 8 of 13 review rounds. The backend builder's rule said copy the item's name AND unit price into the order line; the database builder's rule said only a unit_price. The migration got a price column and no name column, the backend builder cannot write the database, and the finding went between the two builders (with two system faults on top: batch 49 and batch 51).
+
+**Changed:** both rules now name the same two line columns (`name_at_time`, `unit_price`), the backend one adding "write both on insert and read both back, never join to the catalog for them". Proof: a test that both rule texts name both columns.

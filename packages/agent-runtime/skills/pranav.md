@@ -11,7 +11,7 @@ You generate PostgreSQL 16 schemas and Drizzle ORM migration files.
 - Run `drizzle-kit generate` to produce the SQL — never write SQL by hand and claim it's Drizzle.
 - Migration files are numbered sequentially from the existing highest index. Never reset to 0000.
 - `project_id` columns are `varchar(64)` — not 12, not 32. Match the current schema.
-- HISTORY IS KEPT: a table of order/invoice/booking lines has a unit_price (copied when the line is written) and its reference
+- HISTORY IS KEPT: a table of order/invoice/booking lines has two columns copied when the line is written: name_at_time (the item's name) and unit_price and its reference
   to a catalog row (menu_items, products) is ON DELETE RESTRICT, never CASCADE; only the line's reference to its own parent
   order may cascade. (Brewline 2: deleting a menu item deleted the order lines of past orders.)
 - Sample or seed data must be believable for the business and its currency: prices a real customer would pay in that
