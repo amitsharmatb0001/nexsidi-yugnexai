@@ -53,6 +53,7 @@ import { runRouteSweepReal, createReviewAccount } from "./route-sweep.ts";
 import { join as joinPath, dirname } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { reviewDbUrl } from "../../../packages/agent-runtime/src/tools/compose-ports.ts";
+import { resetAppRateLimits } from "./limiter-reset.ts";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 export { isQuotaExhaustionError };
 
@@ -305,12 +306,19 @@ async function runRealLiveRetest(
   // The same moment on the database's own clock: rows the testing adds to public form tables (a contact form) are removed
   // by their time, since no account owns them.
   const testingStartedAt = databaseNow(buildDir);
+  // 2026-10-25: the app's sign-up/sign-in limiter counts in memory and the checks below use its whole budget; start the round
+  // with fresh counters (limiter-reset.ts) so they are not answered with 429.
+  const resetBefore = await resetAppRateLimits(buildDir, backendUrl);
+  if (!resetBefore.ok) console.warn(`[stage6] could not reset the app's rate limits before the checks: ${resetBefore.reason}`);
   const result = await liveRetestChecks(projectId, appUrl, backendUrl, stage4Result, plan, notChecked, changedFiles);
   // The live review signs up its own test accounts and the route sweep creates sample data under one. With
   // the data-safe redeploy they would stay in the database for good, so they are removed as soon as the
   // review ends (every account on the reserved test domain — see VERIFICATION_EMAIL_PATTERN in riya, which
   // removes everything that points at them too).
   purgeVerificationArtifacts(buildDir, testingStartedAt);
+  // ...and hand the app over with fresh counters, so the customer's first sign-up is not refused for the checks' sake.
+  const resetAfter = await resetAppRateLimits(buildDir, backendUrl);
+  if (!resetAfter.ok) notChecked.push(`the app's sign-up/sign-in limiter could not be reset after the checks (${resetAfter.reason}), so the first sign-ups may be refused for a few minutes`);
   // 2026-10-05 (Amit): "clean" is checked, not assumed — every table must hold no more rows than before.
   const after = snapshotTableCounts(buildDir);
   if (baseline && after) {
@@ -1052,7 +1060,15 @@ export async function runStage6(
     if (deps.roundGuard && Array.isArray(retest.findings) && retest.findings.length > 0) {
       // 2026-10-22: a finding that came back is checked before the guard may hold on it (disputes.ts).
       const { settleRepeatsBeforeGuard } = await import("../disputes.ts");
-      retest = { ...retest, findings: await settleRepeatsBeforeGuard(projectId, "live", retest.findings as never[], settleReal) };
+      const kept = await settleRepeatsBeforeGuard(projectId, "live", retest.findings as never[], settleReal);
+      // 2026-10-25 (brewline2): findings Tilotma rules not true are gone, not open. When none is left and the other verdicts
+      // (design, spec) pass, the round has passed; it used to stay "failed" with nothing to fix and escalate a human.
+      const othersPass = retest.liveEval?.pass !== false && retest.specCompliance?.pass !== false;
+      retest = { ...retest, findings: kept, ...(kept.length === 0 && othersPass ? { pass: true } : {}) };
+      if (retest.pass) {
+        console.log(`[stage6] every finding of this round was ruled not true — nothing is open`);
+        break;
+      }
     }
     if (deps.roundGuard && Array.isArray(retest.findings) && retest.findings.length > 0) {
       const verdict = await deps.roundGuard(retest.findings);

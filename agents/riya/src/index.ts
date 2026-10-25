@@ -11,6 +11,7 @@ import { execSync } from "child_process";
 import { randomBytes } from "crypto";
 import { join } from "path";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
+import { resetAppRateLimits } from "../../../pipeline/orchestrator/stages/limiter-reset.ts";
 // @nexsidi/db and drizzle-orm are imported dynamically inside run() (at the
 // point of use) rather than at module top level — @nexsidi/db's client
 // throws eagerly at import time if DATABASE_URL isn't set, which would make
@@ -2196,6 +2197,10 @@ export async function run(
   // prompt-level requirement.
   // Rows the checks below add to public form tables are removed again from this moment on (see PUBLIC_FORM_TABLES_SQL).
   const verificationStartedAt = databaseNow(buildDir);
+  // 2026-10-25 (brewline2): the checks below sign accounts up and in; the app limits those to 10 a window, and a redeploy
+  // with an unchanged image keeps the old container and its counters, so they are reset first (limiter-reset.ts).
+  const limiterReset = await resetAppRateLimits(buildDir, backendUrl);
+  if (!limiterReset.ok) console.warn(`[riya] could not reset the app's rate limits before the checks: ${limiterReset.reason}`);
   const migrationOk = applyMigrationsToDeployedDb(buildDir);
 
   // 2026-07-12: the REAL end-to-end test — a genuine authenticated user's

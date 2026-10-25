@@ -906,3 +906,40 @@ test("a file a handed-over fix changed counts too, labelled by its owner", async
   await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
   expect(seen[1]).toEqual(["backend/src/controllers/exportController.ts"]);
 });
+
+// 2026-10-25 (brewline2): round 1's finding (a sign-in check) was fixed, came back in round 2, and Tilotma checked it before the
+// guard and ruled it not true (the check had been answered "Too many requests" by the app's own limiter). Dropped, the round had
+// no findings left, but the round still counted as failed: "No specific findings to route", the deploy was reported failed and
+// the build escalated to a human. A round whose every finding was ruled not true has nothing open: it passes (the other
+// verdicts, design and spec, still have to pass), the same as the code review loop already does.
+test("a live round whose only finding Tilotma rules not true before the guard has nothing left open, and delivery passes", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { checkRoundGuard } = await import("../progress-guard.ts");
+  const prev = process.env.BUILD_DIR;
+  const dir = mkdtempSync(join(tmpdir(), "stage6-repeat-"));
+  process.env.BUILD_DIR = dir;
+  try {
+    const finding = { file: "frontend/app", issue: "[auth-smoke] After a successful sign-in the user is still on the sign-in page (/sign-in)" };
+    let rounds = 0;
+    let settled = 0;
+    const deps: Stage6Deps = {
+      deployFn: async () => ({ success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] }),
+      liveRetestFn: async () => { rounds++; return { pass: false, findings: [finding] }; },
+      fixAanya: async () => ({ success: true, filesWritten: ["app/x.tsx"] }),
+      roundGuard: (f) => checkRoundGuard("test-proj", "live", f as never),
+      settleDisputes: async (_pid, disputes) => {
+        settled += disputes.length;
+        return disputes.map((d) => ({ dispute: d, verdict: "not_true" as const, evidence: "signing in in a clean browser lands on /order" }));
+      },
+    };
+    const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+    expect(rounds).toBe(2); // the first round, and the one after the fix
+    expect(settled).toBe(1);
+    expect(result.success).toBe(true);
+  } finally {
+    process.env.BUILD_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
