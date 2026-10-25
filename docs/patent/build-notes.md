@@ -691,3 +691,16 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - Earlier in this batch: a time on every worker log line (`log-timestamps.ts`).
 
 **Proof:** tests for each (Tier 3 marker; owed review runs and decides the delivery; its finding goes to a builder; cannot-run is not verified; the real wiring; the two new yardstick items and the Chief's rule; the cascade and price check; timeouts at 119,999 / 120,000 / 187,000 / 600,000 characters); the history check flags Brewline 2 (cascade and no price), Brewline 1 (no price) and passes Trailhead 2; all 2,468 tests pass, type check clean. **Not run for real:** the owed browser review on a live app, which costs a few dollars: its first real run will be in the next build.
+
+## Batch 42 — strongest models for the reviewers, the spec itself can no longer allow a staff sign-up, alarms on the spot (2026-10-25)
+
+**Asked (Amit, after brewline2):** why were problems not noticed and raised at once, why do the adversarial reviewers use flash models (give them the pro models), why the deploy and live checks take over an hour (time and cost optimisation), and why the wrong plan was approved.
+
+**Measured (no model cost):** the no-model steps of a live round take about 2.5 minutes (restart 6 s, redeploy with cached images 68 s, sign-in check 28 s, page sweep 42 s), so the deploy itself is not the long part. Reviewer model time was 46.9 minutes, of which 30.0 minutes (64%) were the 15 calls that waited out the full 120 s and failed (Navya alone about 18 minutes in sequence). The rest of the 106 minutes of deploy and live checks is model work (reviewers, Chief AI, dispute settling about 9 minutes, fix agents, redeploys with changed images); its exact split was not logged (now it is).
+
+**Built:**
+- `router.ts`: the reviewers lead on the two strongest models (logic and performance on `gemini-4-argon`, security on `gemini-3.1-pro-preview`), chosen by name; the flash models are fallbacks only, 3.8-flash last (0 of 7 as a reviewer). Argon is priced at $4/M input, about the same per large review call as pro (about $0.30): expect the reviewers to cost about $1.5 to $2 more per build.
+- `saanvi/src/index.ts`: a public sign-up endpoint is never specified as creating a privileged account: staff/admin wording is removed from its description and any role field from its request body before the spec is locked (the wording "customer or staff account" is what the builders followed on brewline2; I approved it without catching it, so the safeguard is now the system's).
+- `watch-alarms.ts`: failure patterns of a build log (model call failed after N s, 429, escalated to a human, not checked, reviewer did not finish, live retest failed, smoke test failed, budget) raised as alarm lines the moment they are written, repeats shown once with a count.
+
+**Proof:** tests for each; replayed on brewline2's real logs the watcher raises the 15 two-minute review failures, 9 not-checked results, 3 escalations and 4 failed smoke checks; all suites pass, type checks clean. **Not measured yet:** the time and cost effect on a real build.

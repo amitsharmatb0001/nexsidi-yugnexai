@@ -53,8 +53,8 @@ test("shouldUseGeminiForQA is false for any other QA_TIER value", () => {
 // future edit can't silently regress QA back onto a flash model or drop
 // the fallback chain — and prove the override-collapses-to-one-model
 // contract routeToolsWithFallback relies on for GEMINI_GENERATION_MODEL.
-test("poolForTier returns the QA pool led by the pro-thinking model, not flash", () => {
-  expect(poolForTier("qa")).toEqual(["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
+test("poolForTier returns the QA pool led by the two strongest models, with the flash models only as fallbacks", () => {
+  expect(poolForTier("qa")).toEqual(["gemini-4-argon", "gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.8-flash"]);
 });
 
 // 2026-08-16: gemini-3.7-flash added ahead of gemini-3.6-flash — same price,
@@ -162,12 +162,28 @@ test("shouldSkipGeminiModel is true once a model's circuit breaker has tripped O
 // 2026-10-24 (Amit: "separate all agents to separate models so they do their work parallel"): the three reviewers run at
 // the same time, so each now starts on its own model, taken in the tier's own order — logic review on the first (pro),
 // security on the second, performance on the third. Every model stays in each reviewer's pool as a fallback.
-test("rotatedPoolForAgent gives each parallel reviewer its own first model, in the tier's order", () => {
+// 2026-10-25 (Amit: "why adversarial using flash model, give them pro models"): the reviewers started on gemini-3.8-flash
+// (security) and gemini-3.7-flash (performance). In brewline2 3.8-flash failed 7 of 7 review calls. The reviewers now start on the
+// two strongest models: logic and performance on gemini-4-argon, security on gemini-3.1-pro-preview; the flash models are only
+// fallbacks, in the order they performed as reviewers (3.8-flash last).
+test("the reviewers start on the strongest models, never on a flash model", () => {
+  expect(rotatedPoolForAgent("qa", "navya")[0]).toBe("gemini-4-argon");
+  expect(rotatedPoolForAgent("qa", "karan")[0]).toBe("gemini-3.1-pro-preview");
+  expect(rotatedPoolForAgent("qa", "deepika")[0]).toBe("gemini-4-argon");
   const pool = poolForTier("qa");
-  expect(rotatedPoolForAgent("qa", "navya")[0]).toBe(pool[0]);
-  expect(rotatedPoolForAgent("qa", "karan")[0]).toBe(pool[1]);
-  expect(rotatedPoolForAgent("qa", "deepika")[0]).toBe(pool[2]);
-  expect(new Set(["navya", "karan", "deepika"].map((a) => rotatedPoolForAgent("qa", a)[0])).size).toBe(3);
+  expect(pool.slice(0, 2)).toEqual(["gemini-4-argon", "gemini-3.1-pro-preview"]);
+  expect(pool[pool.length - 1]).toBe("gemini-3.8-flash");
+  for (const a of ["navya", "karan", "deepika"]) expect(rotatedPoolForAgent("qa", a)[0]).not.toContain("flash");
+});
+
+test("with argon switched off the reviewers start on the strong model that is left", () => {
+  const prev = process.env.GEMINI_CRITICAL_ARGON;
+  process.env.GEMINI_CRITICAL_ARGON = "off";
+  try {
+    for (const a of ["navya", "karan", "deepika"]) expect(rotatedPoolForAgent("qa", a)[0]).toBe("gemini-3.1-pro-preview");
+  } finally {
+    if (prev === undefined) delete process.env.GEMINI_CRITICAL_ARGON; else process.env.GEMINI_CRITICAL_ARGON = prev;
+  }
 });
 
 test("an agent not on the list keeps the tier's first model; a sub-check of a reviewer follows its parent", () => {

@@ -201,7 +201,10 @@ const TIER_POOLS: Record<GeminiTier, string[]> = {
   critical:   [ARGON, ...CRITICAL_FALLBACKS],
   plan:       ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
   design:     ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-  qa:         ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+  // 2026-10-25 (Amit: "why adversarial using flash model, give them pro models"): the reviewers lead on the two strongest models
+  // (gemini-4-argon, then gemini-3.1-pro-preview); flash models are fallbacks only, ordered by how they performed as reviewers in
+  // brewline2: 3.6-flash 5 of 5 ok, 3.7-flash 7 of 10, 3.5-flash 1 of 1, 3.8-flash 0 of 7 (last).
+  qa:         [ARGON, "gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.8-flash"],
   // 2026-10-24 (Amit: "for builder use all flash models"): all four flash models, ordered by Brewline's measurements —
   // 3.5-flash 98% of calls ok (median 6.8 s), 3.6-flash 95% (5.6 s), 3.8-flash 73% (20.3 s), 3.7-flash 75% (30.1 s).
   // Parallel builder helpers each start on a different one (poolStartingAt), so all four are used.
@@ -266,7 +269,9 @@ function stringHash(s: string): number {
 // time each start on their own model, taken in the tier's own order (so a reordered pool moves them too). The three
 // reviewers run together; the two builders are on different tiers already. A sub-check ("karan-subcheck") follows its
 // parent. Every model stays in the pool as a fallback.
-const PARALLEL_FIRST_MODEL_INDEX: Record<string, number> = { navya: 0, karan: 1, deepika: 2 };
+// 2026-10-25: by model name, no longer by position: logic and performance on argon, security on pro, so no reviewer starts on a
+// flash model; with a model switched off the pool's first model is used.
+const PARALLEL_FIRST_MODEL: Record<string, string> = { navya: ARGON, karan: "gemini-3.1-pro-preview", deepika: ARGON };
 
 /** The tier's pool starting at its Nth model (wrapping), the rest after it in order: helper N of a builder team. */
 export function poolStartingAt(tier: GeminiTier, index: number): string[] {
@@ -280,8 +285,8 @@ export function rotatedPoolForAgent(tier: GeminiTier, agentName: string): string
   const pool = poolForTier(tier);
   if (pool.length <= 2) return pool; // nothing to rotate among
 
-  const index = PARALLEL_FIRST_MODEL_INDEX[agentName.split("-")[0]!];
-  const first = index !== undefined && index < pool.length ? pool[index]! : pool[0]!;
+  const wanted = PARALLEL_FIRST_MODEL[agentName.split("-")[0]!];
+  const first = wanted !== undefined && pool.includes(wanted) ? wanted : pool[0]!;
   const [primary, ...fallbacks] = [first, ...pool.filter((m) => m !== first)];
   const offset = stringHash(agentName) % fallbacks.length;
   const rotatedFallbacks = [...fallbacks.slice(offset), ...fallbacks.slice(0, offset)];

@@ -378,3 +378,28 @@ test("an unclear mention of accounts is asked about, not decided by default", as
   expect(SAANVI_SYSTEM_PROMPT).not.toContain("default to no auth");
   expect(SAANVI_SYSTEM_PROMPT).toMatch(/unclear who signs in[\s\S]{0,200}needsClarification/);
 });
+
+// 2026-10-25 (brewline2): the spec's sign-up endpoint read "Create a new customer or staff account", the builders followed it
+// exactly, and the delivered app let anyone register as staff. I approved that spec without catching the wording; a safeguard that
+// depends on a person noticing is not a safeguard. A public sign-up is never specified as creating a privileged account: the
+// wording and any role field are taken out of the spec itself, before it is locked.
+test("a public sign-up never creates a privileged account: role wording and role fields are removed from the spec", () => {
+  const out = sanitizeApiEndpoints([
+    { method: "POST", path: "/api/v1/auth/sign-up", description: "Create a new customer or staff account with email and password and return a JWT.", auth: false, requestBody: { email: "string", password: "string", role: "customer | staff" }, responseBody: {} },
+    { method: "POST", path: "/api/v1/auth/sign-in", description: "Sign into an existing customer or staff account.", auth: false, requestBody: {}, responseBody: {} },
+    { method: "GET", path: "/api/v1/orders", description: "All orders (staff only)", auth: true, requestBody: null, responseBody: {} },
+  ] as never);
+  const signUp = out.find((e) => e.path.endsWith("/sign-up"))!;
+  expect(/staff|admin|owner|manager/i.test(signUp.description)).toBe(false);
+  expect(signUp.description).toContain("customer account");
+  expect(signUp.description).toContain("lowest role");
+  expect(Object.keys(signUp.requestBody as object)).toEqual(["email", "password"]);
+  // sign-in and the staff-only endpoint keep their wording: only the account-creating endpoint is rewritten
+  expect(out.find((e) => e.path.endsWith("/sign-in"))!.description).toContain("customer or staff account");
+  expect(out.find((e) => e.path.endsWith("/orders"))!.description).toContain("staff only");
+});
+
+test("a sign-up that names no privileged role is left exactly as it was", () => {
+  const endpoints = [{ method: "POST", path: "/api/v1/auth/register", description: "Create an account", auth: false, requestBody: { email: "string", password: "string" }, responseBody: {} }, { method: "GET", path: "/api/v1/profile", description: "own profile", auth: true, requestBody: null, responseBody: {} }];
+  expect(sanitizeApiEndpoints(endpoints as never)).toEqual(endpoints as never);
+});

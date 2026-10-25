@@ -230,10 +230,37 @@ function isAdminOnlyApp(apiEndpoints: ApiEndpoint[]): boolean {
   return protectedPaths.every((p) => /\/admin(\/|$)/i.test(p));
 }
 
+// 2026-10-25 (brewline2): the spec's sign-up endpoint read "Create a new customer or staff account", the builders followed it exactly
+// and the delivered app let anyone register as staff. A public sign-up never creates a privileged account: the role wording is
+// taken out of the account-creating endpoint's description and any role field out of its request, before the spec is locked.
+// Privileged accounts come from a seeded account (Shubham's rule 18), never from a public endpoint.
+const PRIVILEGED_ROLE = /\b(?:staff|admin\w*|owner|manager|barista)\b/i;
+const ROLE_FIELDS = new Set(["role", "roles", "isadmin", "is_admin", "permissions"]);
+
+function withoutPrivilegedSignUp(e: ApiEndpoint): ApiEndpoint {
+  if ((e.method ?? "").toUpperCase() !== "POST" || !REGISTRATION_PATH.test(e.path ?? "")) return e;
+  let next = e;
+  const description = e.description ?? "";
+  if (PRIVILEGED_ROLE.test(description)) {
+    const plain = description.replace(/\b(?:customer|user|member|client)s?\s+(?:or|and|\/)\s+(?:staff|admin\w*|owner|manager|barista)\s+accounts?/gi, "customer account");
+    const kept = plain.split(/(?<=[.;])\s+/).filter((sentence) => !PRIVILEGED_ROLE.test(sentence)).join(" ").trim();
+    next = { ...next, description: `${kept || "Create a new customer account with email and password and return a JWT token."} Public sign-up always creates the lowest role; privileged accounts are seeded, never created here.` };
+  }
+  const body = next.requestBody as unknown;
+  if (body && typeof body === "object" && !Array.isArray(body) && Object.keys(body as object).some((k) => ROLE_FIELDS.has(k.toLowerCase()))) {
+    next = { ...next, requestBody: Object.fromEntries(Object.entries(body as Record<string, unknown>).filter(([k]) => !ROLE_FIELDS.has(k.toLowerCase()))) as never };
+  }
+  return next;
+}
+
 export function sanitizeApiEndpoints(apiEndpoints: ApiEndpoint[]): ApiEndpoint[] {
-  if (!isAdminOnlyApp(apiEndpoints)) return apiEndpoints;
-  const filtered = apiEndpoints.filter((e) => !REGISTRATION_PATH.test(e.path ?? ""));
-  return filtered.length === apiEndpoints.length ? apiEndpoints : filtered;
+  const base = (() => {
+    if (!isAdminOnlyApp(apiEndpoints)) return apiEndpoints;
+    const filtered = apiEndpoints.filter((e) => !REGISTRATION_PATH.test(e.path ?? ""));
+    return filtered.length === apiEndpoints.length ? apiEndpoints : filtered;
+  })();
+  const cleaned = base.map(withoutPrivilegedSignUp);
+  return cleaned.some((e, i) => e !== base[i]) ? cleaned : base;
 }
 
 export function deriveAuthConfig(apiEndpoints: ApiEndpoint[]): ProjectSpec["auth"] {

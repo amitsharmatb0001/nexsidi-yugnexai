@@ -19,8 +19,10 @@ test("setting GEMINI_CRITICAL_ARGON=off takes argon out and nothing else changes
   expect(poolForTier("plan")).toEqual(["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
 });
 
-test("no other tier uses argon: it is for the hardest work only", () => {
-  for (const tier of ["plan", "design", "qa", "generation", "a2a", "user"] as const) expect(poolForTier(tier)).not.toContain("gemini-4-argon");
+// 2026-10-25 (Amit: give the adversarial reviewers the pro models): the "qa" tier now also leads on argon. Nothing else does.
+test("only the critical tier and the reviewers' qa tier use argon", () => {
+  for (const tier of ["plan", "design", "generation", "a2a", "user"] as const) expect(poolForTier(tier)).not.toContain("gemini-4-argon");
+  expect(poolForTier("qa")[0]).toBe("gemini-4-argon");
 });
 
 test("an explicitly chosen model still wins and has no fallback", () => {
