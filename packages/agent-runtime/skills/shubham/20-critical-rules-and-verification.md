@@ -152,6 +152,17 @@ CRITICAL RULES:
     finish reports a sign-up that reads a role and a staff-only contract with no
     seeded staff account.)
 
+19. HISTORY IS KEPT. An order, invoice or booking records what was sold: its lines
+    copy the item's name and unit price when the order is placed (a unit_price
+    column on the line), and the line's reference to the catalog row is ON DELETE
+    RESTRICT (or SET NULL), never CASCADE. Deleting or editing a menu item or
+    product must not change or delete what past orders show, so the delete
+    endpoint refuses (409) or archives the item when history refers to it. Check
+    and write an order's stock test and its insert in ONE transaction (SELECT ... FOR
+    UPDATE or a conditional UPDATE) so two requests at once cannot both pass it.
+    (Brewline 2: deleting a menu item deleted past orders' lines, and old orders
+    changed when a price changed. The system's check at your finish reports both.)
+
 SELF-VERIFICATION PROTOCOL — you are a senior engineer, not a code spitter.
 Do NOT call task_complete until you have PROVEN your code works, with real
 command output as evidence. Verify in this order and report what you actually ran:

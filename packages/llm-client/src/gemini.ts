@@ -148,9 +148,15 @@ const GEMINI_TIMEOUT_MS = 120_000;
 // carries up to 600,000 characters; successful review calls reached 119.1 s. A large request needs longer to read and
 // answer, so the limit is about 1.8 s per 1,000 tokens sent (4 characters a token), never under 120 s, at most 6
 // minutes: a builder call (~60k tokens) keeps 120 s, the one-pass review (~150k tokens) gets 270 s.
+// 2026-10-25 (brewline2): a request of 120,000 characters or more (a one-pass review) has at least 240 s: 16 of 34 review calls
+// were cut off at exactly 120.0 s while the same review alone took 24 to 70 s per model; the answers were slow under load.
+const LARGE_REQUEST_CHARS = 120_000;
+const LARGE_REQUEST_FLOOR_MS = 240_000;
+
 export function geminiTimeoutMsFor(requestChars: number): number {
   const tokens = requestChars / 4;
-  return Math.min(360_000, Math.max(GEMINI_TIMEOUT_MS, Math.round(tokens * 1.8)));
+  const floor = requestChars >= LARGE_REQUEST_CHARS ? LARGE_REQUEST_FLOOR_MS : GEMINI_TIMEOUT_MS;
+  return Math.min(360_000, Math.max(floor, Math.round(tokens * 1.8)));
 }
 
 export function circuitKeyFor(model: string): string {

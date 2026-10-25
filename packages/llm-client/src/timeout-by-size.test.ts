@@ -17,3 +17,17 @@ test("all three call paths use the size-based limit", () => {
   expect(src).not.toContain("setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS)");
   expect((src.match(/setTimeout\(\(\) => controller\.abort\(\), geminiTimeoutMsFor\(/g) ?? []).length).toBe(3);
 });
+
+// 2026-10-25 (brewline2): the one-pass review of a mid-size app (~187,000 characters, about 47K tokens) fell under the size
+// rule's 120 s floor, and 16 of 34 review calls were cut off at exactly 120.0 s (about 2 minutes each, then a fallback model
+// started from scratch); the 18 that finished took 21 to 104 s. Alone, the same review took 24 to 70 s per model, so the
+// failures are slow answers under load (three reviewers and other work at once), not hung calls. A request of 120,000
+// characters or more (a one-pass review) now has at least 240 s.
+test("a one-pass review of a mid-size app gets 240 s, a normal builder call keeps 120 s", () => {
+  expect(geminiTimeoutMsFor(100_000)).toBe(120_000);
+  expect(geminiTimeoutMsFor(119_999)).toBe(120_000);
+  expect(geminiTimeoutMsFor(120_000)).toBe(240_000);
+  expect(geminiTimeoutMsFor(187_000)).toBe(240_000); // brewline2's review
+  expect(geminiTimeoutMsFor(600_000)).toBe(270_000); // the size rule still wins when it is longer
+  expect(geminiTimeoutMsFor(5_000_000)).toBe(360_000);
+});

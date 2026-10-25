@@ -114,3 +114,30 @@ test("Brewline's recorded round 11 through the proof gate and the check: only wh
   expect(sent.length).toBe(5);
   expect(out.fix.length).toBe(0);
 });
+
+// 2026-10-25 (brewline2): the reviewers reported "sign-up accepts a role from the request" (CRITICAL, privilege escalation) and
+// "deleting a menu item deletes the order lines of past orders" (CRITICAL, data loss). The Chief AI filed both under "later":
+// the spec's own wording allowed a staff sign-up, and no plan item said that history must survive. The delivered app still
+// has both. A plan cannot authorise a vulnerability, and every app keeps what its history recorded: both are now fixed items
+// of the yardstick, and the Chief is told a security flaw is never "later" because the plan allowed it.
+test("the yardstick names the two rules the plan never stated: no self-chosen role, and history survives deleting a catalog item", () => {
+  const items = planItemsFor(project());
+  const sec = items.filter((i) => i.id.startsWith("SEC")).map((i) => i.text).join(" | ");
+  expect(sec).toContain("ever lets the caller choose a role");
+  const integrity = items.filter((i) => i.id.startsWith("INT"));
+  expect(integrity.length).toBe(2);
+  expect(integrity.map((i) => i.text).join(" | ")).toContain("eleting or editing a record");
+  expect(integrity.map((i) => i.text).join(" | ")).toContain("price");
+  expect(planSection(dir)).toContain("[INT1]");
+});
+
+test("the Chief is told a security flaw or lost history is a fix even when the plan's wording allowed it", async () => {
+  project();
+  let prompt = "";
+  await chiefCheck(dir, [{ text: "`backend/src/routes/auth.ts` [security/CRITICAL] Privilege Escalation: sign-up accepts a role from the body" }], async (p) => {
+    prompt = p;
+    return JSON.stringify([{ id: 1, verdict: "fix", plan_item: "SEC9", text: "sign-up accepts a role", reason: "SEC9" }]);
+  });
+  expect(prompt.replace(/\s+/g, " ")).toContain("never \"later\" because the plan's own wording allowed it");
+  expect(prompt).toContain("INT1");
+});

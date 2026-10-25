@@ -65,6 +65,9 @@ export interface Stage5Result {
   // 2026-10-03 (evidence-only plan, T3): reviews that could not finish, with
   // why — not findings, so nothing is routed to a builder for them.
   notChecked?: string[];
+  // 2026-10-25 (brewline2): true when the live browser review (Tier 3) ran for this result. It runs only when the static
+  // reviewers pass, so a result that passes later (findings set aside by the Chief AI) has not had it.
+  tier3Ran?: boolean;
 }
 
 // Injectable seam for testing — runStage5() below wraps this with the real
@@ -331,9 +334,10 @@ export async function runStage5WithAgents(
 
   const tier3 = await agents.runTier3Review(projectId, stage4Result);
   if (tier3.incomplete) {
-    return { pass: false, findings: [], perAgentFindings, notChecked: [tier3.incomplete] };
+    return { pass: false, findings: [], perAgentFindings, notChecked: [tier3.incomplete], tier3Ran: true };
   }
   return {
+    tier3Ran: true,
     pass: tier3.pass,
     // 2026-09-29 (project a034f90ba50e): on READY the FINDINGS list holds the
     // checker's verification notes ("… REFUTED", "… PASS"), not issues — when

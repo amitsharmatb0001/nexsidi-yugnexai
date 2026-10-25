@@ -943,3 +943,54 @@ test("a live round whose only finding Tilotma rules not true before the guard ha
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// 2026-10-25 (brewline2): the build was delivered without the live browser review and without the design score. The static
+// reviewers' findings were all set aside by the Chief AI as outside the plan, but Tier 3 and the design score are decided before
+// that, only when the static reviewers pass, so neither ever ran, and a delivery with no design score counted as passed.
+// The result now says the browser review is still owed; stage 6 runs it before accepting the pass, and a delivery where it
+// could not run is "not verified".
+const OWED = { pass: true, findings: [], needsBrowserReview: true };
+const okDeploy = async () => ({ success: true, appUrl: "http://localhost:3200", backendUrl: "http://localhost:3300", githubRepo: null, errors: [] });
+
+test("a pass that owes the browser review runs it first; its design score and findings decide the delivery", async () => {
+  let reviews = 0;
+  const deps: Stage6Deps = {
+    deployFn: okDeploy,
+    liveRetestFn: async () => OWED,
+    browserReviewFn: async () => { reviews++; return { pass: true, findings: [], liveEval: { pass: true, score: 8.1, scores: { designQuality: 8, originality: 8, craft: 8, functionality: 9 }, summary: "ok" } }; },
+  };
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(reviews).toBe(1);
+  expect(result.success).toBe(true);
+  expect(result.deliverySummary.status).toBe("delivered");
+});
+
+test("a browser review that finds a problem sends it to a builder like any live finding", async () => {
+  let aanyaFixes = 0;
+  let reviews = 0;
+  const deps: Stage6Deps = {
+    deployFn: okDeploy,
+    liveRetestFn: async () => OWED,
+    browserReviewFn: async () => { reviews++; return reviews === 1 ? { pass: false, findings: [{ file: "frontend/app/page.tsx", issue: "[DESIGN] the hero is a purple gradient" }] } : { pass: true, findings: [], liveEval: { pass: true, score: 7.4, scores: { designQuality: 7, originality: 7, craft: 8, functionality: 8 }, summary: "ok" } }; },
+    fixAanya: async () => { aanyaFixes++; return { success: true, filesWritten: ["app/page.tsx"] }; },
+  };
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(aanyaFixes).toBe(1);
+  expect(result.success).toBe(true);
+});
+
+test("a pass that owes the browser review, when it cannot be run, is not verified", async () => {
+  const deps: Stage6Deps = { deployFn: okDeploy, liveRetestFn: async () => OWED };
+  const result = await runStage6("test-proj", STAGE4_RESULT, deps, { projectId: "test-proj" } as never);
+  expect(result.deliverySummary.status).toBe("not_verified");
+  expect(result.deliverySummary.notChecked?.join(" ")).toContain("live browser review");
+});
+
+test("the real wiring runs the browser review through the same account and sample-data set-up as a live round", () => {
+  const { readFileSync } = require("node:fs") as typeof import("node:fs");
+  const src = readFileSync(new URL("./stage6-deployment.ts", import.meta.url), "utf-8");
+  expect(src).toContain("browserReviewFn: (pid, appUrl, backendUrl) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result, plan, undefined, true)");
+  const fn = src.slice(src.indexOf("async function liveRetestChecks"), src.indexOf("// Injectable seam for testing"));
+  expect(fn).toContain("browserReviewOnly");
+  expect(fn).toContain("needsBrowserReview");
+});

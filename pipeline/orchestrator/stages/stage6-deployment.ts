@@ -19,6 +19,7 @@ import { resolveFlags } from "../flags.ts";
 import { run as runRiya, purgeVerificationArtifacts, seedSampleData, limitedRolesFromContract, grantTestAccountRole, snapshotTableCounts, compareSnapshots, databaseNow, type DeployResult } from "../../../agents/riya/src/index.ts";
 import { agentForFile, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
+import type { Finding } from "./stage4-multi-agent-dev.ts";
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
 // 2026-07-24 (P2, full agentic upgrade): System B — the subjective live
@@ -157,6 +158,9 @@ export interface LiveRetestResult {
   notChecked?: string[];
   // 2026-10-24: a reviewer's own failure (timeout, crash) — never an app finding; the review is run again instead.
   reviewIncomplete?: boolean;
+  // 2026-10-25 (brewline2): this pass came without the live browser review and the design score (they run only when the static
+  // reviewers pass, and the Chief AI set their findings aside afterwards). Stage 6 runs them before accepting the pass.
+  needsBrowserReview?: boolean;
 }
 
 // 2026-09-29: real bug (project a034f90ba50e). A failed live design review
@@ -220,7 +224,11 @@ export function buildDeliverySummary(
   // the other.
   const specComplianceOk = retest.specCompliance ? retest.specCompliance.pass : true;
   const passed = deployResult.success && retest.pass && liveEvalOk && specComplianceOk;
-  const notChecked = retest.notChecked ?? [];
+  // A pass that never had the live browser review and the design score is not verified (it used to count as delivered).
+  const notChecked = [
+    ...(retest.notChecked ?? []),
+    ...(retest.needsBrowserReview ? ["the live browser review and the design score did not run: the static reviewers' findings were set aside after the point where they are decided"] : []),
+  ];
   return {
     status: !passed ? "failed" : notChecked.length > 0 ? "not_verified" : "delivered",
     ...(notChecked.length > 0 ? { notChecked } : {}),
@@ -298,6 +306,7 @@ async function runRealLiveRetest(
   stage4Result: Stage4Result,
   plan?: BuildPlan,
   changedFiles?: string[],
+  browserReviewOnly = false,
 ): Promise<LiveRetestResult> {
   const notChecked: string[] = [];
   const buildDir = buildDirFor(projectId);
@@ -310,7 +319,7 @@ async function runRealLiveRetest(
   // with fresh counters (limiter-reset.ts) so they are not answered with 429.
   const resetBefore = await resetAppRateLimits(buildDir, backendUrl);
   if (!resetBefore.ok) console.warn(`[stage6] could not reset the app's rate limits before the checks: ${resetBefore.reason}`);
-  const result = await liveRetestChecks(projectId, appUrl, backendUrl, stage4Result, plan, notChecked, changedFiles);
+  const result = await liveRetestChecks(projectId, appUrl, backendUrl, stage4Result, plan, notChecked, changedFiles, browserReviewOnly);
   // The live review signs up its own test accounts and the route sweep creates sample data under one. With
   // the data-safe redeploy they would stay in the database for good, so they are removed as soon as the
   // review ends (every account on the reserved test domain — see VERIFICATION_EMAIL_PATTERN in riya, which
@@ -350,6 +359,9 @@ async function liveRetestChecks(
   plan: BuildPlan | undefined,
   notChecked: string[],
   changedFiles?: string[],
+  // 2026-10-25: only the live browser review (Tier 3) and the design score, with the same test accounts and sample data; the
+  // checks that already passed in this round are not repeated.
+  browserReviewOnly = false,
 ): Promise<LiveRetestResult> {
   const { runStage5 } = await import("./stage5-adversarial-qa.ts");
 
@@ -384,7 +396,7 @@ async function liveRetestChecks(
     // reason (2026-10-04) — only a REAL comparison result blocks delivery or
     // skips the expensive stages below.
     let specCompliance: SpecComplianceResult | undefined;
-    try {
+    if (!browserReviewOnly) try {
       const spec = await readProjectSpec(projectId);
       specCompliance = await runSpecComplianceCheck(spec, appUrl);
       if (!specCompliance.pass) {
@@ -396,7 +408,7 @@ async function liveRetestChecks(
 
     // Cheapest of all — pure file read, no live URL needed at all.
     let stackConformance: SpecComplianceResult | undefined;
-    try {
+    if (!browserReviewOnly) try {
       stackConformance = await runStackConformanceCheck(stage4Result.frontendOutputDir);
       notChecked.push(...(stackConformance.notChecked ?? []));
       if (!stackConformance.pass) {
@@ -442,7 +454,7 @@ async function liveRetestChecks(
     // like the compliance checks above — the fix loop then redeploys and the
     // FULL retest runs again. A skip or pass changes nothing. Off switch:
     // AUTH_SMOKE_TEST=off.
-    if (process.env.AUTH_SMOKE_TEST !== "off" && plan) {
+    if (process.env.AUTH_SMOKE_TEST !== "off" && plan && !browserReviewOnly) {
       const { BrowserSession } = await import("../../../packages/agent-runtime/src/browser/client.ts");
       const browser = new BrowserSession();
       try {
@@ -522,7 +534,7 @@ async function liveRetestChecks(
     // and signed in (see route-sweep.ts) — the agents below only visit the pages they choose to click
     // through. No model, so it runs before them: a broken page, a dead link or a failing request skips the
     // expensive review exactly like the checks above. Off switch: ROUTE_SWEEP=off.
-    if (process.env.ROUTE_SWEEP !== "off") {
+    if (process.env.ROUTE_SWEEP !== "off" && !browserReviewOnly) {
       try {
         // The account and its sample data were made above; the sweep signs in with it and opens the detail pages
         // with the ids of the sample records (it makes its own account only when none could be created).
@@ -545,7 +557,17 @@ async function liveRetestChecks(
     // false instead.
     // After a fix round the reviewers re-read only the files that changed; the
     // live review of the running app (Tier 3) still covers the whole app.
-    const result: Stage5Result = await runStage5(projectId, stage4Result, true, plan, changedFiles && changedFiles.length > 0 ? changedFiles : undefined);
+    let result: Stage5Result;
+    if (browserReviewOnly) {
+      // Only the live browser review (Tier 3), mapped exactly as runStage5 maps it.
+      const { runTier3Review } = await import("../../../agents/tilotma/src/tier3-review.ts");
+      const t3 = await runTier3Review(projectId, stage4Result.frontendOutputDir);
+      result = t3.incomplete
+        ? { pass: false, findings: [], notChecked: [t3.incomplete], tier3Ran: true }
+        : { pass: t3.pass, findings: t3.pass ? [] : t3.findings.map((issue): Finding => ({ file: "", issue })), tier3Ran: true };
+    } else {
+      result = await runStage5(projectId, stage4Result, true, plan, changedFiles && changedFiles.length > 0 ? changedFiles : undefined);
+    }
     // A review that could not finish is "not checked", not a failed app:
     // nothing to route, and the delivery is not verified (see runRealLiveRetest).
     if (result.notChecked?.length) {
@@ -558,7 +580,7 @@ async function liveRetestChecks(
       // only runs once System A (findings) + Tier 3 (does it work) agree
       // the app is objectively sound. `liveEval` stays absent here, which
       // buildDeliverySummary treats as "didn't run", not "failed".
-      return { pass: result.pass, findings: result.findings, specCompliance };
+      return { pass: result.pass, findings: result.findings, specCompliance, ...(result.tier3Ran || browserReviewOnly ? {} : { needsBrowserReview: true }) };
     }
 
     // 2026-07-24 (P2): System B — the app is objectively correct; now judge
@@ -616,6 +638,9 @@ export interface Stage6Deps {
   // changedFiles (2026-10-04): the labeled files ("backend/src/x.ts") a fix round changed since the
   // last review; absent on the first review, which reads everything.
   liveRetestFn: (projectId: string, appUrl: string, backendUrl: string, changedFiles?: string[]) => Promise<LiveRetestResult>;
+  // 2026-10-25: the live browser review and the design score alone, run when a pass still owes them (needsBrowserReview).
+  // Absent in tests that stub the live retest; the real entry point wires it.
+  browserReviewFn?: (projectId: string, appUrl: string, backendUrl: string) => Promise<LiveRetestResult>;
   dbCheckFn?: () => Promise<boolean>;
   // 2026-07-28 (live, complex1): escalations is optional on both — existing
   // DI test stubs (which return only {success}) keep compiling unchanged,
@@ -846,6 +871,7 @@ export async function runStage6(
     deps = {
       deployFn: runRiya,
       liveRetestFn: (pid, appUrl, backendUrl, changed) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result, plan, changed),
+      browserReviewFn: (pid, appUrl, backendUrl) => runRealLiveRetest(pid, appUrl, backendUrl, stage4Result, plan, undefined, true),
       dbCheckFn: checkNexsidiDbReachable,
       roundGuard: (findings) => checkRoundGuard(projectId, "live", findings as never),
       chiefChat: defaultChiefChat,
@@ -1023,7 +1049,16 @@ export async function runStage6(
     };
   }
 
-  let retest = await gateLiveFindings(projectId, guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl)), deps.chiefChat);
+  // One live review as the loop sees it: the checks, the Chief AI's gate, and, when the pass only came because the static
+  // reviewers' findings were set aside, the live browser review and the design score it still owes.
+  const reviewLive = async (changed?: string[]): Promise<LiveRetestResult> => {
+    const first = await gateLiveFindings(projectId, guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl, changed)), deps.chiefChat);
+    if (!(first.pass && first.needsBrowserReview) || !deps.browserReviewFn) return first;
+    console.log(`[stage6] the static reviewers' findings were all outside the plan - running the live browser review and the design score now`);
+    const second = await gateLiveFindings(projectId, guardLiveRetest(projectId, await deps.browserReviewFn(projectId, deployResult.appUrl, deployResult.backendUrl)), deps.chiefChat);
+    return { ...second, specCompliance: first.specCompliance ?? second.specCompliance, notChecked: [...(first.notChecked ?? []), ...(second.notChecked ?? [])], needsBrowserReview: false };
+  };
+  let retest = await reviewLive();
   changedSinceReview.clear(); // the first review reads everything, so earlier changes are already covered
   let prevFindingsSig = "";
   let fixAttempt = 0;
@@ -1045,7 +1080,7 @@ export async function runStage6(
     if (retest.reviewIncomplete && reviewRetries < 1) {
       reviewRetries++;
       console.log(`[stage6] a reviewer did not finish and nothing else is open — running the review again (no fix, no redeploy)`);
-      retest = await gateLiveFindings(projectId, guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl)), deps.chiefChat);
+      retest = await reviewLive();
       continue;
     }
     if (retest.reviewIncomplete) {
@@ -1139,7 +1174,7 @@ export async function runStage6(
 
       const changedForReview = [...changedSinceReview];
       changedSinceReview.clear();
-      retest = await gateLiveFindings(projectId, guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl, changedForReview.length > 0 ? changedForReview : undefined)), deps.chiefChat);
+      retest = await reviewLive(changedForReview.length > 0 ? changedForReview : undefined);
     } else {
       console.warn(`[stage6] No BuildPlan provided — cannot invoke agent fixes. Exiting fix loop.`);
       break;

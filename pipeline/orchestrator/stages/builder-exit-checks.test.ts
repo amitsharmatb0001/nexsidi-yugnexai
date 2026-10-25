@@ -189,3 +189,33 @@ test("the planner, the backend builder and both reviewers are told a role never 
   expect(read("library/auth-flows/SKILL.md")).toContain("role is never read from the request");
   expect(read("library/security-review/SKILL.md")).toContain("role or permission field");
 });
+
+// 2026-10-25 (brewline2): order_items referenced menu_items with ON DELETE CASCADE, so deleting a menu item (an endpoint of the
+// contract) deleted the order lines of every past order; and order_items kept no price, so changing a price changed old orders.
+// A table of order/invoice/booking lines must not cascade from the catalog row it points at, and must keep the price.
+test("a line table that cascades from its catalog row, or keeps no price, is reported; RESTRICT with a price column passes", () => {
+  const bad = [
+    "CREATE TABLE IF NOT EXISTS order_items (",
+    "    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),",
+    "    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,",
+    "    menu_item_id UUID NOT NULL REFERENCES menu_items(id) ON DELETE CASCADE,",
+    "    quantity INTEGER NOT NULL DEFAULT 1",
+    ");",
+  ].join("\n");
+  project("h1", { "db/migrations/0000_initial.sql": bad }, "A coffee shop.");
+  const found = backendExitChecks("h1");
+  expect(found.some((f) => f.includes("order_items") && f.includes("ON DELETE CASCADE"))).toBe(true);
+  expect(found.some((f) => f.includes("order_items") && f.includes("price"))).toBe(true);
+  const good = bad.replace("menu_item_id UUID NOT NULL REFERENCES menu_items(id) ON DELETE CASCADE", "menu_item_id UUID NOT NULL REFERENCES menu_items(id) ON DELETE RESTRICT").replace("quantity INTEGER", "unit_price NUMERIC(10,2) NOT NULL,\n    quantity INTEGER");
+  project("h2", { "db/migrations/0000_initial.sql": good }, "A coffee shop.");
+  expect(backendExitChecks("h2").some((f) => f.includes("order_items"))).toBe(false);
+  // a table that is not a line table is not judged
+  project("h3", { "db/migrations/0000_initial.sql": "CREATE TABLE sessions (id UUID, user_id UUID REFERENCES users(id) ON DELETE CASCADE);\n" }, "A coffee shop.");
+  expect(backendExitChecks("h3").some((f) => f.includes("sessions"))).toBe(false);
+});
+
+test("the backend and database builders are told history is kept", () => {
+  const read = (rel: string) => readFileSync(new URL(`../../../packages/agent-runtime/skills/${rel}`, import.meta.url), "utf-8");
+  expect(read("shubham/20-critical-rules-and-verification.md")).toContain("HISTORY IS KEPT");
+  expect(read("pranav.md")).toContain("HISTORY IS KEPT");
+});

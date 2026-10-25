@@ -752,3 +752,18 @@ test("Tilotma's review: a first pass that did not finish and found nothing is in
   const src = (await import("node:fs")).readFileSync(new URL("../../../agents/tilotma/src/tier3-review.ts", import.meta.url), "utf-8");
   expect(src).toContain("if (!stage1.success && stage1Findings.length === 0)");
 });
+
+// 2026-10-25 (brewline2): Tier 3 (the live browser review) runs only when the static reviewers pass. The Chief AI decides later,
+// in stage 6, which of their findings are outside the plan; the app was then accepted as passed without the browser review ever
+// having run. A result now says whether Tier 3 ran, so the caller can tell "passed after the browser review" from "passed
+// because the static findings were set aside".
+test("a result says whether the live browser review ran", async () => {
+  const ran = await runStage5WithAgents("test-proj", STAGE4_RESULT, makeAgents());
+  expect(ran.tier3Ran).toBe(true);
+  const skippedBecauseStaticFailed = await runStage5WithAgents("test-proj", STAGE4_RESULT, makeAgents({
+    runKaran: async () => ({ agent: "karan", score: 0, passed: false, findings: [{ severity: "CRITICAL" as const, description: "privilege escalation" }] }),
+  }));
+  expect(skippedBecauseStaticFailed.tier3Ran).toBeFalsy();
+  const notAsked = await runStage5WithAgents("test-proj", STAGE4_RESULT, makeAgents(), false);
+  expect(notAsked.tier3Ran).toBeFalsy();
+});

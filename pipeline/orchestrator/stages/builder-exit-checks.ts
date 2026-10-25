@@ -99,6 +99,7 @@ export function backendExitChecks(projectId: string): string[] {
     ...starterContentFindings(dir),
     ...roleFromRequestFindings(join(dir, "backend", "src")),
     ...staffAccountFindings(dir),
+    ...historyIntegrityFindings(dir),
   ];
 }
 
@@ -319,4 +320,38 @@ export function staffAccountFindings(projectDir: string): string[] {
   scan(join(projectDir, "db", "migrations"), /\.sql$/i);
   if (seeded) return [];
   return [`backend/src/db: ${staffOnly.length} endpoint(s) in the contract are staff-only (${staffOnly.slice(0, 3).map((e) => `${e.method.toUpperCase()} ${e.path}`).join(", ")}), but no staff account is seeded — add backend/src/db/seedStaff.ts, called at startup, that creates one staff account only when none exists (email and password from STAFF_EMAIL / STAFF_PASSWORD, a generated password logged once when unset)`];
+}
+
+// 2026-10-25 (brewline2): order_items referenced menu_items with ON DELETE CASCADE, so deleting a menu item (an endpoint of the
+// contract) deleted the order lines of every past order; and order_items kept no price, so changing a price changed old orders.
+// A "line table" (a table with an order/invoice/booking/purchase/sale parent column and a reference to a catalog row) must not
+// cascade from the catalog row and must keep the price it was sold at. A table that a later ALTER TABLE touches is not judged.
+const PARENT_COLUMN = /^\s*"?(order|invoice|booking|purchase|sale)_id"?\s/i;
+
+export function historyIntegrityFindings(projectDir: string): string[] {
+  const dir = join(projectDir, "db", "migrations");
+  let sql = "";
+  try {
+    for (const f of readdirSync(dir).filter((n) => n.endsWith(".sql")).sort()) sql += readFileSync(join(dir, f), "utf-8") + "\n";
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const m of sql.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w+)"?\s*\(([\s\S]*?)\n\s*\)\s*;/gi)) {
+    const table = m[1]!;
+    const columns = m[2]!.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (!columns.some((c) => PARENT_COLUMN.test(c))) continue;
+    if (!columns.some((c) => /^\s*"?\w+_id"?\s[^,]*REFERENCES/i.test(c) && !PARENT_COLUMN.test(c))) continue;
+    if (new RegExp(`ALTER\s+TABLE\s+"?${table}"?`, "i").test(sql)) continue;
+    for (const c of columns) {
+      if (/REFERENCES[^,]*ON\s+DELETE\s+CASCADE/i.test(c) && !PARENT_COLUMN.test(c)) {
+        const col = c.match(/^"?(\w+)"?/)?.[1] ?? "?";
+        out.push(`db/migrations: ${table}.${col} is ON DELETE CASCADE from the row it points at, so deleting that row (a menu item, a product) deletes the ${table} lines of every past order. History must survive: use ON DELETE RESTRICT (or keep the line with the name and price copied into it)`);
+      }
+    }
+    if (!columns.some((c) => /price|amount/i.test(c.split(/\s/)[0] ?? ""))) {
+      out.push(`db/migrations: ${table} keeps no price (no price or amount column), so changing the price of an item changes what every past order shows. Copy the unit price (and name) into the line when the order is placed`);
+    }
+  }
+  return out;
 }

@@ -28,6 +28,15 @@ export const SECURITY_BASELINE: string[] = [
   "Sign-in and sign-up are rate limited",
   "CORS allows only the app's own frontend",
   "The names of the tools that built the app never appear to users",
+  // 2026-10-25 (brewline2): a sign-up that accepted role: 'staff' from the request was filed as "later" because the spec's own
+  // wording allowed a staff sign-up. A plan cannot authorise a vulnerability.
+  "No endpoint ever lets the caller choose a role or permissions for themselves (public sign-up creates the lowest role only; staff accounts come from a seeded account or from someone who already has that role)",
+];
+
+/** What every app keeps, independent of the spec: history is not changed by editing or deleting what it refers to. */
+export const INTEGRITY_BASELINE: string[] = [
+  "Deleting or editing a record that history refers to (a menu item, a product, a service) never deletes or changes what past orders, invoices or bookings recorded: their lines stay, with the name and price as they were at the time",
+  "A check-then-write (is the item in stock, is the slot free) is one atomic step, so two requests at once cannot both pass it",
 ];
 
 const readJson = <T>(file: string): T | null => {
@@ -55,6 +64,7 @@ export function planItemsFor(projectDir: string): PlanItem[] {
     items.push({ id: "DESIGN", text: `approved design: colours ${colours || "(none)"}; fonts ${fonts || "(none)"}` });
   }
   SECURITY_BASELINE.forEach((s, i) => items.push({ id: `SEC${i + 1}`, text: s }));
+  INTEGRITY_BASELINE.forEach((s, i) => items.push({ id: `INT${i + 1}`, text: s }));
   return items;
 }
 
@@ -133,7 +143,10 @@ For each finding answer one of:
 - "fix": it breaks a plan item above AND the code shown (or the observation it reports) supports it. Give plan_item
   (e.g. "SC3", "EP2", "SEC6", "DESIGN") and restate it in "text" quoting the REAL code exactly, without any part the
   code contradicts.
-- "later": it may be real but breaks no plan item (a role, feature or rule the plan does not have; a nicety).
+- "later": it may be real but breaks no plan item (a role, feature or rule the plan does not have; a nicety). A security
+  flaw (a caller choosing their own role, injection, exposed data) or lost history (SEC items, INT1/INT2) is never "later"
+  because the plan's own wording allowed it: a plan cannot authorise a vulnerability or the loss of recorded orders; answer
+  "fix" with the matching SEC or INT item.
 - "false": the code shown contradicts it. A GATE note means the system already found part of it false; keep only a
   part you can confirm in the code (as "fix"), otherwise answer "false".
 
