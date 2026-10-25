@@ -157,6 +157,24 @@ Explicit (paid) caches are not available on gemini-4-argon; implicit caching is 
 | 7 | First deploy from a fixed template (redeploys done today) | First deploy: 16–19 agent calls for a ~1 KB file | — |
 | 8 | Audit the parts not yet traced: planning agents (spec, plan, database), the design score agent, the web UI, other app types, multi-user use | Not covered by the 2026-10-24 audit | — |
 
+### Status of section 5 (2026-10-25)
+
+| # | Status |
+|---|---|
+| 3 | Done: builder teams, review teams, contract check of the compiled backend against the approved API contract (`contract-route-check.ts`). Frontend unit tests are still not built. |
+| 4 | K1 done (reviewer cache order: 0.4% to 74.8% of the code block identical on Brewline's last fix round), K3 done (`browser_steps`, also for the design-score agent), K4 not built: compaction never fired on Brewline (aanya averaged 67K input tokens a call, 76% cached), and teams already shorten each run; revisit only if the next build shows long runs. |
+| 6 | Done (all four flash models, ordered by measurement; leads on 3.1-pro). |
+| 7 | Done: the system writes the standard compose file and starts and checks it (13 s on a copy of Brewline; the agent's first deploy was 25 min); also a fresh-database migration check, which found a fix-round migration that stops Postgres on a new install. |
+| 8 | Done as far as the records allow, see below. |
+| new | Product-image rule, hold-page wording, footer logo as a file, broken-image check in the page sweep, starter content for public catalogs, port reservation for concurrent builds. |
+
+**Audit result (item 8):**
+- Planning (Brewline): spec to contract 9 of 9 endpoints, schema equals migrations, every contract route has a backend task. No gap found. Not checked: how the planner behaves on other kinds of spec (only one recorded plan was traced).
+- Design-score agent: structurally sound (four scores required, "no score" is unscored and never a pass, screenshots required and its images checked). Brewline never reached it (budget stopped first), so its scores are not traced on this build. It now has the grouped browser call.
+- Web UI: only the failure texts were checked (the guessing texts are gone, a test guards it). Not checked: the other screens.
+- Other app types: the planner only produces `web` apps today (mobile, desktop and system apps are Phase 2); nothing to check.
+- Multi-user: projects are scoped by user in the API, the worker runs 6 activities at once, and ports were picked with no hold between picking and starting: two builds deploying together could pick the same port. Fixed (ports held per build for 45 minutes). Not checked: two real builds running at the same time.
+
 ---
 
 ## 6. How the next build is judged (targets from Brewline's baseline)

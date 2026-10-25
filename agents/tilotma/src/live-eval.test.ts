@@ -302,3 +302,9 @@ test("runLiveEval runs on a model that is shown the screenshots, and must have s
   expect(modelCanSeeImages(capturedConfig.model)).toBe(true);
   expect(capturedConfig.requireImagesSeen).toBe(true);
 });
+
+// 2026-10-24: browser_steps runs several browser actions in one call; the design-score agent is told to use it, since
+// each separate action costs a model call that resends the whole conversation.
+test("the design-score agent is told to group browser actions into browser_steps", () => {
+  expect(LIVE_EVAL_SYSTEM_PROMPT).toContain("browser_steps {steps}");
+});

@@ -266,6 +266,12 @@ understand what the interface does, find primary actions, and complete tasks
 without guessing?
 
 Tools available to you:
+- browser_steps {steps}: several browser actions in ONE call, in order, on the same
+  page, e.g. [{action:"navigate",url}, {action:"screenshot",outputPath},
+  {action:"get_text"}]; every result comes back together and every screenshot is
+  attached. Each call resends the whole conversation, so group the actions whose
+  input you already know. Actions: navigate, click, fill, screenshot, get_text,
+  console_errors, computed_style, element_exists, current_url.
 - browser_navigate {url}: open a page.
 - browser_screenshot {outputPath}: capture the CURRENT page. Take one on
   every page you judge — a score without a screenshot to back it is not

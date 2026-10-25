@@ -616,3 +616,11 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - `migrationFindings` (`pipeline/orchestrator/stages/migration-check.ts`): applies every migration in order to an empty PostgreSQL 16 in a throwaway container, as a customer's first start does, and reports the first file that fails with line and the database's own message. Run at the backend builder's finish (`backendFreshStartFindings`). Not run, and says so, if docker is unavailable.
 
 **Proof:** template output is byte-identical to Brewline's final compose file (apart from the secret); on a copy of Brewline the system wrote it and brought the whole stack up and healthy in 13 s (images cached; the agent's first deploy was 25 min), menu answers, frontend 200; the migration check found Brewline's `0003_fix.sql` in 7.7 s with the database's own message and passed Trailhead 2; tests for both (6 + 4); all suites 2,433 pass. Brewline itself was not changed (CLAUDE.md: fix the system, not the app); its broken migration is a finding for the next build. **Not measured yet:** the deploy time on a real first deploy.
+
+## Batch 34 — audit of the untraced parts, and ports held per build (2026-10-25)
+
+**Audit (item 8), from Brewline's records and the code:** planning chain consistent (spec to contract 9 of 9, schema equals migrations, every route has a task); the design-score agent is sound (scores required, unscored never passes, screenshots required) but Brewline never reached it, so no scores traced; other app types: only `web` exists; multi-user: found that ports are picked from a snapshot with no hold, and the worker runs 6 activities at once.
+
+**Built:** `portReservations` (`agents/riya/src/index.ts`): a port a build picks is held for it for 45 minutes in a shared file in the builds folder, checked and taken in one step after the host check; a damaged file counts as empty. The design-score agent's instructions include the grouped browser call.
+
+**Proof:** tests (two builds picking at the same moment get 3200 and 3201; own hold ignored, expired hold free; damaged file; the three picks use it); Riya suite 155 pass. **Not checked:** two real builds at the same time; the web UI screens other than the failure texts; the planner on other kinds of spec.

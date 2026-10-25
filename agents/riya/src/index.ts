@@ -2067,10 +2067,11 @@ export async function run(
   // a correctly-picked free frontend port could still yield a colliding
   // backend port. Now searched for real too, starting from the preferred
   // "+100" convention so the common case still lands on the expected offset.
-  const frontendPort = existingDeployment?.frontendPort ?? (await findFreePort(3200, 3299));
+  const buildsRoot = process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds";
+  const frontendPort = existingDeployment?.frontendPort ?? (await findFreePort(3200, 3299, { reservation: portReservations(buildsRoot, projectId) }));
   const preferredBackendPort = frontendPort + 100 < 3400 ? frontendPort + 100 : 3100;
-  const backendPort = existingDeployment?.backendPort ?? (await findFreePort(preferredBackendPort, preferredBackendPort + 99));
-  const dbPort = existingDeployment?.dbPort ?? (await findFreePort(5435, 5499));
+  const backendPort = existingDeployment?.backendPort ?? (await findFreePort(preferredBackendPort, preferredBackendPort + 99, { reservation: portReservations(buildsRoot, projectId) }));
+  const dbPort = existingDeployment?.dbPort ?? (await findFreePort(5435, 5499, { reservation: portReservations(buildsRoot, projectId) }));
   const appUrl = `http://localhost:${frontendPort}`;
   const backendUrl = `http://localhost:${backendPort}`;
 
@@ -2568,10 +2569,49 @@ export async function isPortFreeOnHost(port: number): Promise<boolean> {
   return true;
 }
 
+// 2026-10-24 (multi-user audit): a port a build has picked is held for it, in a file shared by every build in the builds
+// folder, for 45 minutes. The worker runs up to 6 activities at once; without a hold two builds deploying together could
+// pick the same port, and the second would fail to start.
+const PORT_HOLD_MS = 45 * 60_000;
+
+export interface PortReservation {
+  /** Held by another build right now. */
+  isReserved(port: number): boolean;
+  /** Hold this port for this build. */
+  reserve(port: number): void;
+}
+
+export function portReservations(root: string, projectId: string, now: () => number = Date.now): PortReservation {
+  const file = join(root, ".port-reservations.json");
+  const read = (): Record<string, { projectId: string; at: number }> => {
+    try {
+      const parsed = JSON.parse(readFileSync(file, "utf-8")) as Record<string, { projectId: string; at: number }>;
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+  return {
+    isReserved(port) {
+      const hold = read()[String(port)];
+      return !!hold && hold.projectId !== projectId && now() - hold.at < PORT_HOLD_MS;
+    },
+    reserve(port) {
+      const all = read();
+      for (const [p, hold] of Object.entries(all)) if (now() - hold.at >= PORT_HOLD_MS) delete all[p];
+      all[String(port)] = { projectId, at: now() };
+      mkdirSync(root, { recursive: true });
+      writeFileSync(file, JSON.stringify(all), "utf-8");
+    },
+  };
+}
+
 export async function findFreePort(
   start: number,
   end: number,
   deps: {
+    // Ports other builds have picked; checked and taken in one step after the host check, so concurrent builds differ.
+    reservation?: PortReservation;
     // Per-port docker answer (kept for tests and callers that inject one).
     isPortUsedByDocker?: (port: number) => boolean | null;
     // Snapshot provider; default asks docker once for the whole search.
@@ -2601,7 +2641,13 @@ export async function findFreePort(
       warn(`[ports] docker unavailable — relying on the socket check (${PROBE_HOSTS.join(", ")}) for ${start}-${end}`);
       warned = true;
     }
-    if (await hostCheck(port)) return port;
+    if (!(await hostCheck(port))) continue;
+    // No wait between this check and the hold, so two builds cannot both take the same port.
+    if (deps.reservation) {
+      if (deps.reservation.isReserved(port)) continue;
+      deps.reservation.reserve(port);
+    }
+    return port;
   }
   // Was `return start` — silently handing out a port known to be taken.
   throw new Error(`no free port in ${start}-${end} (all in use)`);
