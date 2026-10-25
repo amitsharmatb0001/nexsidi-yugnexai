@@ -11,6 +11,8 @@ import { scanProjectForDeadButtons } from "./dead-ui-check.ts";
 import { specColours } from "../../../agents/vanya/src/index.ts";
 import { contractRouteFindings, staffOnlyEndpoint, type ContractEndpoint } from "./contract-route-check.ts";
 import { migrationFindings } from "./migration-check.ts";
+import { metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings } from "./shipping-hygiene.ts";
+import { planItemsFor, type PlanItem } from "../chief-check.ts";
 
 const SKIP = new Set(["node_modules", ".next", "dist", "build", ".git"]);
 
@@ -99,6 +101,46 @@ export function backendExitChecks(projectId: string): string[] {
     ...starterContentFindings(dir),
     ...roleFromRequestFindings(join(dir, "backend", "src")),
     ...staffAccountFindings(dir),
+    ...secretLoggingFindings(dir).filter((f) => f.startsWith("backend/")),
+    ...strayShippedFileFindings(dir).filter((f) => f.startsWith("backend/")),
+  ];
+}
+
+export { metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings };
+
+// 2026-10-25 (brewline3): the reviewers judge the code against the approved plan's items (SC, EP, ROLES, DESIGN, SEC, INT), but the
+// builders never had to check their own work against the same list, so every gap was found in review, a paid round each. The builder
+// now gets the items that concern it in its task and cannot finish until its summary accounts for each one with a file it checked.
+const BACKEND_ITEMS = /^(EP\d+|ROLES|SEC(1|2|3|4|6|7|9)|INT\d+)$/;
+const FRONTEND_ITEMS = /^(SC\d+|DESIGN|ROLES|SEC(5|8)|INT3)$/;
+
+export function checklistFor(projectDir: string, role: "backend" | "frontend"): PlanItem[] {
+  const wanted = role === "backend" ? BACKEND_ITEMS : FRONTEND_ITEMS;
+  return planItemsFor(projectDir).filter((i) => wanted.test(i.id));
+}
+
+/** The task text that gives a builder its checklist from the start. */
+export function checklistTaskText(projectId: string, role: "backend" | "frontend"): string {
+  const dir = buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds");
+  const items = checklistFor(dir, role);
+  if (items.length === 0) return "";
+  return `APPROVED PLAN CHECKLIST — the reviewers judge your work against exactly these items. Build to them, and before you call task_complete check each one in your own files. Your task_complete summary must list every item as "[ID] file:line — what you checked", one line each; the system refuses to finish without them.
+${items.map((i) => `[${i.id}] ${i.text}`).join("\n")}`;
+}
+
+const HAS_FILE_NEAR = /[\w./\\-]+\.(?:tsx?|jsx?|css|sql|json|mjs|cjs|ya?ml)\b/i;
+
+/** One finding listing the checklist items the summary does not account for (an id with a file named near it), or none. */
+export function checklistFindings(projectId: string, role: "backend" | "frontend", summary: string): string[] {
+  const dir = buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds");
+  const items = checklistFor(dir, role);
+  const missing = items.filter((i) => {
+    const at = summary.search(new RegExp(`\\[${i.id}\\]|\\b${i.id}\\b`));
+    return at < 0 || !HAS_FILE_NEAR.test(summary.slice(at, at + 220));
+  });
+  if (missing.length === 0) return [];
+  return [
+    `your task_complete summary does not account for ${missing.length} of the approved plan's ${items.length} checklist items. Check each one in your files now (read the code, not memory) and list every item in the summary as "[ID] file:line — what you checked". Missing:\n${missing.map((i) => `[${i.id}] ${i.text}`).join("\n")}`,
   ];
 }
 
@@ -187,6 +229,8 @@ export function frontendExitChecks(projectId: string): string[] {
   out.push(...attributionLogoFindings(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend")));
   for (const f of scanProjectForEmojiUi(projectId)) out.push(`${f.file}: ${f.issue}`);
   for (const f of scanProjectForDeadButtons(projectId)) out.push(`${f.file}: ${f.issue}`);
+  const projectDir = buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds");
+  out.push(...metadataLeakFindings(projectDir), ...cookieSecureFindings(projectDir), ...secretLoggingFindings(projectDir).filter((f) => f.startsWith("frontend/")), ...strayShippedFileFindings(projectDir).filter((f) => f.startsWith("frontend/")));
   const missing = missingSpecColours(projectId);
   if (missing.length > 0) out.push(`frontend theme: the approved spec's colours are not used anywhere in the frontend: ${missing.join(", ")} — put them in the theme (app/theme-overrides.css)`);
   return out;

@@ -177,7 +177,7 @@ export interface AgentRunConfig {
   skipEvidenceGate?: boolean;
   // 2026-10-24: checks the system runs on this agent's work when it calls task_complete; each returned line is a problem
   // it must fix first (the frontend builder's emoji, dead-button and spec-colour checks — see builder-exit-checks.ts).
-  exitChecks?: () => string[] | Promise<string[]>;
+  exitChecks?: (summary: string) => string[] | Promise<string[]>;
   // 2026-08-06: real bug found live (project bae438767bed) — Tilotma's
   // reality-checker (an EVALUATOR per D26/its own prompt: "verify Stage 1's
   // claims... call task_complete", never told to fix anything) has
@@ -1241,7 +1241,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           }
           // 2026-10-24: the system's own checks for this agent's work (e.g. the frontend builder's emoji, dead-button and
           // spec-colour checks) run before it may finish; what they find goes back to it to fix first.
-          const exitFailures = config.exitChecks ? await config.exitChecks() : [];
+          const exitFailures = config.exitChecks ? await config.exitChecks(String(a.summary ?? "")) : [];
           if (exitFailures.length > 0) {
             console.log(`[${config.agentName}:agent] task_complete REJECTED on iteration ${iterations}: ${exitFailures.length} problem(s) found by the system's own checks`);
             result = { status: "error", summary: `Not done yet: the system's own checks found ${exitFailures.length} problem(s) in your files. Fix each one, then call task_complete again:\n${exitFailures.map((f) => `- ${f}`).join("\n")}` };

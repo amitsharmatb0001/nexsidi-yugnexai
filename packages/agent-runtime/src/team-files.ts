@@ -66,7 +66,7 @@ type Overrides = Partial<Pick<AgentRunConfig,
 export function teamRunOverrides(
   phase: { role?: "shared" | "helper" | "integrate"; ownFiles?: string[]; avoidFiles?: string[]; helperIndex?: number } | undefined,
   sandboxDir: string,
-  opts: { taskFiles: string[]; baseExitChecks?: () => string[] | Promise<string[]>; runBackendTests?: boolean },
+  opts: { taskFiles: string[]; baseExitChecks?: (summary: string) => string[] | Promise<string[]>; runBackendTests?: boolean },
 ): Overrides {
   if (!phase?.role) return {};
   // Helpers and the shared step share the folder with other runs at the same time: no whole-folder rollback, no containers,
@@ -96,9 +96,9 @@ export function teamRunOverrides(
   }
   return {
     geminiTier: "design",
-    exitChecks: async () => [
+    exitChecks: async (summary: string) => [
       ...missingFiles(sandboxDir, opts.taskFiles),
-      ...(opts.baseExitChecks ? await opts.baseExitChecks() : []),
+      ...(opts.baseExitChecks ? await opts.baseExitChecks(summary) : []),
       ...(opts.runBackendTests ? backendUnitTestFailures(sandboxDir) : []),
     ],
   };

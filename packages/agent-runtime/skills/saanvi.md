@@ -43,3 +43,8 @@ This is the ONLY document Arjun plans from. Get it right.
 - Extract content from the user's description verbatim into feature descriptions — no placeholder copy.
 - `description` must state the visual identity explicitly (e.g. "dark slate theme with electric violet accent").
 - `successCriteria` must include at least one visual quality criterion.
+- BUSINESS NUMBERS ARE STATED ONCE, WITH VALUES. When the request or a feature depends on a number the user did not give (opening
+  hours, minimum notice for a pickup, order limits, delivery radius), write a concrete default into the spec's rules in plain
+  words (for example "Store hours: Monday to Friday 7:00-17:00, Saturday and Sunday 8:00-15:00") and use exactly those words in every
+  feature and criterion that mentions it. Never write "during store hours" with no hours: the frontend and the backend would each
+  invent their own and disagree (Brewline 3: slots offered from 6:30, refused by the server before 8:00).

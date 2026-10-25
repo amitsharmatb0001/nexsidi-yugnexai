@@ -786,3 +786,14 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Changed:** `chief-check.ts`: a small file is shown whole, a large one as its first 30 lines plus 80 lines each side of every cited line, numbered (cap 150,000 characters); a "false" verdict is accepted only when the system already proved it (gate flag), when its quote is really in a cited file, or when it is an absence in a file shown whole; otherwise the finding is kept and goes to a builder to confirm. The yardstick gained: no secret in a log or shipped test file (SEC4), no internal brief in user-visible text (SEC8), and one set of business-rule numbers for frontend and backend (INT3).
 
 **Proof:** tests for each rule; on brewline3's real files both recorded "cut off" dismissals now get a prompt that shows the cited code (line 296 present; the compose file shown whole). All suites pass.
+
+## Batch 54 — builders check their own work against the approved plan, and find the known classes before review (part A, 2026-10-25)
+
+**Found (brewline3):** the reviewers judge against the plan's items (SC, EP, ROLES, DESIGN, SEC, INT) but no builder path used the same list, so each gap was a paid review round. Four things found one or two per round were file reads a builder could do: the whole spec pasted into the page description (825 characters), a staff password written to the console, two test compose files with weak secrets left in `backend/` and `frontend/`, a `secure` cookie that breaks sign-in over http. The frontend and backend each invented store hours because the spec said only "during store hours".
+
+**Built:**
+- `shipping-hygiene.ts`: `metadataLeakFindings`, `cookieSecureFindings`, `secretLoggingFindings`, `strayShippedFileFindings`, wired into the backend and frontend finish checks (no model call).
+- `builder-exit-checks.ts`: `checklistFor` / `checklistTaskText` / `checklistFindings`: the builder's first task carries the plan items that concern it (backend: endpoints, roles, security, integrity; frontend: criteria, design, display security, integrity) and its `task_complete` summary must list each as `[ID] file:line`, or the system refuses to finish. Fix rounds are not held to it. The loops pass the summary to the finish checks (`loop.ts`, `gemini-loop.ts`, `team-files.ts`).
+- `saanvi.md`: a business number (hours, minimum notice, limits) is written once, with values, in the spec.
+
+**Proof:** tests for each check, the checklist and the wiring; run on brewline3's real code the new checks report 4 problems that were found only in review (metadata 825 characters, `seedStaff.ts:29` password log, `backend/docker-compose.yml`, `frontend/docker-compose.yml`) with no model call; all suites pass.

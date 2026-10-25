@@ -13,8 +13,8 @@ import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-fi
 
 // 2026-10-24: the backend builder's own checks before it may finish (no hot-linked images in code or seed files) —
 // run by the system at task_complete, same as the frontend's. Dynamic import: the checks live in the pipeline package.
-async function backendExitChecksFor(projectId: string): Promise<string[]> {
-  const { backendExitChecks, backendContractFindings, keepHistoryInMigrations } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
+async function backendExitChecksFor(projectId: string, summary?: string): Promise<string[]> {
+  const { backendExitChecks, backendContractFindings, keepHistoryInMigrations, checklistFindings } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
   // 2026-10-25: db/ is the database builder's folder; the system, not this builder, keeps order history safe in it.
   try {
     for (const change of keepHistoryInMigrations(buildDirFor(projectId))) console.log(`[shubham] history kept by the system: ${change}`);
@@ -24,7 +24,19 @@ async function backendExitChecksFor(projectId: string): Promise<string[]> {
   return [
     ...backendExitChecks(projectId),
     ...(await contractRouteFindingsFor(backendContractFindings, projectId)),
+    // 2026-10-25: the first build (not a fix round) must account for every approved-plan item that concerns the backend.
+    ...(summary !== undefined ? checklistFindings(projectId, "backend", summary) : []),
   ];
+}
+
+// 2026-10-25: the approved plan's checklist for this builder (the same items the reviewers judge against), for the build task.
+async function checklistTextFor(projectId: string): Promise<string> {
+  try {
+    const { checklistTaskText } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
+    return checklistTaskText(projectId, "backend");
+  } catch {
+    return "";
+  }
 }
 
 // 2026-10-24: the approved API contract against the compiled backend, never fatal: a check that cannot run adds nothing.
@@ -283,7 +295,7 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
     fallbackModels: FALLBACK_CHAIN.shubham,
     apiKey,
     systemPrompt: knownMistakesPrefix,
-    initialMessage: (phase ? phase.header + "\n\n" : "") + buildAgentTask(plan),
+    initialMessage: (phase ? phase.header + "\n\n" : "") + buildAgentTask(plan) + (!phase || phase.isLast ? "\n\n" + (await checklistTextFor(plan.projectId)) : ""),
     sandboxDir: outputDir,
     readOnlyDirs: shubhamReadOnlyDirs(outputDir),
     projectId: plan.projectId,
@@ -363,8 +375,8 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
     preloadOwnFiles: !!phase && !phase.scaffold,
     maxIterations: phase?.maxSteps ?? 90,
     // 2026-10-24: a team step's settings win (helpers: flash, own files only, type check only; lead: pro, plan-vs-code check).
-    exitChecks: !phase || phase.isLast ? () => backendExitChecksFor(plan.projectId) : undefined,
-    ...teamRunOverrides(phase, outputDir, { taskFiles: plan.shubhamTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: !phase || phase.isLast ? () => backendExitChecksFor(plan.projectId) : undefined, runBackendTests: true }),
+    exitChecks: !phase || phase.isLast ? (summary: string) => backendExitChecksFor(plan.projectId, summary) : undefined,
+    ...teamRunOverrides(phase, outputDir, { taskFiles: plan.shubhamTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: !phase || phase.isLast ? (summary: string) => backendExitChecksFor(plan.projectId, summary) : undefined, runBackendTests: true }),
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see

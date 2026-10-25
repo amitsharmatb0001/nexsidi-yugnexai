@@ -1094,7 +1094,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           }
           // 2026-10-24: the system's own checks for this agent's work (e.g. the frontend builder's emoji, dead-button and
           // spec-colour checks) run before it may finish; what they find goes back to it to fix first.
-          const exitFailures = config.exitChecks ? await config.exitChecks() : [];
+          const exitFailures = config.exitChecks ? await config.exitChecks(String(a.summary ?? "")) : [];
           if (exitFailures.length > 0) {
             console.log(`[${config.agentName}:gemini-agent] task_complete REJECTED on iteration ${iterations}: ${exitFailures.length} problem(s) found by the system's own checks`);
             result = { status: "error", summary: `Not done yet: the system's own checks found ${exitFailures.length} problem(s) in your files. Fix each one, then call task_complete again:\n${exitFailures.map((f) => `- ${f}`).join("\n")}` };

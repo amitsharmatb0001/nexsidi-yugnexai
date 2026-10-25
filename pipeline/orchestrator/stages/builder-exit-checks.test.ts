@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { frontendExitChecks, externalImageUrls, backendExitChecks, historyIntegrityFindings, keepHistoryInMigrations } from "./builder-exit-checks.ts";
+import { frontendExitChecks, externalImageUrls, backendExitChecks, historyIntegrityFindings, keepHistoryInMigrations, metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings, checklistFor, checklistFindings } from "./builder-exit-checks.ts";
 
 // 2026-10-24 (Brewline root cause): 8 emoji findings and the missing-colour findings were raised in review, after the
 // frontend builder had said "done" — its instructions said "no emoji", and the checks existed, but they only ran later.
@@ -26,7 +26,7 @@ function project(id: string, files: Record<string, string>, description: string)
     mkdirSync(join(dir, rel, ".."), { recursive: true });
     writeFileSync(join(dir, rel), body);
   }
-  writeFileSync(join(dir, "spec.json"), JSON.stringify({ description }));
+  if (!("spec.json" in files)) writeFileSync(join(dir, "spec.json"), JSON.stringify({ description }));
 }
 
 const SPEC = "A coffee shop. Visual direction: soft oat cream #FAF6F0 backgrounds, espresso brown #2C1E18 typography, terracotta #D46A4E accents.";
@@ -267,4 +267,112 @@ test("the backend and database rules ask for the same two line columns: the name
     expect(s).toMatch(/name_at_time/);
     expect(s).toMatch(/unit_price/);
   }
+});
+
+// 2026-10-25 (brewline3): the reviewers kept finding, one or two per round, things a builder could have caught before saying done: the
+// whole spec pasted into the page description, a staff password written to the console, a test compose file with weak secrets left in
+// the backend folder, a `secure` cookie that breaks sign-in over http. They are found by file reads, so the system checks them
+// when the builder says it is done.
+const LONG_SPEC = "Brewline is a mobile-friendly pre-order web application for a single-location neighborhood coffee shop where customers can browse drinks and pastries with prices, select same-day 15-minute pickup slots starting at least 15 minutes from now during store hours, and place pre-orders";
+
+test("a page description that is the spec pasted in, or is very long, is reported; a short one is not", () => {
+  project("m1", { "frontend/app/layout.tsx": `export const metadata = { title: "Brewline", description: "${LONG_SPEC}" };\n` }, LONG_SPEC);
+  expect(metadataLeakFindings(join(root, "m1")).length).toBe(1);
+  project("m2", { "frontend/app/layout.tsx": 'export const metadata = { title: "Brewline", description: "Order coffee and pastries ahead for pickup." };\n' }, LONG_SPEC);
+  expect(metadataLeakFindings(join(root, "m2"))).toEqual([]);
+});
+
+test("a cookie set with the secure flag in the browser code is reported (it is dropped over http); one without it is not", () => {
+  project("c1", { "frontend/app/sign-in/page.tsx": 'document.cookie = `token=${t}; path=/; max-age=86400; samesite=lax; secure`;\n' }, "x");
+  expect(cookieSecureFindings(join(root, "c1")).length).toBe(1);
+  project("c2", { "frontend/app/sign-in/page.tsx": 'document.cookie = `token=${t}; path=/; max-age=86400; SameSite=Lax`;\n' }, "x");
+  expect(cookieSecureFindings(join(root, "c2"))).toEqual([]);
+});
+
+test("a password, secret or token written to a log is reported; ordinary logging is not", () => {
+  project("s1", {
+    "backend/src/db/seedStaff.ts": "console.log(`[SEED] Created staff account: ${email} with generated password: ${password}`);\n",
+    "backend/src/app.ts": 'console.log("server listening");\nconsole.error("Error seeding staff:", error);\nconsole.log("hashing password with bcrypt");\n',
+  }, "x");
+  const out = secretLoggingFindings(join(root, "s1"));
+  expect(out.length).toBe(1);
+  expect(out[0]).toContain("backend/src/db/seedStaff.ts");
+});
+
+test("a compose file or an .env with secrets inside the backend or frontend folder is reported; the project root's own compose file is not", () => {
+  project("f1", {
+    "docker-compose.yml": "services: {}\n",
+    "backend/docker-compose.yml": "environment:\n  JWT_SECRET: testsecret\n  POSTGRES_PASSWORD: password\n",
+    "backend/.env": "JWT_SECRET=testsecret\n",
+    "backend/.env.example": "JWT_SECRET=change-me\n",
+  }, "x");
+  const out = strayShippedFileFindings(join(root, "f1"));
+  expect(out.some((f) => f.includes("backend/docker-compose.yml"))).toBe(true);
+  expect(out.some((f) => f.includes("backend/.env"))).toBe(true);
+  expect(out.some((f) => f.startsWith("backend/.env.example"))).toBe(false);
+  expect(out.some((f) => f.startsWith("docker-compose.yml"))).toBe(false);
+});
+
+test("the hygiene checks are part of the builders' finish checks", () => {
+  project("w1", {
+    "frontend/app/layout.tsx": `export const metadata = { description: "${LONG_SPEC}" };\n`,
+    "backend/src/db/seedStaff.ts": "console.log(`password: ${password}`);\n",
+    "backend/docker-compose.yml": "JWT_SECRET: x\n",
+  }, LONG_SPEC);
+  expect(frontendExitChecks("w1").some((f) => f.includes("layout.tsx"))).toBe(true);
+  const back = backendExitChecks("w1");
+  expect(back.some((f) => f.includes("seedStaff.ts"))).toBe(true);
+  expect(back.some((f) => f.includes("docker-compose.yml"))).toBe(true);
+});
+
+const CHECK_FILES = {
+  "api-contract.json": JSON.stringify({ endpoints: [{ method: "POST", path: "/api/v1/orders", description: "Place an order" }, { method: "GET", path: "/api/v1/menu", description: "List" }] }),
+  "spec.json": JSON.stringify({ description: "x", successCriteria: ["Customers can place a pre-order"] }),
+};
+
+test("each builder gets the plan items that concern it: the backend the endpoints and the rules, the frontend the criteria and the design", () => {
+  project("k1", CHECK_FILES, "x");
+  const back = checklistFor(join(root, "k1"), "backend").map((i) => i.id);
+  const front = checklistFor(join(root, "k1"), "frontend").map((i) => i.id);
+  expect(back).toEqual(expect.arrayContaining(["EP1", "EP2", "SEC1", "INT1", "INT3"]));
+  expect(back).not.toContain("SC1");
+  expect(front).toEqual(expect.arrayContaining(["SC1", "SEC5", "SEC8", "INT3"]));
+  expect(front).not.toContain("EP1");
+});
+
+test("a builder cannot finish until its summary accounts for every item that concerns it, each with a file", () => {
+  project("k2", CHECK_FILES, "x");
+  const ids = checklistFor(join(root, "k2"), "backend").map((i) => i.id);
+  const missingAll = checklistFindings("k2", "backend", "All done, tests pass.");
+  expect(missingAll.length).toBe(1);
+  for (const id of ids) expect(missingAll[0]).toContain(`[${id}]`);
+  const partial = ids.slice(1).map((id) => `[${id}] backend/src/routes/x.ts:10`).join("\n");
+  const one = checklistFindings("k2", "backend", partial);
+  expect(one[0]).toContain(`[${ids[0]}]`);
+  expect(one[0]).not.toContain(`[${ids[1]}]`);
+  const full = ids.map((id) => `[${id}] ok - backend/src/routes/x.ts:10`).join("\n");
+  expect(checklistFindings("k2", "backend", full)).toEqual([]);
+  // a bare id with no file after it does not count
+  expect(checklistFindings("k2", "backend", ids.map((id) => `[${id}] ok`).join("\n")).length).toBe(1);
+});
+
+test("both builders pass their completion summary to the finish checks and get the checklist in their first task, not in fix rounds", () => {
+  const read = (rel: string) => readFileSync(new URL(`../../../${rel}`, import.meta.url), "utf-8");
+  for (const f of ["agents/generators/shubham/src/index.ts", "agents/generators/aanya/src/index.ts"]) {
+    const src = read(f);
+    expect(src).toContain("checklistFindings");
+    expect(src).toContain("checklistTextFor(plan.projectId)");
+    expect(src).toMatch(/\(summary: string\) => (backend|frontend)ExitChecksFor\(plan\.projectId, summary\)/);
+  }
+  // the fix rounds call the finish checks without a summary, so no checklist
+  expect(read("agents/generators/shubham/src/index.ts")).toContain("exitChecks: () => backendExitChecksFor(plan.projectId)");
+  expect(read("agents/generators/aanya/src/index.ts")).toContain("exitChecks: () => frontendExitChecksFor(plan.projectId)");
+  expect(read("packages/agent-runtime/src/gemini-loop.ts")).toContain("config.exitChecks(String(a.summary");
+  expect(read("packages/agent-runtime/src/loop.ts")).toContain("config.exitChecks(String(a.summary");
+});
+
+test("the requirements skill tells Saanvi to state a business number once, with values", () => {
+  const skill = readFileSync(new URL("../../../packages/agent-runtime/skills/saanvi.md", import.meta.url), "utf-8");
+  expect(skill).toContain("BUSINESS NUMBERS ARE STATED ONCE");
+  expect(skill).toMatch(/opening\s+hours/);
 });

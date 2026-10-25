@@ -19,9 +19,20 @@ import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts
 import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-files.ts";
 
 // 2026-10-24: the system's own frontend checks (pipeline/orchestrator/stages/builder-exit-checks.ts), loaded when used.
-async function frontendExitChecksFor(projectId: string): Promise<string[]> {
-  const { frontendExitChecks } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
-  return frontendExitChecks(projectId);
+// 2026-10-25: the approved plan's checklist for this builder (the same items the reviewers judge against), for the build task.
+async function checklistTextFor(projectId: string): Promise<string> {
+  try {
+    const { checklistTaskText } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
+    return checklistTaskText(projectId, "frontend");
+  } catch {
+    return "";
+  }
+}
+
+async function frontendExitChecksFor(projectId: string, summary?: string): Promise<string[]> {
+  const { frontendExitChecks, checklistFindings } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
+  // 2026-10-25: the first build (not a fix round) must account for every approved-plan item that concerns the frontend.
+  return [...frontendExitChecks(projectId), ...(summary !== undefined ? checklistFindings(projectId, "frontend", summary) : [])];
 }
 
 export function getOutputDir(projectId: string): string {
@@ -137,7 +148,7 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?
     fallbackModels: FALLBACK_CHAIN.aanya,
     apiKey,
     systemPrompt: loadAndInjectContract(plan.projectId, knownMistakesPrefix + buildAgentPrompt(mode)),
-    initialMessage: (phase ? phase.header + "\n\n" : "") + buildAgentTask(plan, mode),
+    initialMessage: (phase ? phase.header + "\n\n" : "") + buildAgentTask(plan, mode) + (!phase || phase.isLast ? "\n\n" + (await checklistTextFor(plan.projectId)) : ""),
     sandboxDir: outputDir,
     projectId: plan.projectId,
     conversationKey: phase?.conversationKey,
@@ -233,10 +244,10 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?
     // 2026-10-23: a later phase starts with the files already written, whole (builder-preload.ts).
     preloadOwnFiles: !!phase && !phase.scaffold,
     // 2026-10-24: emoji, dead buttons and missing spec colours are checked by the system before the last phase may finish.
-    exitChecks: !phase || phase.isLast ? () => frontendExitChecksFor(plan.projectId) : undefined,
+    exitChecks: !phase || phase.isLast ? (summary: string) => frontendExitChecksFor(plan.projectId, summary) : undefined,
     maxIterations: phase?.maxSteps ?? 90,
     // 2026-10-24: a team step's settings win (helpers: flash, own files only, type check only; lead: pro, plan-vs-code check).
-    ...teamRunOverrides(phase, outputDir, { taskFiles: plan.aanyaTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: !phase || phase.isLast ? () => frontendExitChecksFor(plan.projectId) : undefined }),
+    ...teamRunOverrides(phase, outputDir, { taskFiles: plan.aanyaTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: !phase || phase.isLast ? (summary: string) => frontendExitChecksFor(plan.projectId, summary) : undefined }),
   });
 
   return {
