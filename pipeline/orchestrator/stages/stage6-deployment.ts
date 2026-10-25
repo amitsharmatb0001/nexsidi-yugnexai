@@ -56,6 +56,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { reviewDbUrl } from "../../../packages/agent-runtime/src/tools/compose-ports.ts";
 import { resetAppRateLimits } from "./limiter-reset.ts";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
+import { liveBudgetMs, minutesSince } from "../time-budget.ts";
 export { isQuotaExhaustionError };
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
@@ -1068,8 +1069,17 @@ export async function runStage6(
   let liveStuck = false;
   let liveHold: { reason: string; evidence: string[] } | undefined;
   let reviewRetries = 0;
+  // 2026-10-25: the live stage's time budget (time-budget.ts): when it is used up no new fix round and redeploy starts.
+  const liveStartedAt = Date.now();
 
   while (!retest.pass && fixAttempt < MAX_LIVE_FIX_ATTEMPTS) {
+    if (Date.now() - liveStartedAt > liveBudgetMs()) {
+      const open = Array.isArray(retest.findings) ? (retest.findings as Array<{ file?: string; issue?: string }>).map((f) => `${f.file ? `${f.file}: ` : ""}${f.issue ?? ""}`) : [];
+      console.log(`[stage6] time budget reached (${minutesSince(liveStartedAt)} minutes, ${open.length} finding(s) open) — no further live round`);
+      liveHold = { reason: `the live stage's time budget of ${Math.round(liveBudgetMs() / 60_000)} minutes was used up with ${open.length} finding(s) still open`, evidence: open };
+      liveStuck = true;
+      break;
+    }
     // 2026-10-23: no new live round once the spend cap is reached; the step then raises the budget stop.
     if (await isOverBudget(projectId)) {
       console.log(`[stage6] budget_exceeded — the spend cap was reached, no further live round`);

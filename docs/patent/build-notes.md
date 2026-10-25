@@ -809,3 +809,11 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Proof:** DI tests for the full pass (found after a pass, fixed together, not repeated, not run when the first review is clean), cache tests, team-stage tests (prepare runs no lead; integrate runs only the lead and marks done; integrate without a prepare does the whole team; missing files go to the lead) and a workflow ordering test (frontend prepares at once, integrates only after the backend ends); all suites pass.
 
 **Expected effect (not yet measured in a build):** about 17–23 minutes less generation time on a single-pass plan, at no extra cost; one extra full review (about $1.5–2.5) in place of the repeated incremental rounds.
+
+## Batch 56 — time budgets for the stages that repeat (part D, 2026-10-25)
+
+**Asked (Amit):** "a clean build in 1 hour, not 4 hours". **Found:** nothing in the approved plan or the workflow limited how long a repeating stage could keep starting rounds; brewline3's review loop ran about two hours and its live stage 45 minutes, one round at a time.
+
+**Built:** `time-budget.ts` (`qaBudgetMs` 40 minutes, `liveBudgetMs` 30 minutes by default, `QA_TIME_BUDGET_MIN` / `LIVE_TIME_BUDGET_MIN` to change, 0 to switch off). The review loop (counted from its first review) and the live stage stop starting new rounds when their time is used and hold the build for a human with the findings still open (`guard_hold`); a Retry starts a fresh budget. Proof: tests for the defaults, the environment overrides, a loop held after one slow review with its open findings, the unchanged behaviour with the budget off, and the live stage wiring.
+
+**Not built:** a limit on generation time (a cut-off mid-generation would lose work; the frontend/backend overlap in batch 55 is the generation saving).

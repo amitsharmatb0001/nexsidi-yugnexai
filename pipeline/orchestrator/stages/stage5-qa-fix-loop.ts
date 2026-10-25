@@ -41,6 +41,7 @@ import { join as joinPath } from "node:path";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 import { runFixAsTeam } from "../team-fix.ts";
 import { requestFullReview } from "../review-cache.ts";
+import { qaBudgetMs, minutesSince } from "../time-budget.ts";
 import { chiefCheck, defaultChiefChat, isMachineFinding, isReviewerFailure, prepareForChief, type ChiefChat } from "../chief-check.ts";
 
 export interface QAFixLoopResult extends Stage5Result {
@@ -329,6 +330,9 @@ export async function runQAFixLoopWithDeps(
   stage4Result: Stage4Result,
   deps: QAFixDeps,
 ): Promise<QAFixLoopResult> {
+  // 2026-10-25: the loop's time budget (time-budget.ts), counted from the first review: when it is used up no new round starts and the
+  // build is held with what is open.
+  const loopStartedAt = Date.now();
   let result = await gateQaFindings(projectId, applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan), projectId), deps.chiefChat);
 
   let iterations = 1;
@@ -355,6 +359,11 @@ export async function runQAFixLoopWithDeps(
   let fullPassDone = false;
   for (;;) {
   while (!result.pass && iterations <= MAX_FIX_ITERATIONS + (fullPassDone ? 1 : 0)) {
+    if (Date.now() - loopStartedAt > qaBudgetMs()) {
+      const open = result.findings.map(formatFinding);
+      console.log(`[qa-fix-loop] time budget reached (${minutesSince(loopStartedAt)} minutes, ${open.length} finding(s) open) — no further round, holding the build`);
+      return { ...result, iterations, stuck: true, hold: { reason: `the review's time budget of ${Math.round(qaBudgetMs() / 60_000)} minutes was used up with ${open.length} finding(s) still open`, evidence: open } };
+    }
     // 2026-10-23: no new round once the spend cap is reached; the step then raises the budget stop (activities/index.ts).
     if (await isOverBudget(projectId)) {
       console.log(`[qa-fix-loop] budget_exceeded — the spend cap was reached, no further round`);
