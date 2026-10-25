@@ -89,8 +89,8 @@ test("poolForTier collapses to a single-model pool when an explicit override is 
 // ordering is unchanged (still leads with 3.1-pro-preview for quality) —
 // 3.5-flash is appended as a third rung, matching every other tier.
 test("poolForTier: plan and design use the pro-thinking pool, not flash-lite", () => {
-  expect(poolForTier("plan")).toEqual(["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
-  expect(poolForTier("design")).toEqual(["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
+  expect(poolForTier("plan")).toEqual(["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.8-flash"]);
+  expect(poolForTier("design")).toEqual(["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.8-flash"]);
 });
 
 test("poolForTier: a2a uses the cheap flash-lite pool, same tier as user", () => {
@@ -262,4 +262,16 @@ test("routeToolsWithFallback does not treat a text-only answer as empty — that
   const r = await routeToolsWithFallback("design", [], [], undefined, { chat: chat as never });
   expect(tried.length).toBe(1);
   expect(r.content).toContain("complete");
+});
+
+
+// 2026-10-25 (brewline3 planning chat): gemini-3.8-flash, second in the planning, design and critical pools, aborted at exactly 120 s
+// in the planning chat (after the pro call had already answered 429 after 92.7 s), and failed 7 of 7 review calls in brewline2: 0 of
+// 8 on non-builder calls in two stages. It now comes last in those pools (builders keep their measured order: 3.8-flash worked there).
+test("gemini-3.8-flash is the last fallback in the planning, design, critical and review pools", () => {
+  for (const tier of ["plan", "design", "critical", "qa"] as const) {
+    const pool = poolForTier(tier);
+    expect(pool[pool.length - 1]).toBe("gemini-3.8-flash");
+  }
+  expect(poolForTier("generation")).toContain("gemini-3.8-flash");
 });

@@ -10,13 +10,13 @@ afterEach(() => {
 });
 
 test("the critical tier leads with gemini-4-argon and keeps the proven models behind it, in order", () => {
-  expect(poolForTier("critical")).toEqual(["gemini-4-argon", "gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
+  expect(poolForTier("critical")).toEqual(["gemini-4-argon", "gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.8-flash"]);
 });
 
 test("setting GEMINI_CRITICAL_ARGON=off takes argon out and nothing else changes", () => {
   process.env.GEMINI_CRITICAL_ARGON = "off";
-  expect(poolForTier("critical")).toEqual(["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
-  expect(poolForTier("plan")).toEqual(["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"]);
+  expect(poolForTier("critical")).toEqual(["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.8-flash"]);
+  expect(poolForTier("plan")).toEqual(["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.8-flash"]);
 });
 
 // 2026-10-25 (Amit: give the adversarial reviewers the pro models): the "qa" tier now also leads on argon. Nothing else does.

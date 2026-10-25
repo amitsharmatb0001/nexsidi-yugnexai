@@ -194,13 +194,15 @@ export type GeminiTier = "plan" | "design" | "qa" | "generation" | "a2a" | "user
 // same order as the "plan" tier, so an argon that is unavailable, over quota, or fails answers by moving straight to the next one.
 // Not yet run live: the Google projects configured here had billing disabled on 2026-10-21, so the model has not been called from
 // this code. GEMINI_CRITICAL_ARGON=off removes it from the pool without a code change; scripts/probe-gemini-model.ts checks it first.
-const CRITICAL_FALLBACKS = ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"];
+// 2026-10-25: gemini-3.8-flash moved to the end of the planning, design, critical and review pools: it aborted at exactly 120 s in the
+// brewline3 planning chat and failed 7 of 7 review calls in brewline2 (0 of 8 on non-builder calls); 3.6-flash was 5 of 5 as a reviewer.
+const CRITICAL_FALLBACKS = ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.8-flash"];
 const ARGON = "gemini-4-argon";
 
 const TIER_POOLS: Record<GeminiTier, string[]> = {
   critical:   [ARGON, ...CRITICAL_FALLBACKS],
-  plan:       ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
-  design:     ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash"],
+  plan:       ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.8-flash"],
+  design:     ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash", "gemini-3.8-flash"],
   // 2026-10-25 (Amit: "why adversarial using flash model, give them pro models"): the reviewers lead on the two strongest models
   // (gemini-4-argon, then gemini-3.1-pro-preview); flash models are fallbacks only, ordered by how they performed as reviewers in
   // brewline2: 3.6-flash 5 of 5 ok, 3.7-flash 7 of 10, 3.5-flash 1 of 1, 3.8-flash 0 of 7 (last).
