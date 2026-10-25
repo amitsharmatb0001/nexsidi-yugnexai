@@ -642,3 +642,11 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Changed** (`apps/web/components/ide/IdeWorkspace.tsx`): the card says what Retry does ("Retry resumes from where the build stopped; the work already done is kept"), exported as `RETRY_NOTE`; the `stuck_state` reason now names both ways the quality checks can stop (the same issues keep coming back, or a reviewer could not finish).
 
 **Proof:** test (no guessing word in the note, the stuck reason names a reviewer, the card uses the note and not the old sentence); web suite and type check clean.
+
+## Batch 37 — a role never comes from the request (2026-10-25)
+
+**Found (brewline2, the first build started from the web app):** the approved spec said sign-up "creates a new customer or staff account", and the backend did exactly that: its sign-up body accepts `role: 'customer' | 'staff'`, so anyone can register as staff and reach the barista dashboard and menu manager; no staff account is seeded either (the delivered database held one customer and no staff). The code reviewers returned nothing on it (the plan appeared to allow it), and I approved the spec without flagging the wording. No instruction anywhere said a role must not come from a request.
+
+**Built:** the planner never writes "customer or staff account" for sign-up and puts the seeded account in the spec (`saanvi.md`); backend rule 18 (a role never comes from the request; a seeded `seedStaff.ts` creates one staff account only when none exists, email and password from env, a generated password logged once); the auth skill and the security-review skill (loaded for the builders and for Karan by keyword) say the same; two checks at the backend builder's finish: `roleFromRequestFindings` (a sign-up file that reads a role from the request) and `staffAccountFindings` (a contract with staff-only endpoints and no seeded staff account).
+
+**Proof:** tests (reported with a role field in the sign-up body; not reported for a sign-up with no role field or for reading `req.user.role`; staff-only contract with and without a seeded staff account; the rules are in the planner, builder and both skills); on real builds the checks flag Brewline 2 only and pass Brewline 1 and Trailhead 2; all suites pass. Brewline 2 itself is not patched (CLAUDE.md: fix the system, not the app).

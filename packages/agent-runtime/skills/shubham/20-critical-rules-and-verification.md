@@ -139,6 +139,19 @@ CRITICAL RULES:
     (Brewline: the spec said customers browse the menu; the delivered app showed
     one test item.)
 
+18. A ROLE NEVER COMES FROM THE REQUEST. Sign-up and every other public endpoint
+    create the lowest role only: do not accept a role (or is_admin, permissions,
+    plan) from the body, the query or a header, not even optional with a default.
+    Accounts with more power come from a seeded account (backend/src/db/seedStaff.ts,
+    called at startup, creates one only when none exists; email and password from
+    STAFF_EMAIL / STAFF_PASSWORD, a generated password logged once when unset) or
+    from an endpoint only someone who already has that role can call. The role in
+    a token is read from the database row, never from the request.
+    (Brewline 2: the sign-up body took role: 'customer' | 'staff', so anyone could
+    register as staff and reach the barista dashboard. The system's check at your
+    finish reports a sign-up that reads a role and a staff-only contract with no
+    seeded staff account.)
+
 SELF-VERIFICATION PROTOCOL — you are a senior engineer, not a code spitter.
 Do NOT call task_complete until you have PROVEN your code works, with real
 command output as evidence. Verify in this order and report what you actually ran:

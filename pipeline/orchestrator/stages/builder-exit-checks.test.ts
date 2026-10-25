@@ -150,3 +150,42 @@ test("the backend builder is told to ship starter content for a public catalog",
   expect(shubham).toContain("PUBLIC CATALOG SHIPS WITH STARTER CONTENT");
   expect(shubham).toContain("seedCatalog");
 });
+
+// 2026-10-25 (brewline2, the first build started from the web app): the approved spec said sign-up "creates a new customer or
+// staff account", and the backend did exactly that: the sign-up body takes `role: 'customer' | 'staff'`, so anyone can register
+// as staff and reach the barista dashboard and the menu manager. No staff account was seeded either. Reviewers followed the plan
+// and reported nothing. Nothing in the system said that a role must never come from the request.
+test("a sign-up that takes the account's role from the request is reported; one that does not is not", () => {
+  project("r1", {
+    "backend/src/routes/auth.ts": [
+      "const signUpSchema = z.object({ email: z.string(), password: z.string(), role: z.enum(['customer', 'staff']).optional().default('customer') });",
+      "router.post('/sign-up', async (req, res) => { const { email, password, role } = signUpSchema.parse(req.body); });",
+    ].join("\n"),
+  }, "A coffee shop.");
+  expect(backendExitChecks("r1").some((f) => f.includes("auth.ts") && f.includes("role"))).toBe(true);
+  project("r2", { "backend/src/routes/auth.ts": "const signUpSchema = z.object({ email: z.string(), password: z.string() });\nrouter.post('/sign-up', async (req, res) => { await pool.query(\"INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'customer')\"); });\n" }, "A coffee shop.");
+  expect(backendExitChecks("r2").some((f) => f.includes("role"))).toBe(false);
+  project("r3", { "backend/src/routes/orders.ts": "const { status } = req.body; // an order's role-free body\nconst role = req.user.role;\n" }, "A coffee shop.");
+  expect(backendExitChecks("r3").some((f) => f.includes("role"))).toBe(false);
+});
+
+test("a contract with staff-only endpoints and no seeded staff account is reported; a seeded staff account satisfies it", () => {
+  const contract = JSON.stringify({ endpoints: [{ method: "POST", path: "/api/v1/menu", auth: true, description: "Create a menu item (staff only)." }] });
+  project("t1", { "api-contract.json": contract, "backend/src/index.ts": "app.listen(3001);\n" }, "A coffee shop.");
+  expect(backendExitChecks("t1").some((f) => f.includes("no staff account is seeded"))).toBe(true);
+  project("t2", {
+    "api-contract.json": contract,
+    "backend/src/db/seedStaff.ts": "await pool.query(\"INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'staff') ON CONFLICT DO NOTHING\");\n",
+  }, "A coffee shop.");
+  expect(backendExitChecks("t2").some((f) => f.includes("no staff account is seeded"))).toBe(false);
+  project("t3", { "api-contract.json": JSON.stringify({ endpoints: [{ method: "GET", path: "/api/v1/menu", auth: false }] }) }, "A coffee shop.");
+  expect(backendExitChecks("t3").some((f) => f.includes("no staff account is seeded"))).toBe(false);
+});
+
+test("the planner, the backend builder and both reviewers are told a role never comes from the request", () => {
+  const read = (rel: string) => readFileSync(new URL(`../../../packages/agent-runtime/skills/${rel}`, import.meta.url), "utf-8");
+  expect(read("saanvi.md")).toContain("never writes \"customer or staff account\"");
+  expect(read("shubham/20-critical-rules-and-verification.md")).toContain("A ROLE NEVER COMES FROM THE REQUEST");
+  expect(read("library/auth-flows/SKILL.md")).toContain("role is never read from the request");
+  expect(read("library/security-review/SKILL.md")).toContain("role or permission field");
+});

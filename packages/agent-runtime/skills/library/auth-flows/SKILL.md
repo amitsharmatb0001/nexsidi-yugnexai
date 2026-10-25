@@ -30,3 +30,7 @@ and Get Started. Never both, never a static header.
 bcrypt (cost 10 or more) for passwords; the JWT secret from the
 environment; sign-in errors say "Email or password is incorrect" without
 revealing which; sign-up with an existing email returns 409.
+A role is never read from the request: sign-up always creates the lowest role
+(no role field in the body, not even optional). Staff or admin accounts come from
+a seeded account or from someone who already holds that role; the role in a token
+comes from the database row.

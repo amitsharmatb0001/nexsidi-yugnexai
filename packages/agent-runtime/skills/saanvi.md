@@ -30,6 +30,10 @@ This is the ONLY document Arjun plans from. Get it right.
 - Every user-owned table: `user_id` (uuid, NOT NULL, references users.id).
 - Always include a `users` table: id, email (unique, NOT NULL), password_hash (NOT NULL), name (NOT NULL), created_at, updated_at.
 - Auth: custom JWT — design local register/login endpoints. Never reference Clerk.
+- Roles: public sign-up creates the lowest-privilege account only, and the spec never writes "customer or staff account" for it
+  (Brewline 2: that wording became a sign-up anyone could use to register as staff). Accounts with more power (staff, admin,
+  owner) are created by a seeded account or by someone who already has that power: say so in the feature text, and add the
+  seeded account to the spec's rules.
 
 ## Quality rules
 - Output a single valid JSON object — no prose, no markdown fences, no code blocks.
