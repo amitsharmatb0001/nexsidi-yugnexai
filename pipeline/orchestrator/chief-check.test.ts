@@ -125,7 +125,7 @@ test("the yardstick names the two rules the plan never stated: no self-chosen ro
   const sec = items.filter((i) => i.id.startsWith("SEC")).map((i) => i.text).join(" | ");
   expect(sec).toContain("ever lets the caller choose a role");
   const integrity = items.filter((i) => i.id.startsWith("INT"));
-  expect(integrity.length).toBe(2);
+  expect(integrity.length).toBe(3);
   expect(integrity.map((i) => i.text).join(" | ")).toContain("eleting or editing a record");
   expect(integrity.map((i) => i.text).join(" | ")).toContain("price");
   expect(planSection(dir)).toContain("[INT1]");
@@ -140,4 +140,71 @@ test("the Chief is told a security flaw or lost history is a fix even when the p
   });
   expect(prompt.replace(/\s+/g, " ")).toContain("never \"later\" because the plan's own wording allowed it");
   expect(prompt).toContain("INT1");
+});
+
+// 2026-10-25 (brewline3): the check cut every file at 8,000 characters, so a finding about line 296 of a 500-line file was judged on
+// its first 150 lines, answered "cut off, cannot confirm", and was dismissed as NOT TRUE; one of those dismissals was a genuine
+// problem. Now it is shown the cited lines (and the whole file when it is small), and a finding is only ruled not true when
+// the Chief AI quotes the code that contradicts it.
+function longProject(): string {
+  const d = project();
+  const lines: string[] = [];
+  for (let i = 1; i <= 600; i++) lines.push(i === 296 ? "  const MARKER_LINE_296 = await pool.query('SELECT mi.name FROM menu_items mi');" : `  const filler_${i} = ${i}; // padding so this file is much longer than the old cut`);
+  writeFileSync(join(d, "backend", "src", "orders.ts"), lines.join("\n") + "\n");
+  return d;
+}
+
+test("a finding about line 296 of a long file is shown line 296 with its line number, not the first 8,000 characters", async () => {
+  longProject();
+  let prompt = "";
+  const chat: ChiefChat = async (p) => {
+    prompt = p;
+    return JSON.stringify([{ id: 1, verdict: "later", reason: "x" }]);
+  };
+  await chiefCheck(dir, [{ text: "backend/src/orders.ts:296 — [logic/HIGH] the name is read through a join" }], chat);
+  expect(prompt).toContain("MARKER_LINE_296");
+  expect(prompt).toMatch(/296\|/);
+  expect(prompt.length).toBeLessThan(120_000);
+});
+
+test("a 'false' without a quote of the contradicting code is not accepted: the finding is kept and goes to a builder to confirm", async () => {
+  longProject();
+  const chat: ChiefChat = async () => JSON.stringify([{ id: 1, verdict: "false", reason: "the code is cut off, so the claim cannot be confirmed" }]);
+  const out = await chiefCheck(dir, [{ text: "backend/src/orders.ts:296 — [logic/HIGH] reads the name through a join" }], chat);
+  expect(out.notTrue).toEqual([]);
+  expect(out.fix.length).toBe(1);
+  expect(existsSync(join(dir, "settled-not-true.jsonl"))).toBe(false);
+});
+
+test("a 'false' with a quote that really is in the cited file is accepted; a quote that is not there is not", async () => {
+  longProject();
+  const ok: ChiefChat = async () => JSON.stringify([{ id: 1, verdict: "false", quote: "const filler_10 = 10;", reason: "line 10 shows it" }]);
+  const accepted = await chiefCheck(dir, [{ text: "backend/src/orders.ts:10 — [logic/HIGH] claims something about filler_10" }], ok);
+  expect(accepted.notTrue.length).toBe(1);
+  const invented: ChiefChat = async () => JSON.stringify([{ id: 1, verdict: "false", quote: "WHERE oi.price = 0 AND this text is not in the file", reason: "r" }]);
+  const refused = await chiefCheck(dir, [{ text: "backend/src/orders.ts:11 — [logic/HIGH] another claim" }], invented);
+  expect(refused.notTrue).toEqual([]);
+  expect(refused.fix.length).toBe(1);
+});
+
+test("a finding the proof gate already found false needs no quote (the system proved it)", async () => {
+  project();
+  const chat: ChiefChat = async () => JSON.stringify([{ id: 1, verdict: "false", reason: "no such code" }]);
+  const out = await chiefCheck(dir, [{ text: "backend/src/app.ts uses `app.use(cors());`", flag: "quotes code that is in no project file" }], chat);
+  expect(out.notTrue.length).toBe(1);
+});
+
+test("the Chief is told to quote the code for a 'false' and that 'cannot see' is not 'false'", async () => {
+  project();
+  let prompt = "";
+  await chiefCheck(dir, [{ text: "backend/src/app.ts:1 — x" }], async (p) => { prompt = p; return "[]"; });
+  expect(prompt).toContain('"quote"');
+  expect(prompt).toMatch(/cannot see|cannot confirm/i);
+});
+
+test("the yardstick also names three rules the reviewers kept finding outside the plan: no secrets in logs, no internal brief shown, one set of business-rule numbers", () => {
+  const text = planSection(project());
+  expect(text).toMatch(/log/i);
+  expect(text).toMatch(/brief|spec/i);
+  expect(text).toMatch(/opening hours|business rule/i);
 });

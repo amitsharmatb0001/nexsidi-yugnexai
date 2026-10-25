@@ -778,3 +778,11 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Found (brewline3, the cost question):** one finding, "old orders show the menu item's current name", appeared in 8 of 13 review rounds. The backend builder's rule said copy the item's name AND unit price into the order line; the database builder's rule said only a unit_price. The migration got a price column and no name column, the backend builder cannot write the database, and the finding went between the two builders (with two system faults on top: batch 49 and batch 51).
 
 **Changed:** both rules now name the same two line columns (`name_at_time`, `unit_price`), the backend one adding "write both on insert and read both back, never join to the catalog for them". Proof: a test that both rule texts name both columns.
+
+## Batch 53 — the Chief AI check sees the cited code and may only rule "not true" with a quote (part B of the one-pass plan, 2026-10-25)
+
+**Asked (Amit, after brewline3):** "why Tilotma has a limit of reading files... it can read in parts, or other tools". **Found:** `chief-check.ts` pasted each file cut at 8,000 characters (48,000 in all); a finding about line 296 of `orders.ts` was judged on its first 150 lines, answered "cut off, cannot confirm" and written to `settled-not-true.jsonl` as NOT TRUE; one of the two such dismissals (a `backend/docker-compose.yml` with hard-coded test passwords) was a genuine defect.
+
+**Changed:** `chief-check.ts`: a small file is shown whole, a large one as its first 30 lines plus 80 lines each side of every cited line, numbered (cap 150,000 characters); a "false" verdict is accepted only when the system already proved it (gate flag), when its quote is really in a cited file, or when it is an absence in a file shown whole; otherwise the finding is kept and goes to a builder to confirm. The yardstick gained: no secret in a log or shipped test file (SEC4), no internal brief in user-visible text (SEC8), and one set of business-rule numbers for frontend and backend (INT3).
+
+**Proof:** tests for each rule; on brewline3's real files both recorded "cut off" dismissals now get a prompt that shows the cited code (line 296 present; the compose file shown whole). All suites pass.

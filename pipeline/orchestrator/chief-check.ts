@@ -23,11 +23,11 @@ export const SECURITY_BASELINE: string[] = [
   "SQL uses parameter placeholders, never string-built queries",
   "Every endpoint the contract marks as requiring sign-in rejects requests without a valid token; role-limited endpoints reject other roles",
   "A signed-in user can only read and change their own records",
-  "Passwords are hashed; no secret or password is hard-coded",
+  "Passwords are hashed; no secret or password is hard-coded, written to a log or console, or kept in a test or example file that ships with the source (the only place a generated password appears is the owner's one-time login file)",
   "User input is never rendered as raw HTML",
   "Sign-in and sign-up are rate limited",
   "CORS allows only the app's own frontend",
-  "The names of the tools that built the app never appear to users",
+  "The names of the tools that built the app, and the internal brief or spec text, never appear to users (page title, description and other metadata, errors, API responses)",
   // 2026-10-25 (brewline2): a sign-up that accepted role: 'staff' from the request was filed as "later" because the spec's own
   // wording allowed a staff sign-up. A plan cannot authorise a vulnerability.
   "No endpoint ever lets the caller choose a role or permissions for themselves (public sign-up creates the lowest role only; staff accounts come from a seeded account or from someone who already has that role)",
@@ -37,6 +37,9 @@ export const SECURITY_BASELINE: string[] = [
 export const INTEGRITY_BASELINE: string[] = [
   "Deleting or editing a record that history refers to (a menu item, a product, a service) never deletes or changes what past orders, invoices or bookings recorded: their lines stay, with the name and price as they were at the time",
   "A check-then-write (is the item in stock, is the slot free) is one atomic step, so two requests at once cannot both pass it",
+  // 2026-10-25 (brewline3): the frontend offered pickup slots from 6:30 and the backend refused anything before 8:00; the spec said
+  // "during store hours" and gave no hours, so each side invented its own.
+  "A business rule with a number in it (opening hours, minimum notice, order limits) is defined once, from the spec or the plan's stated default, and the frontend and the backend use the same values",
 ];
 
 const readJson = <T>(file: string): T | null => {
@@ -100,12 +103,65 @@ export function prepareForChief(projectDir: string, texts: string[]): ChiefFindi
 
 export type ChiefChat = (prompt: string) => Promise<string>;
 
-const MAX_FILE_CHARS = 8_000;
-const MAX_CODE_CHARS = 48_000;
+// 2026-10-25 (brewline3): files were cut at 8,000 characters, so a finding about line 296 of a long file was judged on its first
+// 150 lines, answered "cut off, cannot confirm" and dismissed as not true. A small file is shown whole; a large one as its first
+// lines (imports, constants) plus the lines around every line the findings cite, numbered, so the cited place is always there.
+const WHOLE_FILE_CHARS = 30_000;
+const MAX_CODE_CHARS = 150_000;
+const HEAD_LINES = 30;
+const WINDOW_LINES = 80;
 
-function codeExcerpts(projectDir: string, findings: ChiefFinding[]): string {
+/** The lines of `rel` that the finding names (`path:LINE`, `path:LINE-LINE`, or `line N` when it cites one file). */
+function citedLines(text: string, rel: string, onlyFile: boolean): number[] {
+  const out = new Set<number>();
+  const escaped = rel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const m of text.matchAll(new RegExp(`${escaped}:(\\d+)(?:\\s*[-–]\\s*(\\d+))?`, "gi"))) {
+    const a = Number(m[1]);
+    const b = m[2] ? Number(m[2]) : a;
+    for (let n = a; n <= Math.min(b, a + 200); n++) out.add(n);
+  }
+  if (onlyFile) for (const m of text.matchAll(/\blines?\s+(\d+)/gi)) out.add(Number(m[1]));
+  return [...out];
+}
+
+interface Shown {
+  text: string;
+  whole: boolean;
+}
+
+function showFile(body: string, cited: number[]): Shown {
+  const lines = body.split("\n");
+  const numbered = (from: number, to: number) => lines.slice(from, to).map((l, i) => `${from + i + 1}| ${l}`).join("\n");
+  if (body.length <= WHOLE_FILE_CHARS) return { text: numbered(0, lines.length), whole: true };
+  const keep = new Set<number>();
+  for (let i = 0; i < Math.min(HEAD_LINES, lines.length); i++) keep.add(i);
+  for (const n of cited) for (let i = Math.max(0, n - 1 - WINDOW_LINES); i <= Math.min(lines.length - 1, n - 1 + WINDOW_LINES); i++) keep.add(i);
+  if (cited.length === 0) for (let i = 0; i < lines.length && [...keep].length * 60 < WHOLE_FILE_CHARS; i++) keep.add(i);
+  const parts: string[] = [];
+  let prev = -2;
+  for (const i of [...keep].sort((a, b) => a - b)) {
+    if (i !== prev + 1) parts.push(`... (lines ${prev + 2}-${i} not shown)`);
+    parts.push(`${i + 1}| ${lines[i]}`);
+    prev = i;
+  }
+  if (prev < lines.length - 1) parts.push(`... (lines ${prev + 2}-${lines.length} not shown)`);
+  return { text: parts.join("\n"), whole: false };
+}
+
+interface CodeView {
+  text: string;
+  /** every cited file's full text, whitespace-collapsed, for checking a quote */
+  full: Map<string, string>;
+  /** files shown in full */
+  whole: Set<string>;
+}
+
+const collapse = (s: string): string => s.replace(/\s+/g, " ").trim();
+
+function codeView(projectDir: string, findings: ChiefFinding[]): CodeView {
   const files = [...new Set(findings.flatMap((f) => citedFiles(f.text)))];
   const parts: string[] = [];
+  const view: CodeView = { text: "", full: new Map(), whole: new Set() };
   let used = 0;
   for (const rel of files) {
     const abs = join(projectDir, rel);
@@ -119,15 +175,23 @@ function codeExcerpts(projectDir: string, findings: ChiefFinding[]): string {
     } catch {
       continue;
     }
-    if (body.length > MAX_FILE_CHARS) body = body.slice(0, MAX_FILE_CHARS) + "\n... (cut)";
-    if (used + body.length > MAX_CODE_CHARS) {
+    view.full.set(rel, collapse(body));
+    const cited = findings.flatMap((f) => (citedFiles(f.text).includes(rel) ? citedLines(f.text, rel, citedFiles(f.text).length === 1) : []));
+    const shown = showFile(body, cited);
+    if (used + shown.text.length > MAX_CODE_CHARS) {
       parts.push(`=== ${rel} === (not included: size limit)`);
       continue;
     }
-    used += body.length;
-    parts.push(`=== ${rel} ===\n${body}`);
+    used += shown.text.length;
+    if (shown.whole) view.whole.add(rel);
+    parts.push(`=== ${rel} ===\n${shown.text}`);
   }
-  return parts.join("\n\n");
+  view.text = parts.join("\n\n");
+  return view;
+}
+
+function codeExcerpts(projectDir: string, findings: ChiefFinding[]): string {
+  return codeView(projectDir, findings).text;
 }
 
 export function chiefPrompt(projectDir: string, findings: ChiefFinding[]): string {
@@ -147,8 +211,11 @@ For each finding answer one of:
   flaw (a caller choosing their own role, injection, exposed data) or lost history (SEC items, INT1/INT2) is never "later"
   because the plan's own wording allowed it: a plan cannot authorise a vulnerability or the loss of recorded orders; answer
   "fix" with the matching SEC or INT item.
-- "false": the code shown contradicts it. A GATE note means the system already found part of it false; keep only a
-  part you can confirm in the code (as "fix"), otherwise answer "false".
+- "false": the code shown contradicts it. You MUST give "quote": the exact code from REAL CODE below that contradicts the
+  claim (copied word for word). If a claim says something is missing and the whole file is shown with no such thing, set
+  "quote" to "" and "absent": true. If you cannot see the code a finding is about (a part not shown, a file not included),
+  that is NOT "false": answer "fix" and say in "reason" that you cannot see it, so a builder confirms it. A GATE note means
+  the system already found part of it false; keep only a part you can confirm in the code (as "fix"), otherwise "false".
 
 FINDINGS:
 ${list}
@@ -157,7 +224,7 @@ REAL CODE OF THE FILES THE FINDINGS CITE:
 ${codeExcerpts(projectDir, findings) || "(no files cited)"}
 
 Answer with ONLY a JSON array, one object per finding:
-[{"id": 1, "verdict": "fix" | "later" | "false", "plan_item": "SC1", "text": "...", "reason": "one line"}]`;
+[{"id": 1, "verdict": "fix" | "later" | "false", "plan_item": "SC1", "text": "...", "quote": "(false only)", "absent": false, "reason": "one line"}]`;
 }
 
 interface Verdict {
@@ -165,7 +232,18 @@ interface Verdict {
   verdict: string;
   plan_item?: string;
   text?: string;
+  quote?: string;
+  absent?: boolean;
   reason?: string;
+}
+
+/** A "false" is accepted when the system already proved it (gate flag), the quote is really in a cited file, or the claim is an absence in a file shown whole. */
+function falseIsProven(f: ChiefFinding, v: Verdict, view: CodeView): boolean {
+  if (f.flag) return true;
+  const files = citedFiles(f.text);
+  const quote = collapse(String(v.quote ?? ""));
+  if (quote.length >= 12) return files.some((rel) => view.full.get(rel)?.includes(quote));
+  return v.absent === true && files.length > 0 && files.every((rel) => view.whole.has(rel) || !view.full.has(rel));
 }
 
 function parseVerdicts(raw: string): Verdict[] {
@@ -189,6 +267,7 @@ export async function chiefCheck(projectDir: string, findings: ChiefFinding[], c
   const keepAll = (): ChiefResult => ({ fix: findings.map((f) => ({ text: f.text, original: f.text })), later: [], notTrue: [], checked: false });
   if (findings.length === 0) return { fix: [], later: [], notTrue: [], checked: true };
   let verdicts: Verdict[];
+  const view = codeView(projectDir, findings);
   try {
     verdicts = parseVerdicts(await chat(chiefPrompt(projectDir, findings)));
   } catch (err) {
@@ -206,7 +285,11 @@ export async function chiefCheck(projectDir: string, findings: ChiefFinding[], c
     }
     const verdict = String(v.verdict).toLowerCase();
     const item = String(v.plan_item ?? "").toUpperCase();
-    if (verdict === "false") {
+    if (verdict === "false" && !falseIsProven(f, v, view)) {
+      // 2026-10-25: "cannot see" or "no quote" is not "not true": the finding stays and a builder confirms it against the real code.
+      console.log(`[chief-check] ruled false without proof (no quote found in the cited file), kept for a builder to confirm: ${f.text.slice(0, 140)}`);
+      out.fix.push({ text: f.text, original: f.text });
+    } else if (verdict === "false") {
       out.notTrue.push({ text: f.text, reason: v.reason ?? "" });
       appendFileSync(join(projectDir, "settled-not-true.jsonl"), JSON.stringify({ finding: f.text, evidence: `Chief AI check: ${v.reason ?? ""}`, at: now }) + "\n");
       console.log(`[chief-check] not true, not fixed: ${f.text.slice(0, 140)} — ${String(v.reason ?? "").slice(0, 160)}`);

@@ -50,10 +50,12 @@ test("only findings that break a plan item are fixed; out-of-plan ones are kept 
 });
 
 test("when nothing left breaks the plan, the round passes", async () => {
-  project("q2");
+  const dir2 = project("q2");
+  mkdirSync(join(dir2, "backend", "src", "controllers"), { recursive: true });
+  writeFileSync(join(dir2, "backend", "src", "controllers", "orders.controller.ts"), "const page = Number(req.query.page) || 1; // the list is paginated\n");
   const out = await gateQaFindings("q2", { pass: false, findings: findings.slice(1, 3), score: 70 } as never, async () => JSON.stringify([
     { id: 1, verdict: "later", reason: "no admin role" },
-    { id: 2, verdict: "false", reason: "the list is paginated at line 240" },
+    { id: 2, verdict: "false", quote: "const page = Number(req.query.page) || 1;", reason: "the list is paginated" },
   ]));
   expect(out.findings).toEqual([]);
   expect(out.pass).toBe(true);
