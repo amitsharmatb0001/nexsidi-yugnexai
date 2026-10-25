@@ -727,3 +727,14 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - A missing price column is not rewritten by the system (the right column cannot be guessed); it stays with the reviewers and the Chief AI check (INT1/INT2).
 
 **Proof:** a test that the rewrite changes only the catalog reference, keeps the parent cascade, leaves non-line tables alone, is idempotent, and that the backend finish check no longer reports it; all our suites pass (the 3 failures are in the untracked third-party `ref repo/`).
+
+## Batch 45 — no check may ask a builder to change files it cannot write; blocked reports raise an alarm at once (2026-10-25)
+
+**Found (brewline3 log):** the backend builder finished its real work about 10 minutes into the phase (first refused finish 11:19:09) and reported "[blocked] ... I cannot modify db/migrations" at 11:20:06; it was then refused 14 more times and the build escalated at 11:30:44. My alarm watcher only raised on the escalation, so the problem was raised 10 minutes after the builder had said it.
+
+**Built:**
+- `watch-alarms.ts`: a `[blocked]` report and a `task_complete REJECTED` line are alarms at once (repeats are counted, not flooded).
+- The migration-on-an-empty-database check (`backendFreshStartFindings`) had the same flaw (it names `db/migrations` files); it moved from the backend builder's finish check to the review round (`stage5-adversarial-qa.ts`), where a `db/` finding goes to the database builder.
+- `shubham/src/index.ts`: the history-key rewrite from batch 44 is now actually wired in front of the backend finish check (the earlier edit had not applied; the build was saved by the database builder's own rewrite).
+
+**Proof:** tests for the alarms, the check moving, and the wiring of both rewrites; all our suites pass except one timing test that passes on its own (flaky under full-suite load) and 3 tests in the untracked third-party `ref repo/`.

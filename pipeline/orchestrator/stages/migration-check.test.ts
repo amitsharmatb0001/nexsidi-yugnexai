@@ -64,9 +64,11 @@ test("no migrations, or docker not available, means not run, and says so", async
   expect(noDocker.note).toContain("docker");
 });
 
-test("the backend builder's finish check runs it", () => {
-  const exit = readFileSync(new URL("./builder-exit-checks.ts", import.meta.url), "utf-8");
-  expect(exit).toContain("migrationFindings(");
+// 2026-10-25 (brewline3): the migrations are the database builder's files; a backend builder asked to fix them cannot, and the build
+// stopped. The check now runs in the review round, where a db/ finding goes to the database builder.
+test("the migration check runs in the review round, not in the backend builder's finish check", () => {
+  const stage5 = readFileSync(new URL("./stage5-adversarial-qa.ts", import.meta.url), "utf-8");
+  expect(stage5).toContain("backendFreshStartFindings");
   const shubham = readFileSync(new URL("../../../agents/generators/shubham/src/index.ts", import.meta.url), "utf-8");
-  expect(shubham).toContain("backendFreshStartFindings");
+  expect(shubham).not.toContain("backendFreshStartFindings");
 });

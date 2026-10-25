@@ -216,6 +216,15 @@ export async function runStage5WithAgents(
   // 2026-10-22 (Trailhead): emoji as product pictures and icons; same cheap static scan, same round. See emoji-ui-check.ts.
   const { scanProjectForEmojiUi } = await import("./emoji-ui-check.ts");
   const emojiFindings = scanProjectForEmojiUi(projectId);
+  // 2026-10-25: every migration applied to an empty database, as a customer's first start does. The files are the database builder's,
+  // so this runs here and a db/ finding is routed to it, not asked of the backend builder. Never fatal.
+  let freshStartFindings: Finding[] = [];
+  try {
+    const { backendFreshStartFindings } = await import("./builder-exit-checks.ts");
+    freshStartFindings = (await backendFreshStartFindings(projectId)).map((issue) => ({ file: issue.match(/^(db\/migrations\/[^\s(:]+)/)?.[1] ?? "db/migrations", issue }));
+  } catch (err) {
+    console.error(`[stage5] migration check skipped: ${String(err).slice(0, 160)}`);
+  }
 
   // 2026-10-24: the approved plan is the yardstick — a finding must break one of its items (../chief-check.ts checks it).
   const { planSection } = await import("../chief-check.ts");
@@ -304,7 +313,7 @@ export async function runStage5WithAgents(
   // formula) directly — do not invent a second scorer for a convention
   // that already exists on their result.
   const security = scoreSecurityFindings(karanResult.findings);
-  const allPass = security.pass && navyaResult.passed && deepikaResult.passed && deadButtonFindings.length === 0 && emojiFindings.length === 0;
+  const allPass = security.pass && navyaResult.passed && deepikaResult.passed && deadButtonFindings.length === 0 && emojiFindings.length === 0 && freshStartFindings.length === 0;
 
   // 2026-08-09: real bug found live (project meridianbk4) — this used to
   // build `findings` only inside the `!allPass` branch and return
@@ -319,6 +328,7 @@ export async function runStage5WithAgents(
   const findings: Finding[] = [
     ...deadButtonFindings,
     ...emojiFindings,
+    ...freshStartFindings,
     ...karanResult.findings.map(karanFindingToFinding),
     ...navyaResult.findings.map(navyaFindingToFinding),
     ...deepikaResult.findings.map(deepikaFindingToFinding),

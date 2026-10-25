@@ -10,6 +10,8 @@ export function alarmFor(rawLine: string): string | null {
   const call = line.match(/\[call-time:[a-z0-9]+\] (\S+) (\S+) FAILED in ([0-9.]+)s/);
   if (call) return `ALARM review/model call FAILED after ${call[3]}s: ${call[1]} on ${call[2]}`;
   if (/returned 429/.test(line)) return "ALARM model service answered 429 (shared pool is busy; the call is retried elsewhere)";
+  if (/\[blocked\]/.test(line)) return `ALARM BLOCKED: ${line.slice(0, 160)}`;
+  if (/task_complete REJECTED/.test(line)) return `ALARM finish REFUSED by the system checks: ${line.replace(/^.*task_complete REJECTED/, "").slice(0, 120)}`;
   if (/\[activity:escalate\]/.test(line)) return `ALARM ESCALATED to a human: ${line.slice(0, 120)}`;
   if (/not checked|NOT CHECKED/.test(line) && !/^\s*$/.test(line)) return `ALARM NOT CHECKED: ${line.slice(0, 160)}`;
   if (/did not (?:complete|finish)|review-incomplete/.test(line)) return `ALARM ${line.slice(0, 160)}`;

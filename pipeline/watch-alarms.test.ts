@@ -37,3 +37,11 @@ test("the same alarm repeating is shown once with its count, so a failing loop i
   t = 70_000;
   expect(throttle.offer("ALARM x")).toBe("ALARM x (3 times in the last minute)");
 });
+
+// 2026-10-25 (brewline3): the backend builder wrote "[blocked] ... I cannot modify db/migrations myself" at 11:20 and was refused
+// finishing 14 more times; the first alarm came at 11:30 when the build escalated. A builder reporting it is blocked, or a finish
+// refused by the system's checks, is raised at once.
+test("a builder reporting it is blocked, and a refused finish, are alarms at once", () => {
+  expect(alarmFor("11:20:06 [blocked] shubham -> pranav: order_items.menu_item_id uses ON DELETE CASCADE")).toContain("BLOCKED");
+  expect(alarmFor("11:19:09 [shubham:gemini-agent] task_complete REJECTED on iteration 27: 2 problem(s) found by the system's own checks")).toContain("finish REFUSED");
+});

@@ -249,3 +249,10 @@ test("the system turns CASCADE from a catalog row into RESTRICT, keeps the paren
   expect(keepHistoryInMigrations(join(root, "n2"))).toEqual([]);
   expect(readFileSync(join(root, "n2", "db/migrations/0000_initial.sql"), "utf-8")).toContain("ON DELETE CASCADE");
 });
+
+test("both database-folder rewrites are wired: the database builder runs it after its migration, the backend builder before its finish check", () => {
+  const pranav = readFileSync(new URL("../../../agents/generators/pranav/src/index.ts", import.meta.url), "utf-8");
+  const shubham = readFileSync(new URL("../../../agents/generators/shubham/src/index.ts", import.meta.url), "utf-8");
+  expect(pranav).toContain("keepHistoryInMigrations");
+  expect(shubham).toContain("keepHistoryInMigrations");
+});
