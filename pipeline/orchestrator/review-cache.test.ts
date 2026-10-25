@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fingerprintCode, withReviewCache } from "./review-cache.ts";
+import { fingerprintCode, withReviewCache, requestFullReview } from "./review-cache.ts";
 
 // 2026-10-04 (Ledgerly run 4): a restart re-ran all three reviewers on code
 // that had not changed since they passed — about $3 to learn nothing, and a
@@ -137,4 +137,33 @@ test("a change list the caller already has is kept as it is", async () => {
   writeFileSync(join(root, "app", "src", "a.ts"), "export const a = 7;");
   await withReviewCache("p5", "navya", dirs, run, undefined, ["backend/src/x.ts"]);
   expect(seen[1]).toEqual(["backend/src/x.ts"]);
+});
+
+// 2026-10-25 (brewline3): after the first full review, later rounds read only the files that changed, so a defect in a file nobody
+// touched (a sign-in cookie flag) surfaced in round 10. Before a build passes, each reviewer is asked for one full pass: a pass that
+// was only an incremental read does not count, a pass that was already full on this exact code does.
+test("a full review requested after an incremental pass runs on all the code once, even though the code is unchanged", async () => {
+  const dirs = setup();
+  const seen: Array<string[] | undefined> = [];
+  const run = async (changed?: string[]) => { seen.push(changed); return passed; };
+  await withReviewCache("p1", "navya", dirs, run); // first pass: full
+  writeFileSync(join(root, "app", "src", "a.ts"), "export const a = 2;");
+  await withReviewCache("p1", "navya", dirs, run); // second: only the changed file
+  expect(seen[1]?.length).toBe(1);
+  requestFullReview("p1");
+  await withReviewCache("p1", "navya", dirs, run); // the requested full pass
+  expect(seen.length).toBe(3);
+  expect(seen[2]).toBeUndefined();
+  await withReviewCache("p1", "navya", dirs, run); // done: the code is unchanged again, cached
+  expect(seen.length).toBe(3);
+});
+
+test("a full review requested when the last pass was already full on this exact code is not paid for again", async () => {
+  const dirs = setup();
+  let runs = 0;
+  const run = async () => { runs++; return passed; };
+  await withReviewCache("p1", "navya", dirs, run);
+  requestFullReview("p1");
+  await withReviewCache("p1", "navya", dirs, run);
+  expect(runs).toBe(1);
 });

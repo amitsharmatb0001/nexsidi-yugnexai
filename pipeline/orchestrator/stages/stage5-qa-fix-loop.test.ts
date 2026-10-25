@@ -1139,3 +1139,59 @@ test("a review round the guard allows proceeds as before", async () => {
   expect(result.pass).toBe(true);
   expect(result.hold).toBeUndefined();
 });
+
+// 2026-10-25 (brewline3): after the first full review the loop re-reads only the changed files, so defects in files nobody touched
+// came out one or two per round (a sign-in cookie flag in round 10). Before a build may pass, every reviewer does ONE full pass; what
+// it finds is fixed together, and the pass is not repeated.
+test("a build that needed a fix round gets one full review before it passes; its findings are fixed together", async () => {
+  const calls: Array<{ changed?: string[]; previous?: unknown }> = [];
+  let fullRequests = 0;
+  const fixed: string[][] = [];
+  const deps: QAFixDeps = {
+    runStage5: async (_pid, _s4, _plan, changed, previous) => {
+      calls.push({ changed, previous });
+      if (calls.length === 1) return failResult(1, "shubham");
+      if (calls.length === 2) return passResult();
+      if (calls.length === 3) return failResult(2, "aanya"); // what the full pass found
+      return passResult();
+    },
+    fixShubham: async (_p, f) => { fixed.push(f); return { success: true, filesWritten: ["src/a.ts"] }; },
+    fixAanya: async (_p, f) => { fixed.push(f); return { success: true, filesWritten: ["app/page.tsx"] }; },
+    requestFullReview: () => { fullRequests++; },
+  };
+  const out = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+  expect(out.pass).toBe(true);
+  expect(calls.length).toBe(4);
+  expect(fullRequests).toBe(1);
+  // the requested pass reads everything: no changed-files list, no earlier findings
+  expect(calls[2]!.changed).toBeUndefined();
+  expect(calls[2]!.previous).toBeUndefined();
+  expect(fixed.length).toBe(2);
+  expect(fixed[1]!.length).toBe(2);
+});
+
+test("a build whose first review is clean is not reviewed twice, and the full pass is never repeated", async () => {
+  let runs = 0;
+  let fullRequests = 0;
+  const clean: QAFixDeps = {
+    runStage5: async () => { runs++; return passResult(); },
+    fixShubham: async () => ({ success: true }),
+    fixAanya: async () => ({ success: true }),
+    requestFullReview: () => { fullRequests++; },
+  };
+  expect((await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, clean)).pass).toBe(true);
+  expect(runs).toBe(1);
+  expect(fullRequests).toBe(0);
+
+  runs = 0;
+  fullRequests = 0;
+  const once: QAFixDeps = {
+    runStage5: async () => { runs++; return runs === 1 ? failResult(1, "shubham") : passResult(); },
+    fixShubham: async () => ({ success: true, filesWritten: ["src/a.ts"] }),
+    fixAanya: async () => ({ success: true }),
+    requestFullReview: () => { fullRequests++; },
+  };
+  expect((await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, once)).pass).toBe(true);
+  expect(runs).toBe(3); // first review, retest, the one full pass
+  expect(fullRequests).toBe(1);
+});

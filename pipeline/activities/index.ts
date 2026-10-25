@@ -435,7 +435,7 @@ export async function assertWithinBudget(projectId: string, agentName: string): 
 // retry behavior without index.ts <-> stage5-qa-fix-loop.ts becoming a
 // circular import (index.ts already imports runQAFixLoop from there).
 import { runGeneratorWithQuotaRetry } from "./quota-retry.ts";
-import { runBuilderPhase, listBuiltFiles, builderTeamsOn, collapsePhasesForTeam, type PhaseStore } from "./build-phases.ts";
+import { runBuilderPhase, listBuiltFiles, builderTeamsOn, collapsePhasesForTeam, type PhaseStore, type PhaseStage } from "./build-phases.ts";
 import { recordBlocked } from "../../packages/agent-runtime/src/tools/blocked.ts";
 import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 import { recordClaimEvidence } from "../../packages/agent-runtime/src/claims-evidence.ts";
@@ -484,13 +484,17 @@ function phaseStore(projectId: string): PhaseStore {
   const read = (): Record<string, number[]> => {
     try { return readCacheFile<Record<string, number[]>>(projectId, PHASES_FILE); } catch { return {}; }
   };
+  const mark = (key: string, phase: number) => {
+    const done = read();
+    done[key] = [...new Set([...(done[key] ?? []), phase])].sort((a, b) => a - b);
+    writeCacheFile(projectId, PHASES_FILE, JSON.stringify(done, null, 2));
+  };
   return {
     isDone: (builder, phase) => (read()[builder] ?? []).includes(phase),
-    markDone: (builder, phase) => {
-      const done = read();
-      done[builder] = [...new Set([...(done[builder] ?? []), phase])].sort((a, b) => a - b);
-      writeCacheFile(projectId, PHASES_FILE, JSON.stringify(done, null, 2));
-    },
+    markDone: (builder, phase) => mark(builder, phase),
+    // 2026-10-25: a team's prepare step (shared files and helpers) is saved under its own key, so a Retry resumes at the lead's step.
+    isPrepared: (builder, phase) => (read()[`prepared:${builder}`] ?? []).includes(phase),
+    markPrepared: (builder, phase) => mark(`prepared:${builder}`, phase),
   };
 }
 
@@ -517,7 +521,7 @@ function isTeamPass(projectId: string): boolean {
   }
 }
 
-async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phase: number): Promise<void> {
+async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phase: number, stage?: PhaseStage): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
@@ -535,6 +539,7 @@ async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phas
       store: phaseStore(projectId),
       scaffoldNeeded: !existsSync(join(outputDir, "package.json")),
       existingFiles: listBuiltFiles(outputDir),
+      ...(stage ? { stage } : {}),
       runAgent: async (phasePlan, run) => {
         const p = phasePlan as unknown as BuildPlan;
         const result = await runGeneratorWithQuotaRetry(() =>
@@ -549,8 +554,8 @@ async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phas
   }
 }
 
-export async function runAanyaPhase(projectId: string, phase: number): Promise<void> {
-  await runPhaseFor(projectId, "aanya", phase);
+export async function runAanyaPhase(projectId: string, phase: number, stage?: PhaseStage): Promise<void> {
+  await runPhaseFor(projectId, "aanya", phase, stage);
 }
 
 export async function runShubhamPhase(projectId: string, phase: number): Promise<void> {

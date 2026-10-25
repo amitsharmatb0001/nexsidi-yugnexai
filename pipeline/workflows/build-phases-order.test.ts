@@ -76,3 +76,29 @@ test("a single team pass: the backend starts after the database step", async () 
   await done;
   expect(log).toEqual(["db", "shubham", "aanya"]);
 });
+
+// 2026-10-25 (brewline3): the frontend's shared files and helpers do not need the backend; only its lead's integration does. With a
+// prepare step the frontend writes its code while the backend builds, and integrates after the backend has finished.
+test("the frontend prepares while the backend builds and integrates only after it", async () => {
+  const { runBuildPhases } = await import("./project-build.ts") as unknown as {
+    runBuildPhases: (n: number, run: { aanya: (p: number, stage?: string) => Promise<void>; aanyaPrepare?: (p: number) => Promise<void>; shubham?: (p: number) => Promise<void>; pranav?: () => Promise<void> }) => Promise<void>;
+  };
+  const log: string[] = [];
+  let releaseBackend: () => void = () => {};
+  const done = runBuildPhases(1, {
+    aanyaPrepare: async (p) => { log.push(`aanya prepare ${p}`); },
+    aanya: async (p, stage) => { log.push(`aanya ${stage ?? "all"} ${p}`); },
+    shubham: () => new Promise<void>((r) => { log.push("shubham start"); releaseBackend = () => { log.push("shubham end"); r(); }; }),
+  });
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  expect([...log].sort()).toEqual(["aanya prepare 1", "shubham start"]); // both start at once: no waiting for the backend
+  releaseBackend();
+  await done;
+  expect(log.slice(2)).toEqual(["shubham end", "aanya integrate 1"]);
+});
+
+test("the workflow prepares the frontend behind its own version marker, so builds already running keep the old order", () => {
+  const src = readFileSync(new URL("./project-build.ts", import.meta.url), "utf-8");
+  expect(src).toContain('patched("frontend-prepare-v1")');
+  expect(src).toContain('"prepare"');
+});

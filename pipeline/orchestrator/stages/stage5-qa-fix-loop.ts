@@ -40,6 +40,7 @@ import { checkRoundGuard, type GuardVerdict } from "../progress-guard.ts";
 import { join as joinPath } from "node:path";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 import { runFixAsTeam } from "../team-fix.ts";
+import { requestFullReview } from "../review-cache.ts";
 import { chiefCheck, defaultChiefChat, isMachineFinding, isReviewerFailure, prepareForChief, type ChiefChat } from "../chief-check.ts";
 
 export interface QAFixLoopResult extends Stage5Result {
@@ -117,6 +118,9 @@ export interface QAFixDeps {
   // stops the loop before the next round is paid for. Optional so DI tests
   // that don't care keep working; the real entry point wires the real guard.
   roundGuard?: (findings: Finding[]) => Promise<GuardVerdict>;
+  // 2026-10-25 (brewline3): asks every reviewer for one full pass over all the code before the build may pass (review-cache.ts).
+  // Optional so DI tests that do not care keep working; the real entry point wires the real request.
+  requestFullReview?: (projectId: string) => void;
 }
 
 function formatFinding(f: { file: string; issue: string }): string {
@@ -345,7 +349,12 @@ export async function runQAFixLoopWithDeps(
   const heldFirst = await holdIfNoProgress();
   if (heldFirst) return heldFirst;
 
-  while (!result.pass && iterations <= MAX_FIX_ITERATIONS) {
+  // 2026-10-25 (brewline3): after the first full review the rounds read only the changed files, so defects in files nobody touched
+  // surfaced one or two per round. A build that needed a fix round gets ONE full pass by every reviewer before it may pass; what
+  // that pass finds is fixed together by the same loop, and the full pass is not repeated.
+  let fullPassDone = false;
+  for (;;) {
+  while (!result.pass && iterations <= MAX_FIX_ITERATIONS + (fullPassDone ? 1 : 0)) {
     // 2026-10-23: no new round once the spend cap is reached; the step then raises the budget stop (activities/index.ts).
     if (await isOverBudget(projectId)) {
       console.log(`[qa-fix-loop] budget_exceeded — the spend cap was reached, no further round`);
@@ -549,6 +558,17 @@ export async function runQAFixLoopWithDeps(
     previousFindingCount = currentFindingCount;
   }
 
+  if (result.pass && !fullPassDone && iterations > 1 && deps.requestFullReview && !(await isOverBudget(projectId))) {
+    fullPassDone = true;
+    console.log(`[qa-fix-loop] the incremental rounds passed — one full review of all the code before the build passes`);
+    deps.requestFullReview(projectId);
+    result = await gateQaFindings(projectId, applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan), projectId), deps.chiefChat);
+    iterations++;
+    continue;
+  }
+  break;
+  }
+
   return { ...result, iterations, stuck: !result.pass };
 }
 
@@ -573,6 +593,7 @@ export async function runQAFixLoop(
     // 3rd slot (includeTier3). changedFiles/previousFindings (Task 1) pass
     // straight through to runStage5's own matching positional slots.
     runStage5: (pid, s4, p, changedFiles, previousFindings) => runStage5(pid, s4, false, p, changedFiles, previousFindings),
+    requestFullReview: (pid) => requestFullReview(pid),
     // 2026-08-06: real bug found live (project bae438767bed) — a shared-pool
     // quota exhaustion hitting all three fix calls simultaneously (they run
     // concurrently) used to fail every one of them outright within a

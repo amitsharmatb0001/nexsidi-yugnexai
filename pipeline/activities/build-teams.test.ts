@@ -148,3 +148,70 @@ test("on the first build the foundation task goes to the shared step; the helper
   expect(helpers.length).toBe(3);
   expect(helpers.flatMap((h) => h.ownFiles ?? [])).not.toContain("src/app.ts");
 });
+
+// 2026-10-25 (brewline3): with one team pass the frontend started only after the whole backend had finished: 17 to 23 minutes of waiting
+// that nothing depended on. The frontend's shared files and helpers write code against the approved contract and need no running
+// backend (they are told not to run a build, containers or a browser); only the lead's integration step does. So the team is split:
+// "prepare" (shared files + helpers) runs beside the backend, "integrate" (the lead) runs after it.
+const preparingStore = (): PhaseStore & { done: number[]; prepared: number[] } => {
+  const done: number[] = [];
+  const prepared: number[] = [];
+  return { done, prepared, isDone: (_b, p) => done.includes(p), markDone: (_b, p) => { done.push(p); }, isPrepared: (_b, p) => prepared.includes(p), markPrepared: (_b, p) => { prepared.push(p); } };
+};
+const allFiles = TASKS.flatMap((t) => t.outputFiles);
+const record = (runs: PhaseRun[], headers?: string[]) => async (phasePlan: { aanyaTasks: PhaseTask[] }, run: PhaseRun) => {
+  runs.push(run);
+  headers?.push(run.header);
+  return { success: true, errors: [], filesWritten: phasePlan.aanyaTasks.flatMap((t) => t.outputFiles) };
+};
+
+test("the prepare step runs the shared files and the helpers only: no lead, the phase is not marked done", async () => {
+  const runs: PhaseRun[] = [];
+  const s = preparingStore();
+  const out = await runBuilderPhase({ projectId: "p", builder: "aanya", phase: 1, plan: plan(TASKS), store: s, scaffoldNeeded: true, existingFiles: [], stage: "prepare", runAgent: record(runs), reportBlocked: () => {} });
+  expect(runs.map((r) => r.role)).toEqual(["shared", "helper", "helper", "helper"]);
+  expect(s.done).toEqual([]);
+  expect(s.prepared).toEqual([1]);
+  expect(out.skipped).toBe(false);
+});
+
+test("the integrate step after a prepare runs only the lead, and marks the phase done", async () => {
+  const runs: PhaseRun[] = [];
+  const s = preparingStore();
+  s.prepared.push(1);
+  await runBuilderPhase({ projectId: "p", builder: "aanya", phase: 1, plan: plan(TASKS), store: s, scaffoldNeeded: false, existingFiles: allFiles, stage: "integrate", runAgent: record(runs), reportBlocked: () => {} });
+  expect(runs.map((r) => r.role)).toEqual(["integrate"]);
+  expect(runs[0]!.isLast).toBe(true);
+  expect(s.done).toEqual([1]);
+});
+
+test("the integrate step hands the lead any task whose files are still missing after the prepare", async () => {
+  const runs: PhaseRun[] = [];
+  const headers: string[] = [];
+  const s = preparingStore();
+  s.prepared.push(1);
+  const missing = allFiles.filter((f) => f !== "app/contact/page.tsx");
+  await runBuilderPhase({ projectId: "p", builder: "aanya", phase: 1, plan: plan(TASKS), store: s, scaffoldNeeded: false, existingFiles: missing, stage: "integrate", runAgent: record(runs, headers), reportBlocked: () => {} });
+  expect(headers[0]).toContain("NOT finished");
+  expect(headers[0]).toContain("contact");
+  expect(headers[0]).not.toMatch(/NOT finished[^]*about/);
+});
+
+test("the integrate step with no prepare behind it does the whole team, so a retry after a failed prepare loses nothing", async () => {
+  const runs: PhaseRun[] = [];
+  const s = preparingStore();
+  await runBuilderPhase({ projectId: "p", builder: "aanya", phase: 1, plan: plan(TASKS), store: s, scaffoldNeeded: true, existingFiles: [], stage: "integrate", runAgent: record(runs), reportBlocked: () => {} });
+  expect(runs.map((r) => r.role)).toEqual(["shared", "helper", "helper", "helper", "integrate"]);
+  expect(s.done).toEqual([1]);
+});
+
+test("a phase with fewer than two tasks has nothing to prepare, and the stage 'all' is the unchanged behaviour", async () => {
+  const runs: PhaseRun[] = [];
+  const s = preparingStore();
+  const one = await runBuilderPhase({ projectId: "p", builder: "aanya", phase: 1, plan: plan(TASKS.slice(0, 1)), store: s, scaffoldNeeded: true, existingFiles: [], stage: "prepare", runAgent: record(runs), reportBlocked: () => {} });
+  expect(runs).toEqual([]);
+  expect(one.skipped).toBe(true);
+  const runs2: PhaseRun[] = [];
+  await runBuilderPhase({ projectId: "p", builder: "aanya", phase: 1, plan: plan(TASKS), store: preparingStore(), scaffoldNeeded: true, existingFiles: [], runAgent: record(runs2), reportBlocked: () => {} });
+  expect(runs2.map((r) => r.role)).toEqual(["shared", "helper", "helper", "helper", "integrate"]);
+});

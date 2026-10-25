@@ -797,3 +797,15 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - `saanvi.md`: a business number (hours, minimum notice, limits) is written once, with values, in the spec.
 
 **Proof:** tests for each check, the checklist and the wiring; run on brewline3's real code the new checks report 4 problems that were found only in review (metadata 825 characters, `seedStaff.ts:29` password log, `backend/docker-compose.yml`, `frontend/docker-compose.yml`) with no model call; all suites pass.
+
+## Batch 55 — one full review before a build passes, and the frontend builds beside the backend (parts C and D, 2026-10-25)
+
+**Found (brewline3):** (1) after the first full review, later rounds read only the changed files, so defects in files nobody touched came out one or two per round (the sign-in cookie flag in round 10), each a paid fix and deploy. (2) With one team pass the frontend started only after the whole backend had finished: the generation timeline shows the backend 16–21 minutes and then the frontend 23 minutes in a row, though the frontend's shared files and helpers are told not to run a build, containers or a browser and need no running backend; only the lead's integration does.
+
+**Built:**
+- `review-cache.ts` + `stage5-qa-fix-loop.ts`: when the incremental rounds pass after at least one fix round, every reviewer does ONE full pass over all the code (`requestFullReview`; a pass that was only an incremental read does not count, one that was already full on this exact code does and is not paid for again); what it finds is fixed together by the same loop, one extra round is allowed for it, and the full pass is not repeated. A build whose first review is clean is not reviewed twice.
+- `build-phases.ts`, `activities/index.ts`, `project-build.ts`: a team phase can run in two stages. "prepare" (shared files and helpers) runs beside the backend; "integrate" (the lead) runs after it, from the files that really exist (any task whose files are still missing goes to the lead); a Retry resumes at the lead's step. Behind the version marker `frontend-prepare-v1`, so builds already running keep the old order. Without prepare nothing changes.
+
+**Proof:** DI tests for the full pass (found after a pass, fixed together, not repeated, not run when the first review is clean), cache tests, team-stage tests (prepare runs no lead; integrate runs only the lead and marks done; integrate without a prepare does the whole team; missing files go to the lead) and a workflow ordering test (frontend prepares at once, integrates only after the backend ends); all suites pass.
+
+**Expected effect (not yet measured in a build):** about 17–23 minutes less generation time on a single-pass plan, at no extra cost; one extra full review (about $1.5–2.5) in place of the repeated incremental rounds.

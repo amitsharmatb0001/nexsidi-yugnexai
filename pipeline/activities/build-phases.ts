@@ -49,7 +49,14 @@ export interface PhaseRun {
 export interface PhaseStore {
   isDone(builder: PhaseBuilder, phase: number): boolean;
   markDone(builder: PhaseBuilder, phase: number): void;
+  // 2026-10-25 (brewline3): a team's shared files and helpers ("prepare") are saved apart from the lead's integration, so the frontend can
+  // prepare while the backend builds and a Retry resumes at the lead's step. Optional: a store without them always runs the whole team.
+  isPrepared?(builder: PhaseBuilder, phase: number): boolean;
+  markPrepared?(builder: PhaseBuilder, phase: number): void;
 }
+
+/** all: the whole phase (the default); prepare: a team's shared files and helpers only; integrate: the lead's step (the whole team if no prepare is saved). */
+export type PhaseStage = "all" | "prepare" | "integrate";
 
 export interface PhaseAgentResult {
   success: boolean;
@@ -165,6 +172,7 @@ export async function runBuilderPhase(args: {
   store: PhaseStore;
   scaffoldNeeded: boolean;
   existingFiles: string[];
+  stage?: PhaseStage;
   runAgent: (phasePlan: PlanWithTasks, run: PhaseRun) => Promise<PhaseAgentResult>;
   reportBlocked: (what: string, checked: string) => void;
 }): Promise<{ skipped: boolean; filesWritten: string[] }> {
@@ -191,8 +199,9 @@ export async function runBuilderPhase(args: {
   });
 
   if (builderTeamsOn() && tasks.length >= 2) {
-    return runAsTeam(args, tasks, makeRun);
+    return runAsTeam(args, tasks, makeRun, args.stage ?? "all");
   }
+  if (args.stage === "prepare") return { skipped: true, filesWritten: [] }; // nothing to prepare: the integrate step does all of it
 
   let result = await args.runAgent(phasePlan, makeRun(args.scaffoldNeeded));
   if (!result.success) {
@@ -226,9 +235,12 @@ async function runAsTeam(
   args: TeamArgs,
   tasks: PhaseTask[],
   makeRun: (scaffold: boolean, retryNote?: string) => PhaseRun,
+  stage: PhaseStage = "all",
 ): Promise<{ skipped: boolean; filesWritten: string[] }> {
   const { builder, phase, plan, store } = args;
   const key = tasksKey(builder);
+  // The lead's step after a saved prepare does not repeat the shared files and the helpers.
+  const prepared = stage === "integrate" && store.isPrepared?.(builder, phase) === true;
   const base = makeRun(false);
   const written = new Set<string>();
   const planWith = (ts: PhaseTask[]) => ({ ...plan, [key]: ts }) as PlanWithTasks;
@@ -239,7 +251,7 @@ async function runAsTeam(
   const groups = groupTasksForHelpers(helperTasks, MAX_HELPERS);
   const helperFiles = helperTasks.flatMap((t) => t.outputFiles);
 
-  if (args.scaffoldNeeded) {
+  if (args.scaffoldNeeded && !prepared) {
     const header = [
       base.header,
       `TEAM STEP 1 of 3 — SHARED FILES. You are the lead of a team. Write the files every task below will use:\n` +
@@ -276,9 +288,21 @@ async function runAsTeam(
     }
     return { group, result: r };
   };
-  const helpers = await Promise.all(groups.map((g, i) => runHelper(g, i)));
+  const helpers = prepared ? [] : await Promise.all(groups.map((g, i) => runHelper(g, i)));
   for (const h of helpers) for (const f of h.result.filesWritten) written.add(f);
-  const unfinished = helpers.filter((h) => !h.result.success);
+  let unfinished: Array<{ group: PhaseTask[]; result: { errors: string[] } }> = helpers.filter((h) => !h.result.success);
+  if (prepared) {
+    // Whatever the prepare left unwritten goes to the lead, found from the files that really exist now.
+    const slash = (f: string) => f.split("\\").join("/");
+    const present = new Set(args.existingFiles.map(slash));
+    const missing = tasks.filter((t) => t.outputFiles.some((f) => !present.has(slash(f))));
+    if (missing.length > 0) unfinished = [{ group: missing, result: { errors: ["its files were not written before the lead's step"] } }];
+  }
+  if (stage === "prepare") {
+    store.markPrepared?.(builder, phase);
+    console.log(`[phases] ${builder} phase ${phase}: shared files and ${groups.length} helpers done beside the other builder (${written.size} files) — the lead integrates next`);
+    return { skipped: false, filesWritten: [...written] };
+  }
 
   const leadHeader = (retryNote?: string) =>
     [

@@ -58,6 +58,40 @@ interface CacheEntry<T> {
   result: T;
   at: string;
   files?: Record<string, string>;
+  /** the run that produced this pass read the whole code (not only the files changed since an earlier pass) */
+  full?: boolean;
+}
+
+// 2026-10-25 (brewline3): after the first full review later rounds read only the changed files, so a defect in a file nobody touched
+// surfaced late. Before a build passes, the loop asks every reviewer for one full pass (requestFullReview): that reviewer's next run
+// reads all the code, unless its last pass was already a full one on this exact code.
+const REVIEWERS = ["navya", "karan", "deepika"];
+const fullRequestFile = (projectId: string): string => join(buildDirFor(projectId), "full-review-requested.json");
+
+export function requestFullReview(projectId: string, reviewers: string[] = REVIEWERS): void {
+  try {
+    mkdirSync(buildDirFor(projectId), { recursive: true });
+    writeFileSync(fullRequestFile(projectId), JSON.stringify({ reviewers }), "utf-8");
+  } catch (err) {
+    console.error(`[stage5] could not record the full review request: ${String(err).slice(0, 120)}`);
+  }
+}
+
+function pendingFull(projectId: string): string[] {
+  try {
+    return (JSON.parse(readFileSync(fullRequestFile(projectId), "utf-8")) as { reviewers?: string[] }).reviewers ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function clearFull(projectId: string, reviewer: string): void {
+  const left = pendingFull(projectId).filter((r) => r !== reviewer);
+  try {
+    writeFileSync(fullRequestFile(projectId), JSON.stringify({ reviewers: left }), "utf-8");
+  } catch {
+    // a request that cannot be cleared only makes one more full pass
+  }
 }
 
 function cacheFile(projectId: string): string {
@@ -92,23 +126,26 @@ export async function withReviewCache<T extends { passed: boolean }>(
   const hash = fingerprint ?? fingerprintOf(files);
   const all = readAll(projectId);
   const hit = all[reviewer] as CacheEntry<T> | undefined;
-  if (hit && hit.hash === hash && hit.result?.passed) {
+  const wantsFull = pendingFull(projectId).includes(reviewer);
+  if (hit && hit.hash === hash && hit.result?.passed && (!wantsFull || hit.full === true)) {
     console.log(`[stage5] ${reviewer}: the code is unchanged since this reviewer last passed it (${hit.at}) — not run again`);
     return hit.result;
   }
-  let changed = callerChangedFiles && callerChangedFiles.length > 0 ? callerChangedFiles : undefined;
-  if (!changed && hit?.result?.passed && hit.files) {
+  let changed = !wantsFull && callerChangedFiles && callerChangedFiles.length > 0 ? callerChangedFiles : undefined;
+  if (!changed && !wantsFull && hit?.result?.passed && hit.files) {
     const delta = changedSince(hit.files, files);
     if (delta.length > 0) {
       changed = delta;
       console.log(`[stage5] ${reviewer}: passed earlier — reading only the ${delta.length} file(s) changed since: ${delta.slice(0, 6).join(", ")}`);
     }
   }
+  if (wantsFull) console.log(`[stage5] ${reviewer}: a full review of all the code was requested before the build passes`);
   const result = await run(changed);
+  if (wantsFull) clearFull(projectId, reviewer);
   if (result.passed) {
     try {
       mkdirSync(buildDirFor(projectId), { recursive: true });
-      const next = { ...readAll(projectId), [reviewer]: { hash, result, at: new Date().toISOString(), files } };
+      const next = { ...readAll(projectId), [reviewer]: { hash, result, at: new Date().toISOString(), files, full: changed === undefined } };
       writeFileSync(cacheFile(projectId), JSON.stringify(next), "utf-8");
     } catch (err) {
       console.error(`[stage5] could not save the review cache: ${String(err).slice(0, 120)}`);

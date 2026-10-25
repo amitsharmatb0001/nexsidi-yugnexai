@@ -229,9 +229,12 @@ export function shouldStopCompileRepair(failures: number, maximum: number): bool
 // Two waits stay because something really depends on them: the backend's phase 2 waits for the database step (as
 // before), and the frontend's LAST phase — the only one with the whole-app browser check — waits for the finished
 // backend. Pure (only the functions passed in do work), so it is deterministic workflow code.
+// 2026-10-25 (brewline3): the frontend's last phase used to wait for the finished backend before starting at all (17 to 23 minutes idle
+// on a single team pass), though only its lead's integration needs the backend. With aanyaPrepare the shared files and helpers are written
+// beside the backend, and only the integration waits.
 export async function runBuildPhases(
   phaseCount: number,
-  run: { aanya: (phase: number) => Promise<void>; shubham?: (phase: number) => Promise<void>; pranav?: () => Promise<void> },
+  run: { aanya: (phase: number, stage?: "integrate") => Promise<void>; aanyaPrepare?: (phase: number) => Promise<void>; shubham?: (phase: number) => Promise<void>; pranav?: () => Promise<void> },
 ): Promise<void> {
   const database = run.pranav ? run.pranav() : Promise.resolve();
   const backend = (async () => {
@@ -244,8 +247,9 @@ export async function runBuildPhases(
   })();
   const frontend = (async () => {
     for (let phase = 1; phase < phaseCount; phase++) await run.aanya(phase);
+    if (run.aanyaPrepare) await run.aanyaPrepare(phaseCount);
     await backend;
-    await run.aanya(phaseCount);
+    await run.aanya(phaseCount, run.aanyaPrepare ? "integrate" : undefined);
   })();
   await Promise.all([database, backend, frontend]);
 }
@@ -613,7 +617,8 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     try {
       if (phaseCount > 0 && patched("independent-build-phases-v1")) {
         await runBuildPhases(phaseCount, {
-          aanya: (phase) => genAct.runAanyaPhase(projectId, phase),
+          aanya: (phase, stage) => (stage ? genAct.runAanyaPhase(projectId, phase, stage) : genAct.runAanyaPhase(projectId, phase)),
+          ...(patched("frontend-prepare-v1") ? { aanyaPrepare: (phase: number) => genAct.runAanyaPhase(projectId, phase, "prepare") } : {}),
           ...(needs.shubham ? { shubham: (phase: number) => genAct.runShubhamPhase(projectId, phase) } : {}),
           ...(needs.pranav ? { pranav: () => genAct.runPranav(projectId) } : {}),
         });
