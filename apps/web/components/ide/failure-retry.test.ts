@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
-import { isRetryableFailure, readableFailureReason } from "./IdeWorkspace.tsx";
+import { readFileSync } from "node:fs";
+import { isRetryableFailure, readableFailureReason, RETRY_NOTE } from "./IdeWorkspace.tsx";
 
 // 2026-08-29: real gap found live (project 6c7d4358cf73). A machine-wide
 // network outage took every Gemini model down simultaneously mid-generation;
@@ -71,4 +72,17 @@ test("no failure reason guesses at the cause", () => {
     expect({ c, guess: /\b(often|commonly|probably|likely|may still|transient|not a problem with)\b/i.test(text) }).toEqual({ c, guess: false });
   }
   expect(readableFailureReason("deploy_activity_error")).toContain("Retry");
+});
+
+// 2026-10-25 (brewline2): the hold card added its own sentence, "This is often transient (a network blip, a temporary
+// quota limit)", after whatever reason was shown. It is a guess, and on that build it contradicted the reason (the checks
+// had not found the same issues; a reviewer had failed). The card now says only what Retry does, and the stuck reason
+// covers both ways the quality checks can stop.
+test("the retry sentence says what Retry does and guesses nothing, and the stuck reason names both causes", () => {
+  expect(RETRY_NOTE).toContain("resumes");
+  expect({ guess: /\b(often|commonly|probably|likely|may still|transient|blip)\b/i.test(RETRY_NOTE) }).toEqual({ guess: false });
+  expect(readableFailureReason("stuck_state")).toContain("reviewer");
+  const card = readFileSync(new URL("./IdeWorkspace.tsx", import.meta.url), "utf-8");
+  expect(card).not.toContain("This is often transient");
+  expect(card).toContain("? RETRY_NOTE");
 });

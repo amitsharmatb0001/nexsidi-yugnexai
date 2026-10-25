@@ -634,3 +634,11 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Proof:** 2 new tests (fail, then clean: 3 reviews, one builder fix, pass, not stuck; always failing: 3 reviews, no builder asked, stuck with the notice kept); the 42 earlier loop tests still pass; all suites pass.
 
 **Recorded for the full trace after this build, not changed:** Karan's one-pass review calls on gemini-3.8-flash and gemini-3.1-pro both aborted at the 120 s floor of the size-based timeout while gemini-3.7-flash answered in 43 s; a later gemini-3.6-flash answer ended without submitting findings.
+
+## Batch 36 — the hold card stops guessing (2026-10-25)
+
+**Found (brewline2):** the card shown when a build waits for a decision added its own sentence after the reason: "This is often transient (a network blip, a temporary quota limit)". It is a guess, and on that build it contradicted the reason shown just above it. My earlier test only covered the reason texts, not this second sentence.
+
+**Changed** (`apps/web/components/ide/IdeWorkspace.tsx`): the card says what Retry does ("Retry resumes from where the build stopped; the work already done is kept"), exported as `RETRY_NOTE`; the `stuck_state` reason now names both ways the quality checks can stop (the same issues keep coming back, or a reviewer could not finish).
+
+**Proof:** test (no guessing word in the note, the stuck reason names a reviewer, the card uses the note and not the old sentence); web suite and type check clean.

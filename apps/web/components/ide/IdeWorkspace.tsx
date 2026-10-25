@@ -236,7 +236,7 @@ const FAILURE_REASON_TEXT: Record<string, string> = {
   clarification_exhausted: "It asked several clarifying questions but the request still wasn't specific enough to build from.",
   spec_rejected_too_many_times: "The specification was revised too many times without reaching something approvable.",
   generation_failed: "Code generation failed and couldn't recover after several attempts.",
-  stuck_state: "Quality checks kept finding the same issues without improving across several rounds.",
+  stuck_state: "The quality checks stopped before the build passed: either the same issues kept coming back without improving across several rounds, or a reviewer could not finish its review. The build log says which.",
   compile_repair_limit: "It couldn't get the generated code to compile after several repair attempts.",
   deploy_stuck: "Deployment kept failing with the same error and couldn't self-recover.",
   deploy_failed: "Deployment failed.",
@@ -256,6 +256,9 @@ const FAILURE_REASON_TEXT: Record<string, string> = {
 
 // Reasons may carry a "code: detail" shape (see Riya's failureReason) —
 // match on the code and append the detail rather than dumping the raw string.
+/** What the Retry button does (a statement of what happens, not a guess at why the build stopped). */
+export const RETRY_NOTE = "Retry resumes from where the build stopped; the work already done is kept.";
+
 export function readableFailureReason(reason: string): string {
   const [code, ...rest] = reason.split(":");
   const detail = rest.join(":").trim();
@@ -1107,7 +1110,7 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                         : "It hit a limit it couldn't resolve on its own and stopped automatically — nothing is running for this project anymore."}
                       {" "}
                       {isRetryableFailure(needsAttention.reason)
-                        ? "This is often transient (a network blip, a temporary quota limit) — retrying resumes exactly where it stopped, no work is lost."
+                        ? RETRY_NOTE
                         : "It can't continue from here — start a new project to keep going."}
                     </div>
                     <div className={s.gateActions}>
