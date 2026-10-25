@@ -744,3 +744,9 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Measured (brewline3 ledger, 153 calls):** median call time on the same size of input (about 40–60K tokens in): 3.1-pro-preview 6.3 s, 3.5-flash 8.1 s, 3.6-flash 3.4 s, **3.8-flash 58.7 s** (12 calls, max 147 s). Even a 97-token answer on 3.8-flash took 75 s, so the wait is the model's queue, not the writing. Parallel helpers start on different models of the builder pool; the third started on 3.8-flash and sat about a minute per step.
 
 **Changed:** `router.ts` builder pool is now 3.5, 3.6, 3.7, 3.8 (all four kept, 3.8 last, as a fallback); tests updated. Takes effect when the worker next restarts.
+
+## Batch 47 — the new-database migration check never ran inside the worker (2026-10-25)
+
+**Found (brewline3 log):** all 6 runs of the check ended with "migration check not run: spawnSync cmd.exe ETIMEDOUT", each within a second, while the same code run from a shell worked in 5 s (and found nothing wrong). So the check had never actually run in a build, and nothing raised it: the alarm watcher looked for "not checked" only.
+
+**Changed:** `migration-check.ts` starts docker directly (no cmd.exe) and keeps the error code in the note; `watch-alarms.ts` raises "check not run" as NOT CHECKED. Proof: argument-splitting test, alarm test, and a run against brewline3's real migrations (ran, nothing found, 4 s). Whether the direct start also works inside the worker is confirmed at the next review round of this build.

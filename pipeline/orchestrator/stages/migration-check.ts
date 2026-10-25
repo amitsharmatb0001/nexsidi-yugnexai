@@ -4,7 +4,7 @@
 // stops during start-up. The delivered compose file mounts db/migrations as Postgres's init directory, so every file runs
 // in name order on first start and the first error stops it. This does the same in a throwaway PostgreSQL 16 container
 // and reports the first file that fails, with the database's own message. No model call.
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -19,11 +19,19 @@ export interface MigrationCheckDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
-const defaultExec = (cmd: string): string => execSync(cmd, { encoding: "utf-8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
+/** "docker run -d x" as the argument list for docker itself; a part in double quotes stays whole. */
+export function dockerArgs(cmd: string): string[] {
+  const args: string[] = [];
+  for (const m of cmd.replace(/^docker /, "").matchAll(/"([^"]*)"|(\S+)/g)) args.push(m[1] ?? m[2]!);
+  return args;
+}
+
+// Docker is started directly, with no cmd.exe in between: inside the worker the shell start ended at once with ETIMEDOUT (brewline3).
+const defaultExec = (cmd: string): string => execFileSync("docker", dockerArgs(cmd), { encoding: "utf-8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
 
 const errText = (err: unknown): string => {
-  const e = err as { stderr?: unknown; stdout?: unknown; message?: unknown };
-  return `${String(e?.stderr ?? "")}\n${String(e?.stdout ?? "")}\n${String(e?.message ?? err)}`;
+  const e = err as { stderr?: unknown; stdout?: unknown; message?: unknown; code?: unknown };
+  return `${String(e?.stderr ?? "")}\n${String(e?.stdout ?? "")}\n${String(e?.message ?? err)}${e?.code ? ` [${String(e.code)}]` : ""}`;
 };
 
 export async function migrationFindings(projectDir: string, deps: MigrationCheckDeps = {}): Promise<MigrationCheckResult> {

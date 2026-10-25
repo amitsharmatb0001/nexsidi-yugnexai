@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrationFindings } from "./migration-check.ts";
+import { migrationFindings, dockerArgs } from "./migration-check.ts";
 
 // 2026-10-24 (Brewline, found by starting a copy from scratch): a fix round added 0003_fix.sql, which uses MIN(id) on a
 // uuid column. PostgreSQL 16 has no min(uuid), so on a new database the migration stops and Postgres never finishes
@@ -71,4 +71,12 @@ test("the migration check runs in the review round, not in the backend builder's
   expect(stage5).toContain("backendFreshStartFindings");
   const shubham = readFileSync(new URL("../../../agents/generators/shubham/src/index.ts", import.meta.url), "utf-8");
   expect(shubham).not.toContain("backendFreshStartFindings");
+});
+
+// 2026-10-25 (brewline3): inside the worker every run of this check ended at once with "spawnSync cmd.exe ETIMEDOUT" (6 of 6), while the
+// same code run from a shell worked in 5 s, so the check never ran in the build. The docker commands now start docker directly, with no
+// cmd.exe in between, and the note says how long it took and the error code.
+test("a docker command line is split into arguments, a quoted part staying whole", () => {
+  expect(dockerArgs('docker run -d --name x -e POSTGRES_PASSWORD=check postgres:16-alpine')).toEqual(["run", "-d", "--name", "x", "-e", "POSTGRES_PASSWORD=check", "postgres:16-alpine"]);
+  expect(dockerArgs('docker cp "E:/tmp/a b/db/migrations/." mig-1:/m')).toEqual(["cp", "E:/tmp/a b/db/migrations/.", "mig-1:/m"]);
 });

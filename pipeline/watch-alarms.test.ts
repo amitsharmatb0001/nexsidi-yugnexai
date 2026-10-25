@@ -45,3 +45,7 @@ test("a builder reporting it is blocked, and a refused finish, are alarms at onc
   expect(alarmFor("11:20:06 [blocked] shubham -> pranav: order_items.menu_item_id uses ON DELETE CASCADE")).toContain("BLOCKED");
   expect(alarmFor("11:19:09 [shubham:gemini-agent] task_complete REJECTED on iteration 27: 2 problem(s) found by the system's own checks")).toContain("finish REFUSED");
 });
+
+test("a check that could not run is an alarm, so it is never silently counted as passed", () => {
+  expect(alarmFor("12:37:50 [exit-checks] migration check not run: docker could not start a PostgreSQL 16 container (spawnSync ETIMEDOUT)")).toContain("NOT CHECKED");
+});

@@ -13,7 +13,7 @@ export function alarmFor(rawLine: string): string | null {
   if (/\[blocked\]/.test(line)) return `ALARM BLOCKED: ${line.slice(0, 160)}`;
   if (/task_complete REJECTED/.test(line)) return `ALARM finish REFUSED by the system checks: ${line.replace(/^.*task_complete REJECTED/, "").slice(0, 120)}`;
   if (/\[activity:escalate\]/.test(line)) return `ALARM ESCALATED to a human: ${line.slice(0, 120)}`;
-  if (/not checked|NOT CHECKED/.test(line) && !/^\s*$/.test(line)) return `ALARM NOT CHECKED: ${line.slice(0, 160)}`;
+  if (/not checked|NOT CHECKED|check not run/.test(line) && !/^\s*$/.test(line)) return `ALARM NOT CHECKED: ${line.slice(0, 160)}`;
   if (/did not (?:complete|finish)|review-incomplete/.test(line)) return `ALARM ${line.slice(0, 160)}`;
   if (/Live retest failed|TEST DATA LEFT|budget_exceeded|Stuck loop detected|stopping — every fix/.test(line)) return `ALARM ${line.slice(0, 160)}`;
   if (/\bFAILED\b/.test(line)) return `ALARM ${line.slice(0, 160)}`;
