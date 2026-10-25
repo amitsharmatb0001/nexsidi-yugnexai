@@ -57,6 +57,7 @@ import { reviewDbUrl } from "../../../packages/agent-runtime/src/tools/compose-p
 import { resetAppRateLimits } from "./limiter-reset.ts";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 import { liveBudgetMs, minutesSince } from "../time-budget.ts";
+import { projectHygieneFindings } from "./shipping-hygiene.ts";
 export { isQuotaExhaustionError };
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
@@ -82,6 +83,21 @@ const INTERNAL_AGENT_NAMES = [
 // finding-evidence.ts) are dropped before routing — the live stage has no
 // debate, so a false CRITICAL (project a034f90ba50e) went straight to a fixer.
 // If that leaves no findings and nothing else failed, the retest passes.
+// 2026-10-25: the file-read hygiene checks (shipping-hygiene.ts) on the finished project join the live review as proven machine findings, so a
+// build whose builders missed them still gets them fixed, by the owner of each file, in the same round. Never fatal.
+export function withHygieneFindings(projectId: string, retest: LiveRetestResult): LiveRetestResult {
+  let found: Array<{ file: string; issue: string }> = [];
+  try {
+    found = projectHygieneFindings(buildDirFor(projectId));
+  } catch (err) {
+    console.error(`[stage6] hygiene checks skipped: ${String(err).slice(0, 160)}`);
+  }
+  if (found.length === 0) return retest;
+  const existing = Array.isArray(retest.findings) ? (retest.findings as unknown[]) : [];
+  console.log(`[stage6] ${found.length} hygiene finding(s) from the project files join the live review`);
+  return { ...retest, findings: [...found, ...existing], pass: false };
+}
+
 export function guardLiveRetest(projectId: string, retest: LiveRetestResult): LiveRetestResult {
   if (retest.pass || !Array.isArray(retest.findings) || retest.findings.length === 0) return retest;
   const projectDir = buildDirFor(projectId);
@@ -1053,7 +1069,7 @@ export async function runStage6(
   // One live review as the loop sees it: the checks, the Chief AI's gate, and, when the pass only came because the static
   // reviewers' findings were set aside, the live browser review and the design score it still owes.
   const reviewLive = async (changed?: string[]): Promise<LiveRetestResult> => {
-    const first = await gateLiveFindings(projectId, guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl, changed)), deps.chiefChat);
+    const first = await gateLiveFindings(projectId, withHygieneFindings(projectId, guardLiveRetest(projectId, await deps.liveRetestFn(projectId, deployResult.appUrl, deployResult.backendUrl, changed))), deps.chiefChat);
     if (!(first.pass && first.needsBrowserReview) || !deps.browserReviewFn) return first;
     console.log(`[stage6] the static reviewers' findings were all outside the plan - running the live browser review and the design score now`);
     const second = await gateLiveFindings(projectId, guardLiveRetest(projectId, await deps.browserReviewFn(projectId, deployResult.appUrl, deployResult.backendUrl)), deps.chiefChat);

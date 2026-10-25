@@ -145,3 +145,63 @@ export function strayShippedFileFindings(projectDir: string): string[] {
   }
   return out;
 }
+
+/** A column a migration adds must be in the Drizzle schema file too, or the next generated change or query helper does not know it. */
+export function schemaMigrationSyncFindings(projectDir: string): string[] {
+  const schemaFile = join(projectDir, "db", "src", "schema.ts");
+  const migrations = join(projectDir, "db", "migrations");
+  if (!existsSync(schemaFile) || !existsSync(migrations)) return [];
+  let schema = "";
+  try {
+    schema = readFileSync(schemaFile, "utf-8");
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let names: string[] = [];
+  try {
+    names = readdirSync(migrations).filter((n) => n.endsWith(".sql")).sort();
+  } catch {
+    return [];
+  }
+  for (const name of names) {
+    let sql = "";
+    try {
+      sql = readFileSync(join(migrations, name), "utf-8");
+    } catch {
+      continue;
+    }
+    for (const m of sql.matchAll(/ALTER\s+TABLE\s+"?(\w+)"?\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w+)"?/gi)) {
+      const [, table, column] = m;
+      const key = `${table}.${column}`;
+      if (seen.has(key) || schema.includes(`"${column}"`)) continue;
+      seen.add(key);
+      out.push(`db/src/schema.ts: the migration ${name} adds the column ${column} to ${table}, but the Drizzle schema does not list it — add it so the schema file matches the database`);
+    }
+  }
+  return out;
+}
+
+export interface HygieneFinding {
+  file: string;
+  issue: string;
+}
+
+/**
+ * Every hygiene check on the finished project, as machine findings ("[hygiene] ...") against the file that owns each, for the review and
+ * live stages. They are proven by reading files, so no model decides them, and the fix goes to the builder who owns the file.
+ */
+export function projectHygieneFindings(projectDir: string): HygieneFinding[] {
+  const lines = [
+    ...metadataLeakFindings(projectDir),
+    ...cookieSecureFindings(projectDir),
+    ...secretLoggingFindings(projectDir),
+    ...strayShippedFileFindings(projectDir),
+    ...schemaMigrationSyncFindings(projectDir),
+  ];
+  return lines.map((line) => {
+    const file = line.match(/^([^:\s]+?)(?::\d+)?:\s/)?.[1] ?? "";
+    return { file, issue: `[hygiene] ${line}` };
+  });
+}

@@ -218,6 +218,15 @@ export async function runStage5WithAgents(
   const emojiFindings = scanProjectForEmojiUi(projectId);
   // 2026-10-25: every migration applied to an empty database, as a customer's first start does. The files are the database builder's,
   // so this runs here and a db/ finding is routed to it, not asked of the backend builder. Never fatal.
+  // 2026-10-25: the file-read hygiene checks (page metadata, secrets in logs, stray compose files, secure cookie, schema vs migrations) on the
+  // finished project, as proven machine findings against the file that owns each (shipping-hygiene.ts).
+  let hygieneFindings: Finding[] = [];
+  try {
+    const { projectHygieneFindings } = await import("./shipping-hygiene.ts");
+    hygieneFindings = projectHygieneFindings(buildDirFor(projectId));
+  } catch (err) {
+    console.error(`[stage5] hygiene checks skipped: ${String(err).slice(0, 160)}`);
+  }
   let freshStartFindings: Finding[] = [];
   try {
     const { backendFreshStartFindings } = await import("./builder-exit-checks.ts");
@@ -313,7 +322,7 @@ export async function runStage5WithAgents(
   // formula) directly — do not invent a second scorer for a convention
   // that already exists on their result.
   const security = scoreSecurityFindings(karanResult.findings);
-  const allPass = security.pass && navyaResult.passed && deepikaResult.passed && deadButtonFindings.length === 0 && emojiFindings.length === 0 && freshStartFindings.length === 0;
+  const allPass = security.pass && navyaResult.passed && deepikaResult.passed && deadButtonFindings.length === 0 && emojiFindings.length === 0 && freshStartFindings.length === 0 && hygieneFindings.length === 0;
 
   // 2026-08-09: real bug found live (project meridianbk4) — this used to
   // build `findings` only inside the `!allPass` branch and return
@@ -329,6 +338,7 @@ export async function runStage5WithAgents(
     ...deadButtonFindings,
     ...emojiFindings,
     ...freshStartFindings,
+    ...hygieneFindings,
     ...karanResult.findings.map(karanFindingToFinding),
     ...navyaResult.findings.map(navyaFindingToFinding),
     ...deepikaResult.findings.map(deepikaFindingToFinding),

@@ -76,7 +76,7 @@ export function planSection(projectDir: string): string {
   return planItemsFor(projectDir).map((i) => `[${i.id}] ${i.text}`).join("\n");
 }
 
-const MACHINE = /\[(route-sweep|spec-compliance|emoji-ui|auth-smoke|stack-conformance|perf-scan)\]|appears to be dead ui|^live design review failed/i;
+const MACHINE = /\[(route-sweep|spec-compliance|emoji-ui|auth-smoke|stack-conformance|perf-scan|hygiene)\]|appears to be dead ui|^live design review failed/i;
 export function isMachineFinding(text: string): boolean {
   return MACHINE.test(text.replace(/^\|/, "").trim());
 }

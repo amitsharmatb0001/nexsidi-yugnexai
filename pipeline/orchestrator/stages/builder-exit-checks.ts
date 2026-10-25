@@ -11,7 +11,7 @@ import { scanProjectForDeadButtons } from "./dead-ui-check.ts";
 import { specColours } from "../../../agents/vanya/src/index.ts";
 import { contractRouteFindings, staffOnlyEndpoint, type ContractEndpoint } from "./contract-route-check.ts";
 import { migrationFindings } from "./migration-check.ts";
-import { metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings } from "./shipping-hygiene.ts";
+import { metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings, schemaMigrationSyncFindings, projectHygieneFindings } from "./shipping-hygiene.ts";
 import { planItemsFor, type PlanItem } from "../chief-check.ts";
 
 const SKIP = new Set(["node_modules", ".next", "dist", "build", ".git"]);
@@ -106,7 +106,7 @@ export function backendExitChecks(projectId: string): string[] {
   ];
 }
 
-export { metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings };
+export { metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings, schemaMigrationSyncFindings, projectHygieneFindings };
 
 // 2026-10-25 (brewline3): the reviewers judge the code against the approved plan's items (SC, EP, ROLES, DESIGN, SEC, INT), but the
 // builders never had to check their own work against the same list, so every gap was found in review, a paid round each. The builder

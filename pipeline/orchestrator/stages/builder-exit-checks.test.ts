@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { frontendExitChecks, externalImageUrls, backendExitChecks, historyIntegrityFindings, keepHistoryInMigrations, metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings, checklistFor, checklistFindings } from "./builder-exit-checks.ts";
+import { frontendExitChecks, externalImageUrls, backendExitChecks, historyIntegrityFindings, keepHistoryInMigrations, metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings, schemaMigrationSyncFindings, projectHygieneFindings, checklistFor, checklistFindings } from "./builder-exit-checks.ts";
 
 // 2026-10-24 (Brewline root cause): 8 emoji findings and the missing-colour findings were raised in review, after the
 // frontend builder had said "done" — its instructions said "no emoji", and the checks existed, but they only ran later.
@@ -375,4 +375,41 @@ test("the requirements skill tells Saanvi to state a business number once, with 
   const skill = readFileSync(new URL("../../../packages/agent-runtime/skills/saanvi.md", import.meta.url), "utf-8");
   expect(skill).toContain("BUSINESS NUMBERS ARE STATED ONCE");
   expect(skill).toMatch(/opening\s+hours/);
+});
+
+// 2026-10-25 (brewline3, after the review loop): the same classes of problem are also checked on the finished project by the review and
+// live stages, as proven machine findings routed to the owner of the file, so a build whose builders missed them does not depend on a
+// reviewer finding them. Brewline 3 itself carried four of them to the end, and a column the database builder added by migration but
+// left out of the Drizzle schema file.
+test("a column a migration adds that the Drizzle schema file does not list is reported against the schema file", () => {
+  project("y1", {
+    "db/migrations/0001_fix.sql": 'ALTER TABLE "order_items" ADD COLUMN "name_at_time" text NOT NULL DEFAULT \'\';\nALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "note" text;\n',
+    "db/src/schema.ts": 'export const orders = pgTable("orders", { note: text("note") });\nexport const orderItems = pgTable("order_items", { qty: integer("quantity") });\n',
+  }, "x");
+  const out = schemaMigrationSyncFindings(join(root, "y1"));
+  expect(out.length).toBe(1);
+  expect(out[0]).toContain("db/src/schema.ts");
+  expect(out[0]).toContain("name_at_time");
+  project("y2", { "db/migrations/0001_fix.sql": 'ALTER TABLE "orders" ADD COLUMN "note" text;\n' }, "x"); // no schema file: nothing to compare
+  expect(schemaMigrationSyncFindings(join(root, "y2"))).toEqual([]);
+});
+
+test("the project's hygiene findings come as proven machine findings, each against the file that owns it", () => {
+  project("z1", {
+    "frontend/app/layout.tsx": `export const metadata = { description: "${LONG_SPEC}" };\n`,
+    "backend/src/db/seedStaff.ts": "console.log(`password: ${password}`);\n",
+    "backend/docker-compose.yml": "JWT_SECRET: x\n",
+    "db/migrations/0001_fix.sql": 'ALTER TABLE "t" ADD COLUMN "c" text;\n',
+    "db/src/schema.ts": "export const t = 1;\n",
+  }, LONG_SPEC);
+  const out = projectHygieneFindings(join(root, "z1"));
+  expect(out.every((f) => f.issue.startsWith("[hygiene] "))).toBe(true);
+  expect(out.map((f) => f.file).sort()).toEqual(["backend/docker-compose.yml", "backend/src/db/seedStaff.ts", "db/src/schema.ts", "frontend/app/layout.tsx"]);
+});
+
+test("a hygiene finding is recognised as a machine finding (no model call decides it), and both later stages run the checks", () => {
+  const read = (rel: string) => readFileSync(new URL(`../../../${rel}`, import.meta.url), "utf-8");
+  expect(read("pipeline/orchestrator/chief-check.ts")).toContain("hygiene");
+  expect(read("pipeline/orchestrator/stages/stage5-adversarial-qa.ts")).toContain("projectHygieneFindings");
+  expect(read("pipeline/orchestrator/stages/stage6-deployment.ts")).toContain("projectHygieneFindings");
 });
