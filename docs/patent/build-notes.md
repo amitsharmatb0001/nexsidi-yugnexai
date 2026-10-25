@@ -750,3 +750,9 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Found (brewline3 log):** all 6 runs of the check ended with "migration check not run: spawnSync cmd.exe ETIMEDOUT", each within a second, while the same code run from a shell worked in 5 s (and found nothing wrong). So the check had never actually run in a build, and nothing raised it: the alarm watcher looked for "not checked" only.
 
 **Changed:** `migration-check.ts` starts docker directly (no cmd.exe) and keeps the error code in the note; `watch-alarms.ts` raises "check not run" as NOT CHECKED. Proof: argument-splitting test, alarm test, and a run against brewline3's real migrations (ran, nothing found, 4 s). Whether the direct start also works inside the worker is confirmed at the next review round of this build.
+
+## Batch 48 — a one-pass review has 6 minutes, not 4 (2026-10-25)
+
+**Measured (brewline3 ledger):** the logic reviewer's first call (about 70K tokens in) writes 15K–25K tokens: 136 s and 238 s when it finished; cut off at exactly 240 s five times (3 of 3 on argon, 2 on pro), each a lost 4 minutes before the next model was tried (about 20 minutes wasted in 4 rounds). The performance reviewer's calls on argon write 2K–4K tokens and finished in 37–55 s.
+
+**Changed:** `gemini.ts` large-request floor 240 s → 360 s (the existing maximum); tests updated. Takes effect at the next worker restart.

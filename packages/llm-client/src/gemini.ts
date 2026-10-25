@@ -151,8 +151,9 @@ const GEMINI_TIMEOUT_MS = 120_000;
 // minutes: a builder call (~60k tokens) keeps 120 s, the one-pass review (~150k tokens) gets 270 s.
 // 2026-10-25 (brewline2): a request of 120,000 characters or more (a one-pass review) has at least 240 s: 16 of 34 review calls
 // were cut off at exactly 120.0 s while the same review alone took 24 to 70 s per model; the answers were slow under load.
+// 2026-10-25 (brewline3): the floor is 6 minutes: the logic reviewer writes 15K-25K tokens and was cut off at 240 s five times.
 const LARGE_REQUEST_CHARS = 120_000;
-const LARGE_REQUEST_FLOOR_MS = 240_000;
+const LARGE_REQUEST_FLOOR_MS = 360_000;
 
 export function geminiTimeoutMsFor(requestChars: number): number {
   const tokens = requestChars / 4;

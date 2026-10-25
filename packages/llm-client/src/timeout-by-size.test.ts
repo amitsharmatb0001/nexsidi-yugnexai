@@ -8,7 +8,7 @@ import { geminiTimeoutMsFor } from "./gemini.ts";
 
 test("small calls keep 120 s; large ones get about 1.8 s per 1,000 tokens, up to 6 minutes", () => {
   expect(geminiTimeoutMsFor(20_000)).toBe(120_000);
-  expect(geminiTimeoutMsFor(600_000)).toBe(270_000); // ~150k tokens: the one-pass review
+  expect(geminiTimeoutMsFor(600_000)).toBe(360_000); // ~150k tokens: the one-pass review
   expect(geminiTimeoutMsFor(5_000_000)).toBe(360_000);
 });
 
@@ -23,11 +23,20 @@ test("all three call paths use the size-based limit", () => {
 // started from scratch); the 18 that finished took 21 to 104 s. Alone, the same review took 24 to 70 s per model, so the
 // failures are slow answers under load (three reviewers and other work at once), not hung calls. A request of 120,000
 // characters or more (a one-pass review) now has at least 240 s.
-test("a one-pass review of a mid-size app gets 240 s, a normal builder call keeps 120 s", () => {
+test("a one-pass review of a mid-size app gets 360 s, a normal builder call keeps 120 s", () => {
   expect(geminiTimeoutMsFor(100_000)).toBe(120_000);
   expect(geminiTimeoutMsFor(119_999)).toBe(120_000);
-  expect(geminiTimeoutMsFor(120_000)).toBe(240_000);
-  expect(geminiTimeoutMsFor(187_000)).toBe(240_000); // brewline2's review
-  expect(geminiTimeoutMsFor(600_000)).toBe(270_000); // the size rule still wins when it is longer
+  expect(geminiTimeoutMsFor(120_000)).toBe(360_000);
+  expect(geminiTimeoutMsFor(187_000)).toBe(360_000); // brewline2's review
+  expect(geminiTimeoutMsFor(600_000)).toBe(360_000); // the longest limit is 6 minutes
   expect(geminiTimeoutMsFor(5_000_000)).toBe(360_000);
+});
+
+// 2026-10-25 (brewline3): the logic reviewer's first call (about 70K tokens in) writes 15K to 25K tokens of answer: it took 136 s and
+// 238 s when it finished, and was cut off at exactly 240 s five times (3 of 3 on argon, 2 on pro), each costing 4 minutes before the
+// next model was tried. A request of 120,000 characters or more now has the full 6 minutes.
+test("a one-pass review sized request has 6 minutes, because its answer is long", () => {
+  expect(geminiTimeoutMsFor(280_000)).toBe(360_000);
+  expect(geminiTimeoutMsFor(120_000)).toBe(360_000);
+  expect(geminiTimeoutMsFor(119_999)).toBe(120_000);
 });
