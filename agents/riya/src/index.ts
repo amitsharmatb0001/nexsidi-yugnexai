@@ -1200,9 +1200,22 @@ export async function resolveForeignKeyId(
 ): Promise<string | null> {
   if (!fieldName.endsWith("_id")) return null;
   const resource = fieldName.slice(0, -3);
-  const pluralResource = pluralize(resource);
-  const candidatePaths = new Set([`/api/v1/${pluralResource}`, `/api/v1/${resource}`]);
-  const listEp = endpoints.find((e) => e.method === "GET" && !hasPathParam(e.path) && candidatePaths.has(e.path));
+  // 2026-10-25 (brewline2): the list is found by the resource's own words, not only by its exact name: menu_item_id is the
+  // list /api/v1/menu, gear_item_id may be /api/v1/gear-items. Variants: the name with underscores or hyphens, singular or
+  // plural, and the name without a trailing "item". Only a list directly under /api[/vN]/ counts, so /orders/me is not
+  // order_id's list and another resource's list is never taken.
+  const names = new Set<string>();
+  const withoutItem = resource.replace(/_items?$/, "");
+  for (const base of [resource, withoutItem]) {
+    if (!base) continue;
+    for (const form of [base, base.replace(/_/g, "-"), base.replace(/_/g, "")]) names.add(form);
+  }
+  for (const n of [...names]) names.add(pluralize(n));
+  const listEp = endpoints.find((e) => {
+    if (e.method !== "GET" || hasPathParam(e.path)) return false;
+    const segment = e.path.match(/^\/api(?:\/v\d+)?\/([^/]+)\/?$/)?.[1];
+    return !!segment && names.has(segment.toLowerCase());
+  });
   if (!listEp) return null;
   try {
     const headers: Record<string, string> = {};

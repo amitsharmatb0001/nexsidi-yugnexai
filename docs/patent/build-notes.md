@@ -658,3 +658,11 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Changed:** `postJsonWaitingOutRateLimit` (`agents/riya/src/index.ts`) for the deploy checks' test-account sign-up and sign-in, and `signInWaitingOutRateLimit` (`pipeline/orchestrator/stages/auth-smoke.ts`): a 429 is waited out for the app's Retry-After (a minute when it gives none, plus a second) and repeated, up to 3 tries; any other answer is returned at once. The review-account helper in the page sweep already did this.
 
 **Proof:** tests (waits the stated time and repeats; no header: 61 s, 3 tries, last answer returned; other statuses at once; network errors thrown; the helper uses it for both calls; the smoke test waits and goes on); all suites pass.
+
+## Batch 39 — the orders check finds the real menu item (2026-10-25)
+
+**Found (brewline2):** every deploy reported "CRUD verification: not checked: orders: items.0.menu_item_id: Invalid menu_item_id format", although the app ships 12 menu items. `resolveForeignKeyId` looked for the list of a related resource at `/api/v1/menu_items` or `/api/v1/menu_item`; the contract's list is `/api/v1/menu`. The order flow, the heart of a pre-order app, was never exercised by the system's checks.
+
+**Changed** (`agents/riya/src/index.ts`): the related list is found by the resource's own words: the name with underscores, hyphens or neither, singular or plural, and without a trailing "item"; only a list directly under `/api[/vN]/` counts.
+
+**Proof:** tests (menu_item_id finds /api/v1/menu; gear_item_id finds /api/v1/gear-items; user_id and order_id never take another resource's list, e.g. /orders/me); on the running Brewline 2 the check now returns a real menu item id and nothing for user_id and order_id; Riya suite 162 pass, all suites pass. Takes effect on the next deploy check.

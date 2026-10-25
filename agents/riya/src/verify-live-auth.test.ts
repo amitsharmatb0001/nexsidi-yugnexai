@@ -496,6 +496,45 @@ test("resolveForeignKeyId correctly pluralizes a singular resource that itself e
   expect(resolved).toBe("class-real-id");
 });
 
+// 2026-10-25 (brewline2): an order's `menu_item_id` was never resolved to a real menu item, so the orders check reported
+// "not checked: Invalid menu_item_id format" on every deploy, although the app ships 12 menu items. The check looked for a list
+// at /api/v1/menu_items or /api/v1/menu_item; the app's list is /api/v1/menu (and a multi-word resource is often hyphenated,
+// e.g. /api/v1/gear-items). The related list is now found by the resource's own words: the full name, hyphenated or not,
+// singular or plural, and the name without its trailing "item", never a list that belongs to a different resource.
+async function listServer(path: string, key: string, id: string): Promise<string> {
+  server = createServer((req, res) => {
+    if (req.url === path && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true, data: { [key]: [{ id }] } }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  return new Promise<string>((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      resolve(`http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`);
+    });
+  });
+}
+
+test("resolveForeignKeyId finds a related list under the resource's own words: menu_item_id -> /api/v1/menu", async () => {
+  const url = await listServer("/api/v1/menu", "items", "menu-real-id");
+  expect(await resolveForeignKeyId("menu_item_id", [{ method: "GET", path: "/api/v1/menu", auth: false }, { method: "POST", path: "/api/v1/menu", auth: true }], url, null)).toBe("menu-real-id");
+});
+
+test("resolveForeignKeyId finds a hyphenated list: gear_item_id -> /api/v1/gear-items", async () => {
+  const url = await listServer("/api/v1/gear-items", "gearItems", "gear-real-id");
+  expect(await resolveForeignKeyId("gear_item_id", [{ method: "GET", path: "/api/v1/gear-items", auth: false }], url, null)).toBe("gear-real-id");
+});
+
+test("resolveForeignKeyId never takes another resource's list: order_id does not match /api/v1/orders/me, user_id does not match /api/v1/menu", async () => {
+  const url = await listServer("/api/v1/menu", "items", "menu-real-id");
+  expect(await resolveForeignKeyId("user_id", [{ method: "GET", path: "/api/v1/menu", auth: false }], url, null)).toBeNull();
+  expect(await resolveForeignKeyId("order_id", [{ method: "GET", path: "/api/v1/orders/me", auth: true }], url, null)).toBeNull();
+});
+
 // ── verifyAllResourceCrud ────────────────────────────────────────────────────
 // 2026-08-09: real gap found live (project meridianbk4) — Riya's live
 // verification only ever checked ONE hardcoded resource (the first auth:true
