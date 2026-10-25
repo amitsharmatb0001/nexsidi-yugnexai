@@ -11,6 +11,7 @@
 // then submit_findings — gated by finding-evidence.ts so a finding citing a
 // file the agent never actually read is rejected and it has to go check.
 import {
+  withCallContext,
   routeToolsWithFallback,
   translateNimToolToGeminiTool,
   geminiChat,
@@ -746,7 +747,10 @@ export async function runQAAgent(config: QAAgentConfig): Promise<QAAgentResult> 
       // "different models = 120 RPM effective capacity" design) don't all
       // collide on the SAME fallback model's shared rate limit when the
       // pool's shared primary is exhausted — see rotatedPoolForAgent.
-      response = await routeToolsWithFallback("qa", messages, tools, { agentName: config.agentName });
+      // 2026-10-25: the call ledger records this call with the agent, tier and project it belongs to.
+      response = await withCallContext({ projectId: config.projectId, agent: config.agentName, tier: "qa" }, () =>
+        routeToolsWithFallback("qa", messages, tools, { agentName: config.agentName }),
+      );
       if (iterations === 1) {
         console.log(`[${config.agentName}:qa-loop] model=${response.modelUsed}`);
       }

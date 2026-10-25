@@ -704,3 +704,15 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 - `watch-alarms.ts`: failure patterns of a build log (model call failed after N s, 429, escalated to a human, not checked, reviewer did not finish, live retest failed, smoke test failed, budget) raised as alarm lines the moment they are written, repeats shown once with a count.
 
 **Proof:** tests for each; replayed on brewline2's real logs the watcher raises the 15 two-minute review failures, 9 not-checked results, 3 escalations and 4 failed smoke checks; all suites pass, type checks clean. **Not measured yet:** the time and cost effect on a real build.
+
+## Batch 43 — a per-call ledger and a call-by-call cost and time report (2026-10-25)
+
+**Asked (Amit):** "a fully detailed costing and timing of each agent, each round, not an overview report."
+
+**Found:** the project's spend table (`agent_spend`) holds only totals per agent and model: no per-call times, no rounds, and several paths (the planning chat, Saanvi's research, Arjun, the Chief AI check, the design brief) were not in it at all, so the project's cost figure left them out (the cap did not count them either).
+
+**Built:**
+- `packages/llm-client/src/call-ledger.ts`: every Gemini call, answered or failed, is appended to `.call-ledger.jsonl` in the builds folder: model, start and end time, duration, tokens in and out, cache hits, error text, and the agent, tier and project it belongs to. `gemini.ts` records both call paths (`geminiChat`, `geminiChatWithTools`); the agent loops set the context (`withCallContext`); every worker activity runs inside its project's context and the planning activities name their agent (`pipeline/activity-context.ts`); the Chief AI check names itself. Under `bun test` nothing is written unless a test opts in (`.env` sets `BUILD_DIR` for every run).
+- `pipeline/build-report.ts` and `build-report-cli.ts` (`bun pipeline/build-report-cli.ts <projectId> [out.md]`): the build's timeline from the workflow's own step times, each step split into one window per review round (from `rounds.jsonl`), each call assigned to the window it ended in, and per window and agent: calls answered and failed, models, tokens, cache share, cost, call time, time wasted on failed calls and first-to-last span; then every failed call with its reason, totals by agent and by model, and a reconciliation with `agent_spend`.
+
+**Proof:** tests for the ledger (success, failure, context, concurrency, an unwritable ledger, test isolation), the activity context and the report arithmetic (windows tile the timeline, per-agent sums, totals equal the rows, unattributed and out-of-window calls kept); the report tool run on Brewline 2's real workflow history gives its exact step and round windows (no call rows: it predates the ledger); all suites pass. **First real report:** the build running now (Brewline 3).

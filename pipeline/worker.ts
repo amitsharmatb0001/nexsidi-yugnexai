@@ -14,6 +14,7 @@ import { execSync } from "child_process";
 import * as activities from "./activities/index.ts";
 import { abortSignalInterceptors } from "./abort-interceptor.ts";
 import { installLogTimestamps } from "./log-timestamps.ts";
+import { withActivityContext } from "./activity-context.ts";
 
 // Time on every log line, before anything below logs (see log-timestamps.ts).
 installLogTimestamps();
@@ -114,7 +115,8 @@ async function run(): Promise<void> {
     namespace:     "default",
     taskQueue:     TASK_QUEUE,
     workflowsPath: fileURLToPath(new URL("./workflows/project-build.ts", import.meta.url)),
-    activities,
+    // 2026-10-25: each activity's model calls carry its project (and the planning ones their agent) into the call ledger.
+    activities: withActivityContext(activities),
     // Every activity runs inside its own cancellation signal, so an agent
     // stops at its next step when its activity is cancelled or times out
     // (see abort-interceptor.ts).

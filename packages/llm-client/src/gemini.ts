@@ -13,6 +13,7 @@
 import { GoogleAuth } from "google-auth-library";
 import { canRequest, recordFailure, recordSuccess, waitForCircuit } from "./circuit-breaker.ts";
 import { waitForToken } from "./token-bucket.ts";
+import { noteUsage, recordedCall } from "./call-ledger.ts";
 import type { ChatMessage } from "./types.ts";
 import type { NimToolDef } from "./nim.ts";
 
@@ -432,7 +433,15 @@ function buildThinkingConfig(level: GeminiThinkingLevel | undefined): { thinking
   return level ? { thinkingLevel: level } : undefined;
 }
 
+// 2026-10-25: every call is written to the per-call ledger (call-ledger.ts), whether it succeeds or fails.
 export async function geminiChat(
+  messages: ChatMessage[],
+  opts?: { maxTokens?: number; model?: string; thinkingLevel?: GeminiThinkingLevel; fastFailOn429?: boolean },
+): Promise<{ content: string }> {
+  return recordedCall("chat", opts?.model ?? resolveGeminiModel(), () => geminiChatInner(messages, opts));
+}
+
+async function geminiChatInner(
   messages: ChatMessage[],
   opts?: { maxTokens?: number; model?: string; thinkingLevel?: GeminiThinkingLevel; fastFailOn429?: boolean },
 ): Promise<{ content: string }> {
@@ -512,6 +521,7 @@ export async function geminiChat(
     const content = partsToText(parts);
     if (data.usageMetadata) {
       console.log(`[gemini:${model}] ${formatUsageLog(data.usageMetadata)}`);
+      noteUsage({ tokensIn: data.usageMetadata.promptTokenCount, tokensOut: billedOutputTokens(data.usageMetadata), cachedIn: data.usageMetadata.cachedContentTokenCount });
     }
     return { content };
   } catch (err) {
@@ -525,6 +535,14 @@ export async function geminiChat(
 // ── Tool-calling chat (mirrors claudeChatWithTools()'s shape) ──────────────
 
 export async function geminiChatWithTools(
+  messages: GeminiMessage[],
+  tools: GeminiToolDef[],
+  opts?: { model?: string; thinkingLevel?: GeminiThinkingLevel; cachedContent?: string; fastFailOn429?: boolean },
+): Promise<GeminiChatWithToolsResult> {
+  return recordedCall("tools", opts?.model ?? resolveGeminiModel(), () => geminiChatWithToolsInner(messages, tools, opts));
+}
+
+async function geminiChatWithToolsInner(
   messages: GeminiMessage[],
   tools: GeminiToolDef[],
   opts?: { model?: string; thinkingLevel?: GeminiThinkingLevel; cachedContent?: string; fastFailOn429?: boolean },
@@ -622,6 +640,7 @@ export async function geminiChatWithTools(
     const parts = candidate?.content?.parts ?? [];
     if (data.usageMetadata) {
       console.log(`[gemini:${model}] ${formatUsageLog(data.usageMetadata)}`);
+      noteUsage({ tokensIn: data.usageMetadata.promptTokenCount, tokensOut: billedOutputTokens(data.usageMetadata), cachedIn: data.usageMetadata.cachedContentTokenCount });
     }
 
     return {

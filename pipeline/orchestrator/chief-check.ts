@@ -224,7 +224,8 @@ export async function chiefCheck(projectDir: string, findings: ChiefFinding[], c
 
 /** The real model call: one plain chat on the strongest tier, no tools. */
 export const defaultChiefChat: ChiefChat = async (prompt) => {
-  const { routeWithFallback } = await import("@nexsidi/llm-client");
-  const r = await routeWithFallback("critical", [{ role: "user", content: prompt }], { maxTokens: 8_000 });
+  const { routeWithFallback, withCallContext } = await import("@nexsidi/llm-client");
+  // 2026-10-25: the call ledger records this call as the Chief AI's, inside whichever project's activity made it.
+  const r = await withCallContext({ agent: "chief-ai", tier: "critical" }, () => routeWithFallback("critical", [{ role: "user", content: prompt }], { maxTokens: 8_000 }));
   return r.content;
 };

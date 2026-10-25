@@ -10,6 +10,7 @@
 // execWriteFile/execReadFile/etc. tool-execution functions, and the SAME
 // MAX_ITERATIONS constant.
 import {
+  withCallContext,
   routeToolsWithFallback,
   translateNimToolToGeminiTool,
   geminiCreateCachedContent,
@@ -704,7 +705,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       // when set — poolForTier collapses to that single model, no pool
       // fallback. cachedContentHandle (Phase 0.4) is passed through so a
       // cache hit is possible on every turn, not just the first.
-      response = await routeToolsWithFallback(tier, messages, tools, { model: config.geminiModel, cachedContent: cachedContentHandle, agentName: config.agentName, firstModelIndex: config.firstModelIndex });
+      // 2026-10-25: the call ledger records this call with the agent, tier and project it belongs to.
+      response = await withCallContext({ projectId: config.projectId, agent: config.agentName, tier }, () =>
+        routeToolsWithFallback(tier, messages, tools, { model: config.geminiModel, cachedContent: cachedContentHandle, agentName: config.agentName, firstModelIndex: config.firstModelIndex }),
+      );
       if (iterations === 1) {
         console.log(`[${config.agentName}:gemini-agent] model=${response.modelUsed}`);
       }

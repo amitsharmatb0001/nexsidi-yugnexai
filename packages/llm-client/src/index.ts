@@ -19,6 +19,8 @@ export {
   GEMINI_ESCALATION_MODEL,
 } from "./gemini.ts";
 export type { GeminiToolDef, GeminiToolCall, GeminiMessage, GeminiPart, GeminiChatWithToolsResult, GeminiSearchResult, GeminiUsageMetadata, GeminiThinkingLevel, GeminiCachedContentHandle } from "./gemini.ts";
+export { withCallContext, recordedCall, noteUsage, callLedgerPath, readCallLedger } from "./call-ledger.ts";
+export type { CallContext, CallRow, CallUsage } from "./call-ledger.ts";
 export { firecrawlFetchUrl } from "./firecrawl.ts";
 export type { FirecrawlFetchResult } from "./firecrawl.ts";
 export { waitForToken, getBucketState } from "./token-bucket.ts";
