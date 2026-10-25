@@ -113,6 +113,12 @@ export async function settleRepeatsBeforeGuard<F extends { file?: string; issue?
   return findings.filter((f) => !notTrue.has(textOf(f)));
 }
 
+/** The builder who owns the file a finding names (its leading path): backend/ Shubham, frontend/ Aanya, db/ Pranav; null when none. */
+export function ownerOfFinding(finding: string): Owner | null {
+  const top = finding.trimStart().match(/^([a-z]+)\//i)?.[1]?.toLowerCase();
+  return top === "backend" ? "shubham" : top === "frontend" ? "aanya" : top === "db" ? "pranav" : null;
+}
+
 export async function resolveDisputes(
   projectId: string,
   sinceIso: string,
@@ -140,7 +146,7 @@ export async function resolveDisputes(
       appendFileSync(file, JSON.stringify({ finding: v.dispute.finding, evidence: v.evidence, at: new Date().toISOString() }) + "\n");
       console.log(`[disputes] not true, dropped: ${v.dispute.finding.slice(0, 160)}`);
     } else {
-      const owner = v.dispute.agent as Owner;
+      const owner = ownerOfFinding(v.dispute.finding) ?? (v.dispute.agent as Owner);
       (confirmed[owner] ??= []).push(
         `Tilotma checked your dispute and this finding IS true — fix it: ${v.dispute.finding}\nHer evidence: ${v.evidence}`,
       );

@@ -71,3 +71,25 @@ test("no disputes this round: nothing to settle", async () => {
   expect(called).toBe(false);
   expect(out.disputed).toBe(0);
 });
+
+// 2026-10-25 (brewline3): a backend finding (order lines show the menu item's current name) was escalated to the database builder, who
+// had already added the column and disputed it; Tilotma ruled the finding true, and it went back to the DISPUTER, who had nothing to
+// change. Three rounds, then "stuck". A confirmed finding goes to the owner of the file it names.
+test("a confirmed finding goes to the builder who owns the file it names, not to the one who disputed it", async () => {
+  setup();
+  const since = new Date(Date.now() - 1000).toISOString();
+  recordDispute("p1", "pranav", { finding: "backend/src/routes/orders.ts: [INT1] backend/src/routes/orders.ts:298 — line names are read from menu_items", checked: "read db/migrations", observed: "0001_fix.sql adds order_items.name_at_time" });
+  recordDispute("p1", "pranav", { finding: "db/migrations/0000_initial.sql: [INT2] no index", checked: "c", observed: "o" });
+  recordDispute("p1", "aanya", { finding: "something without a path", checked: "c", observed: "o" });
+  const sent: Record<string, string[]> = {};
+  const fixer = (who: string) => async (_plan: unknown, f: string[]) => { sent[who] = f; return { success: true, filesWritten: ["x"] }; };
+  await resolveDisputes("p1", since, PLAN, {
+    settle: async (_p, disputes) => disputes.map((d) => ({ dispute: d, verdict: "true" as const, evidence: "name_at_time exists; orders.ts never reads it" })),
+    fixers: { shubham: fixer("shubham"), aanya: fixer("aanya"), pranav: fixer("pranav") },
+  });
+  expect(sent.shubham?.length).toBe(1);
+  expect(sent.shubham![0]).toContain("orders.ts:298");
+  expect(sent.pranav?.length).toBe(1);
+  expect(sent.pranav![0]).toContain("db/migrations/0000_initial.sql");
+  expect(sent.aanya?.length).toBe(1); // no path: back to whoever disputed it
+});

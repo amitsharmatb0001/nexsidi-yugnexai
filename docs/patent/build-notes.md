@@ -756,3 +756,9 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Measured (brewline3 ledger):** the logic reviewer's first call (about 70K tokens in) writes 15K–25K tokens: 136 s and 238 s when it finished; cut off at exactly 240 s five times (3 of 3 on argon, 2 on pro), each a lost 4 minutes before the next model was tried (about 20 minutes wasted in 4 rounds). The performance reviewer's calls on argon write 2K–4K tokens and finished in 37–55 s.
 
 **Changed:** `gemini.ts` large-request floor 240 s → 360 s (the existing maximum); tests updated. Takes effect at the next worker restart.
+
+## Batch 49 — a confirmed finding goes to the owner of the file it names (2026-10-25)
+
+**Found (brewline3, stopped "stuck" after round 5):** one finding ("order lines show the menu item's current name") cycled for 3 rounds. The backend builder wrote it up as a missing database column and escalated it to the database builder, who had already added `order_items.name_at_time` and disputed it; Tilotma ruled the finding true (the backend never reads the column), and the system sent it back to the disputer, the database builder, who had nothing to change. The backend builder, who needed to act, never got it with Tilotma's evidence.
+
+**Changed:** `disputes.ts`: a confirmed finding goes to the owner of the file it names (backend/ Shubham, frontend/ Aanya, db/ Pranav); with no path it goes back to whoever disputed it, as before. Proof: a test with three disputes by path.
