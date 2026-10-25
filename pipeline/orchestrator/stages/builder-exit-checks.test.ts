@@ -114,3 +114,39 @@ test("a footer logo that is not the app's own logo file, or a missing logo file,
   }, "A coffee shop.");
   expect(frontendExitChecks("l3")).toEqual([]);
 });
+
+// 2026-10-24 (Brewline): the spec says customers browse the menu, but nothing told a builder to ship starter content;
+// the delivered app opened with an empty menu (one test item left from the review). A public list endpoint needs rows.
+test("a public list endpoint with no starter rows anywhere is reported; starter rows in a seed file or migration satisfy it", () => {
+  const contract = JSON.stringify({ endpoints: [
+    { method: "POST", path: "/api/v1/auth/sign-in", auth: false },
+    { method: "GET", path: "/api/v1/menu", auth: false },
+    { method: "GET", path: "/api/v1/orders", auth: true },
+  ] });
+  project("s1", {
+    "api-contract.json": contract,
+    "backend/src/db/seedStaff.ts": "await pool.query(\"INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'staff')\");\n",
+    "db/migrations/0000_initial.sql": "CREATE TABLE menu_items (id uuid);\n",
+  }, "A coffee shop.");
+  const empty = backendExitChecks("s1");
+  expect(empty.some((f) => f.includes("GET /api/v1/menu") && f.includes("starter"))).toBe(true);
+  project("s2", {
+    "api-contract.json": contract,
+    "backend/src/db/seedStaff.ts": "await pool.query(\"INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'staff')\");\n",
+    "backend/src/db/seedCatalog.ts": "await pool.query(\"INSERT INTO menu_items (name, price) VALUES ('Flat white', 4.5)\");\n",
+  }, "A coffee shop.");
+  expect(backendExitChecks("s2").some((f) => f.includes("starter"))).toBe(false);
+  project("s3", {
+    "api-contract.json": contract,
+    "db/migrations/0001_seed.sql": "INSERT INTO menu_items (name, price) VALUES ('Flat white', 4.5) ON CONFLICT DO NOTHING;\n",
+  }, "A coffee shop.");
+  expect(backendExitChecks("s3").some((f) => f.includes("starter"))).toBe(false);
+  project("s4", { "api-contract.json": JSON.stringify({ endpoints: [{ method: "POST", path: "/api/v1/auth/sign-in", auth: false }, { method: "GET", path: "/health", auth: false }] }) }, "A tool with no public lists.");
+  expect(backendExitChecks("s4").some((f) => f.includes("starter"))).toBe(false);
+});
+
+test("the backend builder is told to ship starter content for a public catalog", () => {
+  const shubham = readFileSync(new URL("../../../packages/agent-runtime/skills/shubham/20-critical-rules-and-verification.md", import.meta.url), "utf-8");
+  expect(shubham).toContain("PUBLIC CATALOG SHIPS WITH STARTER CONTENT");
+  expect(shubham).toContain("seedCatalog");
+});

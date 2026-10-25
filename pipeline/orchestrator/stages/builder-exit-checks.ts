@@ -92,7 +92,54 @@ const imageFindings = (where: string, found: Array<{ file: string; url: string }
 /** The backend builder's own checks before it may finish: no hot-linked images in its code or the database seed files. */
 export function backendExitChecks(projectId: string): string[] {
   const dir = buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds");
-  return [...imageFindings("backend/", externalImageUrls(join(dir, "backend", "src"))), ...imageFindings("db/", externalImageUrls(join(dir, "db")))];
+  return [
+    ...imageFindings("backend/", externalImageUrls(join(dir, "backend", "src"))),
+    ...imageFindings("db/", externalImageUrls(join(dir, "db"))),
+    ...starterContentFindings(dir),
+  ];
+}
+
+// 2026-10-24 (Brewline): the spec says customers browse the menu, but no instruction told a builder to ship starter
+// content, so the delivered app opened empty. A public list endpoint needs rows in the database from the first start:
+// any INSERT into a table other than users, in a seed module under backend/src/db or a migration under db/migrations.
+const SEED_INSERT = /INSERT\s+INTO\s+"?(\w+)"?/gi;
+
+export function starterContentFindings(projectDir: string): string[] {
+  const contractFile = join(projectDir, "api-contract.json");
+  if (!existsSync(contractFile)) return [];
+  let endpoints: Array<{ method?: string; path?: string; auth?: boolean }>;
+  try {
+    endpoints = (JSON.parse(readFileSync(contractFile, "utf-8")) as { endpoints?: typeof endpoints }).endpoints ?? [];
+  } catch {
+    return [];
+  }
+  const lists = endpoints.filter((e) => e.method?.toUpperCase() === "GET" && e.auth === false && e.path && !/:/.test(e.path) && !/\/(health|auth|status|ping)(\/|$)/i.test(e.path));
+  if (lists.length === 0) return [];
+  let seeded = false;
+  const scan = (d: string, pattern: RegExp) => {
+    let names: string[];
+    try {
+      names = readdirSync(d);
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      if (SKIP.has(n)) continue;
+      const full = join(d, n);
+      try {
+        if (statSync(full).isDirectory()) scan(full, pattern);
+        else if (pattern.test(n)) {
+          for (const m of readFileSync(full, "utf-8").matchAll(SEED_INSERT)) if (m[1]!.toLowerCase() !== "users") seeded = true;
+        }
+      } catch {
+        // unreadable: skipped
+      }
+    }
+  };
+  scan(join(projectDir, "backend", "src", "db"), /seed.*\.(ts|js|sql)$/i);
+  scan(join(projectDir, "db", "migrations"), /\.sql$/i);
+  if (seeded) return [];
+  return [`backend/src/db: ${lists.map((e) => `GET ${e.path}`).join(", ")} ${lists.length === 1 ? "is a public list" : "are public lists"}, but the database ships with no starter rows (no INSERT into any table but users) — add backend/src/db/seedCatalog.ts with 8 to 15 believable rows, run at startup only when the table is empty`];
 }
 
 // 2026-10-24 (Brewline): the footer's YugNex logo was a retyped copy of a 5,432-character encoded image and showed as a

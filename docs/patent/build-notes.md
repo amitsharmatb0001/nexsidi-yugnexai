@@ -598,3 +598,11 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Built** (`pipeline/orchestrator/stages/contract-route-check.ts`, run in its own Node process by `contract-route-runner.cjs`): when the backend builder says it is done, the system loads the compiled app (`dist/app.js`, no database) and calls every contract endpoint. It reports: a route that answers 404 (not mounted; a 404 on an `:id` route is a missing record, not reported), a protected route that does not answer 401/403 with no token, and a route the contract itself calls staff-only that a signed-in customer token can call. Not run (and says so) when the contract or build is missing or the compiled app is older than the source. Never fatal. Frontend unit tests are still not built; this item covers the backend contract only.
 
 **Proof:** 5 tests (matching backend passes, each of the three defects found, no build = not run, wired into the builder's finish check); live on Brewline's real compiled backend: 9 endpoints, 4 staff-only, 0.8 s, no findings (its backend does match its contract). All suites pass.
+
+## Batch 32 — public catalogs ship with starter content (2026-10-24)
+
+**Found:** Brewline's spec says customers browse the menu of drinks and pastries, but no instruction told any builder to ship starter content: its database files hold no inserts besides the staff account, and the delivered app showed one test item left from the review. (Trailhead 2 has starter rows; it happened to be built that way.)
+
+**Built:** rule 17 in the backend builder's instructions (a public list endpoint needs `backend/src/db/seedCatalog.ts`: 8-15 believable rows in the spec's currency, inserted at startup only when the table is empty, no image addresses); a check at the backend builder's finish (`starterContentFindings`): a public GET list in the approved contract with no INSERT into any table but users, in a seed module or migration, is reported.
+
+**Proof:** tests (reported with no rows; a seed module or a migration satisfies it; an app with no public list is not flagged; the rule is in the instructions); on real builds: Brewline reported, Trailhead 2 passes. All suites 2,423 pass.
