@@ -12,3 +12,34 @@ AGENT_STOP
 coverage/
 .nyc_output/
 *.tsbuildinfo
+
+# ── Secrets and credentials: never commit (2026-10-26) ──────────────────────────
+.env.*
+!.env.example
+*.key
+*.p12
+*.pfx
+*.jks
+service-account*.json
+*-service-account*.json
+*credentials*.json
+*-key.json
+STAFF-LOGIN.txt
+.call-ledger.jsonl
+
+# ── Private working notes: kept local or in the private repo only ──────────────
+CLAUDE.local.md
+yc-pitch-pack/HOW-TO-USE-FOR-YC.md
+docs/reports/
+
+# ── Generated clutter: screenshots, scratch, reference copies, temporary scripts ─
+/*.png
+tier3-review-screenshots/
+live-eval-screenshots/
+review/
+scratch/
+undefined/
+pipeline/undefined/
+ref repo/
+final-bundle/
+pipeline/.*.tmp.ts
