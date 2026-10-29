@@ -448,3 +448,15 @@ test("withNormalizedDbSchema maps fields->columns and tableName->name, leaving a
   expect(withNormalizedDbSchema(good)).toEqual(good);
   expect(withNormalizedDbSchema({ dbSchema: undefined } as any).dbSchema).toEqual({ tables: [] });
 });
+
+// 2026-10-29 (team plan, stage 2): the planner designs tables and endpoints with the rules the reviewers check.
+test("the planner is given the same rules the reviewers check", async () => {
+  const { baselineRulesSection } = await import("../../../pipeline/orchestrator/baseline-rules.ts");
+  let system = "";
+  const stubChat = async (_a: string, msgs: Array<{ role: string; content: string }>) => {
+    system = msgs.find((m) => m.role === "system")?.content ?? "";
+    return { content: VALID_PLAN_JSON, modelUsed: "gemini-3.8-flash" as const };
+  };
+  await run(MINIMAL_SPEC, { chat: stubChat as never, runVanya: stubRunVanya });
+  expect(system).toContain(baselineRulesSection());
+});

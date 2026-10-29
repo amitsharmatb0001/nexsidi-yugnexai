@@ -864,3 +864,20 @@ Approved by Amit as stage 1. It reverses the reading half of his 2 October decis
 - the database finish check ran its migrations on an empty PostgreSQL 16 (all three apply, 4.8 s, container removed) and flags `db/src/schema.ts` missing `name_at_time` — the defect Brewline 3 ended with.
 
 **Not checked:** the database agent run with a model (a paid call), and any of this in a live build.
+
+## Batch 61 — stage 2, parts one and two: no plan with an open value, and one rulebook (2026-10-29)
+
+**Why (root-cause trace of 29 Oct):** two things in Brewline 3.
+- Its spec said "during store hours" with no hours. The frontend builder invented 6:30 AM to 4:00 PM, and the backend file holds both 8:00 and 6:30.
+- The rules the reviewers check (security baseline, integrity baseline) were never given to the planner that designs the tables. So the approved plan had no column for the item's name at order time, and the review flagged it for 18 rounds.
+
+**Built:**
+- **Open values (`agents/planner/src/open-values.ts`):** opening hours, fees, tax rate, order limits, notice or lead time, and deposit. Each counts as open when the plan names it but gives no value. Opening hours count as given by a clock time anywhere in the plan, so "15-minute windows" is not mistaken for hours. The other facts need the value in a sentence that names them, so an unrelated price elsewhere does not settle "a fee is added". A plan with an open value is not shown: the planner is told to ask the customer with its own question widget in the chat, one question at a time, and to put the answers in the rules word for word. This is the same mechanism that already refuses a plan whose phases do not cover everything.
+- **One rulebook (`pipeline/orchestrator/baseline-rules.ts`):** the security and integrity rules move out of `chief-check.ts` into one list, which `chief-check.ts` re-exports. The spec writer and the planner now get it, as do the builders' finish checklist and the reviewers and the Chief AI, as before.
+
+**Proof:** tests first (open values 9, rulebook 2, planner 1, spec writer 1); all 2,600 tests pass. On the recorded requests the check flags:
+- Brewline 3: "during store hours" (the value that was invented);
+- Trailhead 2: "leave damage deposit in store" with no amount;
+- Brewline 1 and 2 and Trailhead 1: nothing (none of them mention hours or a deposit).
+
+**Not checked:** a live planning chat in which the planner asks for the hours (model calls).

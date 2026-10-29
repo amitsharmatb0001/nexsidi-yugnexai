@@ -13,6 +13,7 @@ import { AGENT_MODELS, MODEL_RPM_LIMITS, NIM_CONTEXT_LIMITS, waitForToken, route
 import type { GeminiMessage, GeminiPart, NimToolDef } from "@nexsidi/llm-client";
 import type { PlannerState, StreamChunk, BuildPlan, ProposedPlan, ElicitationQuestion, BuildPhase } from "./types.ts";
 import { researchBrief, defaultResearchDeps, type ResearchNotes, type ResearchProgress } from "./research.ts";
+import { openValuesInPlan } from "./open-values.ts";
 // Phase 5 (full agentic upgrade): the same shared primitives every other
 // agent's research capability is built on — see the "web_search /
 // fetch_url" call site below for why the planner's own Firecrawl-only
@@ -695,6 +696,27 @@ export async function* streamReply(
           messages.push({
             role: "tool" as const,
             content: `Plan not shown — fix the build phases and call propose_plan again:\n- ${phaseProblems.join("\n- ")}`,
+            tool_call_id: callId, name: "propose_plan",
+          });
+          continue;
+        }
+        // 2026-10-29 (team plan, stage 2): a business value the plan names but does not give is asked, never invented.
+        const open = openValuesInPlan(plan);
+        if (open.length > 0) {
+          if (plannerTurnShouldStop(seenCalls, `propose_plan ${toolCallArgs}`, turnStarted, Date.now(), PLANNER_TURN_SAFETY_MS)) {
+            yield { type: "error", content: "I need a few details from you before I can show the plan. Please tell me more about how the business works." };
+            return;
+          }
+          const callId = toolCallId || `call_propose_${round}`;
+          messages.push({
+            role: "assistant", content: textContent || null,
+            tool_calls: [{ id: callId, type: "function", function: { name: "propose_plan", arguments: toolCallArgs }, thoughtSignature: toolCallThoughtSignature }],
+          });
+          messages.push({
+            role: "tool" as const,
+            content:
+              `Plan not shown — it names business values it does not give:\n- ${open.map((o) => `${o.fact}: "${o.where}"`).join("\n- ")}\n` +
+              "Ask the customer for each with ask_user, one at a time (offer common choices and let them type their own). Put each answer in rules, word for word, then call propose_plan again. Never invent a value.",
             tool_call_id: callId, name: "propose_plan",
           });
           continue;

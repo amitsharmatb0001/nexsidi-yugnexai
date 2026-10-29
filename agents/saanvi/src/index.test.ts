@@ -403,3 +403,15 @@ test("a sign-up that names no privileged role is left exactly as it was", () => 
   const endpoints = [{ method: "POST", path: "/api/v1/auth/register", description: "Create an account", auth: false, requestBody: { email: "string", password: "string" }, responseBody: {} }, { method: "GET", path: "/api/v1/profile", description: "own profile", auth: true, requestBody: null, responseBody: {} }];
   expect(sanitizeApiEndpoints(endpoints as never)).toEqual(endpoints as never);
 });
+
+// 2026-10-29 (team plan, stage 2): the spec writer works from the same rules the reviewers check.
+test("the spec writer is given the same rules the reviewers check", async () => {
+  const { baselineRulesSection } = await import("../../../pipeline/orchestrator/baseline-rules.ts");
+  let system = "";
+  const stubChat = async (_a: string, msgs: Array<{ role: string; content: string }>) => {
+    system = msgs.find((m) => m.role === "system")?.content ?? "";
+    return { content: VALID_SPEC_JSON, modelUsed: "gemini-3.8-flash" as const };
+  };
+  await run("proj123", "build me a task app", { chat: stubChat as never });
+  expect(system).toContain(baselineRulesSection());
+});

@@ -5,6 +5,7 @@
 import { agentChat } from "@nexsidi/llm-client";
 import { hashContext } from "@nexsidi/context-chain";
 import { skillPromptSection } from "../../../packages/agent-runtime/src/skill-library.ts";
+import { baselineRulesSection } from "../../../pipeline/orchestrator/baseline-rules.ts";
 
 // ── Canonical ProjectSpec (v1) ────────────────────────────────────────────────
 export interface Feature {
@@ -92,7 +93,8 @@ export async function run(
 ): Promise<SaanviResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const messages = [
-    { role: "system" as const, content: [SAANVI_SYSTEM_PROMPT, skillPromptSection("saanvi", userRequest)].filter(Boolean).join("\n\n") },
+    // 2026-10-29 (team plan, stage 2): the spec is written with the rules the reviewers check.
+    { role: "system" as const, content: [SAANVI_SYSTEM_PROMPT, baselineRulesSection(), skillPromptSection("saanvi", userRequest)].filter(Boolean).join("\n\n") },
     {
       role: "user" as const,
       content: `Project ID: ${projectId}\n\nUser request:\n${userRequest}\n\nOutput ONLY the JSON object. No markdown, no prose.`,

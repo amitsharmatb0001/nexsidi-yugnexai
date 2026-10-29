@@ -13,6 +13,7 @@ import { join } from "path";
 import { assignTaskPhases, type PlanPhase } from "./phases.ts";
 import { assignBySkill, type TaskAssignment } from "./capabilities.ts";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
+import { baselineRulesSection } from "../../../pipeline/orchestrator/baseline-rules.ts";
 
 // ── Output types ──────────────────────────────────────────────────────────────
 export interface RestEndpoint {
@@ -184,7 +185,8 @@ export async function run(
     : JSON.stringify(spec, null, 2);
 
   const messages = [
-    { role: "system" as const, content: [systemPrompt, skillPromptSection("arjun", userContent)].filter(Boolean).join("\n\n") },
+    // 2026-10-29 (team plan, stage 2): the tables and endpoints are designed with the rules the reviewers check.
+    { role: "system" as const, content: [systemPrompt, baselineRulesSection(), skillPromptSection("arjun", userContent)].filter(Boolean).join("\n\n") },
     { role: "user" as const, content: userContent },
   ];
 
