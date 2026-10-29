@@ -12,6 +12,7 @@ import type { AgentRunConfig } from "../../../../packages/agent-runtime/src/loop
 import type { WritableFile } from "../../../../packages/agent-runtime/src/ownership.ts";
 import type { MigrationCheckResult } from "../../../../pipeline/orchestrator/stages/migration-check.ts";
 import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
+import { answersBlock } from "../../../../packages/agent-runtime/src/tools/ask.ts";
 
 // ── Main entry ────────────────────────────────────────────────────────────────
 export async function run(plan: BuildPlan): Promise<GeneratorResult> {
@@ -104,7 +105,7 @@ HOW:
 4. If the fix belongs in the backend or the frontend code: call escalate_finding with the owner (shubham for the
    backend, aanya for the frontend), the file and what must change there.
 5. Call task_complete. The system then checks that src/schema.ts matches the migrations and that every migration runs
-   on an empty PostgreSQL 16; you cannot finish until both hold.`;
+   on an empty PostgreSQL 16; you cannot finish until both hold.` + answersBlock(plan.projectId);
 }
 
 export async function runFix(plan: BuildPlan, findings: string[], deps: PranavAgentDeps = {}): Promise<GeneratorResult> {
@@ -122,6 +123,7 @@ export async function runFix(plan: BuildPlan, findings: string[], deps: PranavAg
     initialMessage: buildPranavFixTask(findings, plan),
     sandboxDir: outputDir,
     readOnlyDirs: [projectDir],
+    enableAsk: true,
     projectId: plan.projectId,
     geminiTier: "generation",
     enableEscalation: true,

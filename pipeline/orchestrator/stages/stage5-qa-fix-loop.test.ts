@@ -1220,3 +1220,25 @@ test("the database fix's hand-on to the backend reaches the backend fixer in the
   await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
   expect(shubhamReceived.some((f) => f.includes("name_at_time"))).toBe(true);
 });
+
+// 2026-10-29 (team plan, stage 2): a fix round that ends with a question for the customer stops the loop at once — another
+// review round would only find again what waits for the answer. The activity then pauses the build for the customer.
+test("a fix round that leaves a question for the customer stops the loop without another review round", async () => {
+  let qaCallCount = 0;
+  let asked = false;
+  const deps: QAFixDeps = {
+    runStage5: async () => {
+      qaCallCount++;
+      return failResult(1, "shubham");
+    },
+    fixShubham: async () => {
+      asked = true;
+      return { success: true, filesWritten: [] };
+    },
+    fixAanya: async () => ({ success: true }),
+    openQuestions: () => (asked ? 1 : 0),
+  };
+  const result = await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+  expect(qaCallCount).toBe(1);
+  expect(result.pass).toBe(false);
+});

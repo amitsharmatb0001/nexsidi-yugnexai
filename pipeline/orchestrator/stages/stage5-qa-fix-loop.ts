@@ -43,6 +43,7 @@ import { runFixAsTeam } from "../team-fix.ts";
 import { requestFullReview } from "../review-cache.ts";
 import { qaBudgetMs, minutesSince } from "../time-budget.ts";
 import { chiefCheck, defaultChiefChat, isMachineFinding, isReviewerFailure, prepareForChief, type ChiefChat } from "../chief-check.ts";
+import { openCustomerQuestions } from "../../../packages/agent-runtime/src/tools/ask.ts";
 
 export interface QAFixLoopResult extends Stage5Result {
   iterations: number; // total QA passes run (initial + retests)
@@ -103,6 +104,9 @@ export interface QAFixDeps {
   // predate this fix keep compiling and behaving unchanged; the real entry
   // point wires Pranav's real runFix (expand-contract migration, not a
   // schema rewrite — see agents/generators/pranav/src/index.ts).
+  // 2026-10-29 (team plan, stage 2): how many questions wait for the customer (tools/ask.ts). When a fix round leaves one,
+  // the loop stops; the activity pauses the build until the customer answers.
+  openQuestions?: () => number;
   // 2026-10-29 (team plan, stage 1): the database builder is an agent and may hand a finding on, like the others.
   fixPranav?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>;
   // 2026-07-08: Patent Claim 2's instinct memory had a real DB table but
@@ -538,6 +542,10 @@ export async function runQAFixLoopWithDeps(
       settle: deps.settleDisputes,
       fixers: { shubham: deps.fixShubham, aanya: deps.fixAanya, pranav: deps.fixPranav },
     });
+    if ((deps.openQuestions?.() ?? 0) > 0) {
+      console.log(`[qa-fix-loop] a builder asked the customer a question — stopping the rounds until it is answered`);
+      return { ...result, iterations, stuck: false };
+    }
     if (mainFixChangedNothing && disputeOutcome.settledNotTrue === 0 && !disputeOutcome.refixChanged && changedFilesThisRound.size === 0) {
       console.error(`[qa-fix-loop] stopping — every fix this round failed outright and nothing was settled, a rescan would be wasted`);
       return { ...result, iterations, stuck: true };
@@ -604,6 +612,7 @@ export async function runQAFixLoop(
     // straight through to runStage5's own matching positional slots.
     runStage5: (pid, s4, p, changedFiles, previousFindings) => runStage5(pid, s4, false, p, changedFiles, previousFindings),
     requestFullReview: (pid) => requestFullReview(pid),
+    openQuestions: () => openCustomerQuestions(projectId).length,
     // 2026-08-06: real bug found live (project bae438767bed) — a shared-pool
     // quota exhaustion hitting all three fix calls simultaneously (they run
     // concurrently) used to fail every one of them outright within a

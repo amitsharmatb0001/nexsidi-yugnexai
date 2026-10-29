@@ -881,3 +881,38 @@ Approved by Amit as stage 1. It reverses the reading half of his 2 October decis
 - Brewline 1 and 2 and Trailhead 1: nothing (none of them mention hours or a deposit).
 
 **Not checked:** a live planning chat in which the planner asks for the hours (model calls).
+
+## Batch 62 — stage 2, part three: builders ask instead of guessing; the customer sees a plain chat question (2026-10-29)
+
+**Why (root-cause trace of 29 Oct):** the core rules tell every agent "Stop and ask ONE precise question instead of guessing", but builders had no way to ask. Brewline 3's frontend invented store hours of 6:30 AM to 4:00 PM, and no ASSUMPTION line was logged for it. **Amit's rule for this (29 Oct):** inside the system a question goes to the Chief AI with names; for the customer it must read like a chat message, with no agent names or internals (CLAUDE.md confidentiality).
+
+**Built:**
+- **`ask_question` (`packages/agent-runtime/src/tools/ask.ts`),** for the backend, frontend and database builders, in their build runs and fix runs.
+  - The Chief AI answers only from the customer's request and the approved spec. It must give a quote, and the quote must really be in those documents, or the answer is not accepted.
+  - A question they do not answer goes to the customer. The builder is told not to guess and to finish the work that does not depend on it.
+  - The same question in other words (matched on key words, so "Store opening hours?" equals "What are the store's opening hours for each day?") is asked once. An answered question is answered from the record.
+- **What the customer sees (`packages/agent-runtime/src/customer-text.ts`):**
+  - the full roster of agent names, and internal words (builder, reviewer, Chief AI, pipeline, workflow, model names), are found and replaced with plain words, then the grammar is mended ("Shubham, the backend builder, needs …" becomes "We need …");
+  - the model writing the question is told the same rule;
+  - the API checks again before anything reaches the browser.
+- **The pause:**
+  - Every paid step (building, review, deploy) stops with a `CustomerQuestion` failure while a question is open. A builder's phase stops before it counts as done, so the answer reaches the work.
+  - The review and live loops stop their rounds at once.
+  - The workflow sets the stage "awaiting_customer" ("One question for you before we continue."), asks each question, records the answer, and runs the same step again. It is a new failure type, so no recorded history can contain it.
+- **The answers reach every agent:** `build-answers.jsonl` goes into every builder's task, into both builders' finish checklists, and into the reviewers' and Chief AI's yardstick as `ANS` items.
+- **Web and API:**
+  - the build page shows the question as a chat message with a reply box (`CustomerQuestion` in `IdeWorkspace.tsx`);
+  - the live status stream carries it, `GET /api/pipeline/:id/question` serves it after a reload, and `POST /api/pipeline/:id/answer` records the exchange in the project's chat history and passes the answer to the build.
+
+**Proof:**
+- Tests first: ask 12, wording 6, wiring 4, pause 6, review loop 1, live stage 2, API 5, web 3, yardstick 1. All 2,637 tests in the pipeline, agents, packages and API pass, and all 92 in the web app.
+- On Brewline 3's recorded request and spec, with the answer step replaced by its worst replies:
+  - made-up hours with a quote that is not in the documents are refused and the question goes to the customer;
+  - the backend's reworded question is recognised as the same one;
+  - the customer sees "What are the store's opening hours for each day?", with no internal terms;
+  - the answer reaches both builders' tasks and checklists and the reviewers' yardstick as ANS1.
+- This proof found two defects first, both fixed with tests: the reworded question was asked twice, and the name rewrite read "We, we, needs".
+
+**Correction:** stages 0 and 1 said "all tests pass" but ran only the pipeline, agents, packages and API. The web app's tests had one failure since stage 0 (the pinned list of retryable reasons lacked `system_changed`); it is fixed here.
+
+**Not checked:** a live build that pauses for a question (that needs a worker, which would also wake Brewline 3), the question card seen in a browser (the local browser is not signed in, and I do not enter Amit's password), and the Chief AI's answer with a real model (a paid call). The pipeline routes require sign-in (they answered 401 without a session).

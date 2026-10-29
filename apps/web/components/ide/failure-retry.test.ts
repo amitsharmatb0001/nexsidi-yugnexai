@@ -52,12 +52,14 @@ test("a 'code: detail' shaped reason (Riya's failureReason convention) is matche
   expect(readableFailureReason("deploy_failed: container exited with code 1")).toContain("Deployment failed");
 });
 
-test("the backend's retryable set is kept in sync — same eight reasons, no more, no fewer", () => {
+// 2026-10-29: nine reasons — system_changed (team plan stage 0) is retryable in both places.
+test("the backend's retryable set is kept in sync — same nine reasons, no more, no fewer", () => {
   const src = require("node:fs").readFileSync(new URL("../../../api/src/routes/pipeline.ts", import.meta.url), "utf-8");
   const match = src.match(/RETRYABLE_FAILURE_REASONS = new Set\(\[([\s\S]*?)\]\)/);
   expect(match).not.toBeNull();
   const backendReasons = [...match![1]!.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
-  const frontendReasons = ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error", "guard_hold"];
+  const frontendReasons = ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error", "guard_hold", "system_changed"];
+  for (const r of frontendReasons) expect(isRetryableFailure(r)).toBe(true);
   expect(new Set(backendReasons)).toEqual(new Set(frontendReasons));
 });
 

@@ -30,6 +30,22 @@ const readJson = <T>(file: string): T | null => {
   }
 };
 
+function answersGiven(projectDir: string): Array<{ question: string; answer: string }> {
+  const file = join(projectDir, "build-answers.jsonl");
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf-8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((l) => {
+      try {
+        const a = JSON.parse(l) as { question?: string; answer?: string };
+        return a.question && a.answer ? [{ question: a.question, answer: a.answer }] : [];
+      } catch {
+        return [];
+      }
+    });
+}
+
 export function planItemsFor(projectDir: string): PlanItem[] {
   const items: PlanItem[] = [];
   const spec = readJson<{ successCriteria?: string[] }>(join(projectDir, "spec.json"));
@@ -48,6 +64,8 @@ export function planItemsFor(projectDir: string): PlanItem[] {
   }
   SECURITY_BASELINE.forEach((s, i) => items.push({ id: `SEC${i + 1}`, text: s }));
   INTEGRITY_BASELINE.forEach((s, i) => items.push({ id: `INT${i + 1}`, text: s }));
+  // 2026-10-29 (team plan, stage 2): answers given during the build (packages/agent-runtime/src/tools/ask.ts) are part of the plan.
+  answersGiven(projectDir).forEach((a, i) => items.push({ id: `ANS${i + 1}`, text: `${a.question} → ${a.answer}` }));
   return items;
 }
 

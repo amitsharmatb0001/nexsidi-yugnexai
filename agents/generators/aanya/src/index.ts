@@ -16,6 +16,7 @@ import { inHouseFontFaceCss, vendorInHouseFonts } from "./fonts.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
 import { loadAndInjectContract } from "../../../../pipeline/orchestrator/stages/contract-extractor.ts";
 import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
+import { answersBlock } from "../../../../packages/agent-runtime/src/tools/ask.ts";
 import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-files.ts";
 
 // 2026-10-24: the system's own frontend checks (pipeline/orchestrator/stages/builder-exit-checks.ts), loaded when used.
@@ -156,6 +157,7 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?
     initialMessage: (phase ? phase.header + "\n\n" : "") + buildAgentTask(plan, mode) + (!phase || phase.isLast ? "\n\n" + (await checklistTextFor(plan.projectId)) : ""),
     sandboxDir: outputDir,
     readOnlyDirs: aanyaReadOnlyDirs(outputDir),
+    enableAsk: true,
     projectId: plan.projectId,
     conversationKey: phase?.conversationKey,
     extendStepsWhileProgressing: Boolean(phase),
@@ -308,7 +310,7 @@ Workflow:
 1. Use read_file to see the exact current content of each affected file
 2. Use edit_file for targeted fixes (cheaper than rewriting the whole file) — use write_file only if the fix genuinely requires touching most of the file
 3. Run "npx next build" to verify nothing broke
-4. Call task_complete with verification_passed: true only after verifying the fix actually addresses the root cause, not just silences the symptom`;
+4. Call task_complete with verification_passed: true only after verifying the fix actually addresses the root cause, not just silences the symptom` + answersBlock(plan.projectId);
 }
 
 // 2026-10-22 (Trailhead rerun): fix rounds ran on the generic 40-step default while doing the same required live check as a
@@ -335,6 +337,7 @@ export async function runFix(plan: BuildPlan, findings: string[], team?: { role?
     initialMessage: buildFixTask(findings, plan),
     sandboxDir: outputDir,
     readOnlyDirs: aanyaReadOnlyDirs(outputDir),
+    enableAsk: true,
     projectId: plan.projectId,
     // flash (default) — see the rationale on Aanya's run() config above.
     enableHttpTools: true,
@@ -818,7 +821,7 @@ above — there is no Spinner component in this library).
 PLANNED FRONTEND FILES AND PAGES (you MUST implement these pages and files as planned):
 ${taskDetails}
 
-Start with list_files to see the scaffold, then write pages and components.`;
+Start with list_files to see the scaffold, then write pages and components.` + answersBlock(plan.projectId);
 }
 
 // ── Static scaffold ───────────────────────────────────────────────────────────

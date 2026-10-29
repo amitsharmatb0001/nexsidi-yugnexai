@@ -98,6 +98,8 @@ export interface IdeWorkspaceProps {
   // DB field, not just a server console.error) when it's genuinely dead.
   needsAttention?: { reason: string | null } | null;
   onRetry?: () => void;
+  // 2026-10-29 (team plan, stage 2): the build waits for the customer's answer to one question (in the customer's words).
+  customerQuestion?: { text: string; sending: boolean; onAnswer: (answer: string) => void } | null;
   stageMessage: string;
   tree: ApiNode[];
   awaitingSpecApproval: boolean;
@@ -312,7 +314,7 @@ function DoneComposer({ onSubmit, submitting }: { onSubmit: (text: string) => vo
 
 export default function IdeWorkspace(props: IdeWorkspaceProps) {
   const {
-    projectId, projectName, appUrl, isDone, appStarting, appStartError, needsAttention, stageMessage,
+    projectId, projectName, appUrl, isDone, appStarting, appStartError, needsAttention, customerQuestion, stageMessage,
     tree, awaitingSpecApproval, buildPlan, awaitingDeployApproval, submitting,
     changeRequest, onChangeRequest, onApproveSpec, onApproveDeploy, onRequestChanges, onRetry, planning,
   } = props;
@@ -1100,6 +1102,8 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
                       <Button size="sm" onClick={gate.onGo} disabled={submitting}>{gate.cta}</Button>
                     </div>
                   </div>
+                ) : customerQuestion ? (
+                  <CustomerQuestion text={customerQuestion.text} sending={customerQuestion.sending} onAnswer={customerQuestion.onAnswer} />
                 ) : isDone ? (
                   <DoneComposer onSubmit={onRequestChanges} submitting={submitting} />
                 ) : needsAttention ? (
@@ -1243,6 +1247,33 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
  * broken: the message just sat there, off-center, while the freed space
  * showed as dead space beside it. Full-width plain text has no such state.
  */
+/** A question for the customer during a build, shown as a chat message with a box to answer (team plan stage 2). */
+export function CustomerQuestion({ text, sending, onAnswer }: { text: string; sending: boolean; onAnswer: (answer: string) => void }) {
+  const [reply, setReply] = useState("");
+  const send = () => {
+    const answer = reply.trim();
+    if (!answer || sending) return;
+    onAnswer(answer);
+  };
+  return (
+    <div className={s.gateCard} aria-live="polite">
+      <PlanRow role="assistant">{text}</PlanRow>
+      <input
+        className={s.gateInput}
+        value={reply}
+        onChange={(e) => setReply(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") send(); }}
+        placeholder="Type your answer"
+        aria-label="Your answer"
+        disabled={sending}
+      />
+      <div className={s.gateActions}>
+        <Button size="sm" onClick={send} disabled={sending || !reply.trim()}>{sending ? "Sending…" : "Send"}</Button>
+      </div>
+    </div>
+  );
+}
+
 function PlanRow({ role, children }: { role: "user" | "assistant" | "system"; children: ReactNode }) {
   return (
     <div className={s.streamRow}>

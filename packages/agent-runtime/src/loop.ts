@@ -33,6 +33,7 @@ import { execFetchUrl, FETCH_URL_TOOL_DEF } from "./tools/research.ts";
 import { recordEscalation, ESCALATE_FINDING_TOOL_DEF, type Escalation } from "./tools/escalate.ts";
 import { recordDispute, DISPUTE_FINDING_TOOL_DEF } from "./tools/dispute.ts";
 import { recordVerdict, SETTLE_DISPUTE_TOOL_DEF } from "./tools/settle.ts";
+import { execAskQuestion, ASK_QUESTION_TOOL_DEF } from "./tools/ask.ts";
 import { fixRunUnaccounted } from "./enforce/fix-accounting.ts";
 import { trackWrittenFile } from "./enforce/files-written.ts";
 import { summaryRejection } from "./enforce/summary-format.ts";
@@ -89,6 +90,8 @@ export interface AgentRunConfig {
   writableFile?: WritableFile;
   // Tilotma settling disputed findings: offers settle_dispute (tools/settle.ts).
   enableDisputeSettling?: boolean;
+  // A builder may ask for a fact the task does not give (tools/ask.ts, 2026-10-29).
+  enableAsk?: boolean;
   // A format the final task_complete summary must match (a judge's score lines).
   summaryMustMatch?: SummaryRule;
   // The run may not finish until at least one screenshot was actually sent to the model.
@@ -415,6 +418,7 @@ export function buildToolList(config: AgentRunConfig): NimToolDef[] {
     // fix runs: hand a finding to its owner, or dispute it with the facts
     ...(config.enableEscalation ? [ESCALATE_FINDING_TOOL_DEF, DISPUTE_FINDING_TOOL_DEF] : []),
     ...(config.enableDisputeSettling ? [SETTLE_DISPUTE_TOOL_DEF] : []),
+    ...(config.enableAsk ? [ASK_QUESTION_TOOL_DEF] : []),
     REPORT_BLOCKED_TOOL_DEF, // every agent, every stage (see tools/blocked.ts)
     ...(config.enableScreenshot ? [SCREENSHOT_TOOL_DEF] : []),
     ...(config.enableBrowser ? BROWSER_TOOL_DEFS : []),
@@ -1192,6 +1196,11 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         }
         case "settle_dispute": {
           result = recordVerdict(config.projectId, args as { number?: number; verdict?: string; evidence?: string });
+          break;
+        }
+        case "ask_question": {
+          // 2026-10-29 (team plan, stage 2): answered from the approved documents, or asked of the customer.
+          result = await execAskQuestion(config.projectId, config.agentName, args as { question?: string; why?: string });
           break;
         }
         case "dispute_finding": {

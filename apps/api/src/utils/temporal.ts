@@ -88,6 +88,12 @@ export async function getWorkflowStatus(projectId: string): Promise<string | nul
 // payload — used by approveSpecSignal to carry "Approve with changes" text
 // (see project-build.ts's approveSpecSignal header comment); every other
 // signal ignores a trailing undefined arg.
+/** The customer's answer to the question the build is waiting on (answerClarificationSignal carries text). */
+export async function sendAnswerSignal(projectId: string, answer: string): Promise<void> {
+  const client = await getClient();
+  await client.workflow.getHandle(`project-build-${projectId}`).signal("answerClarificationSignal", answer);
+}
+
 export async function sendWorkflowSignal(
   projectId: string,
   signalName: string,

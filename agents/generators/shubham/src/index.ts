@@ -9,6 +9,7 @@ import { join, resolve } from "path";
 import type { BuildPlan, GeneratorTask } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
 import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
+import { answersBlock } from "../../../../packages/agent-runtime/src/tools/ask.ts";
 import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-files.ts";
 
 // 2026-10-24: the backend builder's own checks before it may finish (no hot-linked images in code or seed files) —
@@ -299,6 +300,7 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
     initialMessage: (phase ? phase.header + "\n\n" : "") + buildAgentTask(plan) + (!phase || phase.isLast ? "\n\n" + (await checklistTextFor(plan.projectId)) : ""),
     sandboxDir: outputDir,
     readOnlyDirs: shubhamReadOnlyDirs(outputDir),
+    enableAsk: true,
     projectId: plan.projectId,
     conversationKey: phase?.conversationKey,
     extendStepsWhileProgressing: Boolean(phase),
@@ -463,7 +465,7 @@ Workflow:
 1. Use read_file to see the exact current content of each affected file
 2. Use edit_file for targeted fixes (cheaper than rewriting the whole file) — use write_file only if the fix genuinely requires touching most of the file
 3. Run "npx tsc --noEmit" (or the project's build command) to verify nothing broke
-4. Call task_complete with verification_passed: true only after verifying the fix actually addresses the root cause, not just silences the symptom`;
+4. Call task_complete with verification_passed: true only after verifying the fix actually addresses the root cause, not just silences the symptom` + answersBlock(plan.projectId);
 }
 
 // 2026-10-24: `team` set = one helper or the lead of a fix round run as a team (pipeline/orchestrator/team-fix.ts).
@@ -488,6 +490,7 @@ export async function runFix(plan: BuildPlan, findings: string[], team?: { role?
     initialMessage: buildFixTask(findings, plan),
     sandboxDir: outputDir,
     readOnlyDirs: shubhamReadOnlyDirs(outputDir),
+    enableAsk: true,
     projectId: plan.projectId,
     // 2026-07-25 (Phase 1, full MVP upgrade): was `geminiModel:
     // process.env.GEMINI_GENERATION_MODEL`. Verified live (audit-2026-07-25.md,
@@ -638,7 +641,7 @@ Start by using list_files to see what scaffold files are already present.
 Then write EVERY planned file above completely, batching several write_file
 calls per turn — do not pause to type-check between individual files. Only
 once every planned file is written do you move to the single verification
-pass described in your system prompt.`;
+pass described in your system prompt.` + answersBlock(plan.projectId);
 }
 
 // ── Static scaffold — written before agent starts ────────────────────────────

@@ -42,9 +42,10 @@ interface ChatMessage {
 }
 
 interface StageEvent {
-  type:    "stage" | "ping" | "waiting" | "complete";
+  type:    "stage" | "ping" | "waiting" | "complete" | "question";
   stage?:  string;
   message?:string;
+  text?:   string;
 }
 
 interface ProjectResult {
@@ -939,6 +940,8 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   const chatEndRef     = useRef<HTMLDivElement | null>(null);
   const termEndRef     = useRef<HTMLDivElement | null>(null);
   const esRef          = useRef<EventSource | null>(null);
+  const [customerQuestion, setCustomerQuestion] = useState<string | null>(null);
+  const [answering, setAnswering] = useState(false);
   const wsRef          = useRef<WebSocket | null>(null);
   const wsRetryRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wsRetryCount   = useRef(0);
@@ -1180,10 +1183,17 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
     // but that guard is separate. Here we always open fresh.
     const es = new EventSource(`${API}/api/pipeline/${id}/status`, { withCredentials: true });
     esRef.current = es;
+    // A page opened or reloaded while the build waits on a question shows it at once.
+    fetch(`${API}/api/pipeline/${id}/question`, { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { question?: string | null } | null) => { if (d?.question) setCustomerQuestion(d.question); })
+      .catch(() => {});
     es.onmessage = (e) => {
       let ev: StageEvent;
       try { ev = JSON.parse(e.data); } catch { return; }
       if (ev.type === "waiting") { setStatus("waiting"); return; }
+      if (ev.type === "question" && ev.text) { setCustomerQuestion(ev.text); return; }
+      if (ev.stage && ev.stage !== "awaiting_customer") setCustomerQuestion(null);
       if (ev.type === "complete") { setStatus("done"); fetchResult(); fetchTree(); return; }
       if (ev.stage) {
         // See lib/build-status.ts — an "error" stage must not overwrite a
@@ -1420,6 +1430,24 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
     setSubmitting(false);
   }
 
+  // 2026-10-29 (team plan, stage 2): the customer's answer to the question the build waits on.
+  async function answerQuestion(answer: string) {
+    setAnswering(true);
+    try {
+      const res = await fetch(`${API}/api/pipeline/${id}/answer`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answer }),
+      });
+      if (res.ok) {
+        setCustomerQuestion(null);
+        setStageMessage("Thanks — the build continues with your answer.");
+      }
+    } catch {}
+    setAnswering(false);
+  }
+
   const isDone = status === "done" || (status === "failed" && !!result?.appUrl);
   // See BuildStatus's own header comment — genuinely dead, not "still
   // working": needs_review always means this, and failed means this unless
@@ -1502,6 +1530,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       appStartError={appStartError}
       needsAttention={needsAttention ? { reason: result?.failureReason ?? null } : null}
       onRetry={retry}
+      customerQuestion={customerQuestion ? { text: customerQuestion, sending: answering, onAnswer: answerQuestion } : null}
       stageMessage={stageMessage}
       tree={tree}
       awaitingSpecApproval={Boolean(buildPlanModal)}

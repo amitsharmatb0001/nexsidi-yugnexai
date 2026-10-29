@@ -208,3 +208,23 @@ test("the yardstick also names three rules the reviewers kept finding outside th
   expect(text).toMatch(/brief|spec/i);
   expect(text).toMatch(/opening hours|business rule/i);
 });
+
+// 2026-10-29 (team plan, stage 2): an answer given during the build (tools/ask.ts) is part of the yardstick, so the
+// reviewers judge the code against the customer's answer, and the builders' finish checklist names it too.
+test("answers given during the build are plan items the reviewers and builders check against", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { planItemsFor } = await import("./chief-check.ts");
+  const { checklistFor } = await import("./stages/builder-exit-checks.ts");
+  const dir = mkdtempSync(join(tmpdir(), "ans-items-"));
+  try {
+    writeFileSync(join(dir, "build-answers.jsonl"), JSON.stringify({ question: "What are the store hours?", answer: "Mon–Sat 7:00–18:00", source: "customer", askedBy: "shubham", at: "t" }) + "\n");
+    const ans = planItemsFor(dir).find((i) => i.id === "ANS1");
+    expect(ans?.text).toContain("Mon–Sat 7:00–18:00");
+    expect(checklistFor(dir, "backend").some((i) => i.id === "ANS1")).toBe(true);
+    expect(checklistFor(dir, "frontend").some((i) => i.id === "ANS1")).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

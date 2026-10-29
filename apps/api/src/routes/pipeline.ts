@@ -8,7 +8,8 @@
 
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { startProjectBuild, getPipelineStatus, isWorkflowRunning, getWorkflowStatus, sendWorkflowSignal, startChangeRequest } from "../utils/temporal.ts";
+import { startProjectBuild, getPipelineStatus, isWorkflowRunning, getWorkflowStatus, sendWorkflowSignal, sendAnswerSignal, startChangeRequest } from "../utils/temporal.ts";
+import { pendingCustomerQuestion, cleanAnswer } from "../utils/customer-question.ts";
 import { db, projects } from "@nexsidi/db";
 import { eq } from "drizzle-orm";
 import Redis from "ioredis";
@@ -68,6 +69,7 @@ pipelineRouter.get("/:projectId/status", async (c) => {
 
   return streamSSE(c, async (stream) => {
     let lastStage = "";
+    let lastQuestion: string | null = null;
     // 2026-08-26: real bug found live (project 852be5aeaef4). getWorkflowStatus
     // returns null for BOTH "this workflow genuinely doesn't exist" and "we
     // couldn't reach Temporal just now" (it catches and returns null — see
@@ -142,6 +144,13 @@ pipelineRouter.get("/:projectId/status", async (c) => {
           });
           lastStage = stage;
         }
+      }
+
+      // 2026-10-29 (team plan, stage 2): a question for the customer, in the customer's words (utils/customer-question.ts).
+      const question = pendingCustomerQuestion(state);
+      if (question !== lastQuestion) {
+        if (question) await stream.writeSSE({ data: JSON.stringify({ type: "question", text: question }) });
+        lastQuestion = question;
       }
 
       // Send heartbeat so the connection stays alive
@@ -282,6 +291,40 @@ pipelineRouter.post("/:projectId/request-changes", async (c) => {
     return c.json({ success: true, workflowId, message: "Applying your change request..." });
   } catch (err) {
     return c.json({ error: "Failed to start change request" }, 500);
+  }
+});
+
+// ── GET /api/pipeline/:projectId/question — the question the build waits on ──
+// 2026-10-29 (team plan, stage 2): in the customer's words only, for a page that was reloaded while the build waits.
+pipelineRouter.get("/:projectId/question", async (c) => {
+  const projectId = c.req.param("projectId");
+  return c.json({ question: pendingCustomerQuestion(await getPipelineStatus(projectId)) });
+});
+
+// ── POST /api/pipeline/:projectId/answer — the customer's answer ──────────────
+// It is kept in the project's chat history (so the exchange reads as a normal conversation), then passed to the build.
+pipelineRouter.post("/:projectId/answer", async (c) => {
+  const projectId = c.req.param("projectId");
+  let answer: string | null = null;
+  try {
+    answer = cleanAnswer((await c.req.json())?.answer);
+  } catch {
+    answer = null;
+  }
+  if (!answer) return c.json({ error: "answer required" }, 400);
+  const question = pendingCustomerQuestion(await getPipelineStatus(projectId));
+  if (!question) return c.json({ error: "the build is not waiting for an answer" }, 409);
+  try {
+    const { loadSession, saveSession } = await import("../../../../agents/planner/src/session.ts");
+    const session = await loadSession(projectId);
+    if (session) {
+      session.messages.push({ role: "assistant", content: question, ts: Date.now() }, { role: "user", content: answer, ts: Date.now() });
+      await saveSession(session);
+    }
+    await sendAnswerSignal(projectId, answer);
+    return c.json({ success: true, message: "Thanks — the build continues with your answer." });
+  } catch {
+    return c.json({ error: "Failed to send the answer" }, 500);
   }
 });
 

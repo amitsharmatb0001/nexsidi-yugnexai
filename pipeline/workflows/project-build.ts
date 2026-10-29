@@ -56,6 +56,16 @@ export function isSystemChangedFailure(err: unknown): boolean {
   );
 }
 
+// 2026-10-29 (team plan, stage 2): a builder asked something the approved documents do not answer (tools/ask.ts).
+// A new failure type, so no recorded history can contain it.
+export function isCustomerQuestionFailure(err: unknown): boolean {
+  return (
+    err instanceof ActivityFailure &&
+    err.cause instanceof ApplicationFailure &&
+    err.cause.type === "CustomerQuestion"
+  );
+}
+
 export function isBudgetExceededFailure(err: unknown): boolean {
   return (
     err instanceof ActivityFailure &&
@@ -340,6 +350,19 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     return answer;
   }
 
+  // 2026-10-29 (team plan, stage 2): each open question goes to the customer in plain words (no internal names); each
+  // answer is recorded where every builder and reviewer reads it; then the caller runs its step again.
+  async function askTheCustomer(): Promise<void> {
+    const questions = await act.openCustomerQuestionsActivity(projectId);
+    const was = state.stage;
+    state.stage = "awaiting_customer";
+    for (const q of questions) {
+      const answer = await askAndWait([q.forCustomer]);
+      await act.recordCustomerAnswerActivity(projectId, q.id, answer);
+    }
+    state.stage = was;
+  }
+
   // Gate 2 (deploy approval) + Stage 6 (deploy + live-browser retest),
   // extracted so both the normal post-QA flow and resumeFromDeploy (which
   // skips straight here) share one implementation instead of two copies
@@ -416,6 +439,11 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
           }
           state.stage = "deliver";
           console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (guard_hold)`);
+          continue;
+        }
+        if (isCustomerQuestionFailure(err)) {
+          await askTheCustomer();
+          state.stage = "deliver";
           continue;
         }
         if (isSystemChangedFailure(err)) {
@@ -675,6 +703,10 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       // literal calls stay grep/source-string visible — compile-loop.test.ts
       // asserts `escalateAndAwaitRetryDecision("generation_failed")` and
       // `markProjectFailed(projectId, "generation_failed")` verbatim.
+      if (isCustomerQuestionFailure(err)) {
+        await askTheCustomer();
+        continue;
+      }
       if (isSystemChangedFailure(err)) {
         const retry = await escalateAndAwaitRetryDecision("system_changed");
         if (!retry) {
@@ -782,6 +814,10 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       try {
         qaResult = await orchestratorAct.runQAFixLoopActivity(projectId);
       } catch (err) {
+        if (isCustomerQuestionFailure(err)) {
+          await askTheCustomer();
+          continue;
+        }
         if (isSystemChangedFailure(err)) {
           console.log(`[workflow] Stage 5 QA held — the system changed while this build was running`);
           const retry = await escalateAndAwaitRetryDecision("system_changed");

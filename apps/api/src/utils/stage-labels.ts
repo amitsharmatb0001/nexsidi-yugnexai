@@ -16,6 +16,7 @@ export const USER_STAGE_MESSAGES: Record<string, string> = {
   qa_fix: "Improving the code based on quality checks...",
   live_test: "Testing the live app...",
   await_deploy_approval: "Verification complete — approve to deliver the app.",
+  awaiting_customer: "One question for you before we continue.",
   deliver: "Almost done — packaging everything up.",
   done: "Your app is ready!",
   error: "Something went wrong. We're on it.",

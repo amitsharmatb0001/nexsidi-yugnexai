@@ -58,6 +58,7 @@ import { resetAppRateLimits } from "./limiter-reset.ts";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 import { liveBudgetMs, minutesSince } from "../time-budget.ts";
 import { projectHygieneFindings, dedupeAgainstHygiene } from "./shipping-hygiene.ts";
+import { openCustomerQuestions } from "../../../packages/agent-runtime/src/tools/ask.ts";
 export { isQuotaExhaustionError };
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
@@ -953,7 +954,7 @@ export async function runStage6(
   const runOwnerFixes = async (
     fixPlan: BuildPlan,
     routed: { shubham: string[]; aanya: string[]; pranav: string[] },
-  ): Promise<"nothing_to_fix" | "nothing_changed" | "changed"> => {
+  ): Promise<"nothing_to_fix" | "nothing_changed" | "changed" | "waiting_for_customer"> => {
     const owners = (["shubham", "aanya", "pranav"] as const).filter((o) => routed[o].length > 0);
     if (owners.length === 0) return "nothing_to_fix";
     const roundStart = new Date().toISOString();
@@ -1005,6 +1006,11 @@ export async function runStage6(
         return r;
       }])),
     });
+    // 2026-10-29 (team plan, stage 2): a builder asked the customer; nothing is redeployed or reviewed until the answer is in.
+    if (openCustomerQuestions(projectId).length > 0) {
+      console.log(`[stage6] a builder asked the customer a question — stopping until it is answered`);
+      return "waiting_for_customer";
+    }
     if (fixesChangedNothing && !escalationChanged && disputes.settledNotTrue === 0 && !disputes.refixChanged) {
       console.error(`[stage6] every implicated fix this round failed outright and changed nothing — skipping redeploy, a retest would be wasted`);
       return "nothing_changed";
@@ -1042,6 +1048,7 @@ export async function runStage6(
       deployFixRounds++;
       console.log(`[stage6] Deploy attempt ${attempt} found real app errors — sending them to the builders (fix round ${deployFixRounds} of ${MAX_LIVE_FIX_ATTEMPTS})`);
       const outcome = await runOwnerFixes(plan, routed);
+      if (outcome === "waiting_for_customer") break;
       if (outcome === "changed") {
         afterFix = true;
         console.log(`[stage6] Fixes for the deploy errors are in — deploying again`);
@@ -1178,6 +1185,7 @@ export async function runStage6(
 
     if (plan) {
       const outcome = await runOwnerFixes(plan, splitLiveFindings(retest.findings));
+      if (outcome === "waiting_for_customer") break;
       if (outcome === "nothing_to_fix") {
         console.log(`[stage6] No specific findings to route — exiting fix loop`);
         break;

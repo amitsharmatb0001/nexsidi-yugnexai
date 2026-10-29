@@ -58,6 +58,8 @@ import { isQuotaExhaustionError } from "../../packages/agent-runtime/src/gemini-
 // for the incident this responds to.
 import { checkBudget } from "../../packages/agent-runtime/src/cost-budget.ts";
 import { readSystemVersion, stampSystemVersion, checkSystemVersion } from "../orchestrator/system-version.ts";
+import { openCustomerQuestions, recordCustomerAnswer } from "../../packages/agent-runtime/src/tools/ask.ts";
+import { toCustomerText } from "../../packages/agent-runtime/src/customer-text.ts";
 import { fileURLToPath } from "node:url";
 
 // ── In-process cache (activities run in same Temporal worker process)
@@ -429,6 +431,34 @@ export async function assertSameSystem(projectId: string, step: string): Promise
   }
 }
 
+// 2026-10-29 (team plan, stage 2): a builder's question the approved documents do not answer (tools/ask.ts) stops the
+// step before it counts as done; the workflow asks the customer in plain words, records the answer, and runs the step
+// again with the answer in every builder's task.
+export async function assertNoOpenCustomerQuestion(projectId: string): Promise<void> {
+  const open = openCustomerQuestions(projectId);
+  if (open.length === 0) return;
+  console.log(`[activity] ${open.length} question(s) for the customer — the build waits for the answer`);
+  throw ApplicationFailure.create({
+    message: `customer_question: ${open.length} question(s) for the customer`,
+    type: "CustomerQuestion",
+    nonRetryable: true,
+    details: [open.map((q) => ({ id: q.id, forCustomer: q.forCustomer }))],
+  });
+}
+
+export function isCustomerQuestionError(err: unknown): boolean {
+  return err instanceof ApplicationFailure && err.type === "CustomerQuestion";
+}
+
+/** The questions waiting for the customer, in the words the customer sees. */
+export async function openCustomerQuestionsActivity(projectId: string): Promise<Array<{ id: string; forCustomer: string }>> {
+  return openCustomerQuestions(projectId).map((q) => ({ id: q.id, forCustomer: toCustomerText(q.forCustomer) }));
+}
+
+export async function recordCustomerAnswerActivity(projectId: string, id: string, answer: string): Promise<void> {
+  recordCustomerAnswer(projectId, id, answer);
+}
+
 export async function assertWithinBudget(projectId: string, agentName: string): Promise<void> {
   const status = await checkBudget(projectId);
   if (!status.withinBudget) {
@@ -469,10 +499,12 @@ export async function runShubham(projectId: string): Promise<void> {
   try {
     await assertWithinBudget(projectId, "shubham");
     await assertSameSystem(projectId, "shubham");
+    await assertNoOpenCustomerQuestion(projectId);
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "shubham", plan);
     const result = await runGeneratorWithQuotaRetry(() => runShubhamAgent(withNormalizedDbSchema(plan)));
     if (!result.success) generatorFailure("shubham", result.errors);
+    await assertNoOpenCustomerQuestion(projectId);
     console.log(`[activity:shubham] ${result.filesWritten.length} files → ${result.outputDir}`);
   } finally {
     clearInterval(hb);
@@ -485,11 +517,13 @@ export async function runAanya(projectId: string): Promise<void> {
   try {
     await assertWithinBudget(projectId, "aanya");
     await assertSameSystem(projectId, "aanya");
+    await assertNoOpenCustomerQuestion(projectId);
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "aanya", plan);
     // Verified in its on-disk (hashed) shape, then normalised for the generator.
     const result = await runGeneratorWithQuotaRetry(() => runAanyaAgent(withNormalizedDbSchema(plan), "integrate"));
     if (!result.success) generatorFailure("aanya", result.errors);
+    await assertNoOpenCustomerQuestion(projectId);
     console.log(`[activity:aanya] ${result.filesWritten.length} files → ${result.outputDir}`);
   } finally {
     clearInterval(hb);
@@ -549,6 +583,7 @@ async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phas
   try {
     await assertWithinBudget(projectId, builder);
     await assertSameSystem(projectId, builder);
+    await assertNoOpenCustomerQuestion(projectId);
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", builder, plan);
     const schemaReady = withNormalizedDbSchema(plan);
@@ -568,10 +603,14 @@ async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phas
         const result = await runGeneratorWithQuotaRetry(() =>
           builder === "aanya" ? runAanyaAgent(p, "integrate", run) : runShubhamAgent(p, run),
         );
+        await assertNoOpenCustomerQuestion(projectId);
         return { success: result.success, errors: result.errors, filesWritten: result.filesWritten };
       },
       reportBlocked: (what, checked) => recordBlocked(projectId, builder, { owner: "tilotma", what, checked }),
-    }).catch((err) => generatorFailure(builder, [String(err instanceof Error ? err.message : err)]));
+    }).catch((err) => {
+      if (isCustomerQuestionError(err)) throw err;
+      return generatorFailure(builder, [String(err instanceof Error ? err.message : err)]);
+    });
   } finally {
     clearInterval(hb);
   }
@@ -591,10 +630,12 @@ export async function runPranav(projectId: string): Promise<void> {
   try {
     await assertWithinBudget(projectId, "pranav");
     await assertSameSystem(projectId, "pranav");
+    await assertNoOpenCustomerQuestion(projectId);
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "pranav", plan);
     const result = await runGeneratorWithQuotaRetry(() => runPranavAgent(withNormalizedDbSchema(plan)));
     if (!result.success) generatorFailure("pranav", result.errors);
+    await assertNoOpenCustomerQuestion(projectId);
     console.log(`[activity:pranav] ${result.filesWritten.length} DB files written`);
   } finally {
     clearInterval(hb);
@@ -958,12 +999,14 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
   try {
     await assertWithinBudget(projectId, "qa-gan");
     await assertSameSystem(projectId, "qa-gan");
+    await assertNoOpenCustomerQuestion(projectId);
     const plan = getPlan(projectId);
     const stage4Result = buildStage4Result(projectId);
     const result = await runQAFixLoop(projectId, plan, stage4Result);
     // 2026-10-23: the cap is checked again after the rounds, so a step that reached it stops as a budget stop, not a pass.
     await assertWithinBudget(projectId, "qa-gan (after the rounds)");
     await assertSameSystem(projectId, "qa-gan (after the rounds)");
+    await assertNoOpenCustomerQuestion(projectId);
     console.log(
       `[activity:qa-fix-loop] pass=${result.pass} stuck=${result.stuck ?? false} iterations=${result.iterations} findings=${result.findings.length}`,
     );
@@ -1034,6 +1077,7 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
   try {
     await assertWithinBudget(projectId, "deploy");
     await assertSameSystem(projectId, "deploy");
+    await assertNoOpenCustomerQuestion(projectId);
     const plan = getPlan(projectId);
     const stage4Result = buildStage4Result(projectId);
     // Patent Claim 3: verify the codebase QA just approved is exactly what
@@ -1042,6 +1086,7 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
     const result = await runStage6(projectId, stage4Result, plan);
     await assertWithinBudget(projectId, "deploy (after the live rounds)");
     await assertSameSystem(projectId, "deploy (after the live rounds)");
+    await assertNoOpenCustomerQuestion(projectId);
     console.log(`[activity:deploy] success=${result.success} appUrl=${result.appUrl} stuck=${result.stuck ?? false}`);
     recordClaimEvidence(buildDirFor(projectId), 2, result.success ? "deployed after the live checks passed" : "deploy attempt did not pass the live checks", {
       success: result.success, appUrl: result.appUrl, stuck: result.stuck ?? false,

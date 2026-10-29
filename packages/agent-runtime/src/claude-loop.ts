@@ -56,6 +56,7 @@ import { BlockedActionTracker } from "./blocked-actions.ts";
 import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { recordDispute } from "./tools/dispute.ts";
 import { recordVerdict } from "./tools/settle.ts";
+import { execAskQuestion } from "./tools/ask.ts";
 import { fixRunUnaccounted } from "./enforce/fix-accounting.ts";
 import { trackWrittenFile } from "./enforce/files-written.ts";
 import { summaryRejection } from "./enforce/summary-format.ts";
@@ -440,6 +441,11 @@ export async function runAgentWithClaude(config: AgentRunConfig): Promise<AgentR
         }
         case "settle_dispute": {
           result = recordVerdict(config.projectId, args as { number?: number; verdict?: string; evidence?: string });
+          break;
+        }
+        case "ask_question": {
+          // 2026-10-29 (team plan, stage 2): answered from the approved documents, or asked of the customer.
+          result = await execAskQuestion(config.projectId, config.agentName, args as { question?: string; why?: string });
           break;
         }
         case "dispute_finding": {
