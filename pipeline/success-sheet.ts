@@ -2,6 +2,7 @@
 // Every line comes from a record (the workflow's history, rounds.jsonl, the system-version file, the call ledger);
 // what was not recorded is said, never assumed.
 import type { SystemVersionFacts } from "./orchestrator/system-version.ts";
+import type { AcceptanceFacts } from "./orchestrator/acceptance-runner.ts";
 
 interface Payloads {
   payloads?: Array<{ data?: string }>;
@@ -75,6 +76,15 @@ export interface SheetInput {
   version: SystemVersionFacts;
   costUsd: number;
   minutes: number;
+  /** the tests the tester wrote (null: none) and the runner's runs on the app (null: never run) */
+  acceptance?: { written: number | null; runs: AcceptanceFacts | null };
+}
+
+function acceptanceLine(a: SheetInput["acceptance"]): string {
+  if (!a || a.written === null) return "not written (this build has no acceptance tests)";
+  if (!a.runs) return `${a.written} written; never run on the app`;
+  const l = a.runs.last;
+  return `${l.passed} of ${l.total} passed on the last of ${a.runs.runs} run${a.runs.runs === 1 ? "" : "s"} (${l.failed} failed, ${l.notChecked} not checked)`;
 }
 
 const times = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -104,7 +114,7 @@ export function renderSuccessSheet(s: SheetInput): string {
     `| system version | ${s.version.recorded ? `started on ${s.version.startedOn ?? "unknown"}; changed ${s.version.changes}, accepted by Retry ${s.version.accepted}, not checked ${s.version.notChecked}` : "not recorded"} |`,
     `| review rounds (code / live) | ${s.rounds.reviewRounds} / ${s.rounds.liveRounds} |`,
     `| findings in the last round | ${s.rounds.lastRoundFindings ?? "no round recorded"} |`,
-    "| acceptance tests | not checked (the tester is not built yet) |",
+    `| acceptance tests | ${acceptanceLine(s.acceptance)} |`,
     `| cost (call ledger) | $${s.costUsd.toFixed(2)} |`,
     `| time | ${s.minutes} min |`,
     "",

@@ -638,6 +638,39 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
     }
   }
 
+  // ── Stage 2b: acceptance tests (2026-10-29, team plan stage 3) ───────────
+  // The tester writes each phase's acceptance tests from the approved plan before any code exists; the builders see them
+  // and the fixed runner checks them on the running app. A tester that cannot write them never stops the build (the step
+  // records why); a budget or system-version hold is decided by a person, as at every other paid step.
+  if (patched("acceptance-tests-v1")) {
+    state.stage = "acceptance_tests";
+    for (;;) {
+      try {
+        await planAct.runAarav(projectId);
+        break;
+      } catch (err) {
+        if (isSystemChangedFailure(err)) {
+          const retry = await escalateAndAwaitRetryDecision("system_changed");
+          if (!retry) {
+            await act.markProjectFailed(projectId, "system_changed");
+            return;
+          }
+          continue;
+        }
+        if (isBudgetExceededFailure(err)) {
+          const retry = await escalateAndAwaitRetryDecision("budget_exceeded");
+          if (!retry) {
+            await act.markProjectFailed(projectId, "budget_exceeded");
+            return;
+          }
+          continue;
+        }
+        console.log(`[workflow] the acceptance tests could not be written (${err instanceof Error ? err.message : String(err)}) — the build goes on without them`);
+        break;
+      }
+    }
+  }
+
   // ── Stage 3: Parallel code generation, retried in-place on an explicit
   // human decision instead of unconditionally terminating the workflow ────
   // 2026-08-10: real bug found live (project rivhdw1) — a generator hitting

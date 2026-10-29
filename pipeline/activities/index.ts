@@ -61,6 +61,8 @@ import { readSystemVersion, stampSystemVersion, checkSystemVersion } from "../or
 import { openCustomerQuestions, recordCustomerAnswer } from "../../packages/agent-runtime/src/tools/ask.ts";
 import { toCustomerText } from "../../packages/agent-runtime/src/customer-text.ts";
 import { fileURLToPath } from "node:url";
+import { writeAcceptanceTests, testerPrompts, defaultTesterChat } from "../../agents/qa/aarav/src/index.ts";
+import { readAcceptanceTests, saveAcceptanceTests, acceptanceTestsForPhase } from "../orchestrator/acceptance-tests.ts";
 
 // ── In-process cache (activities run in same Temporal worker process)
 const specCache = new Map<string, ProjectSpec>();
@@ -577,6 +579,30 @@ function isTeamPass(projectId: string): boolean {
   }
 }
 
+// 2026-10-29 (team plan, stage 3): the tester writes each phase's acceptance tests right after the plan is approved, from the
+// approved plan only. A retry with the same plan reuses them; a tester that cannot write them leaves a record, not an error.
+export async function runAarav(projectId: string): Promise<{ tests: number; refused: number; notWritten: number; gaps: number }> {
+  const ctx = Context.current();
+  const hb = setInterval(() => ctx.heartbeat("running"), 30_000);
+  try {
+    await assertWithinBudget(projectId, "aarav");
+    await assertSameSystem(projectId, "aarav");
+    const dir = buildDirFor(projectId);
+    const suite = await memoizeStep(dir, "aarav-tests", { prompts: testerPrompts(dir) }, () => writeAcceptanceTests(dir, { chat: defaultTesterChat }));
+    saveAcceptanceTests(dir, suite);
+    return { tests: suite.tests.length, refused: suite.rejected.length, notWritten: suite.notWritten.length, gaps: suite.gaps?.length ?? 0 };
+  } finally {
+    clearInterval(hb);
+  }
+}
+
+/** The acceptance tests a builder's phase task carries ("" when none were written). */
+function acceptanceTestsSection(projectId: string, phase: number, builder: "aanya" | "shubham"): string {
+  const suite = readAcceptanceTests(buildDirFor(projectId));
+  if (!suite?.tests.length) return "";
+  return acceptanceTestsForPhase(suite.tests, isTeamPass(projectId) ? "all" : phase, builder);
+}
+
 async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phase: number, stage?: PhaseStage): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
@@ -600,8 +626,12 @@ async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phas
       ...(stage ? { stage } : {}),
       runAgent: async (phasePlan, run) => {
         const p = phasePlan as unknown as BuildPlan;
+        const tests = acceptanceTestsSection(projectId, phase, builder);
+        const withTests = tests ? { ...run, header: `${run.header}
+
+${tests}` } : run;
         const result = await runGeneratorWithQuotaRetry(() =>
-          builder === "aanya" ? runAanyaAgent(p, "integrate", run) : runShubhamAgent(p, run),
+          builder === "aanya" ? runAanyaAgent(p, "integrate", withTests) : runShubhamAgent(p, withTests),
         );
         await assertNoOpenCustomerQuestion(projectId);
         return { success: result.success, errors: result.errors, filesWritten: result.filesWritten };

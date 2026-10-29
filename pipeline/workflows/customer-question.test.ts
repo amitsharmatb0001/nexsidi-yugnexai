@@ -31,9 +31,10 @@ test("each open question is asked in the customer's words and its answer is reco
 });
 
 test("every paid step checks for an open question where it checks the system version", () => {
-  const sites = [...acts.matchAll(/await assertSameSystem\(projectId, .+?\);\r?\n\s*(.*)/g)];
+  // The tester (stage 3) runs before any builder, so no builder's question can be open there yet.
+  const sites = [...acts.matchAll(/await assertSameSystem\(projectId, (.+?)\);\r?\n\s*(.*)/g)].filter((m) => m[1] !== '"aarav"');
   expect(sites.length).toBe(8);
-  for (const m of sites) expect(m[1]).toBe("await assertNoOpenCustomerQuestion(projectId);");
+  for (const m of sites) expect(m[2]).toBe("await assertNoOpenCustomerQuestion(projectId);");
 });
 
 test("a builder's question stops its step before the step counts as done", () => {

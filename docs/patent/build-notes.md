@@ -916,3 +916,59 @@ Approved by Amit as stage 1. It reverses the reading half of his 2 October decis
 **Correction:** stages 0 and 1 said "all tests pass" but ran only the pipeline, agents, packages and API. The web app's tests had one failure since stage 0 (the pinned list of retryable reasons lacked `system_changed`); it is fixed here.
 
 **Not checked:** a live build that pauses for a question (that needs a worker, which would also wake Brewline 3), the question card seen in a browser (the local browser is not signed in, and I do not enter Amit's password), and the Chief AI's answer with a real model (a paid call). The pipeline routes require sign-in (they answered 401 without a session).
+
+## Batch 63 — stage 3: the tester and the fixed acceptance-test runner (2026-10-29/30)
+
+**Why (root cause 3 of 29 Oct):** nobody wrote down what "works" means before the code. The builders tested their own code and the reviewers judged it afterwards, so every round found something new at the end. "Aarav, the tester" was in the roster but had never been built.
+
+**Built:**
+- **The tester (`agents/qa/aarav/`).**
+  - It runs right after the customer approves the plan and before any builder. For each build phase it writes acceptance tests from the approved plan only: the request, the plan items, the API contract with its request and answer shapes, the pages, and the answers given.
+  - Each test names the plan item it proves (SC, EP, SEC, INT, ANS). There are two kinds: API tests (requests and the expected answers, with values saved between steps) and browser journeys (open a page, fill a field by its label, click by its words, expect text or a page).
+  - The system, not the model, numbers the tests and places them in their phase.
+  - It runs on the reviewers' model tier. A retry with the same plan reuses the tests (step memo).
+- **The Chief AI's check of the tests** (`pipeline/orchestrator/acceptance-tests.ts`, code, no model). It refuses a test that:
+  - names no plan item;
+  - calls an endpoint the contract does not have, or opens a page the plan does not have;
+  - uses what a later phase builds;
+  - runs as someone the plan does not have;
+  - uses a value that is neither stated nor saved;
+  - is malformed.
+
+  The tester is shown each reason and asked for any endpoint or page of the phase with no test, for two rounds at most. What is still missing is recorded as a gap. A phase it cannot write is recorded as "not written", and the build goes on.
+- **Builders cannot change the tests.** They are kept in `<build>/acceptance-tests.json`, outside every builder's folder (the file tools refuse the write). Each builder's phase task lists them: the frontend gets the journeys step by step, the backend gets the API tests step by step. In a one-pass team build, both get every test.
+- **The fixed runner** (`pipeline/orchestrator/acceptance-runner.ts`, no model). It runs during the live review, with the review's customer and staff accounts.
+  - A test it cannot run is "not checked", never passed or failed: the app does not answer, no answer arrives within 30 seconds, the browser cannot start, or there is no account for the role.
+  - It waits out the app's rate limit once and reads answers with or without a `{data: …}` wrapper. A number and the same number as text count as equal (Postgres numeric).
+  - Records a test creates go on the cleanup list. The sign-in limiter is reset after the run.
+  - Every run is kept (`acceptance-runs.jsonl`; the last one in full in `acceptance-results.json`).
+  - In this stage the result decides nothing; stage 4 makes passing tests the definition of done.
+- **The browser worker** has three new actions that find elements the way a person would, exact words first: fill a field by label or placeholder, click a button or link by its words, choose an option.
+- **The success sheet** shows "X of Y passed on the last of N runs (F failed, U not checked)", or that the tests were not written or never run.
+- **The workflow** has a new step, "acceptance_tests", behind the replay marker `acceptance-tests-v1`. A budget or system-version hold there asks the owner, like every paid step. The customer sees "Writing down the checks your app must pass, before any code is written."
+- **Fixed on the way:** the role reader missed "Restricted to authenticated staff accounts." (Brewline 3's wording). Brewline 3's yardstick therefore said "no other role exists", and its live review had no staff account.
+
+**Proof:**
+- Tests first: test format and plan check 14, runner 16, tester 5, wiring 6, success sheet 3, role reader 1. Two older wiring tests were updated for the new step (system-version holds 3 → 4; budget steps 8 → 9; the tester is exempt from the open-question check because no builder has run yet).
+- All 2,681 tests in the pipeline, agents, packages and API pass, and all 92 in the web app.
+- Type checks: no errors in any file this stage added or changed.
+  - Fixed here: a type error in `tools/settle.test.ts` that I introduced in stage 1.
+  - Still open: `claude-loop.ts:518` and `team-files.test.ts:57,65`. They come from the exit-check signature change of 25 Oct.
+- **Free proof against a local stub app with the real browser:**
+  - The stub as planned: 4 passed, plus the 1 failure planted on purpose ("no field labelled Phone on /sign-up").
+  - The same stub with the Brewline 3 bug: the INT1 test failed with "items.0.name should equal Flat White but is Renamed Latte".
+  - The stub switched off: all 5 tests were "not checked".
+  - This proof found three runner defects first, each fixed with a test:
+    - a page read during a navigation counted as a failure;
+    - a request on a reused connection hung the run for 4 minutes (each request now has its own connection and a 30-second limit);
+    - closing a browser worker that had already died raised an unhandled EPIPE.
+- **Free proof on Brewline 3's recorded plan (no model):**
+  - the tester's task for each of its 3 phases is about 19,000 characters;
+  - each task carries the INT1 item-name rule, the 15-minute pickup-slot rule, and the people "anyone", "user", "staff";
+  - a hand-written INT1 test placed in phase 2 is refused ("GET /api/v1/orders/:id is built in phase 3") and accepted in phase 3;
+  - a pickup time off the 15-minute grid (SC4) is accepted;
+  - a DELETE that the contract does not have is refused, and so is a staff page opened before the phase that builds it.
+
+**Prompt size:** each builder's task grows by the test list. On a Brewline-sized plan this is estimated at a few thousand characters; it was not measured on a real tester run.
+
+**Not checked:** the tester with a real model on Brewline 3's plan (a small paid run, needs Amit's OK); the tests run against the real Brewline 3 app (needs its containers started, needs Amit's OK); a live build passing through the new step.

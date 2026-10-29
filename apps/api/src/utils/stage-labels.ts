@@ -11,6 +11,7 @@ export const USER_STAGE_MESSAGES: Record<string, string> = {
   spec: "Getting started on your app...",
   decompose: "Planning out the build...",
   await_spec_approval: "Plan ready — approve it to start code generation.",
+  acceptance_tests: "Writing down the checks your app must pass, before any code is written.",
   generate: "Writing your code. This usually takes 2-4 minutes.",
   qa: "Running quality checks...",
   qa_fix: "Improving the code based on quality checks...",

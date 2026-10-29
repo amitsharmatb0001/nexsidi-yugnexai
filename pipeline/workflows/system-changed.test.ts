@@ -24,10 +24,11 @@ test("other failures are not taken for a system change", () => {
   expect(isSystemChangedFailure(new Error("plain"))).toBe(false);
 });
 
-test("generation, review and deploy each hold and ask the owner on a system change", () => {
-  expect((wf.match(/isSystemChangedFailure\(err\)/g) ?? []).length).toBe(3);
-  expect((wf.match(/escalateAndAwaitRetryDecision\("system_changed"\)/g) ?? []).length).toBe(3);
-  expect((wf.match(/markProjectFailed\(projectId, "system_changed"\)/g) ?? []).length).toBe(3);
+// 2026-10-29 (team plan, stage 3): the tester's step is the fourth.
+test("the tester, generation, review and deploy each hold and ask the owner on a system change", () => {
+  expect((wf.match(/isSystemChangedFailure\(err\)/g) ?? []).length).toBe(4);
+  expect((wf.match(/escalateAndAwaitRetryDecision\("system_changed"\)/g) ?? []).length).toBe(4);
+  expect((wf.match(/markProjectFailed\(projectId, "system_changed"\)/g) ?? []).length).toBe(4);
 });
 
 test("the build's starting version is stamped when the spec step runs", () => {
@@ -38,7 +39,7 @@ test("the build's starting version is stamped when the spec step runs", () => {
 test("every paid stage that checks the budget also checks the system version, except the compile repair", () => {
   const budgetSteps = [...acts.matchAll(/await assertWithinBudget\(projectId, (.+?)\);\r?\n\s*(.*)/g)];
   const checked = budgetSteps.filter((m) => !m[1]!.includes("code-fix"));
-  expect(checked.length).toBe(8);
+  expect(checked.length).toBe(9);
   for (const m of checked) expect(m[2]).toBe(`await assertSameSystem(projectId, ${m[1]});`);
 });
 

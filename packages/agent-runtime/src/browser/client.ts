@@ -80,6 +80,9 @@ export class BrowserSession {
     });
 
     this.proc.on("error", (err) => { rejectReady(err); this.failAll(err); });
+    // 2026-10-29 (acceptance runner proof): writing to a worker that has just died raised an unhandled EPIPE. Its requests
+    // fail through the exit handler below; the write error itself is expected and needs no handler of its own.
+    this.proc.stdin.on("error", () => {});
     this.proc.on("exit", (code) => {
       this.closed = true;
       // CRITICAL: if the worker dies before the ready handshake (bad worker

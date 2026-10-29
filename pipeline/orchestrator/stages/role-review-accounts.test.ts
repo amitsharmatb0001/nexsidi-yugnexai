@@ -91,3 +91,14 @@ test("the review stage creates the role accounts, seeds with them, hands them ov
   expect(src).toContain("process.env.TIER3_REVIEW_ROLE_ACCOUNTS =");
   expect(src).toContain("delete process.env.TIER3_REVIEW_ROLE_ACCOUNTS");
 });
+
+// 2026-10-29 (Brewline 3): its contract said "Restricted to authenticated staff accounts." and no role was found, so the
+// plan's yardstick read "no other role exists" and the live review had no staff account.
+test("'restricted to authenticated staff accounts' names the staff role", () => {
+  expect(limitedRolesFromContract([
+    { description: "Create a new menu item (drink or pastry). Restricted to authenticated staff accounts." },
+    { description: "Sign in for both customers and shop-provisioned staff accounts using email and password." },
+    { description: "Requires an authenticated account (no guest checkout)." },
+  ])).toEqual(["staff"]);
+  expect(limitedRolesFromContract([{ description: "Restricted to manager or admin users." }]).sort()).toEqual(["admin", "manager"]);
+});

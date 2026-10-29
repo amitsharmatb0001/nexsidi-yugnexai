@@ -10,6 +10,8 @@ import { computeCostUsd, checkBudget } from "../packages/agent-runtime/src/cost-
 import { buildDirFor } from "../packages/agent-runtime/src/build-dir.ts";
 import { aggregate, buildWindows, renderReport, type Activity, type RoundMark } from "./build-report.ts";
 import { workflowFacts, roundFacts, renderSuccessSheet, type HistoryEventLite } from "./success-sheet.ts";
+import { readAcceptanceTests } from "./orchestrator/acceptance-tests.ts";
+import { acceptanceFacts } from "./orchestrator/acceptance-runner.ts";
 import { systemVersionFacts } from "./orchestrator/system-version.ts";
 
 const projectId = process.argv[2];
@@ -126,6 +128,7 @@ const sheet = renderSuccessSheet({
   version: systemVersionFacts(dir),
   costUsd: report.total.costUsd,
   minutes: workflowMinutes,
+  acceptance: { written: readAcceptanceTests(dir)?.tests.length ?? null, runs: acceptanceFacts(dir) },
 });
 const md = renderReport(`Build ${projectId}`, report, { agentSpendUsd: spend, workflowMinutes, sheet });
 const out = process.argv[3];

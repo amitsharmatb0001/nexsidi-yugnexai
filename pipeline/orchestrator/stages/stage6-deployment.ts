@@ -16,7 +16,9 @@
 // explaining why real QA coverage is being turned off again.
 import { isOverBudget } from "../../../packages/agent-runtime/src/cost-budget.ts";
 import { resolveFlags } from "../flags.ts";
-import { run as runRiya, purgeVerificationArtifacts, seedSampleData, limitedRolesFromContract, grantTestAccountRole, snapshotTableCounts, compareSnapshots, databaseNow, type DeployResult } from "../../../agents/riya/src/index.ts";
+import { run as runRiya, purgeVerificationArtifacts, seedSampleData, limitedRolesFromContract, grantTestAccountRole, snapshotTableCounts, compareSnapshots, databaseNow, recordSeededRecords, type DeployResult } from "../../../agents/riya/src/index.ts";
+import { readAcceptanceTests } from "../acceptance-tests.ts";
+import { runAcceptanceTests, recordAcceptanceRun, type RunnerAccount } from "../acceptance-runner.ts";
 import { agentForFile, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 import type { Finding } from "./stage4-multi-agent-dev.ts";
@@ -499,6 +501,8 @@ async function liveRetestChecks(
     // compared with those from before — when the review ends (runRealLiveRetest). Off switches: REVIEW_ACCOUNT=off,
     // SEED_SAMPLE_DATA=off.
     let reviewSession: { token: string } | undefined;
+    // The same accounts serve the acceptance tests: "user" is the ordinary account, the rest are the plan's roles.
+    const runnerAccounts: Record<string, RunnerAccount> = {};
     let seededResult: { created: Record<string, string[]>; notSeeded: string[] } | undefined;
     if (process.env.REVIEW_ACCOUNT !== "off" && plan) {
       try {
@@ -508,6 +512,7 @@ async function liveRetestChecks(
           notChecked.push(`review account: ${acct.reason}`);
         } else {
           reviewSession = { token: acct.token };
+          runnerAccounts.user = { email: acct.email, password: acct.password, token: acct.token };
           process.env.TIER3_REVIEW_EMAIL = acct.email;
           process.env.TIER3_REVIEW_PASSWORD = acct.password;
           // 2026-10-24 (Brewline live review): one test account per role the contract limits pages to ("(staff only)"),
@@ -529,6 +534,7 @@ async function liveRetestChecks(
           }
           process.env.TIER3_REVIEW_ROLE_ACCOUNTS = JSON.stringify(roleAccounts.map(({ role, email, password }) => ({ role, email, password })));
           if (roleAccounts.length > 0) console.log(`[stage6] Role accounts ready: ${roleAccounts.map((a) => a.role).join(", ")}`);
+          for (const a of roleAccounts) runnerAccounts[a.role] = { email: a.email, password: a.password, token: a.token };
           if (process.env.SEED_SAMPLE_DATA !== "off") {
             // Each record is created by an account allowed to create it: the ordinary account first, then each role
             // account for what it alone may add (a menu item), then the ordinary account again for what needs those
@@ -547,6 +553,34 @@ async function liveRetestChecks(
         }
       } catch (err) {
         notChecked.push(`review account could not be set up: ${String(err).slice(0, 300)}`);
+      }
+    }
+
+    // 2026-10-29 (team plan, stage 3): the acceptance tests the tester wrote from the approved plan, run by the fixed runner
+    // (no model) on the running app with the review accounts above. Every run is recorded for the report; in this stage the
+    // result does not decide anything (stage 4 makes passing tests the definition of done). Records a test creates are
+    // added to the cleanup list, and the app's sign-in limiter is reset afterwards so the checks below are not refused.
+    // Off switch: ACCEPTANCE_TESTS=off.
+    if (process.env.ACCEPTANCE_TESTS !== "off" && !browserReviewOnly) {
+      const suite = readAcceptanceTests(buildDirFor(projectId));
+      if (suite?.tests.length) {
+        try {
+          const { BrowserSession } = await import("../../../packages/agent-runtime/src/browser/client.ts");
+          const run = await runAcceptanceTests(suite.tests, {
+            apiUrl: backendUrl,
+            appUrl,
+            accounts: runnerAccounts,
+            openBrowser: async () => new BrowserSession(),
+            onCreated: (id) => recordSeededRecords(buildDirFor(projectId), { acceptance: [id] }),
+          });
+          recordAcceptanceRun(buildDirFor(projectId), run);
+          console.log(`[stage6] Acceptance tests: ${run.passed} passed, ${run.failed} failed, ${run.notChecked} not checked (of ${run.results.length})`);
+          for (const r of run.results.filter((x) => x.status !== "passed")) console.log(`[stage6]   ${r.id} [${r.planItem}] ${r.status}: ${r.detail.slice(0, 240)}`);
+        } catch (err) {
+          notChecked.push(`acceptance tests could not run: ${String(err).slice(0, 300)}`);
+        }
+        const reset = await resetAppRateLimits(buildDirFor(projectId), backendUrl);
+        if (!reset.ok) console.warn(`[stage6] could not reset the app's rate limits after the acceptance tests: ${reset.reason}`);
       }
     }
 

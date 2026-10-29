@@ -42,5 +42,5 @@ test("a true verdict may name the project file that must change; anything outsid
   expect(recordVerdict("p1", { number: 1, verdict: "true", evidence: "orders.ts joins menu_items", fix_in: "backend/src/routes/orders.ts" }).status).toBe("success");
   expect(recordVerdict("p1", { number: 2, verdict: "true", evidence: "x", fix_in: "../../etc/passwd" }).status).toBe("error");
   expect(readVerdicts("p1")[0]).toMatchObject({ number: 1, fixIn: "backend/src/routes/orders.ts" });
-  expect(Object.keys(SETTLE_DISPUTE_TOOL_DEF.function.parameters.properties)).toContain("fix_in");
+  expect(Object.keys(SETTLE_DISPUTE_TOOL_DEF.function.parameters.properties as Record<string, unknown>)).toContain("fix_in");
 });

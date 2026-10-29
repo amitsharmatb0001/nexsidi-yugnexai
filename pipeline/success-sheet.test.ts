@@ -76,8 +76,19 @@ test("a delivered build with no restart, no hold and one recorded version is unt
   expect(md).toContain("58 min");
 });
 
-test("acceptance tests are reported as not checked until the tester exists", () => {
-  expect(renderSuccessSheet(base)).toContain("not checked");
+// 2026-10-29 (team plan, stage 3): the tester and the runner exist; the sheet says what was written and what the last run found.
+test("a build without acceptance tests says so", () => {
+  expect(renderSuccessSheet(base)).toContain("| acceptance tests | not written (this build has no acceptance tests) |");
+});
+
+test("tests written but never run on the app are not counted as passing", () => {
+  expect(renderSuccessSheet({ ...base, acceptance: { written: 18, runs: null } })).toContain("| acceptance tests | 18 written; never run on the app |");
+});
+
+test("the last run's counts are shown; they say nothing about whether a person touched the run", () => {
+  const md = renderSuccessSheet({ ...base, acceptance: { written: 18, runs: { runs: 3, last: { at: "t", passed: 15, failed: 2, notChecked: 1, total: 18 } } } });
+  expect(md).toContain("| acceptance tests | 15 of 18 passed on the last of 3 runs (2 failed, 1 not checked) |");
+  expect(md).toContain("**Untouched run: yes**");
 });
 
 test("each reason a run is not untouched is named", () => {

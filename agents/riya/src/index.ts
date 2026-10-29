@@ -133,6 +133,11 @@ export function limitedRolesFromContract(endpoints: Array<{ description?: string
       for (const r of [m[1], m[2]]) if (r) roles.add(r.toLowerCase());
     }
     for (const m of d.matchAll(/\b([a-z][a-z_]{1,20})-only\b/gi)) roles.add(m[1]!.toLowerCase());
+    // 2026-10-29 (Brewline 3): "Restricted to authenticated staff accounts." named a role this reader missed, so the plan's
+    // yardstick said "no other role exists" and the review got no staff account.
+    for (const m of d.matchAll(/\brestricted to (?:the )?(?:authenticated |signed-in |logged-in )?([a-z][a-z_-]{1,20})(?:\s+(?:or|and)\s+([a-z][a-z_-]{1,20}))?\s+(?:accounts?|users?|members?)\b/gi)) {
+      for (const r of [m[1], m[2]]) if (r) roles.add(r.toLowerCase());
+    }
   }
   return [...roles].filter((r) => !NOT_A_ROLE.has(r));
 }

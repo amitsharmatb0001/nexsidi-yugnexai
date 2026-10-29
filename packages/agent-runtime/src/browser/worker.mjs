@@ -55,6 +55,39 @@ async function ensurePage() {
   return page;
 }
 
+// 2026-10-29 (acceptance tests, team plan stage 3): a test written before the code knows only what a person sees — a
+// field's label or placeholder, a button's words — never a CSS selector. These find the element the way a person would,
+// exact words first, and wait up to the timeout for it to appear. The first visible match is used.
+async function firstVisible(candidates, timeoutMs) {
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    for (const make of candidates) {
+      const loc = make();
+      const n = await loc.count().catch(() => 0);
+      for (let i = 0; i < n; i++) {
+        const one = loc.nth(i);
+        if (await one.isVisible().catch(() => false)) return one;
+      }
+    }
+    if (Date.now() >= end) return null;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
+const cssString = (s) => String(s).replace(/["\\]/g, "\\$&");
+
+function fieldCandidates(p, field) {
+  return [
+    () => p.getByLabel(field, { exact: true }),
+    () => p.getByPlaceholder(field, { exact: true }),
+    () => p.getByLabel(field),
+    () => p.getByPlaceholder(field),
+    () => p.getByRole("textbox", { name: field }),
+    () => p.getByRole("combobox", { name: field }),
+    () => p.locator(`[name="${cssString(field)}" i], #${String(field).replace(/[^A-Za-z0-9_-]/g, "")}`),
+  ];
+}
+
 async function handle(req) {
   const { action } = req;
   switch (action) {
@@ -80,6 +113,49 @@ async function handle(req) {
       const p = await ensurePage();
       await p.fill(req.selector, req.value, { timeout: req.timeoutMs ?? 10_000 });
       return { filled: req.selector };
+    }
+    case "fillField": {
+      const p = await ensurePage();
+      const el = await firstVisible(fieldCandidates(p, req.field), req.timeoutMs ?? 8_000);
+      if (!el) throw new Error(`no field labelled "${req.field}" on the page`);
+      await el.fill(String(req.value ?? ""), { timeout: 5_000 });
+      return { filled: req.field };
+    }
+    case "chooseOption": {
+      const p = await ensurePage();
+      const option = String(req.option ?? "");
+      const select = await firstVisible(fieldCandidates(p, req.field), Math.min(req.timeoutMs ?? 8_000, 4_000));
+      if (select && (await select.evaluate((e) => e.tagName).catch(() => "")) === "SELECT") {
+        await select.selectOption({ label: option }, { timeout: 5_000 }).catch(() => select.selectOption(option, { timeout: 5_000 }));
+        return { chose: option };
+      }
+      const choice = await firstVisible([
+        () => p.getByRole("radio", { name: option, exact: true }),
+        () => p.getByRole("checkbox", { name: option, exact: true }),
+        () => p.getByRole("option", { name: option, exact: true }),
+        () => p.getByRole("radio", { name: option }),
+        () => p.getByLabel(option, { exact: true }),
+        () => p.getByRole("button", { name: option, exact: true }),
+      ], req.timeoutMs ?? 8_000);
+      if (!choice) throw new Error(`no choice "${option}" for "${req.field}" on the page`);
+      await choice.click({ timeout: 5_000 });
+      return { chose: option };
+    }
+    case "clickText": {
+      const p = await ensurePage();
+      const text = String(req.text ?? "");
+      const el = await firstVisible([
+        () => p.getByRole("button", { name: text, exact: true }),
+        () => p.getByRole("link", { name: text, exact: true }),
+        () => p.getByRole("button", { name: text }),
+        () => p.getByRole("link", { name: text }),
+        () => p.getByText(text, { exact: true }),
+        () => p.getByText(text),
+      ], req.timeoutMs ?? 8_000);
+      if (!el) throw new Error(`nothing to click with the text "${text}" on the page`);
+      await el.click({ timeout: 5_000 });
+      await p.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+      return { clicked: text, url: p.url() };
     }
     case "getText": {
       const p = await ensurePage();
