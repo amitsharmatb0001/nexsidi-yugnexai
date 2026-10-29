@@ -8,7 +8,7 @@ import { memoizeStep } from "../../packages/agent-runtime/src/step-memo.ts";
 import { run as runShubhamAgent, runFix as runShubhamFix } from "../../agents/generators/shubham/src/index.ts";
 import { run as runAanyaAgent, runFix as runAanyaFix }   from "../../agents/generators/aanya/src/index.ts";
 import { ensureClientDirectiveForStyledModules } from "../../agents/generators/aanya/src/client-directive.ts";
-import { run as runPranavAgent }  from "../../agents/generators/pranav/src/index.ts";
+import { runChecked as runPranavAgent }  from "../../agents/generators/pranav/src/index.ts";
 // 2026-07-24 (P1, full agentic upgrade): the real GAN (evidence-gated QA +
 // peer debate + fault isolation + instinct memory) and the real deploy +
 // live-browser-retest stage — both previously reachable only from

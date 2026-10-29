@@ -119,6 +119,7 @@ export function execRunCommand(
   args: { command: string; timeout_ms?: number },
   ledger?: EvidenceLedger,
   writableFile?: WritableFile,
+  readOnlyDirs: string[] = [],
 ): Promise<ToolResult> {
   const parts = splitCommandLine(args.command);
   const cmd = parts[0];
@@ -138,7 +139,7 @@ export function execRunCommand(
 
   // Every agent does only its own work: no paths outside its folder, and
   // node scripts are locked to its folder (see ownership.ts).
-  const guarded = guardCommand(cmd, cmdArgs, cwd, writableFile);
+  const guarded = guardCommand(cmd, cmdArgs, cwd, writableFile, readOnlyDirs);
   if (guarded.error) {
     return Promise.resolve({
       status: "error",

@@ -103,7 +103,8 @@ export interface QAFixDeps {
   // predate this fix keep compiling and behaving unchanged; the real entry
   // point wires Pranav's real runFix (expand-contract migration, not a
   // schema rewrite — see agents/generators/pranav/src/index.ts).
-  fixPranav?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; filesWritten?: string[] }>;
+  // 2026-10-29 (team plan, stage 1): the database builder is an agent and may hand a finding on, like the others.
+  fixPranav?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>;
   // 2026-07-08: Patent Claim 2's instinct memory had a real DB table but
   // nothing ever wrote to it — every pipeline run started with total
   // amnesia. Optional so existing DI tests (which don't care about memory)
@@ -466,8 +467,8 @@ export async function runQAFixLoopWithDeps(
       fixCalls.push(
         (async () => {
           await deps.recordInstincts?.("pranav", formatted);
-          const { success, filesWritten } = await deps.fixPranav!(plan, formatted);
-          return { agent: "pranav", success, filesWritten };
+          const { success, escalations, filesWritten } = await deps.fixPranav!(plan, formatted);
+          return { agent: "pranav", success, escalations, filesWritten };
         })(),
       );
     }
@@ -623,7 +624,7 @@ export async function runQAFixLoop(
     },
     fixPranav: async (p, findings) => {
       const r = await runGeneratorWithQuotaRetry(() => fixPranavReal(p, findings));
-      return { success: r.success, filesWritten: r.filesWritten };
+      return { success: r.success, escalations: r.escalations, filesWritten: r.filesWritten };
     },
     roundGuard: (findings) => checkRoundGuard(projectId, "qa", findings),
     chiefChat: defaultChiefChat,

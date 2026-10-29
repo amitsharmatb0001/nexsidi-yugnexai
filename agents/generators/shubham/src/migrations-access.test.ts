@@ -9,8 +9,9 @@ import { shubhamReadOnlyDirs, buildFixTask } from "./index.ts";
 // ON CONFLICT (user_id, financial_year) against a migration with no such
 // unique constraint — every invoice save failed. The backend builder now
 // reads the database builder's migrations (it cannot change them).
-test("the backend builder is given the database builder's migrations read-only, and told so", () => {
-  expect(shubhamReadOnlyDirs("/b/p1/backend")).toEqual([resolve("/b/p1/db/migrations")]);
+// 2026-10-29 (team plan, stage 1): the whole project is readable, not only the migrations.
+test("the backend builder reads the whole project (the migrations included), and is told so", () => {
+  expect(shubhamReadOnlyDirs("/b/p1/backend")).toEqual([resolve("/b/p1")]);
   const src = readFileSync(new URL("./index.ts", import.meta.url), "utf-8");
   // both the build run and the fix run get the folder
   expect((src.match(/readOnlyDirs: shubhamReadOnlyDirs\(outputDir\)/g) ?? []).length).toBe(2);

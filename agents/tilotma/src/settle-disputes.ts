@@ -23,7 +23,9 @@ For each dispute:
    database (db_query) — whatever decides it.
 2. Call settle_dispute with its number, "true" if the finding holds or
    "not_true" if it does not, and the evidence you saw (quote the code, the
-   response or the page).
+   response or the page). For a true finding, give in fix_in the project file
+   that must change to fix it (e.g. backend/src/routes/orders.ts) — it may be a
+   different builder's file than the one the finding or the dispute names.
 3. If you cannot check one, do not settle it — it stays open.
 You change nothing. When every dispute you could check is settled, call
 task_complete.`;
@@ -73,10 +75,10 @@ export async function settleDisputes(
     }),
   );
   // The last verdict per dispute number counts; numbers outside the list are ignored.
-  const byNumber = new Map<number, { verdict: "true" | "not_true"; evidence: string }>();
-  for (const v of readVerdicts(projectId, since)) byNumber.set(v.number, { verdict: v.verdict, evidence: v.evidence });
+  const byNumber = new Map<number, { verdict: "true" | "not_true"; evidence: string; fixIn?: string }>();
+  for (const v of readVerdicts(projectId, since)) byNumber.set(v.number, { verdict: v.verdict, evidence: v.evidence, fixIn: v.fixIn });
   return [...byNumber.entries()]
     .filter(([n]) => n >= 1 && n <= disputes.length)
     .sort(([a], [b]) => a - b)
-    .map(([n, v]) => ({ dispute: disputes[n - 1]!, verdict: v.verdict, evidence: v.evidence }));
+    .map(([n, v]) => ({ dispute: disputes[n - 1]!, verdict: v.verdict, evidence: v.evidence, ...(v.fixIn ? { fixIn: v.fixIn } : {}) }));
 }

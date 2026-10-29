@@ -70,3 +70,10 @@ test("the core rules every agent gets say: own work only, never assume, report_b
   expect(core).toContain("report_blocked");
   expect(core.toLowerCase()).toContain("never assume");
 });
+
+// 2026-10-29 (team plan, stage 1): the tools let every agent read the whole project; the rules must say the same.
+test("the core rules let an agent read any folder and change only its own", () => {
+  const core = readFileSync(new URL("../skills/core-reasoning.md", import.meta.url), "utf-8");
+  expect(core).not.toContain("Never read, edit, run");
+  expect(core).toContain("Read any file of the project");
+});

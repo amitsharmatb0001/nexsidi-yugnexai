@@ -672,7 +672,7 @@ export interface Stage6Deps {
   // is instructed to never touch schema files) or silently dropped if it
   // arrived alone. Optional, same convention as fixShubham/fixAanya above;
   // the real entry point wires Pranav's real runFix.
-  fixPranav?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; filesWritten?: string[] }>;
+  fixPranav?: (plan: BuildPlan, findings: string[]) => Promise<{ success: boolean; escalations?: Escalation[]; filesWritten?: string[] }>;
   // 2026-08-05: injectable so tests exercising deployWithQuotaRetry's retry
   // path don't actually wait QUOTA_RETRY_BACKOFF_MS (90s) — defaults to a
   // real setTimeout-based sleep in production (deployWithQuotaRetry's own

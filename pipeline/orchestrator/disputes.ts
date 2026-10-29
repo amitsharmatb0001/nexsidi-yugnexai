@@ -18,6 +18,8 @@ export interface DisputeVerdict {
   dispute: Dispute;
   verdict: "true" | "not_true";
   evidence: string;
+  /** The project file Tilotma says must change; its owner gets the finding. */
+  fixIn?: string;
 }
 
 export type SettleFn = (projectId: string, disputes: Dispute[]) => Promise<DisputeVerdict[]>;
@@ -115,7 +117,8 @@ export async function settleRepeatsBeforeGuard<F extends { file?: string; issue?
 
 /** The builder who owns the file a finding names (its leading path): backend/ Shubham, frontend/ Aanya, db/ Pranav; null when none. */
 export function ownerOfFinding(finding: string): Owner | null {
-  const top = finding.trimStart().match(/^([a-z]+)\//i)?.[1]?.toLowerCase();
+  // The first project path in the text: a confirmed finding sent back starts with Tilotma's preface, not with its file.
+  const top = finding.match(/(?:^|[\s:("'`])(backend|frontend|db)\//i)?.[1]?.toLowerCase();
   return top === "backend" ? "shubham" : top === "frontend" ? "aanya" : top === "db" ? "pranav" : null;
 }
 
@@ -146,9 +149,11 @@ export async function resolveDisputes(
       appendFileSync(file, JSON.stringify({ finding: v.dispute.finding, evidence: v.evidence, at: new Date().toISOString() }) + "\n");
       console.log(`[disputes] not true, dropped: ${v.dispute.finding.slice(0, 160)}`);
     } else {
-      const owner = ownerOfFinding(v.dispute.finding) ?? (v.dispute.agent as Owner);
+      // 2026-10-29 (team plan, stage 1): the file she says must change decides the owner; then the file the finding names.
+      const owner = ownerOfFinding(v.fixIn ?? "") ?? ownerOfFinding(v.dispute.finding) ?? (v.dispute.agent as Owner);
       (confirmed[owner] ??= []).push(
-        `Tilotma checked your dispute and this finding IS true — fix it: ${v.dispute.finding}\nHer evidence: ${v.evidence}`,
+        `Tilotma checked this disputed finding and it IS true — fix it: ${v.dispute.finding}\nHer evidence: ${v.evidence}` +
+          (v.fixIn ? `\nChange ${v.fixIn} (she named this file as the place of the fix).` : ""),
       );
     }
   }

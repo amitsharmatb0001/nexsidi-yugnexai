@@ -7,7 +7,7 @@ import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import { execSync, exec } from "child_process";
 import { randomBytes } from "crypto";
-import { join } from "path";
+import { join, resolve } from "path";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
 import { formatDesignBriefForPrompt } from "../../../vanya/src/index.ts";
@@ -37,6 +37,11 @@ async function frontendExitChecksFor(projectId: string, summary?: string): Promi
 
 export function getOutputDir(projectId: string): string {
   return join(buildDirFor(projectId), "frontend");
+}
+
+// 2026-10-29 (team plan, stage 1): the whole project is readable (writing stays in the frontend folder).
+export function aanyaReadOnlyDirs(outputDir: string): string[] {
+  return [resolve(outputDir, "..")];
 }
 
 // 2026-07-08: see agents/generators/shubham/src/index.ts's identical helper
@@ -150,6 +155,7 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?
     systemPrompt: loadAndInjectContract(plan.projectId, knownMistakesPrefix + buildAgentPrompt(mode)),
     initialMessage: (phase ? phase.header + "\n\n" : "") + buildAgentTask(plan, mode) + (!phase || phase.isLast ? "\n\n" + (await checklistTextFor(plan.projectId)) : ""),
     sandboxDir: outputDir,
+    readOnlyDirs: aanyaReadOnlyDirs(outputDir),
     projectId: plan.projectId,
     conversationKey: phase?.conversationKey,
     extendStepsWhileProgressing: Boolean(phase),
@@ -328,6 +334,7 @@ export async function runFix(plan: BuildPlan, findings: string[], team?: { role?
     systemPrompt: knownMistakesPrefix + buildAgentPrompt("integrate"), // fix always happens post-integrate, per Stage 5's placement after Stage 4
     initialMessage: buildFixTask(findings, plan),
     sandboxDir: outputDir,
+    readOnlyDirs: aanyaReadOnlyDirs(outputDir),
     projectId: plan.projectId,
     // flash (default) — see the rationale on Aanya's run() config above.
     enableHttpTools: true,
@@ -698,12 +705,14 @@ MODE: INTEGRATE (post-approval — wire the locked preview to the real backend)
   mock data with real fetch calls (plus the loading/error states around them).
 
 STAY IN YOUR FOLDER: your work is the frontend in this directory only.
-- Never read, edit, start or stop the backend or the database, and never
-  edit another folder's docker-compose.yml. They are built at the same time
+- You may read the backend and the database (../backend, ../db) to see the
+  real routes, request shapes and columns. Never edit, start or stop them,
+  and never edit another folder's docker-compose.yml. They are built at the same time
   as you, so the backend is usually NOT running yet — that is expected,
   not a bug for you to fix.
-- Never write helper scripts to look outside this folder. Everything you
-  need about the backend is in the API contract above.
+- Never write helper scripts to look outside this folder; read the files
+  directly. The API contract above is the agreement; the backend's code
+  shows what was really built.
 - Prove your forms are wired right by reading your own code against the
   API contract (field names, method, path, Bearer header) and by the
   build. The running app — frontend, backend and database together — is

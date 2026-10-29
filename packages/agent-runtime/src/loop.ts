@@ -1066,7 +1066,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
         case "run_command": {
           const commandArgs = args as { command: string; timeout_ms?: number };
           emitEvent({ type: "tool_call", tool: "run_command", input: commandArgs });
-          const r = await execRunCommand(config.sandboxDir, commandArgs, ledger, config.writableFile);
+          const r = await execRunCommand(config.sandboxDir, commandArgs, ledger, config.writableFile, config.readOnlyDirs);
           emitEvent({ type: "tool_result", tool: "run_command", status: r.status, summary: r.summary, output: (r.output ?? "").slice(0, 500) });
 
           // Self-repair harness: when a command fails and web_search is enabled,

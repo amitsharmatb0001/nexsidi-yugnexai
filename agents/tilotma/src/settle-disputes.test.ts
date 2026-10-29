@@ -45,3 +45,18 @@ test("each verdict she records is matched to its dispute; unsettled ones are lef
   expect(config.extendStepsWhileProgressing).toBe(true);
   expect(config.geminiTier).toBe("critical");
 });
+
+test("the file she says must change is passed on with her verdict, and she is told to name it", async () => {
+  dir = mkdtempSync(join(tmpdir(), "settle-run-fixin-"));
+  process.env.BUILD_DIR = dir;
+  let config: Record<string, unknown> = {};
+  const verdicts = await settleDisputes("p1", D, { reviewRoot: dir }, {
+    run: async (cfg) => {
+      config = cfg as never;
+      recordVerdict("p1", { number: 1, verdict: "true", evidence: "orders.ts ignores the column", fix_in: "backend/src/routes/orders.ts" });
+      return { success: true } as never;
+    },
+  });
+  expect(verdicts[0]).toMatchObject({ verdict: "true", fixIn: "backend/src/routes/orders.ts" });
+  expect(String(config.systemPrompt)).toContain("fix_in");
+});

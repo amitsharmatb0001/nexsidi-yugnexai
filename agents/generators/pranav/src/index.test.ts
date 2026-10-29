@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { nextMigrationFilename, runFix, getOutputDir, generateDrizzleSchema } from "./index.ts";
+import { nextMigrationFilename, generateDrizzleSchema } from "./index.ts";
 import type { BuildPlan, DrizzleTable } from "../../../arjun/src/index.ts";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -124,80 +124,5 @@ test("nextMigrationFilename ignores files without a 4-digit numeric prefix", () 
   }
 });
 
-const TEST_PLAN: BuildPlan = {
-  projectId: "pranav-fix-test",
-  appName: "Test App",
-  appDescription: "d",
-  designBrief: {
-    mood: "m",
-    palette: [{ name: "ink", hex: "#000000" }, { name: "paper", hex: "#ffffff" }, { name: "accent", hex: "#ff0000" }],
-    typography: { display: "d", body: "b" },
-    layoutConcept: "l",
-  },
-  features: [],
-  sharedTypes: "",
-  apiContract: { baseUrl: "http://localhost:3001", endpoints: [] },
-  dbSchema: { tables: [] },
-  shubhamTasks: [],
-  aanyaTasks: [],
-  pranavTasks: [],
-  independenceVerified: true,
-  buildPlanHash: "hash",
-};
-
-test("runFix writes a NEW numbered migration file, never touching 0000_initial.sql (expand-contract, D8)", async () => {
-  const buildDir = mkdtempSync(join(tmpdir(), "nexsidi-pranav-fix-test-"));
-  const previousBuildDir = process.env.BUILD_DIR;
-  process.env.BUILD_DIR = buildDir;
-
-  try {
-    const outputDir = getOutputDir(TEST_PLAN.projectId);
-    const migrationsDir = join(outputDir, "migrations");
-    mkdirSync(migrationsDir, { recursive: true });
-    const initialSql = "CREATE TABLE users (id uuid PRIMARY KEY);";
-    writeFileSync(join(migrationsDir, "0000_initial.sql"), initialSql);
-
-    const stubChat = async () => ({
-      content: "```sql\nALTER TABLE users ALTER COLUMN id TYPE text;\n```",
-      modelUsed: "qwen2.5-coder:7b-instruct-q4_K_M" as const,
-    });
-
-    const result = await runFix(TEST_PLAN, ["[security/HIGH] users.id should be TEXT for Clerk IDs"], { chat: stubChat });
-
-    expect(result.success).toBe(true);
-    expect(result.filesWritten).toEqual(["migrations/0001_fix.sql"]);
-
-    // The original migration is byte-for-byte untouched.
-    expect(readFileSync(join(migrationsDir, "0000_initial.sql"), "utf-8")).toBe(initialSql);
-    // The fix is a NEW, separate file.
-    expect(existsSync(join(migrationsDir, "0001_fix.sql"))).toBe(true);
-    expect(readFileSync(join(migrationsDir, "0001_fix.sql"), "utf-8")).toContain("ALTER TABLE users ALTER COLUMN id TYPE text;");
-  } finally {
-    if (previousBuildDir === undefined) delete process.env.BUILD_DIR;
-    else process.env.BUILD_DIR = previousBuildDir;
-    rmSync(buildDir, { recursive: true, force: true });
-  }
-});
-
-test("runFix extracts raw SQL when the model doesn't wrap it in a code fence", async () => {
-  const buildDir = mkdtempSync(join(tmpdir(), "nexsidi-pranav-fix-test-"));
-  const previousBuildDir = process.env.BUILD_DIR;
-  process.env.BUILD_DIR = buildDir;
-
-  try {
-    const stubChat = async () => ({
-      content: "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);",
-      modelUsed: "qwen2.5-coder:7b-instruct-q4_K_M" as const,
-    });
-
-    const result = await runFix(TEST_PLAN, ["[performance/MEDIUM] missing index on users.email"], { chat: stubChat });
-
-    expect(result.success).toBe(true);
-    const written = readFileSync(join(getOutputDir(TEST_PLAN.projectId), result.filesWritten[0]!), "utf-8");
-    expect(written).toContain("CREATE INDEX IF NOT EXISTS idx_users_email");
-  } finally {
-    if (previousBuildDir === undefined) delete process.env.BUILD_DIR;
-    else process.env.BUILD_DIR = previousBuildDir;
-    rmSync(buildDir, { recursive: true, force: true });
-  }
-});
+// 2026-10-29: the single-call fix tests (a new migration from one model answer, SQL with or without a fence) moved to
+// agent.test.ts with the database agent: it may write only a new migration and src/schema.ts (never an applied one).

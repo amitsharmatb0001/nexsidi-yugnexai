@@ -1195,3 +1195,28 @@ test("a build whose first review is clean is not reviewed twice, and the full pa
   expect(runs).toBe(3); // first review, retest, the one full pass
   expect(fullRequests).toBe(1);
 });
+
+// 2026-10-29 (team plan, stage 1): the database builder is an agent that can hand a finding to the backend
+// ("the column is there; the backend never writes it"). Its hand-on must reach the backend in the same round.
+test("the database fix's hand-on to the backend reaches the backend fixer in the same round", async () => {
+  let qaCallCount = 0;
+  let shubhamReceived: string[] = [];
+  const deps: QAFixDeps = {
+    runStage5: async () => {
+      qaCallCount++;
+      return qaCallCount === 1 ? failResult(1, "pranav") : passResult();
+    },
+    fixShubham: async (_plan, findings) => {
+      shubhamReceived = findings;
+      return { success: true };
+    },
+    fixAanya: async () => ({ success: true }),
+    fixPranav: async () => ({
+      success: true,
+      filesWritten: [],
+      escalations: [{ targetAgent: "shubham", finding: "orders.ts never writes order_items.name_at_time", reason: "the column exists in 0001_fix.sql" }],
+    }),
+  };
+  await runQAFixLoopWithDeps("test-proj", PLAN, STAGE4_RESULT, deps);
+  expect(shubhamReceived.some((f) => f.includes("name_at_time"))).toBe(true);
+});

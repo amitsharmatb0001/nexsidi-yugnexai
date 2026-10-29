@@ -68,8 +68,9 @@ export function getOutputDir(projectId: string): string {
 // 2026-10-03 (Ledgerly run 4): the backend used ON CONFLICT on a unique
 // constraint the migrations never created, so every invoice save failed.
 // It may read (never write) the database builder's migrations.
+// 2026-10-29 (team plan, stage 1): the whole project is readable (writing stays in the backend folder).
 export function shubhamReadOnlyDirs(outputDir: string): string[] {
-  return [resolve(outputDir, "..", "db", "migrations")];
+  return [resolve(outputDir, "..")];
 }
 
 const MIGRATIONS_NOTE = `THE REAL DATABASE: the database builder's migrations are in ../db/migrations.

@@ -225,3 +225,47 @@ test("isBuilderFixFile refuses deploy files and allows source files", async () =
     expect(isBuilderFixFile(f)).toBe(true);
   }
 });
+
+// 2026-10-29 (team plan, stage 1): builders read the whole project and change only their own folder. In Brewline 3 the backend
+// builder tried `ls ../db/migrations` and list_files on `../db`, was refused both times, and reported the database column missing
+// for an hour after it was added.
+test("a builder given the whole project reads any folder with read-only commands (real run)", async () => {
+  const { root, frontend } = build();
+  try {
+    const cat = await execRunCommand(frontend, { command: "cat ../backend/secret.txt" }, undefined, undefined, [root]);
+    expect(cat.status).toBe("success");
+    expect(String(cat.output)).toContain("backend work");
+    expect((await execRunCommand(frontend, { command: "ls ../backend" }, undefined, undefined, [root])).status).toBe("success");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reading the whole project never lets a command run, copy or reach outside the project", () => {
+  const cwd = "/b/frontend";
+  const ro = ["/b"];
+  expect(guardCommand("cat", ["../backend/x.ts"], cwd, undefined, ro).error).toBeUndefined();
+  expect(guardCommand("grep", ["-rn", "name_at_time", "../db"], cwd, undefined, ro).error).toBeUndefined();
+  expect(guardCommand("node", ["../backend/fix_cors.js"], cwd, undefined, ro).error).toContain("outside your folder");
+  expect(guardCommand("cp", ["../backend/x.ts", "x.ts"], cwd, undefined, ro).error).toContain("outside your folder");
+  expect(guardCommand("cat", ["../../etc/passwd"], cwd, undefined, ro).error).toContain("outside your folder");
+});
+
+test("a refusal tells the builder it may read other folders and how", () => {
+  const err = guardCommand("node", ["../backend/fix_cors.js"], "/b/frontend", undefined, ["/b"]).error ?? "";
+  expect(err).toContain("read");
+  expect(err).toContain("report_blocked");
+});
+
+test("a builder given the whole project lists and reads every folder but writes only its own", () => {
+  const { root, frontend } = build();
+  try {
+    const list = execListFiles(frontend, { dir: ".." }, [root]);
+    expect(String(list.output)).toContain("backend");
+    expect(execReadFile(frontend, { path: "../backend/secret.txt" }, undefined, [root]).status).toBe("success");
+    expect(execWriteFile(frontend, { path: "../backend/secret.txt", content: "x" }).status).toBe("error");
+    expect(execDeleteFile(frontend, { path: "../backend/secret.txt" }).status).toBe("error");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

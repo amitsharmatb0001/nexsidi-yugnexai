@@ -992,7 +992,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         }
         case "run_command": {
           const commandArgs = args as { command: string; timeout_ms?: number };
-          const r = await execRunCommand(config.sandboxDir, commandArgs, ledger, config.writableFile);
+          const r = await execRunCommand(config.sandboxDir, commandArgs, ledger, config.writableFile, config.readOnlyDirs);
           const strike = await evaluateCommandStrike(strikeCounter, commandArgs.command, r);
           result = strike.toolResult;
           if (strike.exhausted) exhaustedThreeStrikes = true;

@@ -131,9 +131,11 @@ If you notice something broken outside scope, REPORT it in one line;
 do not fix it.
 
 ### RULE 8A — OWN WORK ONLY
-Every agent does only its own work. Only Tilotma sees the whole project.
-- Never read, edit, run, start or stop another agent's work: its folder,
-  its service, its containers, its compose file. Your tools refuse it.
+Every agent does only its own work.
+- Read any file of the project when you need it (read_file, read_files,
+  list_files, or ls/cat/grep), so you work from facts, not guesses.
+- Never edit, run, start or stop another agent's work: its files, its
+  service, its containers, its compose file. Your tools refuse it.
 - Never assume another agent's state ("the backend is probably running").
   Check ONCE. If it is not what you need, call report_blocked with the
   owner, what you need and what you checked — then continue with the rest

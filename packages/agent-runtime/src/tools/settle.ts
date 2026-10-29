@@ -16,7 +16,11 @@ export interface Verdict {
   verdict: "true" | "not_true";
   evidence: string;
   at: string;
+  /** For a true finding: the project file that must change (its owner gets the finding). */
+  fixIn?: string;
 }
+
+const PROJECT_FILE = /^(backend|frontend|db)\/[^\s]+$/;
 
 function buildRoot(projectId: string): string {
   return buildDirFor(projectId);
@@ -28,14 +32,18 @@ export function verdictsFile(projectId: string): string {
 
 export function recordVerdict(
   projectId: string | undefined,
-  args: { number?: number; verdict?: string; evidence?: string },
+  args: { number?: number; verdict?: string; evidence?: string; fix_in?: string },
 ): ToolResult {
   const number = Number(args.number);
   const evidence = String(args.evidence ?? "").trim();
+  const fixIn = String(args.fix_in ?? "").trim().replace(/\\/g, "/");
   if (!Number.isInteger(number) || number < 1) return { status: "error", summary: "Give the dispute's number from the list." };
   if (args.verdict !== "true" && args.verdict !== "not_true") return { status: "error", summary: 'The verdict is "true" (the finding holds) or "not_true".' };
   if (!evidence) return { status: "error", summary: "Give the evidence you checked yourself: the code, the response or the page that decides it." };
-  const v: Verdict = { number, verdict: args.verdict, evidence: evidence.slice(0, 2000), at: new Date().toISOString() };
+  if (fixIn && (!PROJECT_FILE.test(fixIn) || fixIn.split("/").includes(".."))) {
+    return { status: "error", summary: "fix_in is the project file that must change, from the project root: it starts with backend/, frontend/ or db/." };
+  }
+  const v: Verdict = { number, verdict: args.verdict, evidence: evidence.slice(0, 2000), at: new Date().toISOString(), ...(fixIn ? { fixIn } : {}) };
   if (projectId) {
     try {
       mkdirSync(buildRoot(projectId), { recursive: true });
@@ -76,6 +84,10 @@ export const SETTLE_DISPUTE_TOOL_DEF: NimToolDef = {
         number: { type: "integer", description: "The dispute's number in the list you were given" },
         verdict: { type: "string", enum: ["true", "not_true"] },
         evidence: { type: "string", description: "What you checked and saw that decides it" },
+        fix_in: {
+          type: "string",
+          description: "For a true finding: the project file that must change to fix it, from the project root (e.g. backend/src/routes/orders.ts). Name it when the fix belongs in a different file, or another builder's folder, than the one the finding names.",
+        },
       },
       required: ["number", "verdict", "evidence"],
     },

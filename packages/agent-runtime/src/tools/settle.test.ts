@@ -33,3 +33,14 @@ test("the verdict tool is offered only to a dispute-settling run", () => {
   expect(names({ enableDisputeSettling: true })).toContain("settle_dispute");
   expect(SETTLE_DISPUTE_TOOL_DEF.function.parameters.required).toEqual(["number", "verdict", "evidence"]);
 });
+
+// 2026-10-29 (team plan, stage 1): a true finding may need its fix in another builder's file than the one it names
+// (Brewline 3: "the database has the column; the backend ignores it"). Tilotma names that file; it must be a project file.
+test("a true verdict may name the project file that must change; anything outside backend/, frontend/ or db/ is refused", () => {
+  dir = mkdtempSync(join(tmpdir(), "settle-fixin-"));
+  process.env.BUILD_DIR = dir;
+  expect(recordVerdict("p1", { number: 1, verdict: "true", evidence: "orders.ts joins menu_items", fix_in: "backend/src/routes/orders.ts" }).status).toBe("success");
+  expect(recordVerdict("p1", { number: 2, verdict: "true", evidence: "x", fix_in: "../../etc/passwd" }).status).toBe("error");
+  expect(readVerdicts("p1")[0]).toMatchObject({ number: 1, fixIn: "backend/src/routes/orders.ts" });
+  expect(Object.keys(SETTLE_DISPUTE_TOOL_DEF.function.parameters.properties)).toContain("fix_in");
+});

@@ -93,3 +93,29 @@ test("a confirmed finding goes to the builder who owns the file it names, not to
   expect(sent.pranav![0]).toContain("db/migrations/0000_initial.sql");
   expect(sent.aanya?.length).toBe(1); // no path: back to whoever disputed it
 });
+
+// 2026-10-29 (team plan, stage 1): when Tilotma names the file that must change, its owner gets the finding.
+test("a confirmed finding goes to the owner of the file Tilotma says must change, with that file named", async () => {
+  setup();
+  const since = new Date(Date.now() - 1000).toISOString();
+  recordDispute("p1", "pranav", { finding: "db/migrations/0001_fix.sql: [INT1] past orders show today's item name", checked: "read 0001_fix.sql", observed: "ADD COLUMN name_at_time" });
+  const sent: Record<string, string[]> = {};
+  const fixer = (who: string) => async (_plan: unknown, f: string[]) => { sent[who] = f; return { success: true, filesWritten: ["x"] }; };
+  await resolveDisputes("p1", since, PLAN, {
+    settle: async (_p, disputes) => disputes.map((d) => ({ dispute: d, verdict: "true" as const, evidence: "the column exists; orders.ts never writes it", fixIn: "backend/src/routes/orders.ts" })),
+    fixers: { shubham: fixer("shubham"), pranav: fixer("pranav") },
+  });
+  expect(sent.pranav).toBeUndefined();
+  expect(sent.shubham?.length).toBe(1);
+  expect(sent.shubham![0]).toContain("Change backend/src/routes/orders.ts");
+});
+
+// 2026-10-29 (Brewline 3 replay): a confirmed finding that comes back disputed again starts with "Tilotma checked…", not with
+// its file, and went back to the database builder who disputed it — the ping-pong of 25 Oct. The first project path counts.
+test("the owner is found from the first project path in the finding, even after a verdict's preface", async () => {
+  const { ownerOfFinding } = await import("./disputes.ts");
+  expect(ownerOfFinding("Tilotma checked this disputed finding and it IS true — fix it: backend/src/routes/orders.ts: [INT1] uses mi.name")).toBe("shubham");
+  expect(ownerOfFinding("frontend/app/order/page.tsx: calls backend/src/routes/orders.ts")).toBe("aanya");
+  expect(ownerOfFinding("something without a path")).toBeNull();
+  expect(ownerOfFinding("see mybackend/notes and ../db/x")).toBeNull();
+});

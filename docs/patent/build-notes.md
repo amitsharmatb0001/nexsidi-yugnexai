@@ -843,3 +843,24 @@ Tests: 1,877 pass (agent-runtime, both builders, orchestrator, Riya, Tilotma, ll
 **Proof:** tests first (version: 16; wiring: 8; success sheet: 10; report: 1); all 2,566 tests pass. On the real repository: stamped, then a throwaway file in `pipeline/` held the check, naming exactly that file; Retry accepted it; removing the file passed. On Brewline 3's real records the sheet reads: not delivered, 7 holds (generation_failed, stuck_state twice, budget_exceeded four times), 6 restarts, version not recorded, 9 code-review and 5 live rounds, $47.84, 1,416 min — the same as the audit.
 
 **Not checked:** a live workflow holding on a system change — starting the worker would also wake Brewline 3, whose 24-hour decision window has passed (it would be marked failed). **Corrected:** the audit said Brewline 2 and 3 had identical briefs; my check compared only the heading line. They differ (Brewline 3's includes the planning answers), so plan stability for one brief is not checked.
+
+## Batch 60 — stage 1 of the team plan: the agents see each other's work (2026-10-29)
+
+**Why (audit and root-cause trace of 29 Oct):** in Brewline 3 the database builder added `order_items.name_at_time` in the first fix round, but:
+- the backend builder was refused when it listed `../db` and ran `ls ../db/migrations`, and kept reporting the column missing for an hour;
+- the database fix, one model call, could not update `db/src/schema.ts`, read the backend or run its migrations;
+- a confirmed finding that came back disputed started with the verdict's preface, not its file, so it went back to the database builder.
+
+Approved by Amit as stage 1. It reverses the reading half of his 2 October decision; writing stays blocked.
+
+**Built:**
+- **Reading:** the builders read the whole project: their file tools, and `ls`, `cat`, `head`, `tail`, `wc`, `grep` on any project path (`ownership.ts` `guardCommand` with read-only folders, passed by all three loops). Writing, `node`, `cp` and anything outside the project stay refused, and so do compose files that build another folder. The backend builder's read folder widens from `db/migrations` to the project; the frontend builder gets the same. The core rules and the frontend prompt now say "read any file, change only your own" (they said "never read").
+- **Routing:** the Chief AI's verdict may name the file that must change (`settle_dispute` `fix_in`, only `backend/`, `frontend/` or `db/` paths); its owner gets the finding, then the owner of the finding's file, then the builder who disputed it. The owner comes from the first project path in the text, so a finding that comes back after a verdict still reaches the right builder.
+- **The database builder is an agent:** a fix round runs in `db/`, reads the whole project, may write only a new numbered migration and `src/schema.ts` (an applied migration is refused), can dispute or hand a finding on (its hand-ons now reach the backend in the review loop), and cannot finish while `schema.ts` misses a column a migration adds or a migration fails on an empty PostgreSQL 16 (a check that cannot run does not block). The first build runs the same checks at once and gives what fails to the agent before anyone reviews (`runChecked`). The single-call fix and its five tests are replaced by twelve agent tests. The "run drizzle-kit, never write SQL" line in its instructions is replaced by the new-migration rule.
+
+**Proof:** tests first (reading 4, builders 5, wording 2, routing 4, database agent 12, review-loop hand-on 1); all 2,587 tests pass. On a copy of Brewline 3's recorded files:
+- `list_files ../db`, `ls ../db/migrations` and `cat ../db/migrations/0001_fix.sql` all succeed from the backend folder, and `node ../db/x.js` is still refused;
+- replaying its two recorded confirmed disputes sends both to the backend builder (before: one went back to the database builder);
+- the database finish check ran its migrations on an empty PostgreSQL 16 (all three apply, 4.8 s, container removed) and flags `db/src/schema.ts` missing `name_at_time` — the defect Brewline 3 ended with.
+
+**Not checked:** the database agent run with a model (a paid call), and any of this in a live build.

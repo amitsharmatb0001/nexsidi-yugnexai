@@ -18,7 +18,11 @@ export function relativeInside(root: string, abs: string): string {
 }
 
 export const OUTSIDE_FOLDER_HINT =
-  "That is another agent's work. Do not work around it — call report_blocked with the owner, what you need and what you checked, then continue with your own task.";
+  "You may read every folder of the project (read_file, read_files, list_files, or ls, cat, head, tail, wc, grep), but you change and run only your own. If another folder's work is wrong, call report_blocked with the owner, what you need and what you checked, then continue with your own task.";
+
+// 2026-10-29 (team plan, stage 1): commands that only read. With the project root among an agent's read-only folders they may name
+// any file of the project; every other command (node, cp, npm, …) stays inside the agent's own folder.
+const READ_ONLY_COMMANDS = new Set(["ls", "cat", "head", "tail", "wc", "grep"]);
 
 function norm(p: string): string {
   const r = resolve(p);
@@ -55,8 +59,9 @@ const NPX_SCRIPT_RUNNERS = new Set(["tsx", "ts-node", "node", "bun", "esno", "vi
  * permission mode: reads and writes elsewhere and child processes are
  * refused (ERR_ACCESS_DENIED) — checked on Node 22.17.1, Windows.
  */
-export function guardCommand(cmd: string, args: string[], cwd: string, writableFile?: WritableFile): { error?: string; args: string[] } {
-  const outside = outsidePathArgs(cwd, args);
+export function guardCommand(cmd: string, args: string[], cwd: string, writableFile?: WritableFile, readOnlyDirs: string[] = []): { error?: string; args: string[] } {
+  const readable = (arg: string) => readOnlyDirs.some((d) => isInsideDir(d, resolve(cwd, arg)));
+  const outside = outsidePathArgs(cwd, args).filter((a) => !(READ_ONLY_COMMANDS.has(cmd) && readable(a)));
   if (outside.length > 0) {
     return { error: `${outside.join(", ")} is outside your folder. ${OUTSIDE_FOLDER_HINT}`, args };
   }

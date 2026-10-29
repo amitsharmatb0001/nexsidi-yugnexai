@@ -2,13 +2,15 @@
 // Produces complete Drizzle schema + migration SQL from a BuildPlan DB schema.
 // Uses Qwen2.5-Coder 7B via local Ollama (GPU on Dell G15).
 
-import { agentChat } from "@nexsidi/llm-client";
+import { agentChat, AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { mkdirSync, writeFileSync, readdirSync, readFileSync, existsSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import type { BuildPlan, DrizzleTable, DrizzleColumn } from "../../../arjun/src/index.ts";
 import type { GeneratorResult } from "../../shubham/src/index.ts";
-import { recordDispute } from "../../../../packages/agent-runtime/src/tools/dispute.ts";
-import { findQuoteLine } from "../../../../packages/agent-runtime/src/enforce/finding-evidence.ts";
+import { resolveGeneratorRunner, type GeneratorRunner } from "../../../../packages/agent-runtime/src/generator-tier.ts";
+import type { AgentRunConfig } from "../../../../packages/agent-runtime/src/loop.ts";
+import type { WritableFile } from "../../../../packages/agent-runtime/src/ownership.ts";
+import type { MigrationCheckResult } from "../../../../pipeline/orchestrator/stages/migration-check.ts";
 import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
 // ── Main entry ────────────────────────────────────────────────────────────────
@@ -49,70 +51,117 @@ export async function run(plan: BuildPlan): Promise<GeneratorResult> {
   return { success: errors.length === 0, projectId: plan.projectId, outputDir, filesWritten, errors };
 }
 
-// 2026-07-24 (P3.W3.4, full agentic upgrade): Pranav previously had no fix
-// path at all — the real GAN's fix loop (stage5-qa-fix-loop.ts) explicitly
-// gave up the moment a QA round's findings were ALL db/-prefixed ("no
-// auto-fix path yet. Stop rather than loop uselessly"). This is that path.
-//
-// Deliberately NOT the same shape as Shubham/Aanya's runFix (a tool-calling
-// agent loop that rewrites files directly): a DB fix is a NEW migration
-// file that ALTERs the existing schema, never a rewrite of migration 0000
-// or the live schema.ts — CLAUDE.md D8 ("expand-contract migrations
-// only") applies precisely because migration 0000 may already be applied
-// to a running Postgres instance by the time a QA round finds a problem
-// with it. schema.ts IS updated (Drizzle's schema file must reflect the
-// post-fix shape for future codegen), but only additively/compatibly.
-//
-// `deps` is injectable (defaults to the real agentChat) — matches this
-// codebase's established DI pattern (Saanvi/Arjun/Vanya's run()) so this
-// is unit-testable without a live LLM call or mock.module (which risks
-// bleeding into other test files sharing bun's module cache).
-export interface PranavFixDeps {
-  chat: typeof agentChat;
+// 2026-10-29 (team plan, stage 1): the database fix is an agent in the database folder. It was one model call that could
+// only write a new migration: in Brewline 3 it added order_items.name_at_time but could not update src/schema.ts, read the
+// backend that uses the table, or run its migrations. Now it reads the whole project, adds a NEW migration (an applied
+// one is never edited — CLAUDE.md D8, expand-contract) and keeps src/schema.ts in step, and it cannot finish while the
+// two disagree or a migration fails on an empty PostgreSQL 16.
+export interface PranavAgentDeps {
+  runAgent?: GeneratorRunner;
+  migrationCheck?: (projectDir: string) => Promise<MigrationCheckResult>;
 }
 
-export async function runFix(
-  plan: BuildPlan,
-  findings: string[],
-  deps: PranavFixDeps = { chat: agentChat },
-): Promise<GeneratorResult> {
+/** The files a fix may write: a new numbered migration and src/schema.ts. */
+export function pranavFixFiles(appliedMigrations: Set<string>): WritableFile {
+  return (relPath) => {
+    const p = relPath.replace(/\\/g, "/");
+    if (p === "src/schema.ts") return true;
+    return /^migrations\/\d{4}_[\w-]+\.sql$/.test(p) && !appliedMigrations.has(p);
+  };
+}
+
+/** The database builder's finish check: src/schema.ts lists every column the migrations add, and every migration runs on an empty database. */
+export async function databaseExitChecks(projectDir: string, deps: Pick<PranavAgentDeps, "migrationCheck"> = {}): Promise<string[]> {
+  const { schemaMigrationSyncFindings } = await import("../../../../pipeline/orchestrator/stages/shipping-hygiene.ts");
+  const { migrationFindings } = await import("../../../../pipeline/orchestrator/stages/migration-check.ts");
+  const sync = schemaMigrationSyncFindings(projectDir);
+  const migrations = await (deps.migrationCheck ?? migrationFindings)(projectDir);
+  if (!migrations.ran && migrations.note) console.log(`[pranav] ${migrations.note}`);
+  return [...sync, ...migrations.findings];
+}
+
+export function buildPranavFixTask(findings: string[], plan: BuildPlan): string {
   const outputDir = getOutputDir(plan.projectId);
   const migrationsDir = join(outputDir, "migrations");
-  const filesWritten: string[] = [];
-  const errors: string[] = [];
+  const next = `migrations/${nextMigrationFilename(migrationsDir, "fix")}`;
+  return `Fix these findings in the database.
 
-  try {
-    // 2026-10-03 (evidence-only plan): work from the migrations that really
-    // run, and let the model answer NOT TRUE with a quote from them. A quote
-    // that is really there becomes a dispute for Tilotma and gets no SQL; a
-    // quote that is not there is refused and the finding stays open.
-    const migrationsText = readMigrations(migrationsDir);
-    const existingSchema = migrationsText || readExistingSchema(outputDir);
-    const answer = await generateFixMigrationSql(existingSchema, findings, deps);
-    const { sql, notTrue } = splitNotTrue(answer);
-    for (const { index, quote } of notTrue) {
-      const finding = findings[index - 1] ?? `finding ${index}`;
-      if (migrationsText && findQuoteLine(migrationsText, quote) !== null) {
-        recordDispute(plan.projectId, "pranav", {
-          finding,
-          checked: "read every migration in db/migrations",
-          observed: `the migrations already contain: ${quote}`,
-        });
-      } else {
-        errors.push(`NOT TRUE for "${finding.slice(0, 120)}" quoted SQL that is not in the migrations — the finding stays open`);
-      }
-    }
-    if (sql) {
-      const filename = nextMigrationFilename(migrationsDir, "fix");
-      mkdirSync(migrationsDir, { recursive: true });
-      writeFileSync(join(migrationsDir, filename), sql, "utf-8");
-      filesWritten.push(`migrations/${filename}`);
-    }
-  } catch (err) {
-    errors.push(String(err));
-  }
+FINDINGS:
+${findings.map((f, i) => `${i + 1}. ${f}`).join("\n")}
 
-  return { success: errors.length === 0, projectId: plan.projectId, outputDir, filesWritten, errors };
+THE MIGRATIONS THAT RUN, word for word (already applied — never edit them):
+${readMigrations(migrationsDir) || "(none)"}
+
+src/schema.ts (it must list every table and column the migrations create):
+${readExistingSchema(outputDir) || "(missing)"}
+
+HOW:
+1. Check each finding against the migrations above and against the code that uses the tables: read ../backend with
+   read_file, read_files or grep.
+2. If the database must change: write ONE new migration, ${next}, with ALTER TABLE / CREATE INDEX / ADD CONSTRAINT
+   statements (expand only: no DROP, no rename), and add every new column to src/schema.ts.
+3. If the migrations already do what a finding asks: call dispute_finding with the statement that shows it.
+4. If the fix belongs in the backend or the frontend code: call escalate_finding with the owner (shubham for the
+   backend, aanya for the frontend), the file and what must change there.
+5. Call task_complete. The system then checks that src/schema.ts matches the migrations and that every migration runs
+   on an empty PostgreSQL 16; you cannot finish until both hold.`;
+}
+
+export async function runFix(plan: BuildPlan, findings: string[], deps: PranavAgentDeps = {}): Promise<GeneratorResult> {
+  const outputDir = getOutputDir(plan.projectId);
+  const migrationsDir = join(outputDir, "migrations");
+  const projectDir = resolve(outputDir, "..");
+  const applied = new Set(existsSync(migrationsDir) ? readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).map((f) => `migrations/${f}`) : []);
+  const runner = deps.runAgent ?? resolveGeneratorRunner();
+  const result = await runner({
+    agentName: "pranav",
+    model: AGENT_MODELS.pranav,
+    fallbackModels: FALLBACK_CHAIN.pranav,
+    apiKey: process.env.NIM_API_KEY ?? "",
+    systemPrompt: "",
+    initialMessage: buildPranavFixTask(findings, plan),
+    sandboxDir: outputDir,
+    readOnlyDirs: [projectDir],
+    projectId: plan.projectId,
+    geminiTier: "generation",
+    enableEscalation: true,
+    writableFile: pranavFixFiles(applied),
+    maxIterations: 30,
+    exitChecks: () => databaseExitChecks(projectDir, deps),
+  } as AgentRunConfig);
+  return {
+    success: result.success,
+    projectId: plan.projectId,
+    outputDir,
+    filesWritten: result.filesWritten,
+    errors: result.errors,
+    escalations: result.escalations,
+  };
+}
+
+/** The first build, then the same checks at once; what they find goes to the agent before anyone reviews the app. */
+export async function runChecked(
+  plan: BuildPlan,
+  deps: {
+    run?: (plan: BuildPlan) => Promise<GeneratorResult>;
+    checks?: (projectDir: string) => Promise<string[]>;
+    fix?: (plan: BuildPlan, findings: string[]) => Promise<GeneratorResult>;
+  } = {},
+): Promise<GeneratorResult> {
+  const first = await (deps.run ?? run)(plan);
+  if (!first.success) return first;
+  const projectDir = resolve(getOutputDir(plan.projectId), "..");
+  const problems = await (deps.checks ?? ((d: string) => databaseExitChecks(d)))(projectDir);
+  if (problems.length === 0) return first;
+  console.log(`[pranav] the first build's checks found ${problems.length} problem(s); the database builder fixes them now`);
+  const fixed = await (deps.fix ?? ((p: BuildPlan, f: string[]) => runFix(p, f)))(plan, problems);
+  return {
+    ...first,
+    success: fixed.success,
+    filesWritten: [...first.filesWritten, ...fixed.filesWritten.filter((f) => !first.filesWritten.includes(f))],
+    errors: [...first.errors, ...fixed.errors],
+    escalations: fixed.escalations,
+  };
 }
 
 /** Every migration's SQL, in order, each under its file name. */
@@ -123,18 +172,6 @@ function readMigrations(migrationsDir: string): string {
     .sort()
     .map((f) => `-- ${f}\n${readFileSync(join(migrationsDir, f), "utf-8")}`)
     .join("\n");
-}
-
-/** Separates "NOT TRUE <n>: <quote>" lines from the SQL in the model's answer. */
-export function splitNotTrue(answer: string): { sql: string; notTrue: Array<{ index: number; quote: string }> } {
-  const notTrue: Array<{ index: number; quote: string }> = [];
-  const kept: string[] = [];
-  for (const line of answer.split(/\r?\n/)) {
-    const m = line.match(/^\s*NOT TRUE\s+(\d+)\s*:\s*(.+)$/i);
-    if (m) notTrue.push({ index: parseInt(m[1]!, 10), quote: m[2]!.trim() });
-    else kept.push(line);
-  }
-  return { sql: kept.join("\n").trim(), notTrue };
 }
 
 function readExistingSchema(outputDir: string): string {
@@ -158,46 +195,6 @@ export function nextMigrationFilename(migrationsDir: string, label: string): str
   const next = String(maxNum + 1).padStart(4, "0");
   return `${next}_${label}.sql`;
 }
-
-async function generateFixMigrationSql(existingSchema: string, findings: string[], deps: PranavFixDeps): Promise<string> {
-  const { content } = await deps.chat(
-    "pranav",
-    [
-      { role: "system", content: PRANAV_FIX_PROMPT },
-      {
-        role: "user",
-        content: `THE MIGRATIONS THAT RUN (already applied — do not recreate these tables):\n${existingSchema}\n\nQA FINDINGS (numbered):\n${findings.map((f, i) => `${i + 1}. ${f}`).join("\n")}`,
-      },
-    ],
-    process.env.NIM_API_KEY ?? "",
-  );
-
-  const sqlMatch = content.match(/```sql\s*([\s\S]*?)\s*```/) ?? content.match(/```\s*([\s\S]*?)\s*```/);
-  return sqlMatch?.[1]?.trim() ?? content.trim();
-}
-
-const PRANAV_FIX_PROMPT = `\
-You are a PostgreSQL migration expert fixing specific issues in an ALREADY-DEPLOYED
-schema. You are writing a NEW, ADDITIVE migration — never regenerate or DROP an
-existing table. This is expand-contract only:
-
-CRITICAL RULES:
-1. Use ALTER TABLE, CREATE INDEX, or ADD CONSTRAINT to fix issues — never DROP TABLE,
-   never CREATE TABLE for a table that already exists in the existing schema shown.
-2. If a column's type is wrong (e.g. UUID where it should be TEXT for Clerk user IDs),
-   use ALTER TABLE ... ALTER COLUMN ... TYPE ... — with a USING clause if the existing
-   data needs conversion.
-3. If a column should be nullable and isn't (or vice versa), use ALTER TABLE ... ALTER
-   COLUMN ... DROP NOT NULL / SET NOT NULL.
-4. If an index is missing, use CREATE INDEX IF NOT EXISTS.
-5. Address ONLY the findings listed — do not "improve" unrelated parts of the schema.
-6. Output ONLY the SQL — no markdown, no code fences, just raw ALTER/CREATE INDEX statements.
-7. CHECK EACH FINDING AGAINST THE MIGRATIONS FIRST. If the migrations already do
-   what a finding says is missing (the index, constraint or column is there),
-   write no SQL for it. Instead write one line:
-   NOT TRUE <finding number>: <the exact statement from the migrations that shows it>
-   Copy the statement exactly — it is checked against the files.
-`;
 
 function normalizeColumn(col: any): DrizzleColumn {
   const name = col.name;
