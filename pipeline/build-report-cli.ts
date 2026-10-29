@@ -9,6 +9,8 @@ import { readCallLedger } from "../packages/llm-client/src/call-ledger.ts";
 import { computeCostUsd, checkBudget } from "../packages/agent-runtime/src/cost-budget.ts";
 import { buildDirFor } from "../packages/agent-runtime/src/build-dir.ts";
 import { aggregate, buildWindows, renderReport, type Activity, type RoundMark } from "./build-report.ts";
+import { workflowFacts, roundFacts, renderSuccessSheet, type HistoryEventLite } from "./success-sheet.ts";
+import { systemVersionFacts } from "./orchestrator/system-version.ts";
 
 const projectId = process.argv[2];
 if (!projectId) {
@@ -93,7 +95,39 @@ try {
 } catch {
   spend = undefined;
 }
-const md = renderReport(`Build ${projectId}`, report, { agentSpendUsd: spend, workflowMinutes: Math.round((workflowEnd - workflowStart) / 60_000) });
+// The success sheet: delivered or not, holds, restarts, system version, rounds — each from its own record.
+let delivered: boolean | null = null;
+try {
+  const { db, projects } = await import("@nexsidi/db");
+  const { eq } = await import("drizzle-orm");
+  const [p] = await db.select({ status: projects.status }).from(projects).where(eq(projects.id, projectId)).limit(1);
+  delivered = p ? p.status === "done" : null;
+} catch {
+  delivered = null;
+}
+const roundLines: Array<{ stage: string; findings?: unknown[]; reset?: boolean }> = [];
+if (existsSync(roundsFile)) {
+  for (const line of readFileSync(roundsFile, "utf-8").split("\n")) {
+    try {
+      if (line.trim()) roundLines.push(JSON.parse(line));
+    } catch {
+      // a torn line is skipped
+    }
+  }
+}
+const wfFacts = workflowFacts(events as HistoryEventLite[]);
+// A held workflow has no end event: its time runs to its last recorded event, not to now.
+const lastRecorded = wfFacts.ended ? workflowEnd : Date.parse(wfFacts.lastEventAt ?? new Date(workflowEnd).toISOString());
+const workflowMinutes = Math.round((lastRecorded - workflowStart) / 60_000);
+const sheet = renderSuccessSheet({
+  delivered,
+  workflow: wfFacts,
+  rounds: roundFacts(roundLines),
+  version: systemVersionFacts(dir),
+  costUsd: report.total.costUsd,
+  minutes: workflowMinutes,
+});
+const md = renderReport(`Build ${projectId}`, report, { agentSpendUsd: spend, workflowMinutes, sheet });
 const out = process.argv[3];
 if (out) {
   writeFileSync(out, md, "utf-8");

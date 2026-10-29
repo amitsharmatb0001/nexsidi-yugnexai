@@ -205,13 +205,14 @@ function row(a: AgentStat): string {
 }
 const HEADER = "| agent | ok | failed | models (calls) | tokens in | out | cached | cache | cost | call time (ok) | wasted on failed | first→last call |\n|---|---|---|---|---|---|---|---|---|---|---|---|";
 
-export function renderReport(name: string, report: Report, extra: { agentSpendUsd?: number; workflowMinutes?: number } = {}): string {
+export function renderReport(name: string, report: Report, extra: { agentSpendUsd?: number; workflowMinutes?: number; sheet?: string } = {}): string {
   const lines: string[] = [];
   const t = report.total;
   lines.push(`# ${name} — cost and time, agent by agent, round by round`);
   lines.push("");
   lines.push(`Built from the per-call ledger: ${t.callsOk + t.callsFailed} model calls (${t.callsOk} answered, ${t.callsFailed} failed), cost ${usd(t.costUsd)}, ${mmss(t.okSeconds)} of answered-call time and ${mmss(t.failedSeconds)} wasted on failed calls (parallel calls overlap, so call time is not wall-clock time).${extra.workflowMinutes !== undefined ? ` The build ran ${extra.workflowMinutes} min.` : ""}`);
   lines.push("");
+  if (extra.sheet) lines.push(extra.sheet);
   for (const s of report.sections) {
     const span = s.to === Infinity || s.from === -Infinity ? "" : ` — ${hhmmss(s.from)}–${hhmmss(s.to)} UTC, ${mmss((s.to - s.from) / 1000)}`;
     lines.push(`## ${s.label}${span}`);

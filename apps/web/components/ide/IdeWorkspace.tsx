@@ -252,6 +252,7 @@ const FAILURE_REASON_TEXT: Record<string, string> = {
   // 2026-10-24: says what happened, not a guess at why (the old text called it "often a transient network issue").
   deploy_activity_error: "The deploy step stopped with an error before it finished. What happened is in the build log; Retry runs the deploy step again.",
   guard_hold: "The work was paused on purpose because it stopped making progress — the same problem kept coming back, or a round cost more without fixing anything. Nothing more is spent until you decide. The reason and evidence are in HOLD.md in the build folder.",
+  system_changed: "The system's code changed while this build was running, so the build stopped before its next paid step. Retry continues on the changed system; the build report will then show that this build did not test one fixed version.",
 };
 
 // Reasons may carry a "code: detail" shape (see Riya's failureReason) —
@@ -277,7 +278,7 @@ export function readableFailureReason(reason: string): string {
 export function isRetryableFailure(reason: string | null): boolean {
   if (!reason) return false;
   const code = reason.split(":")[0]!.trim();
-  return ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error", "guard_hold"].includes(code);
+  return ["budget_exceeded", "generation_failed", "stuck_state", "compile_repair_limit", "deploy_stuck", "deploy_failed", "deploy_activity_error", "guard_hold", "system_changed"].includes(code);
 }
 
 function DoneComposer({ onSubmit, submitting }: { onSubmit: (text: string) => void; submitting: boolean }) {

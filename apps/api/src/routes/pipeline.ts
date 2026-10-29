@@ -322,6 +322,8 @@ const RETRYABLE_FAILURE_REASONS = new Set([
   // escalateAndAwaitRetryDecision exactly like the reasons above it, so it
   // needs the identical retry path, not a dead end.
   "deploy_activity_error",
+  // 2026-10-29 (team plan, stage 0): the system changed while the build ran; Retry continues on the changed system.
+  "system_changed",
 ]);
 
 pipelineRouter.post("/:projectId/retry", async (c) => {
@@ -345,6 +347,10 @@ pipelineRouter.post("/:projectId/retry", async (c) => {
     // 2026-10-22: the owner's Retry resets what the progress guard compares against (see recordRetryReset).
     const { recordRetryReset } = await import("../../../../pipeline/orchestrator/progress-guard.ts");
     recordRetryReset(projectId);
+    // The owner's Retry is the decision to continue on a changed system; the build's record keeps that it did.
+    const { acceptPendingSystemVersion } = await import("../../../../pipeline/orchestrator/system-version.ts");
+    const { buildDirFor } = await import("../../../../packages/agent-runtime/src/build-dir.ts");
+    acceptPendingSystemVersion(buildDirFor(projectId));
     await sendWorkflowSignal(projectId, "retryStageSignal", true);
     // The workflow's own state.stage will move off "await_spec_approval"-
     // style holding points once it resumes; setting "building" here closes

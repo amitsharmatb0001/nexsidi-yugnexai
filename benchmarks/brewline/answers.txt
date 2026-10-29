@@ -1,0 +1,10 @@
+- payments are handled in-store at pickup.
+- Checkout requires an account (no guest checkout).
+- One physical store location.
+- No limit on orders per pickup time.
+- Staff mark a specific drink out of stock by hand (per drink, not per ingredient).
+- No-shows are reviewed by staff by hand, with no automatic blocking.
+- baristas manage incoming pre-orders and the menu from a built-in staff dashboard
+- staff log in with an account the shop sets up, customers sign up themselves.
+- Customers choose a 15-minute window today starting at least 15 minutes from now during store hours
+- Every item is sold exactly as listed (no modifiers)

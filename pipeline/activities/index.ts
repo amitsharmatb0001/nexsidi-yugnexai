@@ -57,6 +57,8 @@ import { isQuotaExhaustionError } from "../../packages/agent-runtime/src/gemini-
 // activity entry point on — see docs/nexsidi/plans/2026-08-11-cost-control.md
 // for the incident this responds to.
 import { checkBudget } from "../../packages/agent-runtime/src/cost-budget.ts";
+import { readSystemVersion, stampSystemVersion, checkSystemVersion } from "../orchestrator/system-version.ts";
+import { fileURLToPath } from "node:url";
 
 // ── In-process cache (activities run in same Temporal worker process)
 const specCache = new Map<string, ProjectSpec>();
@@ -150,6 +152,7 @@ export async function runSaanvi(
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
+    stampSystemVersion(buildDirFor(projectId), await readSystemVersion(REPO_ROOT), "spec");
     if (userRequest) writeCacheFile(projectId, "user-request.txt", userRequest);
     const req  = userRequest ?? readUserRequest(projectId);
     const attachmentsContext = getAttachmentsContext(projectId);
@@ -409,6 +412,23 @@ export function guardHoldFailure(hold: { reason: string; evidence: string[] }): 
   });
 }
 
+// 2026-10-29 (team plan, stage 0): a build tests one version of the system. A version the owner has not accepted
+// holds the build (see orchestrator/system-version.ts); the workflow asks the owner with reason "system_changed".
+const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
+
+export async function assertSameSystem(projectId: string, step: string): Promise<void> {
+  const verdict = checkSystemVersion(buildDirFor(projectId), await readSystemVersion(REPO_ROOT), step);
+  if (!verdict.ok) {
+    console.error(`[SYSTEM CHANGED] ${verdict.reason}: ${verdict.evidence.join("; ")}`);
+    throw ApplicationFailure.create({
+      message: `system_changed: ${verdict.reason}`,
+      type: "SystemChanged",
+      nonRetryable: true,
+      details: [verdict],
+    });
+  }
+}
+
 export async function assertWithinBudget(projectId: string, agentName: string): Promise<void> {
   const status = await checkBudget(projectId);
   if (!status.withinBudget) {
@@ -448,6 +468,7 @@ export async function runShubham(projectId: string): Promise<void> {
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
     await assertWithinBudget(projectId, "shubham");
+    await assertSameSystem(projectId, "shubham");
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "shubham", plan);
     const result = await runGeneratorWithQuotaRetry(() => runShubhamAgent(withNormalizedDbSchema(plan)));
@@ -463,6 +484,7 @@ export async function runAanya(projectId: string): Promise<void> {
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
     await assertWithinBudget(projectId, "aanya");
+    await assertSameSystem(projectId, "aanya");
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "aanya", plan);
     // Verified in its on-disk (hashed) shape, then normalised for the generator.
@@ -526,6 +548,7 @@ async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phas
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
     await assertWithinBudget(projectId, builder);
+    await assertSameSystem(projectId, builder);
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", builder, plan);
     const schemaReady = withNormalizedDbSchema(plan);
@@ -567,6 +590,7 @@ export async function runPranav(projectId: string): Promise<void> {
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
     await assertWithinBudget(projectId, "pranav");
+    await assertSameSystem(projectId, "pranav");
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "pranav", plan);
     const result = await runGeneratorWithQuotaRetry(() => runPranavAgent(withNormalizedDbSchema(plan)));
@@ -933,11 +957,13 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
   const hb = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
     await assertWithinBudget(projectId, "qa-gan");
+    await assertSameSystem(projectId, "qa-gan");
     const plan = getPlan(projectId);
     const stage4Result = buildStage4Result(projectId);
     const result = await runQAFixLoop(projectId, plan, stage4Result);
     // 2026-10-23: the cap is checked again after the rounds, so a step that reached it stops as a budget stop, not a pass.
     await assertWithinBudget(projectId, "qa-gan (after the rounds)");
+    await assertSameSystem(projectId, "qa-gan (after the rounds)");
     console.log(
       `[activity:qa-fix-loop] pass=${result.pass} stuck=${result.stuck ?? false} iterations=${result.iterations} findings=${result.findings.length}`,
     );
@@ -1007,6 +1033,7 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
   const hb = setInterval(() => ctx.heartbeat("running"), 30_000);
   try {
     await assertWithinBudget(projectId, "deploy");
+    await assertSameSystem(projectId, "deploy");
     const plan = getPlan(projectId);
     const stage4Result = buildStage4Result(projectId);
     // Patent Claim 3: verify the codebase QA just approved is exactly what
@@ -1014,6 +1041,7 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
     await verifyHandoff(projectId, "qa-gan", "deploy", buildHandoffContext(buildDirFor(projectId), filterSourceManifest(stage4Result), plan));
     const result = await runStage6(projectId, stage4Result, plan);
     await assertWithinBudget(projectId, "deploy (after the live rounds)");
+    await assertSameSystem(projectId, "deploy (after the live rounds)");
     console.log(`[activity:deploy] success=${result.success} appUrl=${result.appUrl} stuck=${result.stuck ?? false}`);
     recordClaimEvidence(buildDirFor(projectId), 2, result.success ? "deployed after the live checks passed" : "deploy attempt did not pass the live checks", {
       success: result.success, appUrl: result.appUrl, stuck: result.stuck ?? false,

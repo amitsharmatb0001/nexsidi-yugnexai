@@ -112,3 +112,11 @@ test("the written report names every agent in every window with calls, time, tok
   expect(md).toContain("agent_spend");
   expect(md).toContain("85 min");
 });
+
+test("the success sheet comes first, before the round-by-round detail", () => {
+  const windows = buildWindows(ACTIVITIES, ROUNDS, at(85));
+  const rows = [row("shubham", "gemini-3.5-flash", 6, 20_000, true, { in: 100_000, out: 2_000 })];
+  const md = renderReport("Brewline 3", aggregate(rows, windows, PRICE), { sheet: "## Success sheet\n\n**Untouched run: no**\n" });
+  expect(md.indexOf("## Success sheet")).toBeGreaterThan(-1);
+  expect(md.indexOf("## Success sheet")).toBeLessThan(md.indexOf("## runShubhamPhase"));
+});

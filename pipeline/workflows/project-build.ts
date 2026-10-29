@@ -46,6 +46,16 @@ export function isGuardHoldFailure(err: unknown): boolean {
   );
 }
 
+// 2026-10-29 (team plan, stage 0): the system's code changed while the build ran (orchestrator/system-version.ts).
+// A new failure type, so no recorded history can contain it and the branches below need no patch marker.
+export function isSystemChangedFailure(err: unknown): boolean {
+  return (
+    err instanceof ActivityFailure &&
+    err.cause instanceof ApplicationFailure &&
+    err.cause.type === "SystemChanged"
+  );
+}
+
 export function isBudgetExceededFailure(err: unknown): boolean {
   return (
     err instanceof ActivityFailure &&
@@ -408,6 +418,16 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
           console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (guard_hold)`);
           continue;
         }
+        if (isSystemChangedFailure(err)) {
+          state.stage = "error";
+          const retry = await escalateAndAwaitRetryDecision("system_changed");
+          if (!retry) {
+            await act.markProjectFailed(projectId, "system_changed");
+            return;
+          }
+          state.stage = "deliver";
+          continue;
+        }
         // 2026-08-30: real, live 4th occurrence of the exact uncaught-throw
         // class this file's own header comments above already document
         // three times over (fulfillio1 x2, the ContextChainViolation case).
@@ -655,6 +675,14 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       // literal calls stay grep/source-string visible — compile-loop.test.ts
       // asserts `escalateAndAwaitRetryDecision("generation_failed")` and
       // `markProjectFailed(projectId, "generation_failed")` verbatim.
+      if (isSystemChangedFailure(err)) {
+        const retry = await escalateAndAwaitRetryDecision("system_changed");
+        if (!retry) {
+          await act.markProjectFailed(projectId, "system_changed");
+          return;
+        }
+        continue;
+      }
       if (isBudgetExceededFailure(err)) {
         const retry = patched("generation-retry-signal-v1")
           ? await escalateAndAwaitRetryDecision("budget_exceeded")
@@ -754,6 +782,15 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       try {
         qaResult = await orchestratorAct.runQAFixLoopActivity(projectId);
       } catch (err) {
+        if (isSystemChangedFailure(err)) {
+          console.log(`[workflow] Stage 5 QA held — the system changed while this build was running`);
+          const retry = await escalateAndAwaitRetryDecision("system_changed");
+          if (!retry) {
+            await act.markProjectFailed(projectId, "system_changed");
+            return;
+          }
+          continue;
+        }
         if (isGuardHoldFailure(err)) {
           console.log(`[workflow] Stage 5 QA held by the progress guard — nothing paid runs until a human decides (see HOLD.md)`);
           const retry = await escalateAndAwaitRetryDecision("guard_hold");

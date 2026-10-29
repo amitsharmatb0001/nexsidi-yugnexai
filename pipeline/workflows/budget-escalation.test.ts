@@ -185,7 +185,8 @@ test("a non-budget error thrown by isBudgetExceededFailure's own check path is r
 
 test("a non-budget Stage 6 deploy failure is NOT rethrown uncaught — it routes through the same retry decision as budget_exceeded", () => {
   const callIdx = source.indexOf("deployResult = await deployRetestAct.runDeployWithLiveRetest(projectId);");
-  const surrounding = source.slice(callIdx, callIdx + 3200);
+  // 2026-10-29: 3200 -> 4000 characters; the system-change branch (team plan stage 0) sits before the fallback.
+  const surrounding = source.slice(callIdx, callIdx + 4000);
   // The old bug, explicitly absent: nothing at this call site may
   // unconditionally rethrow just because the error isn't a budget failure.
   expect(surrounding).not.toContain("if (!isBudgetExceededFailure(err)) throw err;");
