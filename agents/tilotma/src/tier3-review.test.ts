@@ -232,3 +232,22 @@ test("the reality checker runs on the critical tier and the evidence collector d
   const collector = source.slice(source.indexOf('agentName: "tilotma-evidence-collector"'), source.indexOf('agentName: "tilotma-reality-checker"'));
   expect(collector).not.toContain("critical");
 });
+
+// 2026-10-30 (understanding plan, step 4): the live reviewers get the shared record with the plan — the app as the system
+// read it from the code, and the rules its checks already found broken.
+test("the live reviewers' plan block carries the app as the system read it", async () => {
+  const { approvedPlanBlock } = await import("./tier3-review.ts");
+  const root = mkdtempSync(join(tmpdir(), "t3-map-"));
+  const prev = process.env.BUILD_DIR;
+  process.env.BUILD_DIR = root;
+  const d = join(root, "pmap");
+  mkdirSync(join(d, "db", "migrations"), { recursive: true });
+  writeFileSync(join(d, "spec.json"), JSON.stringify({ successCriteria: ["Customers order coffee."] }));
+  writeFileSync(join(d, "db", "migrations", "0000.sql"), `CREATE TABLE "menu_items" ("id" uuid PRIMARY KEY, "name" text NOT NULL);`);
+  const block = approvedPlanBlock("pmap");
+  if (prev === undefined) delete process.env.BUILD_DIR;
+  else process.env.BUILD_DIR = prev;
+  rmSync(root, { recursive: true, force: true });
+  expect(block).toContain("[SC1] Customers order coffee.");
+  expect(block).toContain("THE APP, READ FROM ITS CODE BY THE SYSTEM");
+});

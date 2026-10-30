@@ -155,18 +155,40 @@ test("the backend builder is told to ship starter content for a public catalog",
 // staff account", and the backend did exactly that: the sign-up body takes `role: 'customer' | 'staff'`, so anyone can register
 // as staff and reach the barista dashboard and the menu manager. No staff account was seeded either. Reviewers followed the plan
 // and reported nothing. Nothing in the system said that a role must never come from the request.
-test("a sign-up that takes the account's role from the request is reported; one that does not is not", () => {
+// 2026-10-30: checked by fact on the app map (SEC9): the account table's role column written with a value the request decides.
+// Reading a role from the body and never writing it is not the finding; the old check matched the words "role" and "sign-up".
+test("a sign-up that writes the account's role from the request is reported; one that writes the lowest role is not", async () => {
+  const { mapRuleFindings } = await import("./builder-exit-checks.ts");
+  const users = `CREATE TABLE "users" ("id" uuid PRIMARY KEY, "email" text NOT NULL, "password_hash" text NOT NULL, "role" text NOT NULL);`;
+  const app = `import auth from './routes/auth';
+const app = express();
+app.use('/api/v1/auth', auth);`;
   project("r1", {
+    "db/migrations/0000.sql": users,
+    "backend/src/app.ts": app,
     "backend/src/routes/auth.ts": [
       "const signUpSchema = z.object({ email: z.string(), password: z.string(), role: z.enum(['customer', 'staff']).optional().default('customer') });",
-      "router.post('/sign-up', async (req, res) => { const { email, password, role } = signUpSchema.parse(req.body); });",
+      "const router = Router();",
+      "router.post('/sign-up', async (req, res) => {",
+      "  const { email, password, role } = signUpSchema.parse(req.body);",
+      "  await pool.query('INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3)', [email, password, role]);",
+      "});",
+      "export default router;",
     ].join("\n"),
   }, "A coffee shop.");
-  expect(backendExitChecks("r1").some((f) => f.includes("auth.ts") && f.includes("role"))).toBe(true);
-  project("r2", { "backend/src/routes/auth.ts": "const signUpSchema = z.object({ email: z.string(), password: z.string() });\nrouter.post('/sign-up', async (req, res) => { await pool.query(\"INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'customer')\"); });\n" }, "A coffee shop.");
-  expect(backendExitChecks("r2").some((f) => f.includes("role"))).toBe(false);
-  project("r3", { "backend/src/routes/orders.ts": "const { status } = req.body; // an order's role-free body\nconst role = req.user.role;\n" }, "A coffee shop.");
-  expect(backendExitChecks("r3").some((f) => f.includes("role"))).toBe(false);
+  expect(mapRuleFindings(join(root, "r1"), "shubham").some((f) => f.includes("[map-rule SEC9] backend/src/routes/auth.ts:5"))).toBe(true);
+  project("r2", {
+    "db/migrations/0000.sql": users,
+    "backend/src/app.ts": app,
+    "backend/src/routes/auth.ts": `const router = Router();
+router.post('/sign-up', async (req, res) => {
+  const { email, password, role } = req.body;
+  await pool.query("INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'customer')", [email, password]);
+});
+export default router;
+`,
+  }, "A coffee shop.");
+  expect(mapRuleFindings(join(root, "r2"), "shubham").some((f) => f.includes("SEC9"))).toBe(false);
 });
 
 test("a contract with staff-only endpoints and no seeded staff account is reported; a seeded staff account satisfies it", () => {

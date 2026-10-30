@@ -10,7 +10,7 @@
 //      its test passes. There is no second review round.
 // What is still open at the end (a test that still fails, a fix run that could not finish) holds the build for a person.
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
-import { groupFindingsByAgent, type Finding, type Stage4Result } from "./stage4-multi-agent-dev.ts";
+import { agentForFile, groupFindingsByAgent, type Finding, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 import { applyEvidenceGate, gateQaFindings, type QAFixDeps, type QAFixLoopResult } from "./stage5-qa-fix-loop.ts";
 import { adoptReviewTests, planItemOf, proveReviewFindings, recordReviewNotes, type ReviewFinding } from "../review-proof.ts";
@@ -19,8 +19,9 @@ import type { RunSummary } from "../acceptance-runner.ts";
 import { dropSettledNotTrue, resolveDisputes } from "../disputes.ts";
 import { isReviewerFailure } from "../chief-check.ts";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
-import { buildAppMap } from "../app-map/index.ts";
+import { buildAppMap, type AppMap } from "../app-map/index.ts";
 import { checkRules, ruleFindings } from "../app-map/rules.ts";
+import { findingIdentity, recordSent, sentBefore } from "../app-map/identity.ts";
 import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
 
 export interface ReviewOnceDeps extends Pick<QAFixDeps, "fixShubham" | "fixAanya" | "fixPranav" | "settleDisputes" | "chiefChat" | "openQuestions" | "recordInstincts"> {
@@ -34,14 +35,30 @@ export interface ReviewOnceDeps extends Pick<QAFixDeps, "fixShubham" | "fixAanya
 }
 
 /** The broken rules, as findings in the file each names (its owner's folder: app-map/rules.test.ts). */
-function mapRuleViolations(dir: string): Finding[] {
-  try {
-    const v = checkRules(dir, buildAppMap(dir));
-    return ruleFindings(v).map((issue, i) => ({ file: v[i]!.file, issue }));
-  } catch (err) {
-    console.warn(`[review-once] the rules were not checked on the app map: ${String(err).slice(0, 160)}`);
-    return [];
+function mapRuleViolations(dir: string, map: AppMap): Finding[] {
+  const v = checkRules(dir, map);
+  return ruleFindings(v).map((issue, i) => ({ file: v[i]!.file, issue }));
+}
+
+/**
+ * One finding per fact (app-map/identity.ts): the first of the findings with the same identity is kept — the map's own, which
+ * carries the fact, comes first. A fact that was sent to a builder before is marked as come back. Records what is sent.
+ */
+function oneFindingPerFact(dir: string, map: AppMap, findings: Finding[]): Finding[] {
+  const seen = new Set<string>();
+  const out: Finding[] = [];
+  const sent: Array<{ identity: string; owner: string; text: string }> = [];
+  for (const f of findings) {
+    const identity = findingIdentity(map, f);
+    const cited = !identity.startsWith("?|");
+    if (cited && seen.has(identity)) continue;
+    seen.add(identity);
+    const before = cited ? sentBefore(dir, identity) : null;
+    out.push(before ? { ...f, issue: `${f.issue} — CAME BACK: sent to ${before.owner} at ${before.sentAt}, and that fix run finished; find why the earlier change did not hold before changing anything else` } : f);
+    if (cited) sent.push({ identity, owner: agentForFile(f.file), text: f.issue.slice(0, 300) });
   }
+  recordSent(dir, sent);
+  return out;
 }
 
 const REVIEW_RERUNS = 2;
@@ -107,9 +124,16 @@ export async function runReviewOnceWithDeps(projectId: string, plan: BuildPlan, 
 
   // 2026-10-30 (understanding plan, step 3): the rules every app keeps, checked by code on the app map — whether or not a
   // reviewer reported them. A system finding (the map read it from the code), sent to the owner of the file it names.
-  const ruleFindingsNow = mapRuleViolations(dir);
-  if (ruleFindingsNow.length) console.log(`[review-once] ${ruleFindingsNow.length} rule(s) broken in the code, by the app map`);
-  const unfixed = await fixOnce(projectId, plan, [...proven.machine, ...ruleFindingsNow, ...confirmedCode], deps);
+  let toFix: Finding[] = [...proven.machine, ...confirmedCode];
+  try {
+    const map = buildAppMap(dir);
+    const ruleFindingsNow = mapRuleViolations(dir, map);
+    if (ruleFindingsNow.length) console.log(`[review-once] ${ruleFindingsNow.length} rule(s) broken in the code, by the app map`);
+    toFix = oneFindingPerFact(dir, map, [...ruleFindingsNow, ...toFix]);
+  } catch (err) {
+    console.warn(`[review-once] the app map could not be read — rules not checked, findings not merged by fact: ${String(err).slice(0, 160)}`);
+  }
+  const unfixed = await fixOnce(projectId, plan, toFix, deps);
   if ((deps.openQuestions?.() ?? 0) > 0) {
     console.log(`[review-once] a builder asked the customer a question — the step stops until it is answered`);
     return { ...review, pass: false, iterations: 1, stuck: false };

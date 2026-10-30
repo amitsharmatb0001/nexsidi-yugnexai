@@ -20,6 +20,7 @@ export interface PlanItem {
 
 // The rules every app keeps live in baseline-rules.ts, the one list every agent reads (2026-10-29).
 import { SECURITY_BASELINE, INTEGRITY_BASELINE } from "./baseline-rules.ts";
+import { mapSection } from "./app-map/section.ts";
 export { SECURITY_BASELINE, INTEGRITY_BASELINE };
 
 const readJson = <T>(file: string): T | null => {
@@ -202,6 +203,7 @@ it is not confirmed.
 
 APPROVED PLAN (the only yardstick):
 ${planSection(projectDir)}
+${mapSection(projectDir, { maxChars: 8_000 })}
 
 For each finding answer one of:
 - "fix": it breaks a plan item above AND the code shown (or the observation it reports) supports it. Give plan_item

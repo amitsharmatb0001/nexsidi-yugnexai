@@ -50,6 +50,18 @@ test("recording and checking build the identical context, so the hash matches un
   expect(JSON.stringify(c)).not.toBe(JSON.stringify(a));
 });
 
+// 2026-10-30 (understanding plan, step 4): the context object also carries the app map's code facts — what the app does,
+// with a digest — and the structural links from plan items to files. Same code, same facts; changed code, changed digest.
+test("the handoff context carries the app map's facts, the same for the same code", () => {
+  const a = buildHandoffContext(dir, { filesWritten: ["backend/src/index.ts"] }, plan);
+  expect(a.appMap.digest).toMatch(/^[0-9a-f]{64}$/);
+  expect(buildHandoffContext(dir, { filesWritten: ["backend/src/index.ts"] }, plan).appMap).toEqual(a.appMap);
+  writeFileSync(join(dir, "backend/src/index.ts"), `const app = express();\napp.get("/api/v1/ping", (req, res) => res.json({}));\n`);
+  const b = buildHandoffContext(dir, { filesWritten: ["backend/src/index.ts"] }, plan);
+  expect(b.appMap.endpoints).toEqual(["GET /api/v1/ping → backend/src/index.ts"]);
+  expect(b.appMap.digest).not.toBe(a.appMap.digest);
+});
+
 test("latestCodeMap reads the code map back from the newest handoff file in the folder", () => {
   const hd = join(dir, ".nexsidi", "handoffs");
   mkdirSync(hd, { recursive: true });

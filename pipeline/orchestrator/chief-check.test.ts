@@ -229,3 +229,16 @@ test("answers given during the build are plan items the reviewers and builders c
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// 2026-10-30 (understanding plan, step 4): the Chief AI decides with the same facts the system has — the app read from its
+// code, and the rules the checks already found broken.
+test("the Chief AI's prompt carries the app as the system read it from the code", async () => {
+  const { chiefPrompt } = await import("./chief-check.ts");
+  const d = mkdtempSync(join(tmpdir(), "chief-map-"));
+  mkdirSync(join(d, "db", "migrations"), { recursive: true });
+  writeFileSync(join(d, "db", "migrations", "0000.sql"), `CREATE TABLE "menu_items" ("id" uuid PRIMARY KEY, "name" text NOT NULL);`);
+  const p = chiefPrompt(d, [{ text: "db/migrations/0000.sql:1 — [INT1] something" }]);
+  expect(p).toContain("THE APP, READ FROM ITS CODE BY THE SYSTEM");
+  expect(p).toContain("menu_items");
+  rmSync(d, { recursive: true, force: true });
+});

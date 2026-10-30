@@ -144,3 +144,39 @@ test("a rule the code breaks goes to its owner's fix run even when no reviewer r
   expect(calls).toContain("fix shubham 1");
   expect(sent[0]).toContain("[map-rule SEC1] backend/src/routes/search.ts:2");
 });
+
+// 2026-10-30 (understanding plan, step 4): findings are identified by the rule they cite and the place in the app map their
+// line falls in — the same fact in other words, or from the map's own check, reaches the builder once; and a fact that was
+// sent to a builder before is marked as come back.
+function historyBuild() {
+  mkdirSync(join(dir, "db", "migrations"), { recursive: true });
+  writeFileSync(join(dir, "db", "migrations", "0000.sql"), `CREATE TABLE "menu_items" ("id" uuid PRIMARY KEY, "name" text NOT NULL, "price" numeric NOT NULL);
+CREATE TABLE "orders" ("id" uuid PRIMARY KEY);
+CREATE TABLE "order_items" ("id" uuid PRIMARY KEY, "order_id" uuid REFERENCES "orders"("id"), "menu_item_id" uuid REFERENCES "menu_items"("id"), "quantity" integer, "name_at_time" text, "price_at_time" numeric);`);
+}
+
+test("a reviewer's finding and the map's broken rule about the same fact reach the builder once", async () => {
+  historyBuild();
+  const sent: string[] = [];
+  const { deps } = standIns({
+    runStage5: async () => ({ pass: false, findings: [codeFinding] }),
+    fixShubham: async (_p, f) => (sent.push(...f), { success: true, filesWritten: [] }),
+  });
+  await runReviewOnceWithDeps("p1", plan, s4, deps);
+  const int1 = sent.filter((s) => s.includes("INT1"));
+  expect(int1).toHaveLength(1);
+  expect(int1[0]).toContain("[map-rule INT1]");
+});
+
+test("a fact sent to a builder before is marked as come back, with when and to whom", async () => {
+  historyBuild();
+  const { recordSent } = await import("../app-map/identity.ts");
+  recordSent(dir, [{ identity: "INT1|endpoint:GET /:id", owner: "shubham", text: "reads the current name" }], "2026-10-25T14:20:00Z");
+  const sent: string[] = [];
+  const { deps } = standIns({
+    runStage5: async () => ({ pass: true, findings: [] }),
+    fixShubham: async (_p, f) => (sent.push(...f), { success: true, filesWritten: [] }),
+  });
+  await runReviewOnceWithDeps("p1", plan, s4, deps);
+  expect(sent.find((s) => s.includes("[map-rule INT1]"))).toContain("CAME BACK: sent to shubham at 2026-10-25T14:20:00Z");
+});

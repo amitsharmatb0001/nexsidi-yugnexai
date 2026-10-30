@@ -246,7 +246,9 @@ export async function runStage5WithAgents(
   const { planSection } = await import("../chief-check.ts");
   const planRule = `\n\nAPPROVED PLAN — the only yardstick. Report a finding only if it breaks one of these items, and start its description with the item in brackets, e.g. [SC2] or [SEC1]. Something that breaks no item here is not a finding:\n${planSection(buildDirFor(projectId))}` +
     // 2026-10-30 (team plan, stage 5): every finding comes with proof (../review-proof.ts); one without goes to the notes.
-    `\n\nPROOF: a finding about what the customer asked for (an SC, EP, ANS or ROLES item) must carry a "reproduction": a test that fails on the running app while the finding is true (see the submit_findings tool). The system runs it before any builder sees the finding; one that passes, or a finding without it, goes to the notes. A finding about the rules every app keeps (SEC, INT) or the approved design may instead stand on its quoted code. You review once: there is no second round, so report everything you find now.`;
+    `\n\nPROOF: a finding about what the customer asked for (an SC, EP, ANS or ROLES item) must carry a "reproduction": a test that fails on the running app while the finding is true (see the submit_findings tool). The system runs it before any builder sees the finding; one that passes, or a finding without it, goes to the notes. A finding about the rules every app keeps (SEC, INT) or the approved design may instead stand on its quoted code. You review once: there is no second round, so report everything you find now.` +
+    // 2026-10-30 (understanding plan, step 4): the shared record — the app as the system read it, and what its checks found.
+    (await import("../app-map/section.ts")).mapSection(buildDirFor(projectId));
   const systemContext = plan ? buildSystemContext(plan) + planRule : undefined;
   // Patent claim 4: what each reviewer missed in training rounds (defects planted in real code and not reported) is added to its
   // next review. Never fatal: with no examples or no database the input is unchanged.

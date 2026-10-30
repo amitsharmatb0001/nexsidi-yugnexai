@@ -8,6 +8,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildCodeMap, type CodeMap } from "../../packages/context-chain/src/code-map.ts";
 import { buildTraceGraph, type TraceGraph, type TraceInput } from "../../packages/context-chain/src/traceability.ts";
+import { buildAppMap } from "../orchestrator/app-map/index.ts";
+import { handoffFacts, type HandoffFacts } from "../orchestrator/app-map/trace.ts";
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
 
@@ -63,9 +65,11 @@ export function buildHandoffContext(
   buildDir: string,
   manifest: { filesWritten: string[] },
   plan: unknown,
-): { filesWritten: string[]; codeMap: CodeMap; traceability: TraceGraph } {
+): { filesWritten: string[]; codeMap: CodeMap; traceability: TraceGraph; appMap: HandoffFacts } {
   const codeMap = buildCodeMap(buildDir, manifest.filesWritten.filter(isMappedFile), { rules: rulesFromPlan(plan) });
-  return { filesWritten: manifest.filesWritten, codeMap, traceability: buildTraceGraph(traceInputFromPlan(plan), codeMap) };
+  // 2026-10-30 (understanding plan, step 4): what the app does (app-map), with a digest, and the links from plan items to
+  // files by fact — beside the word-matched trace, which stays for the files the map does not read.
+  return { filesWritten: manifest.filesWritten, codeMap, traceability: buildTraceGraph(traceInputFromPlan(plan), codeMap), appMap: handoffFacts(buildAppMap(buildDir)) };
 }
 
 /** The code map from the newest handoff file in a project's folder that has one, or null. */

@@ -180,3 +180,25 @@ test("a test withdrawn once is not withdrawn again, and does not count as progre
   expect(calls.filter((c) => c.startsWith("fix")).length).toBe(4);
   expect(readAcceptanceTests(join(dir, "p1"))?.withdrawn?.length).toBe(1);
 });
+
+// 2026-10-30 (understanding plan, step 5): progress is judged by facts. A round in which no more tests pass but the code
+// closed broken rules (fewer open facts on the app map) is progress; a round whose fixes left the code's facts unchanged
+// (the same map digest) made none, whatever the builders said, and the reason says so.
+test("a round that closes broken rules is progress even when no more tests pass", async () => {
+  const open = [["INT1|table:order_items", "SEC9|endpoint:POST /api/v1/auth/sign-up"], ["SEC9|endpoint:POST /api/v1/auth/sign-up"], [], []];
+  let round = 0;
+  const { deps, calls } = standIns({ "AT-1-1": false, "AT-1-2": true }, () => (round++, { filesWritten: 1 }));
+  deps.facts = () => ({ open: open[Math.min(round, open.length - 1)]!, digest: `d${round}` });
+  const r = await runAcceptanceGate(join(dir, "p1"), deps, { maxFixRounds: 6, stuckRounds: 2 });
+  expect(r.status).toBe("failing");
+  // rounds 1 and 2 closed a fact each (progress); rounds 3 and 4 closed nothing: stuck after 4 fix rounds, not 2
+  expect(calls.filter((c) => c.startsWith("fix")).length).toBe(4);
+});
+
+test("fix rounds that leave the code's facts unchanged are named as such in the hold reason", async () => {
+  const { deps } = standIns({ "AT-1-1": false, "AT-1-2": true });
+  deps.facts = () => ({ open: [], digest: "same" });
+  const r = await runAcceptanceGate(join(dir, "p1"), deps, { maxFixRounds: 4, stuckRounds: 2 });
+  expect(r.status).toBe("failing");
+  expect(r.reason).toContain("changed nothing the app map reads in the code");
+});

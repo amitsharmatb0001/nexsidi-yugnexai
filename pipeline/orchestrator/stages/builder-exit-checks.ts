@@ -101,7 +101,7 @@ export function backendExitChecks(projectId: string): string[] {
     ...imageFindings("backend/", externalImageUrls(join(dir, "backend", "src"))),
     ...imageFindings("db/", externalImageUrls(join(dir, "db"))),
     ...starterContentFindings(dir),
-    ...roleFromRequestFindings(join(dir, "backend", "src")),
+    // 2026-10-30: the self-chosen role (SEC9) is checked on the app map (mapRuleFindings), by fact, not by the words "role" and "sign-up".
     ...staffAccountFindings(dir),
     ...secretLoggingFindings(dir).filter((f) => f.startsWith("backend/")),
     ...strayShippedFileFindings(dir).filter((f) => f.startsWith("backend/")),
@@ -281,47 +281,6 @@ export async function backendFreshStartFindings(projectId: string): Promise<stri
   const r = await migrationFindings(dir);
   if (!r.ran && r.note) console.warn(`[exit-checks] ${r.note}`);
   return r.findings;
-}
-
-// 2026-10-25 (brewline2): sign-up took `role: 'customer' | 'staff'` from the request body, so anyone could register as staff.
-// A role (or any permission) is never read from the request: sign-up makes the lowest role; more powerful accounts come from
-// a seeded account or from someone who already has that power. Found: a file that handles sign-up and reads `role` from the
-// request (a validation field named role, `req.body.role`, or role in a destructure of the request body).
-const ROLE_FROM_REQUEST = [
-  /\brole\s*:\s*z\./,
-  /req\.body\.role\b/,
-  /\{[^{}]*\brole\b[^{}]*\}\s*=\s*(?:req\.body|\w+\.data)\b/,
-  /\{[^{}]*\brole\b[^{}]*\}\s*=\s*\w*[sS]chema\.parse\(\s*req\.body/,
-];
-
-export function roleFromRequestFindings(backendSrcDir: string): string[] {
-  const out: string[] = [];
-  const walk = (d: string, rel: string) => {
-    let names: string[];
-    try {
-      names = readdirSync(d);
-    } catch {
-      return;
-    }
-    for (const n of names) {
-      if (SKIP.has(n)) continue;
-      const full = join(d, n);
-      const r = rel ? `${rel}/${n}` : n;
-      try {
-        if (statSync(full).isDirectory()) walk(full, r);
-        else if (/\.(ts|js)$/.test(n) && !/\.test\./.test(n)) {
-          const text = readFileSync(full, "utf-8");
-          if (/sign-?up|register/i.test(text) && ROLE_FROM_REQUEST.some((re) => re.test(text))) {
-            out.push(`backend/src/${r}: sign-up reads the account's role from the request, so anyone can register with the most powerful role. A role is never taken from the request: sign-up always creates the lowest role, and staff/admin accounts come from a seeded account (seedStaff.ts) or from someone who already has that role`);
-          }
-        }
-      } catch {
-        // unreadable: skipped
-      }
-    }
-  };
-  walk(backendSrcDir, "");
-  return out;
 }
 
 /**

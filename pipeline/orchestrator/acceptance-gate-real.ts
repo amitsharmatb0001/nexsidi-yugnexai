@@ -13,6 +13,7 @@ import { acceptanceFixCheck, type GateDeps, type GateUrls, type Owner } from "./
 import { activeTests, readAcceptanceTests, type AcceptanceTest } from "./acceptance-tests.ts";
 import { resolveDisputes } from "./disputes.ts";
 import { refreshAppMap } from "./app-map/index.ts";
+import { codeFacts } from "./app-map/trace.ts";
 import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 import { openCustomerQuestions } from "../../packages/agent-runtime/src/tools/ask.ts";
 import { openBlockers } from "../../packages/agent-runtime/src/tools/blocked.ts";
@@ -144,6 +145,15 @@ export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDe
     },
     // An open question for the customer, or an open blocker report, stops the rounds (orchestrator/blockers.ts).
     openQuestions: () => openCustomerQuestions(projectId).length + openBlockers(projectId).length > 0,
+    // 2026-10-30 (understanding plan, step 5): progress by facts — the rules the code breaks, and what the code does.
+    facts: () => {
+      try {
+        return codeFacts(dir);
+      } catch (err) {
+        console.warn(`[acceptance-gate] the app map could not be read — progress by tests only: ${String(err).slice(0, 160)}`);
+        return { open: [], digest: `unread-${Date.now()}` };
+      }
+    },
   };
 
   return {

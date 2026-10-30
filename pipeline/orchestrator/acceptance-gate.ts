@@ -8,8 +8,9 @@
 //      the same round;
 //   3. a fix run may finish only when its tests pass on the rebuilt app, or it has disputed a test with evidence (the
 //      Chief AI rules: a test she finds wrong is withdrawn) or handed it on (acceptanceFixCheck below);
-//   4. the rounds repeat while they make progress. Two rounds in a row with no more tests passing, or the round limit,
-//      end the gate as "failing" and the workflow holds the build for a person.
+//   4. the rounds repeat while they make progress: more tests passing, or fewer facts open on the app map (rules the code
+//      breaks, by identity — understanding plan step 5). Two rounds in a row with neither, or the round limit, end the gate
+//      as "failing" and the workflow holds the build for a person; fixes that left the code's facts unchanged are named.
 // The builders of a feature share its tests, so they own the feature together. With builder teams (the default) the
 // whole app is built in one pass, so the gate runs once, after the build; with several phases it runs after the last.
 import { readAcceptanceTests, activeTests, withdrawTest, testSteps, type AcceptanceTest } from "./acceptance-tests.ts";
@@ -41,6 +42,11 @@ export interface GateDeps {
   /** budget and system-version checks before each paid round; throws to stop */
   beforeRound?(): Promise<void>;
   openQuestions?(): boolean;
+  /**
+   * The code's facts now (2026-10-30, understanding plan step 5): the identities of the rules the app map finds broken, and
+   * the digest of what the map reads. Without it, progress is tests passing only.
+   */
+  facts?(): { open: string[]; digest: string };
   now?(): Date;
 }
 
@@ -81,6 +87,9 @@ export async function runAcceptanceGate(
     return { status: "not_checked", rounds: 0, reason: "this build has no acceptance tests (none were written, or all were withdrawn)", withdrawn };
   }
   let best = -1;
+  let fewestOpen = Number.POSITIVE_INFINITY;
+  let lastDigest: string | undefined;
+  let unchangedRounds = 0;
   let stale = 0;
   let fixRounds = 0;
   let withdrewLastRound = false;
@@ -94,15 +103,19 @@ export async function runAcceptanceGate(
     const failing = run.results.filter((r) => r.status === "failed");
     console.log(`[acceptance-gate] round ${fixRounds + 1}: ${run.passed} passed, ${run.failed} failed, ${run.notChecked} not checked`);
     if (failing.length === 0) return { status: "passed", rounds: fixRounds, last: run, withdrawn };
-    // Progress is tests passing, not files written (enforce/fix-accounting.ts).
-    if (run.passed > best) {
-      best = run.passed;
-      stale = 0;
-    } else if (fixRounds > 0 && !withdrewLastRound) {
-      stale++;
-    }
-    const open = `still failing: ${failing.map((f) => `${f.id} [${f.planItem}]`).join(", ")}`;
-    if (stale >= stuckRounds) return { status: "failing", rounds: fixRounds, last: run, reason: `${stale} fix rounds in a row made no more tests pass; ${open}`, withdrawn };
+    // Progress is facts: tests passing, or broken rules closed in the code — not files written (enforce/fix-accounting.ts).
+    const facts = deps.facts?.();
+    const testsUp = run.passed > best;
+    const factsDown = facts !== undefined && facts.open.length < fewestOpen;
+    if (testsUp) best = run.passed;
+    if (facts) fewestOpen = Math.min(fewestOpen, facts.open.length);
+    if (testsUp || factsDown) stale = 0;
+    else if (fixRounds > 0 && !withdrewLastRound) stale++;
+    if (facts && fixRounds > 0) unchangedRounds = facts.digest === lastDigest ? unchangedRounds + 1 : 0;
+    lastDigest = facts?.digest;
+    const open = `still failing: ${failing.map((f) => `${f.id} [${f.planItem}]`).join(", ")}${facts?.open.length ? `; rules still broken: ${facts.open.join(", ")}` : ""}`;
+    const why = `${stale} fix rounds in a row made no more tests pass${facts ? " and closed no broken rule" : ""}${unchangedRounds >= stale ? "; the fixes changed nothing the app map reads in the code" : ""}`;
+    if (stale >= stuckRounds) return { status: "failing", rounds: fixRounds, last: run, reason: `${why}; ${open}`, withdrawn };
     if (fixRounds >= maxFixRounds) return { status: "failing", rounds: fixRounds, last: run, reason: `${maxFixRounds} fix rounds did not make every test pass; ${open}`, withdrawn };
 
     fixRounds++;

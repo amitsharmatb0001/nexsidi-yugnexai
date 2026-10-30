@@ -27,6 +27,7 @@ import { assertValidIdentifier } from "../../../pipeline/orchestrator/checkpoint
 import { runWithQuotaWatchAndResume } from "../../../pipeline/activities/quota-retry.ts";
 import { reviewAccountFromEnv, reviewAccountSection, reviewSeededFromEnv, type ReviewAccount } from "./review-account.ts";
 import { planSection } from "../../../pipeline/orchestrator/chief-check.ts";
+import { mapSection } from "../../../pipeline/orchestrator/app-map/section.ts";
 import { reproInstruction } from "../../../pipeline/orchestrator/stages/live-review-once.ts";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 
@@ -75,8 +76,15 @@ export function approvedPlanBlock(projectId: string): string {
     section = "";
   }
   // 2026-10-30 (team plan, stage 5): every finding comes with proof; REVIEW_ONCE=off drops the instruction.
+  // 2026-10-30 (understanding plan, step 4): the shared record — the app as the system read it, and what its checks found.
+  let shared = "";
+  try {
+    shared = mapSection(buildDirFor(projectId), { maxChars: 8_000 });
+  } catch {
+    shared = "";
+  }
   return section
-    ? `\n\nAPPROVED PLAN — the only yardstick. Every finding starts with the item it breaks, e.g. [SC2]:\n${section}` + (process.env.REVIEW_ONCE !== "off" ? reproInstruction() : "")
+    ? `\n\nAPPROVED PLAN — the only yardstick. Every finding starts with the item it breaks, e.g. [SC2]:\n${section}` + (process.env.REVIEW_ONCE !== "off" ? reproInstruction() : "") + shared
     : "";
 }
 

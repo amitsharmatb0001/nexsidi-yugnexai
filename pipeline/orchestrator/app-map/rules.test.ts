@@ -228,6 +228,29 @@ test("INT1: the line's header (booking_items → bookings) is not an item, and a
   expect(v.some((f) => f.includes("listGear"))).toBe(false);
 });
 
+test("SEC9: a role chosen by a branch on the request is chosen by the caller (RateGate: finalRole = 'admin' when the body asks for admin)", async () => {
+  const { fromRequest } = await import("./code.ts");
+  const ts = (await import("typescript")).default;
+  const src = `async function signUp(req, res) {
+  const { role } = req.body;
+  const requested = role || "client";
+  let finalRole = "client";
+  if (requested === "admin") { finalRole = "admin"; }
+  const pick = req.query.x ? "staff" : "client";
+  await pool.query("INSERT INTO users (role) VALUES ($1)", [finalRole]);
+}`;
+  const sf = ts.createSourceFile("a.ts", src, ts.ScriptTarget.Latest, true);
+  const fn = sf.statements[0]!;
+  const ident = (name: string) => { let found: ts.Node | undefined; const v = (n: ts.Node) => { if (!found && ts.isIdentifier(n) && n.text === name && ts.isArrayLiteralExpression(n.parent)) found = n; ts.forEachChild(n, v); }; v(fn); return found!; };
+  const finalRoleUse = ident("finalRole");
+  expect(fromRequest([finalRoleUse], fn, sf)).toBe(false); // as SQL text: only literals reach it
+  expect(fromRequest([finalRoleUse], fn, sf, { controlFlow: true })).toBe(true); // as a decision: the request picks the branch
+  const pickDecl = (sf.statements[0] as ts.FunctionDeclaration).body!.statements[4] as ts.VariableStatement;
+  const pickInit = pickDecl.declarationList.declarations[0]!.initializer!;
+  expect(fromRequest([pickInit], fn, sf)).toBe(false);
+  expect(fromRequest([pickInit], fn, sf, { controlFlow: true })).toBe(true);
+});
+
 test("SEC9: only the account table's role counts; a contact's role is a job title", () => {
   expect(of("SEC9").filter((v) => v.fact.includes("contacts.role"))).toEqual([]);
 });
@@ -249,4 +272,15 @@ test("every violation's file is in its owner's folder, so the review sends it to
   const v = rules();
   expect(v.length).toBeGreaterThan(5);
   for (const x of v) expect(`${x.rule} ${x.file} → ${agentForFile(x.file)}`).toBe(`${x.rule} ${x.file} → ${x.owner}`);
+});
+
+test("the shared record for the reviewers and the Chief AI: the app as the system read it, and the rules it already found broken", async () => {
+  const { mapSection } = await import("./section.ts");
+  const s = mapSection(dir);
+  expect(s).toContain("THE APP, READ FROM ITS CODE BY THE SYSTEM");
+  expect(s).toContain("order_items");
+  expect(s).toContain("ALREADY FOUND BY THE SYSTEM'S CHECKS");
+  expect(s).toContain("[map-rule SEC1] backend/src/routes/auth.ts:7");
+  expect(mapSection(join(tmpdir(), "no-such-build-folder-xyz"))).toBe("");
+  expect(mapSection(dir, { maxChars: 500 }).length).toBeLessThan(900);
 });

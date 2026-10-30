@@ -292,7 +292,27 @@ function valueParts(e: ts.Expression, ff: FixedFacts, depth = 0): ts.Expression[
   return [e];
 }
 
-export function fromRequest(exprs: ts.Node[], scope: ts.Node, sf: ts.SourceFile): boolean {
+/**
+ * opts.controlFlow (SEC9, who decides a value — RateGate: `if (requested === "admin") finalRole = "admin"`): the conditions of
+ * the if / ?: / switch that choose a value count too, and a check against a fixed list does not clear it (the caller still picks).
+ */
+const conditionsIn = (e: ts.Node): ts.Node[] => {
+  const out: ts.Node[] = [];
+  visit(e, (n) => { if (ts.isConditionalExpression(n)) out.push(n.condition); });
+  return out;
+};
+const branchConditions = (at: ts.Node, scope: ts.Node): ts.Node[] => {
+  const out: ts.Node[] = [];
+  for (let n: ts.Node = at; n.parent && n !== scope; n = n.parent) {
+    const p = n.parent;
+    if (ts.isIfStatement(p) && n !== p.expression) out.push(p.expression);
+    else if (ts.isConditionalExpression(p) && n !== p.condition) out.push(p.condition);
+    else if (ts.isCaseClause(p) && p.parent && ts.isCaseBlock(p.parent) && ts.isSwitchStatement(p.parent.parent)) out.push(p.parent.parent.expression);
+  }
+  return out;
+};
+
+export function fromRequest(exprs: ts.Node[], scope: ts.Node, sf: ts.SourceFile, opts: { controlFlow?: boolean } = {}): boolean {
   const ff = fixedFacts(sf);
   const fixed = ff.fixed;
   // Variables the function checks against a fixed list: `SORTS.includes(x)`, `["a", "b"].includes(x.toLowerCase())`.
@@ -302,10 +322,13 @@ export function fromRequest(exprs: ts.Node[], scope: ts.Node, sf: ts.SourceFile)
     const list = n.expression.expression;
     const isFixedList = (ts.isIdentifier(list) && fixed.has(list.text)) || (ts.isArrayLiteralExpression(list) && list.elements.every((x) => ts.isStringLiteralLike(x)));
     const name = rootName(n.arguments[0]);
-    if (isFixedList && name) checked.add(name);
+    if (isFixedList && name && !opts.controlFlow) checked.add(name);
   });
   const seen = new Set<string>();
-  let frontier = exprs.flatMap((e) => (ts.isExpression(e) ? valueParts(e, ff) : [e]));
+  let frontier = exprs.flatMap((e) => [
+    ...(ts.isExpression(e) ? valueParts(e, ff) : [e]),
+    ...(opts.controlFlow ? [...conditionsIn(e), ...branchConditions(e, scope)] : []),
+  ]);
   for (let depth = 0; depth < 4 && frontier.length; depth++) {
     const names: string[] = [];
     for (const e of frontier) {
@@ -323,11 +346,14 @@ export function fromRequest(exprs: ts.Node[], scope: ts.Node, sf: ts.SourceFile)
       return ids.some((id) => names.includes(id));
     };
     const next: ts.Node[] = [];
-    const add = (e: ts.Expression) => next.push(...valueParts(e, ff));
+    const add = (e: ts.Expression, at: ts.Node = e) => {
+      next.push(...valueParts(e, ff));
+      if (opts.controlFlow) next.push(...conditionsIn(e), ...branchConditions(at, scope));
+    };
     visit(scope, (n) => {
-      if (ts.isVariableDeclaration(n) && n.initializer && declares(n.name)) add(n.initializer);
-      if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left) && names.includes(n.left.text)) add(n.right);
-      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "push" && ts.isIdentifier(n.expression.expression) && names.includes(n.expression.expression.text)) n.arguments.forEach(add);
+      if (ts.isVariableDeclaration(n) && n.initializer && declares(n.name)) add(n.initializer, n);
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left) && names.includes(n.left.text)) add(n.right, n);
+      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "push" && ts.isIdentifier(n.expression.expression) && names.includes(n.expression.expression.text)) n.arguments.forEach((a) => add(a, n));
       if ((ts.isForOfStatement(n) || ts.isForInStatement(n)) && declares(n.initializer)) add(n.expression);
     });
     frontier = next;
@@ -346,7 +372,8 @@ function writesFromRequest(text: string, values: ts.Expression | undefined, scop
   for (const [col, val] of pairs) {
     const n = val.match(/^\$(\d+)$/)?.[1];
     const el = n ? values.elements[Number(n) - 1] : undefined;
-    if (el && fromRequest([el], scope, sf)) out.push(`${table}.${col}`);
+    // Who decides the value: its data, and the branches that choose it (SEC9).
+    if (el && fromRequest([el], scope, sf, { controlFlow: true })) out.push(`${table}.${col}`);
   }
   return out;
 }
@@ -378,11 +405,22 @@ export interface EndpointFacts {
   answers401: boolean | null;
   /** the handler's own code answers 403 (it checks the caller's role or ownership itself) */
   answers403: boolean | null;
+  /** the first and last line of the handler in handlerFile (a finding's line inside it is about this endpoint) */
+  handlerSpan: [number, number] | null;
+}
+
+/** A named function of the backend and its lines (a finding inside a helper is about that helper). */
+export interface FunctionSpan {
+  file: string;
+  name: string;
+  start: number;
+  end: number;
 }
 
 export interface BackendFacts {
   endpoints: EndpointFacts[];
   sql: SqlUse[];
+  functions: FunctionSpan[];
   notes: string[];
 }
 
@@ -573,9 +611,13 @@ export function readBackend(backendDir: string): BackendFacts {
       sql: [...new Set(used)].map(({ node: _n, parsed: _p, ...q }) => q),
       answers401: handlerNode ? nodes.some((fn) => /\b401\b/.test(fn.getText(handlerParsed.sf))) : null,
       answers403: handlerNode ? nodes.some((fn) => /\b403\b/.test(fn.getText(handlerParsed.sf))) : null,
+      handlerSpan: handlerNode ? [lineOf(handlerParsed.sf, handlerNode), handlerParsed.sf.getLineAndCharacterOfPosition(handlerNode.end).line + 1] : null,
     });
   }
-  return { endpoints, sql: sql.map(({ node: _n, parsed: _p, ...q }) => q), notes };
+  const functions: FunctionSpan[] = files.flatMap((p) =>
+    [...fnsOf.get(p.abs)!.entries()].map(([name, n]) => ({ file: p.rel, name, start: lineOf(p.sf, n), end: p.sf.getLineAndCharacterOfPosition(n.end).line + 1 })),
+  );
+  return { endpoints, sql: sql.map(({ node: _n, parsed: _p, ...q }) => q), functions, notes };
 }
 
 // ── Frontend ────────────────────────────────────────────────────────────────

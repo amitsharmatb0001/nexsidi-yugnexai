@@ -1192,3 +1192,45 @@ Approved by Amit as stage 1. It reverses the reading half of his 2 October decis
 - INT3 (one value for a business number across frontend and backend) and SEC3 (own records only), which the map does not read yet.
 
 **Found, not changed:** `historyIntegrityFindings` (`builder-exit-checks.ts`) is a text-matching INT1 check that nothing outside its tests calls. These rules replace it, and removing it belongs to stage 6.
+
+## Batch 69 — understanding plan, steps 4 and 5: findings known by fact, a shared record, progress by facts (2026-10-30)
+
+**Why:** Brewline 3's item-name finding came back in new words, round after round, and nothing recognised it. The later reports under the same rule were different facts, and nothing told them apart either. The reviewers, the Chief AI and the system's checks each read the code alone. Progress was "more tests pass", so a round that fixed a broken rule counted as no progress, and a round that changed nothing could not be told from one that tried.
+
+**Built:**
+- **Finding identity** (`app-map/identity.ts`). An identity is the rule or plan item the finding cites, plus the place in the map its file and line fall in:
+  - an endpoint (the line is in one of its queries or inside its handler);
+  - a helper function (the innermost named function, e.g. `orders.ts#validatePickupSlot`);
+  - a table (a migration; the first table of the map the finding names);
+  - a page, or else the file.
+  The map now records each handler's lines and every backend function's lines.
+- **The ledger** (`<build>/findings-ledger.jsonl`): which identities went to which builder, and when.
+- **Review-once:** one finding per identity reaches the fix run. The map's broken rule comes first, because it carries the fact. A finding whose identity was sent before is marked "CAME BACK: sent to <builder> at <time>…". A finding that cites no id is never merged.
+- **Structural traceability** (`app-map/trace.ts`; claim 3's two-way links). Every link names the fact it rests on:
+  - plan item → endpoint, page or table: the item names it exactly, or one of its acceptance tests requests or opens it;
+  - endpoint → route, handler and query files;
+  - page → page file and the files its calls are in;
+  - table → the migrations that create it or add its columns.
+  The word-matched trace in `packages/context-chain` stays, for files the map does not read.
+- **The handoff context object** now carries `appMap`: the code facts' SHA-256 digest, the endpoints with their handler files, the tables, and the structural links. These are code facts only: no times and no tests, which change between record and check without the code changing.
+- **The shared record** (`app-map/section.ts`): the app as the system read it, and the rules its checks already found broken ("do not report them again"). It goes into the static reviewers' context, the live reviewers' plan block and the Chief AI's prompt, capped at 12,000 or 8,000 characters.
+- **Progress by facts** (acceptance gate, step 5):
+  - A round makes progress when more tests pass, or fewer facts are open: the identities of the rules the map finds broken (`codeFacts`).
+  - Two rounds with neither hold the build. The reason lists the rules still broken.
+  - When the code's digest did not change, the reason says the fixes "changed nothing the app map reads in the code".
+  - Deviation from the step 5 plan, on the facts: a changed digest alone is not counted as progress. Code that changes while no test passes and no rule closes is churn, and counting it would let a build spend rounds without getting closer.
+- **SEC9 with control flow:** a role written with a value that a branch on the request chooses counts as chosen by the caller. RateGate's sign-up sets `finalRole = "admin"` when the body asks for admin and an environment secret matches. The rulebook allows staff accounts only from a seed or from someone who already has the role. SQL text (SEC1) still follows data only: a literal chosen by a condition is safe SQL.
+- **Removed:** the text check `roleFromRequestFindings`, which matched the words "role" and "sign-up". On 94 builds the map's SEC9 finds every case it found, and not its false one: 9739da9032b0, a contact's job title.
+
+**Proof:**
+- **Brewline 3's recorded review findings** (`rounds.jsonl`: 39 findings in 14 rounds). Each was identified on the code of its time: the 14:42 snapshot and the 8 commits. The rounds before 14:42 have no recorded code, so they were placed on the 14:42 code and are marked so.
+  - 39 findings make 23 identities.
+  - The item-name read, reported 6 times between 12:32 and 13:26 in different words, is one identity: `INT1|endpoint:GET /api/v1/orders`. From its second report it would have been marked come back.
+  - The insert (`INT1|endpoint:POST /api/v1/orders`), the schema file (`INT1|table:order_items`) and the pickup-slot helper (`EP7` and `SC4` at `orders.ts#validatePickupSlot`) come out as different facts. This is the correction on record from batch 67.
+- **Brewline 3's code facts at each commit:** one open fact throughout, `MAP|table:order_items` (the schema file). Only 4 distinct digests across 8 commits: 4 fix commits changed nothing the map reads. Under step 5 the gate would have held the build after two such rounds and named the fact.
+- **Tests:** identity 5, trace 4, the handoff 1, review-once 2, gate 2, the real gate 1, the shared record 2 (Chief AI and live reviewers), SEC9 control flow 1, and the finish check rewritten to the fact version 1.
+
+**Not checked:**
+- the shared record's effect on what reviewers report (it needs a paid review);
+- the gate's progress rule in a live build (it needs a worker);
+- identity of findings that cite no file and line (left unmerged by design).
