@@ -34,7 +34,7 @@ async function checklistTextFor(projectId: string): Promise<string> {
 async function frontendExitChecksFor(projectId: string, summary?: string): Promise<string[]> {
   const { frontendExitChecks, checklistFindings, mapRuleFindings } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
   // 2026-10-25: the first build (not a fix round) must account for every approved-plan item that concerns the frontend.
-  return [...frontendExitChecks(projectId), ...mapRuleFindings(buildDirFor(projectId), "aanya"), ...(summary !== undefined ? checklistFindings(projectId, "frontend", summary) : [])];
+  return [...frontendExitChecks(projectId), ...mapRuleFindings(buildDirFor(projectId), "aanya", { remember: true }), ...(summary !== undefined ? checklistFindings(projectId, "frontend", summary) : [])];
 }
 
 export function getOutputDir(projectId: string): string {

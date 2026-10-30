@@ -4,7 +4,7 @@
 // by the system, when the builder calls task_complete (last phase and fix rounds), and what they find is handed back to
 // it first. Pure file reads; no model call.
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 import { scanProjectForEmojiUi } from "./emoji-ui-check.ts";
 import { scanProjectForDeadButtons } from "./dead-ui-check.ts";
@@ -15,6 +15,7 @@ import { metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, stra
 import { planItemsFor, type PlanItem } from "../chief-check.ts";
 import { buildAppMap } from "../app-map/index.ts";
 import { checkRules, ruleFindings } from "../app-map/rules.ts";
+import { recordMistakePatterns } from "../app-map/mistakes.ts";
 
 const SKIP = new Set(["node_modules", ".next", "dist", "build", ".git"]);
 
@@ -403,10 +404,12 @@ export function keepHistoryInMigrations(projectDir: string): string[] {
 // the map's own gaps. Before, these were prompt text the reviewers judged rounds later. The builder gets only the ones it owns
 // (the file's owner, decided from the facts); the schema file against the migrations is the database builder's own check
 // already (schemaMigrationSyncFindings). A folder the map cannot read is not checked here, and blocks nothing.
-export function mapRuleFindings(projectDir: string, owner: "shubham" | "aanya" | "pranav"): string[] {
+export function mapRuleFindings(projectDir: string, owner: "shubham" | "aanya" | "pranav", opts: { remember?: boolean } = {}): string[] {
   try {
     const map = buildAppMap(projectDir);
     const violations = checkRules(projectDir, map).filter((v) => !(v.rule === "MAP" && v.file === "db/src/schema.ts"));
+    // Stage 7: each broken rule is a mistake this builder made, kept by its fact key once per build (app-map/mistakes.ts).
+    if (opts.remember) void recordMistakePatterns(projectDir, basename(projectDir), owner, violations.filter((v) => v.owner === owner));
     return ruleFindings(violations, owner);
   } catch (err) {
     console.warn(`[map-rules] not checked for ${owner}: ${String(err).slice(0, 160)}`);

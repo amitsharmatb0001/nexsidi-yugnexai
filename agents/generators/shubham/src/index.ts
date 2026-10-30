@@ -27,7 +27,7 @@ async function backendExitChecksFor(projectId: string, summary?: string): Promis
     ...backendExitChecks(projectId),
     ...(await contractRouteFindingsFor(backendContractFindings, projectId)),
     // 2026-10-30: the rules every app keeps, checked on the app map (the ones this builder owns).
-    ...mapRuleFindings(buildDirFor(projectId), "shubham"),
+    ...mapRuleFindings(buildDirFor(projectId), "shubham", { remember: true }),
     // 2026-10-25: the first build (not a fix round) must account for every approved-plan item that concerns the backend.
     ...(summary !== undefined ? checklistFindings(projectId, "backend", summary) : []),
   ];

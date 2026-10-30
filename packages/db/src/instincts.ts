@@ -158,8 +158,10 @@ export async function queryRecentInstincts(domain: InstinctDomain | InstinctDoma
     .select({ trigger: instinctsTable.trigger, action: instinctsTable.action, confidence: instinctsTable.confidence })
     .from(instinctsTable)
     .where(and(domainFilter, eq(instinctsTable.outcome, "mistake")))
-    // Patterns that passed the statistical test come first (claim 7), then the most recent.
-    .orderBy(desc(instinctsTable.significant), desc(instinctsTable.createdAt))
+    // Patterns that passed the statistical test come first (claim 7), then those seen in the most projects and most often —
+    // since stage 7 a broken rule has one fact key across projects (pipeline/orchestrator/app-map/mistakes.ts), so these
+    // counts mean something — then the most recent.
+    .orderBy(desc(instinctsTable.significant), desc(instinctsTable.projectCount), desc(instinctsTable.occurrences), desc(instinctsTable.createdAt))
     .limit(limit);
   return rows;
 }

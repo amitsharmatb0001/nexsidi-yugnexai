@@ -22,6 +22,8 @@ import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 import { buildAppMap, type AppMap } from "../app-map/index.ts";
 import { checkRules, ruleFindings } from "../app-map/rules.ts";
 import { findingIdentity, recordSent, sentBefore } from "../app-map/identity.ts";
+import { recordMistakePatterns } from "../app-map/mistakes.ts";
+import { basename } from "node:path";
 import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
 
 export interface ReviewOnceDeps extends Pick<QAFixDeps, "fixShubham" | "fixAanya" | "fixPranav" | "settleDisputes" | "chiefChat" | "openQuestions" | "recordInstincts"> {
@@ -37,6 +39,8 @@ export interface ReviewOnceDeps extends Pick<QAFixDeps, "fixShubham" | "fixAanya
 /** The broken rules, as findings in the file each names (its owner's folder: app-map/rules.test.ts). */
 function mapRuleViolations(dir: string, map: AppMap): Finding[] {
   const v = checkRules(dir, map);
+  // Stage 7: kept in mistake memory by their fact keys, once per build, under the owner (app-map/mistakes.ts).
+  for (const owner of new Set(v.map((x) => x.owner))) void recordMistakePatterns(dir, basename(dir), owner, v.filter((x) => x.owner === owner));
   return ruleFindings(v).map((issue, i) => ({ file: v[i]!.file, issue }));
 }
 
@@ -77,7 +81,9 @@ async function fixOnce(projectId: string, plan: BuildPlan, findings: Finding[], 
       const fix = fixerOf(owner as Owner);
       const texts = list.map(formatFinding);
       if (!fix) return { owner, list, success: false, escalations: [] as Escalation[] };
-      await deps.recordInstincts?.(owner, texts);
+      // The map's broken rules are already kept by their fact keys; a model summary would give them new words each time.
+      const reviewTexts = texts.filter((t) => !t.includes("[map-rule "));
+      if (reviewTexts.length) await deps.recordInstincts?.(owner, reviewTexts);
       const r = await fix(plan, texts);
       return { owner, list, success: r.success, escalations: r.escalations ?? [] };
     }),

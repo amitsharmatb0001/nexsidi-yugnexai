@@ -1273,3 +1273,34 @@ Rule 17 stays as written, because its how-to (`seedCatalog.ts`, 8 to 15 rows, on
 The protocol tells the backend builder to start its own Docker stack and call every protected route with and without a token (step d), then exercise every resource with database reads (step e). Since stage 4 the acceptance gate runs the tests on the running app, and the map's SEC2 checks sign-in by fact. Dropping steps d and e would save about 6K characters and the builder's paid iterations on it. It would also move a live check from the builder to the gate, which is a decision for Amit, not a cleanup.
 
 **Tests:** all 938 in agent-runtime and the generators pass. The two content tests caught two cuts that would have broken a cross-builder agreement; both are restored.
+
+## Batch 71 — team plan stage 7: mistake memory by facts (2026-10-30)
+
+**Amit's decision:** repeats are recognised by facts, in code. No vector extension and no embeddings.
+
+**Why:** the store (claim 7) matched a repeat on `domain + trigger`, where the trigger was a model's summary of the finding. That summary comes out in new words every time. Of 595 patterns, every one was seen once, so the statistical test had nothing to count. The builders read the 5 newest.
+
+**Built** (`pipeline/orchestrator/app-map/mistakes.ts`):
+- Every broken rule on the app map has a `kind`, so its key is `<rule>/<kind>`. There are 15 keys, for example `INT1/no-copy`, `INT1/cascade`, `INT2/no-lock`, `SEC1/sql-from-request`, `SEC9/role-from-request`, `MAP/schema-file-differs` and `MAP/contract-endpoint-not-served`. Each has one fixed guidance line with no project names.
+- **Recording:**
+  - each key is recorded once per build (`<build>/mistake-patterns.json`) under the builder that broke it, at the builder's finish check and at review-once;
+  - there is no model call;
+  - the store's own `recordInstinct` now finds the same trigger across projects and counts it (occurrences and confidence; the claim 7 statistics count projects);
+  - the map's findings no longer go to the model-summary path; the reviewers' own findings still do;
+  - tests never write to the platform's store, which they would reach from the repo root.
+- **Reading:** the builders' known mistakes are ordered by significance, then the number of projects, then the number of sightings, then recency. Before, it was significance, then recency.
+
+**Proof on the recorded builds** (96 folders with code; read only). The same key appears across projects:
+- `MAP/schema-file-differs`: 13 projects
+- `MAP/contract-endpoint-not-served`: 6
+- `MAP/call-outside-contract`: 5
+- `SEC9/role-from-request`: 5
+- `INT1/no-copy`: 4
+- `MAP/unknown-column`: 2
+- one project each: `SEC2/no-sign-in`, `SEC2/no-role-check`, `INT2/no-transaction`, `INT2/no-lock`, `INT1/cascade`
+
+Under the old triggers each of these would have been a new pattern seen once.
+
+**Tests:** mistakes 3; review-once 1 (map findings are not model-summarised).
+
+**Not checked:** a write to the live store (it needs the database during a build); the reviewers' own findings still get model-summary triggers.

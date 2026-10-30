@@ -180,3 +180,14 @@ test("a fact sent to a builder before is marked as come back, with when and to w
   await runReviewOnceWithDeps("p1", plan, s4, deps);
   expect(sent.find((s) => s.includes("[map-rule INT1]"))).toContain("CAME BACK: sent to shubham at 2026-10-25T14:20:00Z");
 });
+
+// 2026-10-30 (team plan, stage 7): the map's broken rules are kept in mistake memory by their fact keys, not by a model's
+// summary of their words; only the reviewers' own findings go the old way.
+test("the map's broken rules are not sent to the model-summary memory; the reviewers' findings are", async () => {
+  writeFileSync(join(dir, "backend", "src", "routes", "search.ts"), "export const search = async (req, res) => {\n  await db.query(`SELECT id FROM orders WHERE note = '${req.query.q}'`);\n};\n");
+  const summarised: string[] = [];
+  const { deps } = standIns({ recordInstincts: async (_o, texts) => void summarised.push(...texts) });
+  await runReviewOnceWithDeps("p1", plan, s4, deps);
+  expect(summarised.some((t) => t.includes("[map-rule"))).toBe(false);
+  expect(summarised.some((t) => t.includes("[route-sweep]"))).toBe(true);
+});

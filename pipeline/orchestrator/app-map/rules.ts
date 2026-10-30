@@ -19,6 +19,8 @@ import { limitedRolesFromContract } from "../../../agents/riya/src/index.ts";
 
 export interface RuleViolation {
   rule: "INT1" | "INT2" | "SEC1" | "SEC2" | "SEC9" | "MAP";
+  /** the kind of break, the same in every project (mistakes.ts keys repeats by rule and kind) */
+  kind: string;
   owner: FileOwner;
   file: string;
   line: number;
@@ -67,17 +69,17 @@ export function checkRules(projectDir: string, map: AppMap): RuleViolation[] {
       const itemPrice = Object.keys(tables[item]!.columns).find((x) => PRICE_COL.test(x))!;
       for (const [copy, what, src] of [[nameCopy, "name", itemName], [priceCopy, "price", itemPrice]] as const) {
         if (!copy) {
-          out.push({ rule: "INT1", owner: "pranav", file: t.createdIn, line: 1, fact: `${line} keeps no copy of ${item}.${src}: editing the item changes every past ${line} line`, fix: `add a column to ${line} that stores the ${what} at the time (a new migration), and write it on every insert` });
+          out.push({ rule: "INT1", kind: "no-copy", owner: "pranav", file: t.createdIn, line: 1, fact: `${line} keeps no copy of ${item}.${src}: editing the item changes every past ${line} line`, fix: `add a column to ${line} that stores the ${what} at the time (a new migration), and write it on every insert` });
         }
       }
       if (c.references!.onDelete === "CASCADE") {
-        out.push({ rule: "INT1", owner: "pranav", file: c.addedIn, line: 1, fact: `deleting a ${item} row deletes its ${line} lines (ON DELETE CASCADE) through ${line}.${fkCol}`, fix: `use ON DELETE RESTRICT, or SET NULL with ${fkCol} allowed to be empty and the lines keeping their copies (a new migration)` });
+        out.push({ rule: "INT1", kind: "cascade", owner: "pranav", file: c.addedIn, line: 1, fact: `deleting a ${item} row deletes its ${line} lines (ON DELETE CASCADE) through ${line}.${fkCol}`, fix: `use ON DELETE RESTRICT, or SET NULL with ${fkCol} allowed to be empty and the lines keeping their copies (a new migration)` });
       }
       for (const q of map.sql) {
         if (q.facts.kind === "insert" && q.facts.tables[0]?.table === line) {
           for (const copy of [nameCopy, priceCopy]) {
             if (copy && !q.facts.writes.includes(`${line}.${copy}`)) {
-              out.push({ rule: "INT1", owner: ownerOf(q.file), file: q.file, line: q.line, fact: `${q.function} inserts ${line} lines without ${line}.${copy}`, fix: `write ${copy} from the item as it is at the time of the insert` });
+              out.push({ rule: "INT1", kind: "insert-without-copy", owner: ownerOf(q.file), file: q.file, line: q.line, fact: `${q.function} inserts ${line} lines without ${line}.${copy}`, fix: `write ${copy} from the item as it is at the time of the insert` });
             }
           }
         }
@@ -88,12 +90,12 @@ export function checkRules(projectDir: string, map: AppMap): RuleViolation[] {
           // Only when the line has its own copy to read: without one, the missing column (the database builder's) is the fact,
           // and the backend could not keep this rule (Brewline 3: the backend was sent the finding before the column existed).
           if ((first === `${item}.${itemName}` && nameCopy) || (first === `${item}.${itemPrice}` && priceCopy)) {
-            out.push({ rule: "INT1", owner: ownerOf(q.file), file: q.file, line: q.line, fact: `${q.function} reads the ${first === `${item}.${itemName}` ? "name" : "price"} from ${first}, the current value, not what the ${line} line recorded`, fix: `read ${line}'s own copy${first === `${item}.${itemName}` ? (nameCopy ? ` (${nameCopy})` : "") : priceCopy ? ` (${priceCopy})` : ""}` });
+            out.push({ rule: "INT1", kind: "read-current", owner: ownerOf(q.file), file: q.file, line: q.line, fact: `${q.function} reads the ${first === `${item}.${itemName}` ? "name" : "price"} from ${first}, the current value, not what the ${line} line recorded`, fix: `read ${line}'s own copy${first === `${item}.${itemName}` ? (nameCopy ? ` (${nameCopy})` : "") : priceCopy ? ` (${priceCopy})` : ""}` });
           }
         }
         const join = q.facts.tables.find((x) => x.table === item && x.join === "inner");
         if (join && c.references!.onDelete === "SET NULL") {
-          out.push({ rule: "INT1", owner: ownerOf(q.file), file: q.file, line: q.line, fact: `${q.function} INNER JOINs ${item}, but deleting a ${item} row sets ${line}.${fkCol} to empty: those lines disappear from the history`, fix: `use LEFT JOIN ${item}` });
+          out.push({ rule: "INT1", kind: "inner-join-hides", owner: ownerOf(q.file), file: q.file, line: q.line, fact: `${q.function} INNER JOINs ${item}, but deleting a ${item} row sets ${line}.${fkCol} to empty: those lines disappear from the history`, fix: `use LEFT JOIN ${item}` });
         }
       }
     }
@@ -109,13 +111,13 @@ export function checkRules(projectDir: string, map: AppMap): RuleViolation[] {
     const inTx = e.sql.slice(0, checkAt).some((q) => q.facts.transaction === "begin");
     if (!(inTx && check.facts.locks)) {
       const col = [...check.facts.reads, ...check.facts.filters].find((r) => STOCK_COL.test(r.split(".")[1] ?? ""))!;
-      out.push({ rule: "INT2", owner: ownerOf(check.file), file: check.file, line: check.line, fact: `${e.method} ${e.path} reads ${col} and then writes ${writes[0]!.facts.tables[0]?.table ?? "rows"}${inTx ? " in a transaction, but without locking the rows it read" : " outside a transaction"}: two requests at once can both pass the check`, fix: "run the check and the write in one transaction (BEGIN … COMMIT) and read the rows with SELECT … FOR UPDATE, or make the write itself conditional" });
+      out.push({ rule: "INT2", kind: inTx ? "no-lock" : "no-transaction", owner: ownerOf(check.file), file: check.file, line: check.line, fact: `${e.method} ${e.path} reads ${col} and then writes ${writes[0]!.facts.tables[0]?.table ?? "rows"}${inTx ? " in a transaction, but without locking the rows it read" : " outside a transaction"}: two requests at once can both pass the check`, fix: "run the check and the write in one transaction (BEGIN … COMMIT) and read the rows with SELECT … FOR UPDATE, or make the write itself conditional" });
     }
   }
 
   // ── SEC1: no SQL built from request values ────────────────────────────────
   for (const q of map.sql) {
-    if (q.fromRequest) out.push({ rule: "SEC1", owner: ownerOf(q.file), file: q.file, line: q.line, fact: `${q.function} builds its SQL text from request values`, fix: "pass every value as a $n parameter; build only fixed column names into the text" });
+    if (q.fromRequest) out.push({ rule: "SEC1", kind: "sql-from-request", owner: ownerOf(q.file), file: q.file, line: q.line, fact: `${q.function} builds its SQL text from request values`, fix: "pass every value as a $n parameter; build only fixed column names into the text" });
   }
 
   // ── SEC2 and SEC9: who may call an endpoint, and no self-chosen role ──────
@@ -138,10 +140,10 @@ export function checkRules(projectDir: string, map: AppMap): RuleViolation[] {
     const roles = limitedRolesFromContract([c]);
     // Only what the contract states: an endpoint with no auth field is not checked. A handler that answers 401 itself checks.
     if (c.auth === true && !e.middleware.some(isSignIn) && e.answers401 !== true) {
-      out.push({ rule: "SEC2", owner: ownerOf(e.file), file: e.file, line: e.line, fact: `${e.method} ${e.path} needs sign-in by the contract, but no sign-in check runs before ${e.handler}`, fix: "put the sign-in middleware on the route or on its router before it" });
+      out.push({ rule: "SEC2", kind: "no-sign-in", owner: ownerOf(e.file), file: e.file, line: e.line, fact: `${e.method} ${e.path} needs sign-in by the contract, but no sign-in check runs before ${e.handler}`, fix: "put the sign-in middleware on the route or on its router before it" });
     }
     if (roles.length > 0 && e.answers403 !== true && !e.middleware.some((m) => roles.some((r) => m.toLowerCase().includes(r)) || /role/i.test(m))) {
-      out.push({ rule: "SEC2", owner: ownerOf(e.file), file: e.file, line: e.line, fact: `${e.method} ${e.path} is limited to ${roles.join(" or ")} by the contract, but no role check runs before ${e.handler} (middleware: ${e.middleware.join(", ") || "none"})`, fix: `add the ${roles.join("/")} role check to the route` });
+      out.push({ rule: "SEC2", kind: "no-role-check", owner: ownerOf(e.file), file: e.file, line: e.line, fact: `${e.method} ${e.path} is limited to ${roles.join(" or ")} by the contract, but no role check runs before ${e.handler} (middleware: ${e.middleware.join(", ") || "none"})`, fix: `add the ${roles.join("/")} role check to the route` });
     }
   }
   // The account table is the one that stores a password (9739da9032b0: contacts.role is a job title, not an access role).
@@ -152,14 +154,14 @@ export function checkRules(projectDir: string, map: AppMap): RuleViolation[] {
     for (const q of e.sql) {
       for (const w of q.writesFromRequest) {
         if (/\.(role|roles|is_admin|is_staff|permissions?)$/.test(w) && accounts.has(w.split(".")[0]!)) {
-          out.push({ rule: "SEC9", owner: ownerOf(q.file), file: q.file, line: q.line, fact: `${e.method} ${e.path}: ${w} is written from the request, so a caller chooses their own role`, fix: "set the lowest role in the code; never take it from the request" });
+          out.push({ rule: "SEC9", kind: "role-from-request", owner: ownerOf(q.file), file: q.file, line: q.line, fact: `${e.method} ${e.path}: ${w} is written from the request, so a caller chooses their own role`, fix: "set the lowest role in the code; never take it from the request" });
         }
       }
     }
   }
 
   // ── The map's own gaps ────────────────────────────────────────────────────
-  for (const u of map.unknownColumns) out.push({ rule: "MAP", owner: ownerOf(u.file), file: u.file, line: u.line, fact: u.why, fix: "use a column the migrations create, or add it in a new migration" });
+  for (const u of map.unknownColumns) out.push({ rule: "MAP", kind: "unknown-column", owner: ownerOf(u.file), file: u.file, line: u.line, fact: u.why, fix: "use a column the migrations create, or add it in a new migration" });
   // One violation per call site: a shared lib/api.ts is reached from every page (7e1ab88dc56a: one call, 8 pages).
   const calls = new Map<string, { c: (typeof map.links.unmatchedCalls)[number]; pages: string[] }>();
   for (const c of map.links.unmatchedCalls) {
@@ -171,10 +173,10 @@ export function checkRules(projectDir: string, map: AppMap): RuleViolation[] {
     // In the contract: the backend does not serve it (193c3080e582: an empty router). Not in it: the page calls the wrong path.
     const inContract = contract.some((x) => String(x.method ?? "").toUpperCase() === c.method && (x.path === c.path || pathFits(String(x.path ?? ""), c.path)));
     out.push(inContract
-      ? { rule: "MAP", owner: "shubham", file: "backend/src", line: 0, fact: `${c.method} ${c.path} is in the contract and called by ${pages.join(", ")} (${c.file}:${c.line}), but the backend does not serve it`, fix: `serve ${c.method} ${c.path} as the contract describes` }
-      : { rule: "MAP", owner: "aanya", file: c.file, line: c.line, fact: `${c.method} ${c.path} (from ${pages.join(", ")}) matches no endpoint of the backend and is not in the contract`, fix: "call an endpoint of the approved contract" });
+      ? { rule: "MAP", kind: "contract-endpoint-not-served", owner: "shubham", file: "backend/src", line: 0, fact: `${c.method} ${c.path} is in the contract and called by ${pages.join(", ")} (${c.file}:${c.line}), but the backend does not serve it`, fix: `serve ${c.method} ${c.path} as the contract describes` }
+      : { rule: "MAP", kind: "call-outside-contract", owner: "aanya", file: c.file, line: c.line, fact: `${c.method} ${c.path} (from ${pages.join(", ")}) matches no endpoint of the backend and is not in the contract`, fix: "call an endpoint of the approved contract" });
   }
-  for (const d of map.schemaDiff) out.push({ rule: "MAP", owner: "pranav", file: "db/src/schema.ts", line: 1, fact: `${d.table}.${d.column} is in the ${d.in === "migrations only" ? "migrations but not in the schema file" : "schema file but not in the migrations"}`, fix: "make db/src/schema.ts match the migrations" });
+  for (const d of map.schemaDiff) out.push({ rule: "MAP", kind: "schema-file-differs", owner: "pranav", file: "db/src/schema.ts", line: 1, fact: `${d.table}.${d.column} is in the ${d.in === "migrations only" ? "migrations but not in the schema file" : "schema file but not in the migrations"}`, fix: "make db/src/schema.ts match the migrations" });
   return out;
 }
 

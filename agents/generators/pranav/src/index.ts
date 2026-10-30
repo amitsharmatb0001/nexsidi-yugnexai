@@ -80,7 +80,7 @@ export async function databaseExitChecks(projectDir: string, deps: Pick<PranavAg
   const migrations = await (deps.migrationCheck ?? migrationFindings)(projectDir);
   if (!migrations.ran && migrations.note) console.log(`[pranav] ${migrations.note}`);
   // 2026-10-30: the rules every app keeps, checked on the app map — for this builder, the history columns (INT1).
-  return [...sync, ...migrations.findings, ...mapRuleFindings(projectDir, "pranav")];
+  return [...sync, ...migrations.findings, ...mapRuleFindings(projectDir, "pranav", { remember: true })];
 }
 
 export function buildPranavFixTask(findings: string[], plan: BuildPlan): string {
