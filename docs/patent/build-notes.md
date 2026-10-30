@@ -1093,3 +1093,37 @@ Approved by Amit as stage 1. It reverses the reading half of his 2 October decis
   - a folder and a file inside it were two problems.
 
 **Not checked:** the Chief AI's decision with a real model, and a live build stopping on a blocker (it needs a worker).
+
+## Batch 67 — understanding plan, step 2: the app map, read from the code (2026-10-30)
+
+**Why (Amit, 30 Oct, after reading yugnex.com):** the website promises software "understood as a system, not text". Nothing in the pipeline held an understanding of the app it was building: models re-read files and described them, and the system compared descriptions.
+
+**Built** (`pipeline/orchestrator/app-map/`, code only, no model):
+- **SQL reader** (`sql.ts`):
+  - the migrations, applied in order, give every table, its columns with type, nullability, defaults and foreign keys with their delete rule (constraints added, dropped and renamed included);
+  - each query gives its tables with aliases and join types, the columns it reads, writes and filters on, and where each output column comes from (`COALESCE(name_at_time, mi.name)` is "name_at_time, else menu_items.name");
+  - it also records row locks (`FOR UPDATE`), transactions, WITH names, and whether the SQL text is built from values.
+  - What it does not understand is listed, never guessed (a `DO $$` block, for example).
+- **Code reader** (`code.ts`, the TypeScript compiler's syntax tree):
+  - the backend: router mounts, followed through re-exports and barrels, give every endpoint its full path, middleware and handler; the handler and the same-file functions it calls give the SQL it runs. A query text built in code from fixed strings is read: a SET list pushed and joined, with values as parameters, in template or `+` form, and an if/else with two variants.
+  - the frontend: each page's route comes from its folders, and its API calls come through the components it imports (only request calls: fetch, apiFetch, api.post …).
+  - the Drizzle schema file gives its declared columns. Test files are not the app.
+- **The map** (`index.ts`): the database, the schema file against the migrations, every endpoint with its SQL, every page with its calls, SQL that names a missing table or column, frontend calls with no endpoint, endpoints no page calls, every file's owner, and each plan item's endpoints, pages, tables and tests.
+  - It is kept in `<build>/app-map.json` and rebuilt after every builder, database, blocker and gate step, and before the review and the live step.
+  - `bun pipeline/orchestrator/app-map/cli.ts <build>` prints it.
+
+**Relation to what existed:** `packages/context-chain/src/code-map.ts` (21 Oct, claims 1/3) maps files: imports, exports, symbols, and the file dependency graph. Its alignment record says it is "not yet used by the receiving agent to make decisions". The app map is the layer above it: what the app does. Putting the app map into the handoff context object, and replacing the word-matched requirement links with the map's structural ones, is step 4.
+
+**Proof:**
+- Tests first: SQL reader 10, code reader 9, map 6, wiring 2. All 2,778 tests in the pipeline, agents, packages and API pass, and all 92 in the web app. Type checks: only the two errors of 25 Oct (one type error in the new code was caught and fixed).
+- **On Brewline 3's recorded code:**
+  - At the 14:42 snapshot, the map shows both facts the live review reported at 14:55: `order_items.name_at_time` is in the migrations but not in the schema file, and both order reads take `name_at_time`, else `menu_items.name`.
+  - On the final code it shows the order endpoint's transaction (BEGIN, a `FOR UPDATE` lock on the menu rows, the writes including `name_at_time`, COMMIT or ROLLBACK), `menu_item_id` nullable with ON DELETE SET NULL, LEFT JOINs on the reads, every page's calls matched to an endpoint, and nothing that does not fit.
+- **On 6 other builds** (Brewline 1, Brewline 2, Trailhead 2, shopbill-9, Leafkeeper 6, Fernly):
+  - The first runs found 9 defects in my readers, each fixed with a test: data changes in migrations, `DO $$` blocks cut at semicolons, AT TIME ZONE and EXTRACT read as columns, WITH names as missing tables, `api.post(path, body)` read as GET, string checks taken for API calls, routers and handlers behind re-exports and barrels, `+`-built SET lists, and a placeholder listed as a column. Before these fixes, 34 calls looked like they had no endpoint and 9 columns looked missing.
+  - Now: 0 missing columns and 0 calls without an endpoint. Listed and not guessed: 2 `DO $$` blocks, and 5 queries in 3 builds whose SQL is built from substitutions the map cannot trace to fixed strings (step 3's security rule judges each one).
+- **Correction recorded:** I told Amit the item-name bug "was never fixed". The snapshots show the backend fixed it by 14:42; the later reports were different facts under the same rule (the read fallback and the schema file). Identifying a problem by "plan item + file" would have merged them; the map identifies it by the fact.
+
+**Note:** the map uses the TypeScript compiler at run time, as `code-map.ts` already does; it is a root dev dependency, so a production install without dev dependencies would need it moved to dependencies.
+
+**Not checked:** the map inside a live build (it needs a worker); apps written outside the generated stack (another router style or ORM would be listed as not read).

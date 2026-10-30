@@ -12,6 +12,7 @@ import { runAcceptanceTests, recordAcceptanceRun, type RunnerAccount, type RunSu
 import { acceptanceFixCheck, type GateDeps, type GateUrls, type Owner } from "./acceptance-gate.ts";
 import { activeTests, readAcceptanceTests, type AcceptanceTest } from "./acceptance-tests.ts";
 import { resolveDisputes } from "./disputes.ts";
+import { refreshAppMap } from "./app-map/index.ts";
 import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 import { openCustomerQuestions } from "../../packages/agent-runtime/src/tools/ask.ts";
 import { openBlockers } from "../../packages/agent-runtime/src/tools/blocked.ts";
@@ -96,6 +97,8 @@ export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDe
 
   const deps: GateDeps = {
     deploy: async () => {
+      // 2026-10-30 (understanding plan, step 2): each round starts from the code as the fixes left it.
+      refreshAppMap(dir);
       const r = await serial(() => runRiya(projectId));
       if (!r.success) return { reason: r.errors.join("; ").slice(0, 600) || "the deploy step failed" };
       current = { appUrl: r.appUrl, backendUrl: r.backendUrl };

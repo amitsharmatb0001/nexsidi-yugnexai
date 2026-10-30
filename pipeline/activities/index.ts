@@ -66,6 +66,7 @@ import { writeAcceptanceTests, testerPrompts, defaultTesterChat } from "../../ag
 import { readAcceptanceTests, saveAcceptanceTests, acceptanceTestsForPhase } from "../orchestrator/acceptance-tests.ts";
 import { runAcceptanceGate } from "../orchestrator/acceptance-gate.ts";
 import { realGateDeps } from "../orchestrator/acceptance-gate-real.ts";
+import { refreshAppMap } from "../orchestrator/app-map/index.ts";
 
 // ── In-process cache (activities run in same Temporal worker process)
 const specCache = new Map<string, ProjectSpec>();
@@ -492,6 +493,7 @@ export async function resolveBlockersActivity(projectId: string): Promise<{ rout
     console.log(`[activity:blockers] routed ${r.routed}, answered ${r.answered}, to the customer ${r.customer}, to a person ${r.person.length}`);
     return r;
   } finally {
+    refreshAppMap(buildDirFor(projectId));
     clearInterval(hb);
   }
 }
@@ -696,6 +698,8 @@ ${tests}` } : run;
       return generatorFailure(builder, [String(err instanceof Error ? err.message : err)]);
     });
   } finally {
+    // 2026-10-30 (understanding plan, step 2): the app map follows every change of the code.
+    refreshAppMap(buildDirFor(projectId));
     clearInterval(hb);
   }
 }
@@ -724,6 +728,7 @@ export async function runPranav(projectId: string): Promise<void> {
     await assertNoOpenBlocker(projectId);
     console.log(`[activity:pranav] ${result.filesWritten.length} DB files written`);
   } finally {
+    refreshAppMap(buildDirFor(projectId));
     clearInterval(hb);
   }
 }
@@ -1089,6 +1094,7 @@ export async function runAcceptanceGateActivity(projectId: string): Promise<{ st
   await assertSameSystem(projectId, "acceptance-gate");
   await assertNoOpenCustomerQuestion(projectId);
   await assertNoOpenBlocker(projectId);
+  refreshAppMap(buildDirFor(projectId));
   const { deps, cleanup } = realGateDeps(projectId, getPlan(projectId));
   try {
     const r = await runAcceptanceGate(buildDirFor(projectId), {
@@ -1119,7 +1125,9 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
     await assertNoOpenBlocker(projectId);
     const plan = getPlan(projectId);
     const stage4Result = buildStage4Result(projectId);
+    refreshAppMap(buildDirFor(projectId));
     const result = await runQAFixLoop(projectId, plan, stage4Result);
+    refreshAppMap(buildDirFor(projectId));
     // 2026-10-23: the cap is checked again after the rounds, so a step that reached it stops as a budget stop, not a pass.
     await assertWithinBudget(projectId, "qa-gan (after the rounds)");
     await assertSameSystem(projectId, "qa-gan (after the rounds)");
@@ -1202,6 +1210,7 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
     // Patent Claim 3: verify the codebase QA just approved is exactly what
     // deploy is about to ship — before it's shipped.
     await verifyHandoff(projectId, "qa-gan", "deploy", buildHandoffContext(buildDirFor(projectId), filterSourceManifest(stage4Result), plan));
+    refreshAppMap(buildDirFor(projectId));
     const result = await runStage6(projectId, stage4Result, plan);
     await assertWithinBudget(projectId, "deploy (after the live rounds)");
     await assertSameSystem(projectId, "deploy (after the live rounds)");
