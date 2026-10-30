@@ -215,3 +215,27 @@ services:
   expect(written).toContain("ports:");
 });
 
+
+// 2026-10-30 (Brewline 3 blockers): the shipping check said "a compose file inside the source folder — delete it before
+// finishing", and the ownership rule refused the delete ("is not one of your files"): four reports, no builder could satisfy
+// both. A builder may now delete exactly what that check asks it to delete, in its own folder; it still may not create or
+// change such a file, and a Dockerfile stays protected.
+import { isBuilderFixFile } from "../ownership.ts";
+import { mkdtempSync as mkdtempS, writeFileSync as writeS, existsSync as existsS, rmSync as rmS } from "node:fs";
+import { tmpdir as tmpS } from "node:os";
+import { join as joinS } from "node:path";
+test("a builder may delete a stray compose or secrets file in its own folder, and nothing else of the deploy files", () => {
+  const d = mkdtempS(joinS(tmpS(), "stray-"));
+  try {
+    for (const f of ["docker-compose.yml", "docker-compose.override.yaml", ".env", "Dockerfile", ".env.example"]) writeS(joinS(d, f), "x");
+    expect(execDeleteFile(d, { path: "docker-compose.yml" }, isBuilderFixFile).status).toBe("success");
+    expect(execDeleteFile(d, { path: "docker-compose.override.yaml" }, isBuilderFixFile).status).toBe("success");
+    expect(execDeleteFile(d, { path: ".env" }, isBuilderFixFile).status).toBe("success");
+    expect(existsS(joinS(d, "docker-compose.yml"))).toBe(false);
+    expect(execDeleteFile(d, { path: "Dockerfile" }, isBuilderFixFile).status).toBe("error");
+    expect(execWriteFile(d, { path: "docker-compose.yml", content: "services: {}" }, isBuilderFixFile).status).toBe("error");
+    expect(execDeleteFile(d, { path: "../docker-compose.yml" }, isBuilderFixFile).status).toBe("error");
+  } finally {
+    rmS(d, { recursive: true, force: true });
+  }
+});

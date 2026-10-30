@@ -39,7 +39,7 @@ test("the build's starting version is stamped when the spec step runs", () => {
 test("every paid stage that checks the budget also checks the system version, except the compile repair", () => {
   const budgetSteps = [...acts.matchAll(/await assertWithinBudget\(projectId, (.+?)\);\r?\n\s*(.*)/g)];
   const checked = budgetSteps.filter((m) => !m[1]!.includes("code-fix"));
-  expect(checked.length).toBe(11); // 2026-10-30: the acceptance gate checks at its start and before every round
+  expect(checked.length).toBe(12); // 2026-10-30: the acceptance gate (its start and every round), and the blocker decisions step
   for (const m of checked) expect(m[2]).toBe(`await assertSameSystem(projectId, ${m[1]});`);
 });
 

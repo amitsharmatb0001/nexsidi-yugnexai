@@ -32,8 +32,9 @@ test("each open question is asked in the customer's words and its answer is reco
 });
 
 test("every paid step checks for an open question where it checks the system version", () => {
-  // The tester (stage 3) runs before any builder, so no builder's question can be open there yet.
-  const sites = [...acts.matchAll(/await assertSameSystem\(projectId, (.+?)\);\r?\n\s*(.*)/g)].filter((m) => m[1] !== '"aarav"');
+  // The tester (stage 3) runs before any builder, so no builder's question can be open there yet. The step that decides
+  // blocker reports (2026-10-30) runs because something is open, so it does not stop on that.
+  const sites = [...acts.matchAll(/await assertSameSystem\(projectId, (.+?)\);\r?\n\s*(.*)/g)].filter((m) => m[1] !== '"aarav"' && m[1] !== '"blockers"');
   expect(sites.length).toBe(10); // 2026-10-30: the acceptance gate checks at its start and before every round
   for (const m of sites) expect(m[2]).toBe("await assertNoOpenCustomerQuestion(projectId);");
 });
@@ -47,7 +48,8 @@ test("a builder's question stops its step before the step counts as done", () =>
   const phase = acts.slice(acts.indexOf("async function runPhaseFor("), acts.indexOf("export async function runAanyaPhase("));
   const wrapper = phase.slice(phase.indexOf("runAgent: async"), phase.indexOf("reportBlocked:"));
   expect(wrapper).toContain("assertNoOpenCustomerQuestion(projectId)");
-  expect(phase).toContain("if (isCustomerQuestionError(err)) throw err;");
+  // 2026-10-30: a blocker report passes through the same way.
+  expect(phase).toContain("if (isCustomerQuestionError(err) || isBlockedError(err)) throw err;");
 });
 
 test("an open question leaves the activity as a non-retryable CustomerQuestion failure", () => {

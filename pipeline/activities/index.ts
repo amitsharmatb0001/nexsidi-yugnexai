@@ -59,6 +59,7 @@ import { isQuotaExhaustionError } from "../../packages/agent-runtime/src/gemini-
 import { checkBudget } from "../../packages/agent-runtime/src/cost-budget.ts";
 import { readSystemVersion, stampSystemVersion, checkSystemVersion } from "../orchestrator/system-version.ts";
 import { openCustomerQuestions, recordCustomerAnswer } from "../../packages/agent-runtime/src/tools/ask.ts";
+import { openBlockers } from "../../packages/agent-runtime/src/tools/blocked.ts";
 import { toCustomerText } from "../../packages/agent-runtime/src/customer-text.ts";
 import { fileURLToPath } from "node:url";
 import { writeAcceptanceTests, testerPrompts, defaultTesterChat } from "../../agents/qa/aarav/src/index.ts";
@@ -450,6 +451,51 @@ export async function assertNoOpenCustomerQuestion(projectId: string): Promise<v
   });
 }
 
+// 2026-10-30 (Amit: "the owner can't do the edit — why did nobody flag it"): an open blocker report stops paid work, like an
+// open customer question. The workflow has it decided (orchestrator/blockers.ts) and runs the step again, or holds the
+// build when the decision is a person's.
+export async function assertNoOpenBlocker(projectId: string): Promise<void> {
+  const open = openBlockers(projectId);
+  if (open.length === 0) return;
+  console.log(`[activity] ${open.length} blocker report(s) open — paid work stops until each is decided`);
+  throw ApplicationFailure.create({
+    message: `blocked: ${open.length} report(s) waiting for a decision`,
+    type: "Blocked",
+    nonRetryable: true,
+    details: [open.map((b) => ({ agent: b.agent, owner: b.owner, what: b.what.slice(0, 300) }))],
+  });
+}
+
+export function isBlockedError(err: unknown): boolean {
+  return err instanceof ApplicationFailure && err.type === "Blocked";
+}
+
+/** Decides every open blocker: the owner fixes it at once, an answer is recorded, a customer question opens, or a person decides. */
+export async function resolveBlockersActivity(projectId: string): Promise<{ routed: number; answered: number; customer: number; person: Array<{ agent: string; what: string; reason: string }> }> {
+  const ctx = Context.current();
+  const hb = setInterval(() => ctx.heartbeat("running"), 30_000);
+  try {
+    await assertWithinBudget(projectId, "blockers");
+    await assertSameSystem(projectId, "blockers");
+    const plan = getPlan(projectId);
+    const { resolveBlockers } = await import("../orchestrator/blockers.ts");
+    const { projectHygieneFindings } = await import("../orchestrator/stages/builder-exit-checks.ts");
+    const [{ runFix: fixShubham }, { runFix: fixAanya }, { runFix: fixPranav }] = await Promise.all([
+      import("../../agents/generators/shubham/src/index.ts"),
+      import("../../agents/generators/aanya/src/index.ts"),
+      import("../../agents/generators/pranav/src/index.ts"),
+    ]);
+    const r = await resolveBlockers(projectId, {
+      fix: (owner, findings) => runGeneratorWithQuotaRetry(() => (owner === "shubham" ? fixShubham(plan, findings) : owner === "aanya" ? fixAanya(plan, findings) : fixPranav(plan, findings))),
+      systemFindings: () => { try { return projectHygieneFindings(buildDirFor(projectId)).map((f) => `${f.file}: ${f.issue}`); } catch { return []; } },
+    });
+    console.log(`[activity:blockers] routed ${r.routed}, answered ${r.answered}, to the customer ${r.customer}, to a person ${r.person.length}`);
+    return r;
+  } finally {
+    clearInterval(hb);
+  }
+}
+
 export function isCustomerQuestionError(err: unknown): boolean {
   return err instanceof ApplicationFailure && err.type === "CustomerQuestion";
 }
@@ -504,11 +550,13 @@ export async function runShubham(projectId: string): Promise<void> {
     await assertWithinBudget(projectId, "shubham");
     await assertSameSystem(projectId, "shubham");
     await assertNoOpenCustomerQuestion(projectId);
+    await assertNoOpenBlocker(projectId);
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "shubham", plan);
     const result = await runGeneratorWithQuotaRetry(() => runShubhamAgent(withNormalizedDbSchema(plan)));
     if (!result.success) generatorFailure("shubham", result.errors);
     await assertNoOpenCustomerQuestion(projectId);
+    await assertNoOpenBlocker(projectId);
     console.log(`[activity:shubham] ${result.filesWritten.length} files → ${result.outputDir}`);
   } finally {
     clearInterval(hb);
@@ -522,12 +570,14 @@ export async function runAanya(projectId: string): Promise<void> {
     await assertWithinBudget(projectId, "aanya");
     await assertSameSystem(projectId, "aanya");
     await assertNoOpenCustomerQuestion(projectId);
+    await assertNoOpenBlocker(projectId);
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "aanya", plan);
     // Verified in its on-disk (hashed) shape, then normalised for the generator.
     const result = await runGeneratorWithQuotaRetry(() => runAanyaAgent(withNormalizedDbSchema(plan), "integrate"));
     if (!result.success) generatorFailure("aanya", result.errors);
     await assertNoOpenCustomerQuestion(projectId);
+    await assertNoOpenBlocker(projectId);
     console.log(`[activity:aanya] ${result.filesWritten.length} files → ${result.outputDir}`);
   } finally {
     clearInterval(hb);
@@ -612,6 +662,7 @@ async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phas
     await assertWithinBudget(projectId, builder);
     await assertSameSystem(projectId, builder);
     await assertNoOpenCustomerQuestion(projectId);
+    await assertNoOpenBlocker(projectId);
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", builder, plan);
     const schemaReady = withNormalizedDbSchema(plan);
@@ -636,11 +687,12 @@ ${tests}` } : run;
           builder === "aanya" ? runAanyaAgent(p, "integrate", withTests) : runShubhamAgent(p, withTests),
         );
         await assertNoOpenCustomerQuestion(projectId);
+        await assertNoOpenBlocker(projectId);
         return { success: result.success, errors: result.errors, filesWritten: result.filesWritten };
       },
       reportBlocked: (what, checked) => recordBlocked(projectId, builder, { owner: "tilotma", what, checked }),
     }).catch((err) => {
-      if (isCustomerQuestionError(err)) throw err;
+      if (isCustomerQuestionError(err) || isBlockedError(err)) throw err;
       return generatorFailure(builder, [String(err instanceof Error ? err.message : err)]);
     });
   } finally {
@@ -663,11 +715,13 @@ export async function runPranav(projectId: string): Promise<void> {
     await assertWithinBudget(projectId, "pranav");
     await assertSameSystem(projectId, "pranav");
     await assertNoOpenCustomerQuestion(projectId);
+    await assertNoOpenBlocker(projectId);
     const plan = getPlan(projectId);
     await verifyHandoff(projectId, "arjun", "pranav", plan);
     const result = await runGeneratorWithQuotaRetry(() => runPranavAgent(withNormalizedDbSchema(plan)));
     if (!result.success) generatorFailure("pranav", result.errors);
     await assertNoOpenCustomerQuestion(projectId);
+    await assertNoOpenBlocker(projectId);
     console.log(`[activity:pranav] ${result.filesWritten.length} DB files written`);
   } finally {
     clearInterval(hb);
@@ -1034,6 +1088,7 @@ export async function runAcceptanceGateActivity(projectId: string): Promise<{ st
   await assertWithinBudget(projectId, "acceptance-gate");
   await assertSameSystem(projectId, "acceptance-gate");
   await assertNoOpenCustomerQuestion(projectId);
+  await assertNoOpenBlocker(projectId);
   const { deps, cleanup } = realGateDeps(projectId, getPlan(projectId));
   try {
     const r = await runAcceptanceGate(buildDirFor(projectId), {
@@ -1042,10 +1097,11 @@ export async function runAcceptanceGateActivity(projectId: string): Promise<{ st
         await assertWithinBudget(projectId, "acceptance-gate");
         await assertSameSystem(projectId, "acceptance-gate");
         await assertNoOpenCustomerQuestion(projectId);
+        await assertNoOpenBlocker(projectId);
       },
     });
     console.log(`[activity:acceptance] ${r.status}${r.reason ? ` — ${r.reason}` : ""}`);
-    if (r.status === "waiting_for_customer") await assertNoOpenCustomerQuestion(projectId);
+    if (r.status === "waiting_for_customer") { await assertNoOpenCustomerQuestion(projectId); await assertNoOpenBlocker(projectId); }
     return { status: r.status, ...(r.reason ? { reason: r.reason } : {}), rounds: r.rounds, passed: r.last?.passed, failed: r.last?.failed, withdrawn: r.withdrawn };
   } finally {
     await cleanup().catch((err) => console.warn(`[activity:acceptance] cleanup failed: ${String(err).slice(0, 200)}`));
@@ -1060,6 +1116,7 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
     await assertWithinBudget(projectId, "qa-gan");
     await assertSameSystem(projectId, "qa-gan");
     await assertNoOpenCustomerQuestion(projectId);
+    await assertNoOpenBlocker(projectId);
     const plan = getPlan(projectId);
     const stage4Result = buildStage4Result(projectId);
     const result = await runQAFixLoop(projectId, plan, stage4Result);
@@ -1067,6 +1124,7 @@ export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoop
     await assertWithinBudget(projectId, "qa-gan (after the rounds)");
     await assertSameSystem(projectId, "qa-gan (after the rounds)");
     await assertNoOpenCustomerQuestion(projectId);
+    await assertNoOpenBlocker(projectId);
     console.log(
       `[activity:qa-fix-loop] pass=${result.pass} stuck=${result.stuck ?? false} iterations=${result.iterations} findings=${result.findings.length}`,
     );
@@ -1138,6 +1196,7 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
     await assertWithinBudget(projectId, "deploy");
     await assertSameSystem(projectId, "deploy");
     await assertNoOpenCustomerQuestion(projectId);
+    await assertNoOpenBlocker(projectId);
     const plan = getPlan(projectId);
     const stage4Result = buildStage4Result(projectId);
     // Patent Claim 3: verify the codebase QA just approved is exactly what
@@ -1147,6 +1206,7 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
     await assertWithinBudget(projectId, "deploy (after the live rounds)");
     await assertSameSystem(projectId, "deploy (after the live rounds)");
     await assertNoOpenCustomerQuestion(projectId);
+    await assertNoOpenBlocker(projectId);
     console.log(`[activity:deploy] success=${result.success} appUrl=${result.appUrl} stuck=${result.stuck ?? false}`);
     recordClaimEvidence(buildDirFor(projectId), 2, result.success ? "deployed after the live checks passed" : "deploy attempt did not pass the live checks", {
       success: result.success, appUrl: result.appUrl, stuck: result.stuck ?? false,

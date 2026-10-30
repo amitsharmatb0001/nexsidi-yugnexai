@@ -13,7 +13,7 @@ import { toCustomerText } from "../customer-text.ts";
 export interface BuildAnswer {
   question: string;
   answer: string;
-  source: "spec" | "customer";
+  source: "spec" | "customer" | "code";
   quote?: string;
   askedBy: string;
   at: string;
@@ -82,6 +82,18 @@ export function openCustomerQuestions(projectId: string): CustomerQuestion[] {
   const last = new Map<string, CustomerQuestion>();
   for (const q of readLines<CustomerQuestion>(questionsFile(projectId))) last.set(q.id, q);
   return [...last.values()].filter((q) => q.status === "open");
+}
+
+/** An answer the Chief AI found in the project's own code, with the quote that shows it (team plan: blockers, 2026-10-30). */
+export function recordCodeAnswer(projectId: string, a: { question: string; answer: string; quote: string; askedBy: string }): void {
+  append(answersFile(projectId), { question: a.question, answer: a.answer, source: "code", quote: a.quote, askedBy: a.askedBy, at: new Date().toISOString() } satisfies BuildAnswer);
+}
+
+/** A question for the customer, in plain words; the build waits for the answer. */
+export function recordCustomerQuestion(projectId: string, q: { question: string; forCustomer: string; askedBy: string }): CustomerQuestion {
+  const record: CustomerQuestion = { id: randomUUID(), question: q.question, forCustomer: toCustomerText(q.forCustomer), askedBy: q.askedBy, at: new Date().toISOString(), status: "open" };
+  append(questionsFile(projectId), record);
+  return record;
 }
 
 /** The customer's answer: closes the question and becomes an answer every agent reads. */

@@ -1052,3 +1052,44 @@ Approved by Amit as stage 1. It reverses the reading half of his 2 October decis
   - Of all 97 recorded findings, the ones about the customer's request with no reproduction (9) and those naming no plan item (34) would have gone to the notes.
 
 **Not checked:** a reviewer actually writing reproductions (model calls), a build through the new review (a paid run), and the browser reviewer following the REPRO format.
+
+## Batch 66 — understanding plan, step 1: a blocker stops paid work and is decided from facts (2026-10-30)
+
+**Why (Amit, 30 Oct):** "the owner can't do the edit, then what were you doing — why did nobody flag it… logic, not guess work". Brewline 3 recorded 13 blocker reports. None stopped a round, because only the final live review read them. 14 paid rounds ran after the first report, which said the database builder had to change a migration. I did not read these records during that build either. The website's promise ("software as a system to be understood, not text") is the yardstick for this plan.
+
+**Built:**
+- **An open blocker stops paid work.** Every place that checks for an open customer question now also checks for an open blocker (14 places, plus the acceptance gate's waiting check). The rounds inside the gate, the review step and the live step stop on one too.
+  - The workflow has the open blockers decided (`resolveBlockersActivity`) and runs the same step again.
+  - When the decision is a person's, the build holds with the new reason `blocked`, retryable on the build page in plain words.
+- **Each report is decided from facts first** (`pipeline/orchestrator/blockers.ts`, no model). The facts:
+  - the paths it names, and their owners (backend/, frontend/, db/; a bare file name is in the reporter's own folder; technology names like "Node.js" are not files);
+  - which kind of refusal by our own tools it quotes (not their file, not available in this run, outside their folder, not on the command list, refused);
+  - whether one of our own checks demands the same file.
+
+  From the facts alone:
+  - a check that demands what a tool refuses goes to a person, quoting both;
+  - a change no tool refused, in a file the named owner owns, goes to that owner, who fixes it at once.
+
+  Anything else goes to the Chief AI, whose decision counts only with proof:
+  - a quote really in the file;
+  - a file really in the owner's folder;
+  - a customer question in plain words.
+
+  Otherwise a person decides. Reports on the same facts (the same kind of refusal about the same place, a file inside a named folder included) get one decision; a report that comes back after its decision goes to a person.
+- **Decisions are kept** in `<build>/blocker-rulings.jsonl`. Answers found in the code are added to the answers every builder reads (source `code`); customer questions use the stage 2 chat.
+- **A contradiction fixed in code:** the shipping check said "a compose file inside the source folder — delete it before finishing", and the deploy-file rule refused the delete (Brewline 3 reports 8, 10, 12 and 13). A builder may now delete exactly those files (a stray `docker-compose*.yml` or `.env` in its own folder). Creating or changing them, or deleting a Dockerfile, is still refused.
+
+**Proof:**
+- Tests first: decisions 12, delete rule 1, wiring 5. Four older wiring tests were updated (the decision step is exempt from the open-question check, one more budget-checked step, a longer step window, the pass-through line).
+- All 2,751 tests in the pipeline, agents, packages and API pass, and all 92 in the web app. Type checks: only the two errors of 25 Oct.
+- **Brewline 3's 13 reports through the rule (free):**
+  - they are 7 distinct problems;
+  - the CASCADE change (reports 1 and 2) goes to the database builder by facts, at 11:20, where 14 paid rounds actually followed;
+  - the two compose-file contradictions (reports 8 and 13, 10 and 12) go to a person by facts, and that contradiction is now fixed in code;
+  - 4 go to the Chief AI with proof: actions refused outside the folder (with 4 and 7 and 11 on the same facts; 7 and 11 came after a decision, so they would go to a person), a refused shell command, a refused read of the column name (reading is allowed since stage 1), and the container tool not available in a helper run.
+- This proof found three defects in the first version, all fixed with tests:
+  - different refusals were merged into one decision (5 with 3, and 6 with 1, which would have sent a read request to the database builder as a change);
+  - "Node.js" was taken for a file;
+  - a folder and a file inside it were two problems.
+
+**Not checked:** the Chief AI's decision with a real model, and a live build stopping on a blocker (it needs a worker).

@@ -180,9 +180,15 @@ export function execEditFiles(
 // (blocked — not in command.ts's ALLOWED_COMMANDS), then burned ~15
 // iterations on workarounds (node -e "fs.unlinkSync(...)", checking
 // existence, writing placeholder content) instead of a direct tool call.
+// 2026-10-30 (Brewline 3 blockers): the shipping check asks a builder to delete a compose or secrets file left in its source
+// folder ("only the project root's docker-compose.yml ships"), and the deploy-file rule refused the delete — four blocker
+// reports, no builder could satisfy both. Exactly those files may be deleted in the builder's own folder; creating or
+// changing them stays refused, and a Dockerfile stays protected. Same names as strayShippedFileFindings.
+const STRAY_SHIPPED_FILE = /^(docker-compose.*.ya?ml|.env|.env.(production|development|test))$/i;
+
 export function execDeleteFile(sandboxDir: string, args: { path: string }, writableFile?: WritableFile): ToolResult {
   try {
-    const abs = guardWritePath(sandboxDir, args.path, writableFile);
+    const abs = guardWritePath(sandboxDir, args.path, STRAY_SHIPPED_FILE.test(basename(args.path)) ? undefined : writableFile);
     if (!existsSync(abs)) {
       return { status: "error", summary: `File not found: ${args.path}`, next_actions: ["use list_files to see what exists"] };
     }

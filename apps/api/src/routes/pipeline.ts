@@ -369,6 +369,8 @@ const RETRYABLE_FAILURE_REASONS = new Set([
   "system_changed",
   // 2026-10-30 (team plan, stage 4): acceptance tests still fail after the fix rounds stopped making progress; Retry runs more.
   "acceptance_failing",
+  // 2026-10-30: part of the work is blocked and its decision is a person's (orchestrator/blockers.ts).
+  "blocked",
 ]);
 
 pipelineRouter.post("/:projectId/retry", async (c) => {

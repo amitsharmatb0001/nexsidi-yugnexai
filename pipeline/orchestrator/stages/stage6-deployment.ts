@@ -62,6 +62,7 @@ import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
 import { liveBudgetMs, minutesSince } from "../time-budget.ts";
 import { projectHygieneFindings, dedupeAgainstHygiene } from "./shipping-hygiene.ts";
 import { openCustomerQuestions } from "../../../packages/agent-runtime/src/tools/ask.ts";
+import { openBlockers } from "../../../packages/agent-runtime/src/tools/blocked.ts";
 export { isQuotaExhaustionError };
 
 // Confidentiality Global Constraint (plan + CLAUDE.md): internal agent names
@@ -1078,7 +1079,8 @@ export async function runStage6(
       }])),
     });
     // 2026-10-29 (team plan, stage 2): a builder asked the customer; nothing is redeployed or reviewed until the answer is in.
-    if (openCustomerQuestions(projectId).length > 0) {
+    // 2026-10-30: the same for an open blocker report (../blockers.ts).
+    if (openCustomerQuestions(projectId).length + openBlockers(projectId).length > 0) {
       console.log(`[stage6] a builder asked the customer a question — stopping until it is answered`);
       return "waiting_for_customer";
     }

@@ -44,6 +44,7 @@ import { requestFullReview } from "../review-cache.ts";
 import { qaBudgetMs, minutesSince } from "../time-budget.ts";
 import { chiefCheck, defaultChiefChat, isMachineFinding, isReviewerFailure, prepareForChief, type ChiefChat } from "../chief-check.ts";
 import { openCustomerQuestions } from "../../../packages/agent-runtime/src/tools/ask.ts";
+import { openBlockers } from "../../../packages/agent-runtime/src/tools/blocked.ts";
 
 export interface QAFixLoopResult extends Stage5Result {
   iterations: number; // total QA passes run (initial + retests)
@@ -612,7 +613,8 @@ export async function runQAFixLoop(
     // straight through to runStage5's own matching positional slots.
     runStage5: (pid, s4, p, changedFiles, previousFindings) => runStage5(pid, s4, false, p, changedFiles, previousFindings),
     requestFullReview: (pid) => requestFullReview(pid),
-    openQuestions: () => openCustomerQuestions(projectId).length,
+    // An open blocker report stops the rounds too (../blockers.ts).
+    openQuestions: () => openCustomerQuestions(projectId).length + openBlockers(projectId).length,
     // 2026-08-06: real bug found live (project bae438767bed) — a shared-pool
     // quota exhaustion hitting all three fix calls simultaneously (they run
     // concurrently) used to fail every one of them outright within a

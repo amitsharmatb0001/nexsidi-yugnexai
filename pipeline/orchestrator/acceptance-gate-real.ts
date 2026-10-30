@@ -14,6 +14,7 @@ import { activeTests, readAcceptanceTests, type AcceptanceTest } from "./accepta
 import { resolveDisputes } from "./disputes.ts";
 import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 import { openCustomerQuestions } from "../../packages/agent-runtime/src/tools/ask.ts";
+import { openBlockers } from "../../packages/agent-runtime/src/tools/blocked.ts";
 
 /** Runs jobs one after another, in the order they asked. */
 export function oneAtATime(): <T>(job: () => Promise<T>) => Promise<T> {
@@ -138,7 +139,8 @@ export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDe
       }
       return { withdrawn };
     },
-    openQuestions: () => openCustomerQuestions(projectId).length > 0,
+    // An open question for the customer, or an open blocker report, stops the rounds (orchestrator/blockers.ts).
+    openQuestions: () => openCustomerQuestions(projectId).length + openBlockers(projectId).length > 0,
   };
 
   return {

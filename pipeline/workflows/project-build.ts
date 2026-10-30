@@ -58,6 +58,11 @@ export function isSystemChangedFailure(err: unknown): boolean {
 
 // 2026-10-29 (team plan, stage 2): a builder asked something the approved documents do not answer (tools/ask.ts).
 // A new failure type, so no recorded history can contain it.
+// 2026-10-30: a builder reported it cannot do part of its work (orchestrator/blockers.ts decides each report).
+export function isBlockedFailure(err: unknown): boolean {
+  return err instanceof ActivityFailure && err.cause instanceof ApplicationFailure && err.cause.type === "Blocked";
+}
+
 export function isCustomerQuestionFailure(err: unknown): boolean {
   return (
     err instanceof ActivityFailure &&
@@ -352,6 +357,23 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
 
   // 2026-10-29 (team plan, stage 2): each open question goes to the customer in plain words (no internal names); each
   // answer is recorded where every builder and reviewer reads it; then the caller runs its step again.
+  // Open blocker reports are decided (the owner fixes it, an answer, a customer question, or a person); a person's decision
+  // holds the build. Returns false when the person stops the build.
+  async function clearBlockers(): Promise<boolean> {
+    const was = state.stage;
+    const r = await orchestratorAct.resolveBlockersActivity(projectId);
+    if (r.person.length > 0) {
+      console.log(`[workflow] ${r.person.length} blocker(s) need a person: ${r.person.map((p) => p.reason).join(" | ").slice(0, 400)}`);
+      const retry = await escalateAndAwaitRetryDecision("blocked");
+      if (!retry) {
+        await act.markProjectFailed(projectId, "blocked");
+        return false;
+      }
+    }
+    state.stage = was;
+    return true;
+  }
+
   async function askTheCustomer(): Promise<void> {
     const questions = await act.openCustomerQuestionsActivity(projectId);
     const was = state.stage;
@@ -439,6 +461,11 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
           }
           state.stage = "deliver";
           console.log(`[workflow] retrying Stage 6 deploy after a human retry decision (guard_hold)`);
+          continue;
+        }
+        if (isBlockedFailure(err)) {
+          if (!(await clearBlockers())) return;
+          state.stage = "deliver";
           continue;
         }
         if (isCustomerQuestionFailure(err)) {
@@ -736,6 +763,10 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       // literal calls stay grep/source-string visible — compile-loop.test.ts
       // asserts `escalateAndAwaitRetryDecision("generation_failed")` and
       // `markProjectFailed(projectId, "generation_failed")` verbatim.
+      if (isBlockedFailure(err)) {
+        if (!(await clearBlockers())) return;
+        continue;
+      }
       if (isCustomerQuestionFailure(err)) {
         await askTheCustomer();
         continue;
@@ -831,6 +862,11 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
         }
         state.stage = "acceptance";
       } catch (err) {
+        if (isBlockedFailure(err)) {
+          if (!(await clearBlockers())) return;
+          state.stage = "acceptance";
+          continue;
+        }
         if (isCustomerQuestionFailure(err)) {
           await askTheCustomer();
           state.stage = "acceptance";
@@ -893,6 +929,10 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
       try {
         qaResult = await orchestratorAct.runQAFixLoopActivity(projectId);
       } catch (err) {
+        if (isBlockedFailure(err)) {
+          if (!(await clearBlockers())) return;
+          continue;
+        }
         if (isCustomerQuestionFailure(err)) {
           await askTheCustomer();
           continue;

@@ -6,6 +6,7 @@
 // live review checks each one on the running app and routes what it finds
 // to the owner through the normal fix loop.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
@@ -55,7 +56,7 @@ export function recordBlocked(
   return {
     status: "success",
     summary:
-      "Reported to Tilotma, who will check it on the running app and route it to the owner. " +
+      "Reported to Tilotma. Paid work stops until it is decided: the owner fixes it, you get the answer, or a person decides. " +
       "Do not work around it and do not touch another agent's work — continue with the rest of your own task.",
   };
 }
@@ -73,6 +74,48 @@ export function readBlockedReports(projectId: string): BlockedReport[] {
         return [];
       }
     });
+}
+
+// 2026-10-30 (Amit: "the owner can't do the edit — why did nobody flag it"): a report used to be read only by the final live
+// review, so none of Brewline 3's 13 stopped a round. Every report now gets a decision (pipeline/orchestrator/blockers.ts),
+// kept in <build>/blocker-rulings.jsonl; a report without one is open, and an open report stops paid work.
+export function blockerId(b: BlockedReport): string {
+  return createHash("sha256").update(`${b.agent}|${b.at}|${b.what}`).digest("hex").slice(0, 16);
+}
+
+export interface BlockerRuling {
+  id: string;
+  agent: string;
+  kind: "route" | "answer" | "customer" | "person";
+  detail: string;
+  /** the facts the decision stands on: paths and owners (pipeline/orchestrator/blockers.ts) */
+  factsKey: string;
+  at: string;
+}
+
+const rulingsFile = (projectId: string) => join(buildRoot(projectId), "blocker-rulings.jsonl");
+
+export function readBlockerRulings(projectId: string): BlockerRuling[] {
+  const file = rulingsFile(projectId);
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf-8").split(/\r?\n/).filter(Boolean).flatMap((l) => {
+    try {
+      return [JSON.parse(l) as BlockerRuling];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export function recordBlockerRuling(projectId: string, ruling: BlockerRuling): void {
+  mkdirSync(buildRoot(projectId), { recursive: true });
+  appendFileSync(rulingsFile(projectId), JSON.stringify(ruling) + "\n");
+}
+
+/** Reports with no decision yet. */
+export function openBlockers(projectId: string): BlockedReport[] {
+  const ruled = new Set(readBlockerRulings(projectId).map((r) => r.id));
+  return readBlockedReports(projectId).filter((b) => !ruled.has(blockerId(b)));
 }
 
 export const REPORT_BLOCKED_TOOL_DEF: NimToolDef = {
