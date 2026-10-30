@@ -62,3 +62,28 @@ test("the deploy step uses the fast path for a running app and keeps the secret 
   expect(src).toContain("await redeployRunningApp(buildDir, appUrl, backendUrl)");
   expect(src).toContain("existingJwtSecret(");
 });
+
+// 2026-10-30 (team plan, stage 4): the acceptance gate rebuilds the app after every fix. The rebuild ran with execSync,
+// which blocks the activity for the whole image build, so its heartbeat could not fire (the failure docker.ts documents
+// for the docker tool). The command now runs without blocking, and an exec that answers later is awaited.
+test("a rebuild that finishes later is waited for, and one that fails later is reported", async () => {
+  dir = mkdtempSync(join(tmpdir(), "redeploy-"));
+  writeFileSync(join(dir, "docker-compose.yml"), COMPOSE);
+  globalThis.fetch = (async () => new Response("ok", { status: 200 })) as unknown as typeof fetch;
+  let finished = false;
+  const later = await redeployRunningApp(dir, "http://localhost:3200", "http://localhost:3300", {
+    exec: () => new Promise<string>((r) => setTimeout(() => { finished = true; r(""); }, 20)),
+    pollMs: 1,
+  });
+  expect(later).toEqual({ ok: true });
+  expect(finished).toBe(true);
+  const failedLater = await redeployRunningApp(dir, "http://localhost:3200", "http://localhost:3300", { exec: () => Promise.reject(new Error("build failed: TS2304")), pollMs: 1 });
+  expect(failedLater).toEqual({ ok: false, reason: expect.stringContaining("TS2304") });
+});
+
+test("the default rebuild command does not block the process", () => {
+  const src = readFileSync(new URL("./index.ts", import.meta.url), "utf-8");
+  const fn = src.slice(src.indexOf("export async function redeployRunningApp("), src.indexOf("export async function redeployRunningApp(") + 1_500);
+  expect(fn).not.toContain("execSync(");
+  expect(fn).toContain("await exec(");
+});

@@ -1,5 +1,8 @@
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { NimToolDef } from "@nexsidi/llm-client";
 import type { ToolResult } from "./file.ts";
+import { buildDirFor } from "../build-dir.ts";
 
 // P3 (agent-autonomy-assessment F3): findings were routed to a fix agent by
 // the FILE PATH a QA agent happened to cite, with no way for that agent to
@@ -45,6 +48,37 @@ export function recordEscalation(args: {
       summary: `Escalated to ${targetAgent}: ${args.reason.slice(0, 100)}`,
     },
   };
+}
+
+// 2026-10-30 (team plan, stage 4): the hand-off is also written down, so the acceptance finish check (a fix run may end
+// with a failing test only when it disputed the test or handed it on) can see it. <build>/escalations.jsonl.
+const escalationsFile = (projectId: string) => join(buildDirFor(projectId), "escalations.jsonl");
+
+export function saveEscalation(projectId: string | undefined, agent: string, e: Escalation): void {
+  if (!projectId) return;
+  try {
+    mkdirSync(buildDirFor(projectId), { recursive: true });
+    appendFileSync(escalationsFile(projectId), JSON.stringify({ agent, ...e, at: new Date().toISOString() }) + "\n");
+  } catch (err) {
+    console.error(`[${agent}] could not save the hand-off: ${String(err)}`);
+  }
+}
+
+/** Hand-offs recorded for a project, optionally only those at or after `sinceIso`. */
+export function readEscalations(projectId: string, sinceIso?: string): Array<Escalation & { agent: string; at: string }> {
+  const file = escalationsFile(projectId);
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf-8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        const e = JSON.parse(line) as Escalation & { agent: string; at: string };
+        return !sinceIso || e.at >= sinceIso ? [e] : [];
+      } catch {
+        return [];
+      }
+    });
 }
 
 export const ESCALATE_FINDING_TOOL_DEF: NimToolDef = {

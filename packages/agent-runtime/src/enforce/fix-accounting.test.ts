@@ -24,3 +24,15 @@ test("all three agent loops apply it to fix runs before accepting task_complete"
     expect({ f, wired: src.includes("fixRunUnaccounted(") }).toEqual({ f, wired: true });
   }
 });
+
+// 2026-10-30 (team plan, stage 4): the acceptance gate's finish check rebuilds the app; it runs only when the builder's own
+// checks already pass.
+import { withExtraChecks } from "./fix-accounting.ts";
+test("the extra finish check runs only after the builder's own checks pass", async () => {
+  let ran = 0;
+  const extra = { exitChecks: async () => (ran++, ["AT-1-1 still fails"]) };
+  expect(await withExtraChecks(["tsc: 2 errors"], extra)).toEqual(["tsc: 2 errors"]);
+  expect(ran).toBe(0);
+  expect(await withExtraChecks(Promise.resolve([]), extra)).toEqual(["AT-1-1 still fails"]);
+  expect(await withExtraChecks([], undefined)).toEqual([]);
+});

@@ -367,6 +367,8 @@ const RETRYABLE_FAILURE_REASONS = new Set([
   "deploy_activity_error",
   // 2026-10-29 (team plan, stage 0): the system changed while the build ran; Retry continues on the changed system.
   "system_changed",
+  // 2026-10-30 (team plan, stage 4): acceptance tests still fail after the fix rounds stopped making progress; Retry runs more.
+  "acceptance_failing",
 ]);
 
 pipelineRouter.post("/:projectId/retry", async (c) => {

@@ -10,6 +10,7 @@ import type { BuildPlan, GeneratorTask } from "../../../arjun/src/index.ts";
 import { buildSystemContext } from "../../../arjun/src/index.ts";
 import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 import { answersBlock } from "../../../../packages/agent-runtime/src/tools/ask.ts";
+import { withExtraChecks } from "../../../../packages/agent-runtime/src/enforce/fix-accounting.ts";
 import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-files.ts";
 
 // 2026-10-24: the backend builder's own checks before it may finish (no hot-linked images in code or seed files) —
@@ -469,7 +470,10 @@ Workflow:
 }
 
 // 2026-10-24: `team` set = one helper or the lead of a fix round run as a team (pipeline/orchestrator/team-fix.ts).
-export async function runFix(plan: BuildPlan, findings: string[], team?: { role?: "helper" | "integrate"; ownFiles?: string[]; helperIndex?: number }): Promise<GeneratorResult> {
+// 2026-10-30 (team plan, stage 4): `extra.exitChecks` adds the caller's own finish check — the acceptance gate's "the
+// failing test passes on the rebuilt app" (pipeline/orchestrator/acceptance-gate.ts). It runs only once the builder's own
+// checks pass, since a rebuild of an app that fails them would only fail again.
+export async function runFix(plan: BuildPlan, findings: string[], team?: { role?: "helper" | "integrate"; ownFiles?: string[]; helperIndex?: number }, extra?: { exitChecks?: () => Promise<string[]> }): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
   // F7 (agent-autonomy-assessment): instincts were written by the fix loop
@@ -539,8 +543,8 @@ export async function runFix(plan: BuildPlan, findings: string[], team?: { role?
     // 2026-10-23: a fix round starts with the current files, whole, instead of reading them one at a time.
     preloadOwnFiles: true,
     maxIterations: FIX_MAX_STEPS,
-    exitChecks: () => backendExitChecksFor(plan.projectId),
-    ...teamRunOverrides(team, outputDir, { taskFiles: [], baseExitChecks: () => backendExitChecksFor(plan.projectId), runBackendTests: true }),
+    exitChecks: () => withExtraChecks(backendExitChecksFor(plan.projectId), extra),
+    ...teamRunOverrides(team, outputDir, { taskFiles: [], baseExitChecks: () => withExtraChecks(backendExitChecksFor(plan.projectId), extra), runBackendTests: true }),
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see

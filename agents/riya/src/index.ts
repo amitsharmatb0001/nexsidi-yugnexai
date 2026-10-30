@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { runAgentEscalated, parseServiceHostPort, ensureDeliveryGitignore, stripRestartPoliciesInFile } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "fs";
-import { execSync } from "child_process";
+import { execSync, exec as execCallback } from "child_process";
 import { randomBytes } from "crypto";
 import { join } from "path";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
@@ -2807,14 +2807,18 @@ export async function redeployRunningApp(
   buildDir: string,
   appUrl: string,
   backendUrl: string,
-  deps: { exec?: (cmd: string) => string; pollMs?: number; waitMs?: number } = {},
+  deps: { exec?: (cmd: string) => string | Promise<string>; pollMs?: number; waitMs?: number } = {},
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const composePath = join(buildDir, "docker-compose.yml");
   if (!existsSync(composePath)) return { ok: false, reason: "no docker-compose.yml" };
-  const exec = deps.exec ?? ((cmd: string) => execSync(cmd, { encoding: "utf-8", timeout: 900_000, stdio: ["pipe", "pipe", "pipe"] }));
+  // 2026-10-30 (team plan, stage 4): not execSync — a blocking image build stops the activity's heartbeat (see docker.ts).
+  const exec = deps.exec ?? ((cmd: string) => new Promise<string>((resolve, reject) => {
+    execCallback(cmd, { encoding: "utf-8", timeout: 900_000, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) =>
+      err ? reject(new Error(`${err.message}\n${String(stderr).slice(-2_000)}`)) : resolve(String(stdout)));
+  }));
   try {
     try { stripRestartPoliciesInFile(composePath); } catch { /* best effort */ }
-    exec(`docker compose -f "${composePath}" up -d --build`);
+    await exec(`docker compose -f "${composePath}" up -d --build`);
   } catch (err) {
     return { ok: false, reason: `docker compose up --build failed: ${String(err instanceof Error ? err.message : err).slice(0, 300)}` };
   }

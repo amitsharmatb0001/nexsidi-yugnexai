@@ -18,8 +18,9 @@ test("a CustomerQuestion activity failure is recognised, and nothing else is", (
   expect(isCustomerQuestionFailure(new Error("plain"))).toBe(false);
 });
 
-test("generation, review and deploy each ask the customer and then run the same step again", () => {
-  expect((wf.match(/if \(isCustomerQuestionFailure\(err\)\) \{\s*await askTheCustomer\(\);/g) ?? []).length).toBe(3);
+// 2026-10-30 (team plan, stage 4): the acceptance gate is the fourth.
+test("generation, the acceptance gate, review and deploy each ask the customer and then run the same step again", () => {
+  expect((wf.match(/if \(isCustomerQuestionFailure\(err\)\) \{\s*await askTheCustomer\(\);/g) ?? []).length).toBe(4);
 });
 
 test("each open question is asked in the customer's words and its answer is recorded", () => {
@@ -33,7 +34,7 @@ test("each open question is asked in the customer's words and its answer is reco
 test("every paid step checks for an open question where it checks the system version", () => {
   // The tester (stage 3) runs before any builder, so no builder's question can be open there yet.
   const sites = [...acts.matchAll(/await assertSameSystem\(projectId, (.+?)\);\r?\n\s*(.*)/g)].filter((m) => m[1] !== '"aarav"');
-  expect(sites.length).toBe(8);
+  expect(sites.length).toBe(10); // 2026-10-30: the acceptance gate checks at its start and before every round
   for (const m of sites) expect(m[2]).toBe("await assertNoOpenCustomerQuestion(projectId);");
 });
 

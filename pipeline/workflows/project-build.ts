@@ -812,6 +812,52 @@ export async function projectBuildWorkflow(projectId: string, userRequest?: stri
   }
   // After 3 failed compile attempts, continue anyway — QA will catch it.
 
+  // ── Stage 3c: the acceptance gate (2026-10-30, team plan stage 4) ─────────
+  // The build is done when its acceptance tests pass on the running app (orchestrator/acceptance-gate.ts): the system
+  // starts the app, runs the tests and sends each failing test to its owner, until they pass. A gate that stops making
+  // progress holds the build for a person; Retry runs more rounds. An app that cannot be started, or a build without
+  // tests, goes on to the review, which has its own deploy handling.
+  if (patched("acceptance-gate-v1")) {
+    state.stage = "acceptance";
+    for (;;) {
+      try {
+        const gate = await orchestratorAct.runAcceptanceGateActivity(projectId);
+        if (gate.status !== "failing") break;
+        console.log(`[workflow] acceptance tests still failing: ${gate.reason ?? ""}`);
+        const retry = await escalateAndAwaitRetryDecision("acceptance_failing");
+        if (!retry) {
+          await act.markProjectFailed(projectId, "acceptance_failing");
+          return;
+        }
+        state.stage = "acceptance";
+      } catch (err) {
+        if (isCustomerQuestionFailure(err)) {
+          await askTheCustomer();
+          state.stage = "acceptance";
+          continue;
+        }
+        if (isSystemChangedFailure(err)) {
+          const retry = await escalateAndAwaitRetryDecision("system_changed");
+          if (!retry) {
+            await act.markProjectFailed(projectId, "system_changed");
+            return;
+          }
+          continue;
+        }
+        if (isBudgetExceededFailure(err)) {
+          const retry = await escalateAndAwaitRetryDecision("budget_exceeded");
+          if (!retry) {
+            await act.markProjectFailed(projectId, "budget_exceeded");
+            return;
+          }
+          continue;
+        }
+        console.log(`[workflow] the acceptance gate could not run (${err instanceof Error ? err.message : String(err)}) — the review goes on`);
+        break;
+      }
+    }
+  }
+
   // ── P1 (full agentic upgrade, 2026-07-24): unify onto the real GAN ───────
   // Replaces the degenerate one-shot QA scorer (a flash model guessing a
   // score from a 20K-char code sample, no file locations, oscillating

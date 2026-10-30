@@ -30,7 +30,7 @@ import { execHttpRequest, HTTP_TOOL_DEF } from "./tools/http.ts";
 import { execDockerCompose, DOCKER_TOOL_DEF } from "./tools/docker.ts";
 import { execWebSearch, WEB_SEARCH_TOOL_DEF } from "./tools/websearch.ts";
 import { execFetchUrl, FETCH_URL_TOOL_DEF } from "./tools/research.ts";
-import { recordEscalation, ESCALATE_FINDING_TOOL_DEF, type Escalation } from "./tools/escalate.ts";
+import { recordEscalation, saveEscalation, ESCALATE_FINDING_TOOL_DEF, type Escalation } from "./tools/escalate.ts";
 import { recordDispute, DISPUTE_FINDING_TOOL_DEF } from "./tools/dispute.ts";
 import { recordVerdict, SETTLE_DISPUTE_TOOL_DEF } from "./tools/settle.ts";
 import { execAskQuestion, ASK_QUESTION_TOOL_DEF } from "./tools/ask.ts";
@@ -1189,6 +1189,7 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
           const { escalation, result: escalationResult } = recordEscalation(a);
           if (escalation) {
             escalations.push(escalation);
+            saveEscalation(config.projectId, config.agentName, escalation);
             console.log(`[${config.agentName}:agent] Escalated finding to ${escalation.targetAgent}: ${escalation.reason.slice(0, 100)}`);
           }
           result = escalationResult;

@@ -63,6 +63,8 @@ import { toCustomerText } from "../../packages/agent-runtime/src/customer-text.t
 import { fileURLToPath } from "node:url";
 import { writeAcceptanceTests, testerPrompts, defaultTesterChat } from "../../agents/qa/aarav/src/index.ts";
 import { readAcceptanceTests, saveAcceptanceTests, acceptanceTestsForPhase } from "../orchestrator/acceptance-tests.ts";
+import { runAcceptanceGate } from "../orchestrator/acceptance-gate.ts";
+import { realGateDeps } from "../orchestrator/acceptance-gate-real.ts";
 
 // ── In-process cache (activities run in same Temporal worker process)
 const specCache = new Map<string, ProjectSpec>();
@@ -1021,6 +1023,34 @@ export interface QAFixLoopActivityResult {
   stuck: boolean;
   iterations: number;
   findingsCount: number;
+}
+
+// 2026-10-30 (team plan, stage 4): the build closes only when its acceptance tests pass on the running app
+// (orchestrator/acceptance-gate.ts). Every round is a paid step, so the budget, the system version and open customer
+// questions are checked before each one, as at every other paid step.
+export async function runAcceptanceGateActivity(projectId: string): Promise<{ status: string; reason?: string; rounds: number; passed?: number; failed?: number; withdrawn: string[] }> {
+  const ctx = Context.current();
+  const hb = setInterval(() => ctx.heartbeat("running"), 30_000);
+  await assertWithinBudget(projectId, "acceptance-gate");
+  await assertSameSystem(projectId, "acceptance-gate");
+  await assertNoOpenCustomerQuestion(projectId);
+  const { deps, cleanup } = realGateDeps(projectId, getPlan(projectId));
+  try {
+    const r = await runAcceptanceGate(buildDirFor(projectId), {
+      ...deps,
+      beforeRound: async () => {
+        await assertWithinBudget(projectId, "acceptance-gate");
+        await assertSameSystem(projectId, "acceptance-gate");
+        await assertNoOpenCustomerQuestion(projectId);
+      },
+    });
+    console.log(`[activity:acceptance] ${r.status}${r.reason ? ` — ${r.reason}` : ""}`);
+    if (r.status === "waiting_for_customer") await assertNoOpenCustomerQuestion(projectId);
+    return { status: r.status, ...(r.reason ? { reason: r.reason } : {}), rounds: r.rounds, passed: r.last?.passed, failed: r.last?.failed, withdrawn: r.withdrawn };
+  } finally {
+    await cleanup().catch((err) => console.warn(`[activity:acceptance] cleanup failed: ${String(err).slice(0, 200)}`));
+    clearInterval(hb);
+  }
 }
 
 export async function runQAFixLoopActivity(projectId: string): Promise<QAFixLoopActivityResult> {

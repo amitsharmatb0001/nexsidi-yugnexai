@@ -17,7 +17,7 @@
 import { isOverBudget } from "../../../packages/agent-runtime/src/cost-budget.ts";
 import { resolveFlags } from "../flags.ts";
 import { run as runRiya, purgeVerificationArtifacts, seedSampleData, limitedRolesFromContract, grantTestAccountRole, snapshotTableCounts, compareSnapshots, databaseNow, recordSeededRecords, type DeployResult } from "../../../agents/riya/src/index.ts";
-import { readAcceptanceTests } from "../acceptance-tests.ts";
+import { readAcceptanceTests, activeTests } from "../acceptance-tests.ts";
 import { runAcceptanceTests, recordAcceptanceRun, type RunnerAccount } from "../acceptance-runner.ts";
 import { agentForFile, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
@@ -562,11 +562,12 @@ async function liveRetestChecks(
     // added to the cleanup list, and the app's sign-in limiter is reset afterwards so the checks below are not refused.
     // Off switch: ACCEPTANCE_TESTS=off.
     if (process.env.ACCEPTANCE_TESTS !== "off" && !browserReviewOnly) {
-      const suite = readAcceptanceTests(buildDirFor(projectId));
-      if (suite?.tests.length) {
+      // Tests the Chief AI withdrew on a builder's dispute (acceptance-gate.ts) no longer count.
+      const tests = activeTests(readAcceptanceTests(buildDirFor(projectId)));
+      if (tests.length) {
         try {
           const { BrowserSession } = await import("../../../packages/agent-runtime/src/browser/client.ts");
-          const run = await runAcceptanceTests(suite.tests, {
+          const run = await runAcceptanceTests(tests, {
             apiUrl: backendUrl,
             appUrl,
             accounts: runnerAccounts,

@@ -365,8 +365,9 @@ test("both builders pass their completion summary to the finish checks and get t
     expect(src).toMatch(/\(summary: string\) => (backend|frontend)ExitChecksFor\(plan\.projectId, summary\)/);
   }
   // the fix rounds call the finish checks without a summary, so no checklist
-  expect(read("agents/generators/shubham/src/index.ts")).toContain("exitChecks: () => backendExitChecksFor(plan.projectId)");
-  expect(read("agents/generators/aanya/src/index.ts")).toContain("exitChecks: () => frontendExitChecksFor(plan.projectId)");
+  // 2026-10-30 (stage 4): the fix rounds add the acceptance gate's check after their own (withExtraChecks), still without a summary.
+  expect(read("agents/generators/shubham/src/index.ts")).toContain("exitChecks: () => withExtraChecks(backendExitChecksFor(plan.projectId), extra)");
+  expect(read("agents/generators/aanya/src/index.ts")).toContain("exitChecks: () => withExtraChecks(frontendExitChecksFor(plan.projectId), extra)");
   expect(read("packages/agent-runtime/src/gemini-loop.ts")).toContain("config.exitChecks(String(a.summary");
   expect(read("packages/agent-runtime/src/loop.ts")).toContain("config.exitChecks(String(a.summary");
 });

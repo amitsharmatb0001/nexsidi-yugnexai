@@ -65,6 +65,8 @@ export interface AcceptanceSuite {
   notWritten: Array<{ phase: number; reason: string }>;
   /** endpoints and pages of a phase that no accepted test uses */
   gaps?: Array<{ phase: number; missing: string[] }>;
+  /** tests the Chief AI ruled wrong when a builder disputed them (team plan stage 4); they no longer count */
+  withdrawn?: Array<{ id: string; evidence: string; at: string }>;
 }
 
 // ── The plan's scope ────────────────────────────────────────────────────────
@@ -319,6 +321,20 @@ export function readAcceptanceTests(projectDir: string): AcceptanceSuite | null 
   return readJson<AcceptanceSuite>(join(projectDir, TESTS_FILE));
 }
 
+/** The tests that count: every test the Chief AI has not withdrawn. */
+export function activeTests(suite: AcceptanceSuite | null): AcceptanceTest[] {
+  const gone = new Set((suite?.withdrawn ?? []).map((w) => w.id));
+  return (suite?.tests ?? []).filter((t) => !gone.has(t.id));
+}
+
+/** A test the Chief AI ruled wrong on a builder's dispute, with her evidence. Kept in the file, never deleted. */
+export function withdrawTest(projectDir: string, id: string, evidence: string): void {
+  const suite = readAcceptanceTests(projectDir);
+  if (!suite || !suite.tests.some((t) => t.id === id) || suite.withdrawn?.some((w) => w.id === id)) return;
+  suite.withdrawn = [...(suite.withdrawn ?? []), { id, evidence, at: new Date().toISOString() }];
+  saveAcceptanceTests(projectDir, suite);
+}
+
 // ── What a builder sees ─────────────────────────────────────────────────────
 
 function apiLine(s: ApiStep, testAs: string): string {
@@ -339,6 +355,11 @@ function journeyLine(s: JourneyStep): string {
     case "notSee": return `do not see "${s.text}"`;
     case "atPath": return `be on ${s.path}`;
   }
+}
+
+/** A test's steps, one plain line each. */
+export function testSteps(t: AcceptanceTest): string[] {
+  return t.steps.map((s, i) => `${i + 1}. ${t.kind === "api" ? apiLine(s as ApiStep, t.as) : journeyLine(s as JourneyStep)}`);
 }
 
 /**

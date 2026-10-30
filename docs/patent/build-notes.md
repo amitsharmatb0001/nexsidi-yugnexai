@@ -972,3 +972,47 @@ Approved by Amit as stage 1. It reverses the reading half of his 2 October decis
 **Prompt size:** each builder's task grows by the test list. On a Brewline-sized plan this is estimated at a few thousand characters; it was not measured on a real tester run.
 
 **Not checked:** the tester with a real model on Brewline 3's plan (a small paid run, needs Amit's OK); the tests run against the real Brewline 3 app (needs its containers started, needs Amit's OK); a live build passing through the new step.
+
+## Batch 64 — stage 4: done means the acceptance tests pass on the running app (2026-10-30)
+
+**Why (root causes 2 and 3 of 29 Oct):** "done" counted activity. A builder finished when it said so; a fix counted when any file was written, disputed or handed on. Nobody owned a feature end to end, so the review rounds found what the build had never shown to work.
+
+**Built:**
+- **The acceptance gate** (`pipeline/orchestrator/acceptance-gate.ts`, a workflow step after the build and its compile gate, before the review, behind the replay marker `acceptance-gate-v1`).
+  - The system starts the app with the deploy step's fast path: the standard compose file and a rebuild, with no model when that works.
+  - The tester's tests run on the app, and each failing test goes, whole, to its owner: an API test to the backend builder, a journey to the frontend builder.
+  - A builder that finds the cause in another folder hands it on, and the owner fixes it in the same round.
+  - Rounds repeat while more tests pass. Two rounds in a row with no more passing, or 4 fix rounds, end the gate as "failing", and the build holds with the new reason `acceptance_failing`. Retry runs more rounds.
+  - An app that cannot be started, or a build without tests, goes on to the review; the result is "not checked", not passed.
+  - The step checks the budget, the system version and open customer questions at its start and before every round. Test accounts and the records the tests create are removed afterwards, and the sign-in limiter is reset.
+  - The customer sees "Running your app and checking it does what the plan says."
+- **A fix is done when its test passes** (`acceptanceFixCheck`, attached to the backend and frontend fix runs through a new `extra.exitChecks` on `runFix`).
+  - When the fix run says "done", the system rebuilds the app and runs that run's tests again.
+  - "Done" is refused, with the failure, while a test still fails, unless the run disputed the test this round (the Chief AI rules) or handed it on. A change that breaks the app's build is refused too.
+  - The check runs only after the builder's own finish checks pass. Rebuilds run one at a time.
+- **Disputes:** the Chief AI's existing dispute ruling decides. A test she rules wrong is withdrawn (kept in `acceptance-tests.json` under `withdrawn`, with her evidence) and no longer counts, here or in the final review. A test she rules right goes back to the builder.
+- **Fix accounting counts tests:** `testFixOutcome` (fixed, still failing, broken). The gate measures progress by tests passing, not files written.
+- **Hand-offs are written down** (`<build>/escalations.jsonl`, from both agent loops), so the finish check can see them.
+- **The rebuild no longer blocks the process:** the fast path ran `docker compose up --build` with `execSync`, which stops the activity's heartbeat for the whole image build (the failure docker.ts documents). It now runs asynchronously; this also covers the existing final deploy.
+
+**Different from the plan, and why:**
+- The plan named a new evidence kind in `completion-gate.ts`. The existing finish-check hook already refuses "done" and hands the reason back, so the test check uses that hook.
+- "Builders run the app at the end of every phase": with builder teams (the default) the whole app is built in one pass, so the gate runs once, after it. With teams off and several phases, it runs once after the last phase. Gating each phase would make the builders wait for each other at every phase; this was not done.
+- The database builder's fix runs do not carry the test check; a test handed to it is checked by the next round's run.
+
+**Proof:**
+- Tests first:
+  - gate 15 (stand-in steps: the build stays open while a test fails; a fix that writes files but leaves the test failing is refused; a dispute is decided by the Chief AI; a hand-off is fixed in the same round; an app that cannot start is not checked);
+  - one-at-a-time rebuild 1, hand-off record 1, test accounting and extra check 2, non-blocking rebuild 2, wiring 7.
+- Four older count tests were updated for the new step, and one pinned text for the fix rounds' finish check.
+- All 2,708 tests in the pipeline, agents, packages and API pass, and all 92 in the web app. Type checks: no errors in changed files except the two of 25 Oct (`claude-loop.ts:518`, `team-files.test.ts`). The type check caught one gap first: the re-fix after a ruling did not report success.
+- **Free proof with the real runner and the real browser against a stub app** (fix runs and the ruling are stand-ins):
+  - round 1: 1 test passed, 2 failed;
+  - the backend's "done" without a fix was refused, with the failure ("items.0.name should equal Flat White but is Renamed …"), and allowed after the fix;
+  - the frontend disputed a test asking for a phone field the plan does not have, so its "done" was allowed, and the ruling withdrew the test;
+  - round 2: both remaining tests passed, and the gate closed after one fix round.
+- This proof found a gate defect first, fixed with a test: a ruling that repeated an earlier withdrawal counted as progress, so the gate never saw it was stuck. It also found a flaw in my own proof test: it reused a menu item that each run renamed. The tester is told to create its own data.
+
+**Cost note:** until stage 5 (the reviewers as the final gate, run once), a build runs both the gate's fix rounds and the existing review loop, so it may cost more than before.
+
+**Not checked:** a real build through the gate (real deploy, model fix runs, the Chief AI's ruling): a paid run, needing Amit's OK.

@@ -47,7 +47,7 @@ import { execHttpRequest } from "./tools/http.ts";
 import { execDockerCompose } from "./tools/docker.ts";
 import { execWebSearch } from "./tools/websearch.ts";
 import { execFetchUrl } from "./tools/research.ts";
-import { recordEscalation, type Escalation } from "./tools/escalate.ts";
+import { recordEscalation, saveEscalation, type Escalation } from "./tools/escalate.ts";
 import { execScreenshot } from "./tools/screenshot.ts";
 import { BrowserToolset, BROWSER_TOOL_NAMES } from "./tools/browser.ts";
 import { readFileSync, mkdirSync, appendFileSync } from "node:fs";
@@ -1033,6 +1033,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
           const { escalation, result: escalationResult } = recordEscalation(a);
           if (escalation) {
             escalations.push(escalation);
+            saveEscalation(config.projectId, config.agentName, escalation);
             console.log(`[${config.agentName}:gemini-agent] Escalated finding to ${escalation.targetAgent}: ${escalation.reason.slice(0, 100)}`);
           }
           result = escalationResult;
