@@ -1234,3 +1234,42 @@ Approved by Amit as stage 1. It reverses the reading half of his 2 October decis
 - the shared record's effect on what reviewers report (it needs a paid review);
 - the gate's progress rule in a live build (it needs a worker);
 - identity of findings that cite no file and line (left unmerged by design).
+
+## Batch 70 — team plan stage 6: builder instructions against the code checks (2026-10-30)
+
+**What stage 6 asked:** list the rules in the builders' instructions and remove those a code check now enforces. Then measure the size before and after.
+
+**Inventory: rules a check enforces at the builder's finish** (the check names the file, the line and the fix):
+
+| Builder | Rule | Check |
+|---|---|---|
+| Backend | SQL placeholders (1, 9) | map SEC1, taint analysis |
+| Backend | hot-linked images (16) | `externalImageUrls` |
+| Backend | role from the request (18) | map SEC9; `staffAccountFindings` for the seed |
+| Backend | history kept (19) | map INT1 and INT2 |
+| Backend | starter content (17) | `starterContentFindings` |
+| Frontend | emoji, hot-linked images | `scanProjectForEmojiUi`, `externalImageUrls` |
+
+Rule 17 stays as written, because its how-to (`seedCatalog.ts`, 8 to 15 rows, only when empty) is the content of the fix.
+
+**Changed:**
+- Backend rules 1, 16, 18 and 19 now take one to three lines each, with their checklist ids, plus one line saying the system checks them at task_complete.
+- The explanation under rule 9 is one line. Its code example stays: it is the how-to.
+- Rule 19 still names the line columns `name_at_time` and `unit_price`, as a test requires: the database builder's rules ask for the same two.
+- The frontend's emoji and image rules are one bullet. It keeps the label "NO HOT-LINKED IMAGES", which a test checks so that both builders are told the same rule.
+- **Removed the backend's rule 13:** how to call Clerk's API without a cache. It contradicted the same instructions' "NEVER use Clerk" (custom JWT is the decided stack).
+
+**Measured** (the files as the builders get them, with core-reasoning.md):
+
+| Builder | Before | After | Change |
+|---|---|---|---|
+| Backend | 41,239 | 38,928 | −2,311 (−5.6%) |
+| Frontend | 55,580 | 55,054 | −526 (−0.9%) |
+
+**Finding:** the size is not mostly rules a check enforces. It is how-to:
+- the frontend's component API reference (17K) and design doctrine (10K);
+- the backend's self-verification protocol (about 9K).
+
+The protocol tells the backend builder to start its own Docker stack and call every protected route with and without a token (step d), then exercise every resource with database reads (step e). Since stage 4 the acceptance gate runs the tests on the running app, and the map's SEC2 checks sign-in by fact. Dropping steps d and e would save about 6K characters and the builder's paid iterations on it. It would also move a live check from the builder to the gate, which is a decision for Amit, not a cleanup.
+
+**Tests:** all 938 in agent-runtime and the generators pass. The two content tests caught two cuts that would have broken a cross-builder agreement; both are restored.

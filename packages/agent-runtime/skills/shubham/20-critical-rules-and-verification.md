@@ -1,5 +1,5 @@
 CRITICAL RULES:
-1. SQL: use $1, $2 placeholders — NEVER string interpolation
+1. SQL: use $1, $2 placeholders — NEVER string interpolation (SEC1; the system checks every query at your finish)
 2. Route params: always name them (req: Request, res: Response) — NEVER rename "res"
 3. SQL column names: valid SQL only — NEVER put random text inside SQL strings
 4. IDOR: always filter by userId — WHERE id = $1 AND user_id = $2
@@ -24,12 +24,7 @@ CRITICAL RULES:
    const query = "UPDATE tasks SET " + fields.join(", ") + " WHERE id = $" + i++ + " AND user_id = $" + i + " RETURNING *";
    await pool.query(query, values);
    ---
-   The "$" + i above generates the placeholder NUMBER as text — that is
-   not string interpolation of user data. If you ever put taskId, userId,
-   or any request-body value directly inside the query string itself
-   (via template-literal interpolation or string concatenation of the
-   VALUE, not the placeholder number), that is the exact bug this rule
-   exists to prevent.
+   Only fixed column names and placeholder numbers go into the text; every value goes into the params array.
 10. CSRF middleware must actually validate the token against a stored/
     session value — not just check that a token header is present. If you
     write a placeholder comment like "In production, validate against a
@@ -70,17 +65,6 @@ CRITICAL RULES:
       .toISOString() on it throws RangeError. Convert the value to a Date,
       check whether getTime() is NaN, and return 400 if so, BEFORE calling
       toISOString() anywhere on that value.
-13. requireAuth middleware: do NOT add an in-memory cache (Map, object,
-    etc.) of Clerk user lookups. It is not needed at this app's scale, and
-    it is a real bug magnet: a cache with no expiry serves a stale/
-    placeholder email forever after the user's real Clerk profile
-    changes, and in-memory state is per-process, so it silently
-    desyncs across multiple instances. Just call Clerk's API (or query
-    the DB) directly on every request — a straightforward getAuth() +
-    DB upsert with no caching layer is correct, simpler, and exactly
-    what this app needs. Do not add caching here unless the task
-    explicitly asks for it.
-
 14. ADMIN-ONLY APPS MUST SEED THEIR ADMIN ACCOUNT — otherwise you ship a
     locked door with no key.
     2026-08-27: real bug found live (project 852be5aeaef4). The spec had
@@ -120,12 +104,7 @@ CRITICAL RULES:
     use the one its description implies and say which in your summary. Put
     the currency in one shared place the frontend reads, never assume it.
 
-16. NO HOT-LINKED IMAGES. Never put an image URL from another site (Unsplash,
-    Pexels, Pixabay, picsum, placeholder services, or any http(s) .jpg/.png)
-    in seed data, migrations or code. Leave image_url null, or point it at a
-    designed placeholder the frontend serves from its own public/images.
-    (Trailhead: a burger photo stood in for a sleeping bag, and the browser
-    blocked others. The system checks this when you say you are done.)
+16. NO HOT-LINKED IMAGES: leave image_url null or use the frontend's own public/images (checked at your finish).
 
 17. A PUBLIC CATALOG SHIPS WITH STARTER CONTENT. When the contract has a public
     list endpoint (a GET with auth:false that returns records: a menu, products,
@@ -139,30 +118,16 @@ CRITICAL RULES:
     (Brewline: the spec said customers browse the menu; the delivered app showed
     one test item.)
 
-18. A ROLE NEVER COMES FROM THE REQUEST. Sign-up and every other public endpoint
-    create the lowest role only: do not accept a role (or is_admin, permissions,
-    plan) from the body, the query or a header, not even optional with a default.
-    Accounts with more power come from a seeded account (backend/src/db/seedStaff.ts,
-    called at startup, creates one only when none exists; email and password from
-    STAFF_EMAIL / STAFF_PASSWORD, a generated password logged once when unset) or
-    from an endpoint only someone who already has that role can call. The role in
-    a token is read from the database row, never from the request.
-    (Brewline 2: the sign-up body took role: 'customer' | 'staff', so anyone could
-    register as staff and reach the barista dashboard. The system's check at your
-    finish reports a sign-up that reads a role and a staff-only contract with no
-    seeded staff account.)
+18. A ROLE NEVER COMES FROM THE REQUEST (SEC9): sign-up creates the lowest role; staff accounts come from
+    backend/src/db/seedStaff.ts (one only when none exists; STAFF_EMAIL / STAFF_PASSWORD, a generated password
+    logged once when unset) or from someone who already has the role.
 
-19. HISTORY IS KEPT. An order, invoice or booking records what was sold: its lines
-    copy the item's name and unit price when the order is placed (columns
-    name_at_time and unit_price on the line, which the database builder creates;
-    write both on insert and read both back, never join to the catalog for them), and the line's reference to the catalog row is ON DELETE
-    RESTRICT (or SET NULL), never CASCADE. Deleting or editing a menu item or
-    product must not change or delete what past orders show, so the delete
-    endpoint refuses (409) or archives the item when history refers to it. Check
-    and write an order's stock test and its insert in ONE transaction (SELECT ... FOR
-    UPDATE or a conditional UPDATE) so two requests at once cannot both pass it.
-    (Brewline 2: deleting a menu item deleted past orders' lines, and old orders
-    changed when a price changed. The system's check at your finish reports both.)
+19. HISTORY IS KEPT (INT1, INT2): an order line copies the item's name and unit price into its columns
+    name_at_time and unit_price (the database builder creates them) on insert and reads them back, never from the catalog; its reference to the item is never ON DELETE CASCADE; a stock check and its write are
+    one transaction (SELECT ... FOR UPDATE).
+
+Rules 1, 16, 18 and 19 are checked by the system on the code when you call task_complete: what is broken comes
+back with its file, line and fix.
 
 SELF-VERIFICATION PROTOCOL — you are a senior engineer, not a code spitter.
 Do NOT call task_complete until you have PROVEN your code works, with real
