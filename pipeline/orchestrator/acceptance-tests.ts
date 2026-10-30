@@ -54,6 +54,8 @@ export interface AcceptanceTest {
   as: string;
   kind: "api" | "journey";
   steps: ApiStep[] | JourneyStep[];
+  /** who wrote it: the tester (default) or a review finding the runner reproduced (team plan stage 5) */
+  source?: "tester" | "review";
 }
 
 export interface AcceptanceSuite {
@@ -94,6 +96,17 @@ export function normalizePath(p: string): string {
     .split("/")
     .map((s) => (/^(:|\[|\{|\*)/.test(s) || /\{\{[^}]*\}\}/.test(s) ? "*" : s.toLowerCase()))
     .join("/");
+}
+
+/**
+ * A path a test uses fits a path of the plan when every part is equal, or either part is a parameter: the plan's ":id" or
+ * "[id]" takes a concrete id ("/api/v1/orders/1", 2026-10-30, a reviewer's reproduction), and a test's {{saved}} value fits
+ * any part.
+ */
+export function pathFits(planPath: string, testPath: string): boolean {
+  const a = normalizePath(planPath).split("/");
+  const b = normalizePath(testPath).split("/");
+  return a.length === b.length && a.every((seg, i) => seg === "*" || b[i] === "*" || seg === b[i]);
 }
 
 type Phase = { endpoints?: string[]; pages?: string[] };
@@ -247,7 +260,7 @@ function checkOne(t: AcceptanceTest, scope: PlanScope): string[] {
       const path = String(s.path ?? "");
       if (!path.startsWith("/")) reasons.push(`step ${n}: the path must start with / (a path of the app, not an address)`);
       else {
-        const ep = scope.endpoints.find((e) => e.method === method && normalizePath(e.path) === normalizePath(path));
+        const ep = scope.endpoints.find((e) => e.method === method && pathFits(e.path, path));
         if (!ep) reasons.push(`step ${n}: ${method} ${path} is not in the approved API contract`);
         else usedIn(`${method} ${ep.path}`, ep.phase);
       }
@@ -276,7 +289,7 @@ function checkOne(t: AcceptanceTest, scope: PlanScope): string[] {
         if (!String((s as Record<string, unknown>)[f] ?? "").trim()) reasons.push(`step ${n}: ${s.do} needs a ${f}`);
       }
       if (s.do === "open" || s.do === "atPath") {
-        const page = scope.pages.find((p) => normalizePath(p.path) === normalizePath(s.path ?? ""));
+        const page = scope.pages.find((p) => pathFits(p.path, s.path ?? ""));
         if (!String(s.path ?? "").startsWith("/")) reasons.push(`step ${n}: the path must start with / (a page of the app, not an address)`);
         else if (!page) reasons.push(`step ${n}: ${s.path} is not a page of the approved plan`);
         else usedIn(`the page ${page.path}`, page.phase);

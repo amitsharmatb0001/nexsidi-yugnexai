@@ -66,6 +66,9 @@ export interface Stage4Result {
 export interface Finding {
   file: string;
   issue: string;
+  // 2026-10-30 (team plan, stage 5): the reviewer's quoted code and its reproduction test (review-proof.ts).
+  evidence?: string;
+  reproduction?: Record<string, unknown>;
 }
 
 // 2026-07-28 (live, complex1): real bug found live — a generated project's

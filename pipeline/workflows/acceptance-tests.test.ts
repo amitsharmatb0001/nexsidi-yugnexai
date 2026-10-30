@@ -52,8 +52,10 @@ test("the live review runs the tests with the review accounts, records the run, 
   expect(block).toContain("runAcceptanceTests(");
   expect(block).toContain("recordAcceptanceRun(");
   expect(block).toContain("recordSeededRecords(");
-  // Stage 3 only measures: a failing acceptance test does not stop the review (stage 4 makes it the definition of done).
-  expect(block).not.toContain("return { pass: false");
+  // 2026-10-30 (stage 5): with the reviewers run once, a failing test is a finding for its owner and stops the round
+  // (stage 3 only recorded it; REVIEW_ONCE=off keeps that).
+  expect(stage6).toContain("if (process.env.REVIEW_ONCE !== \"off\") failingAcceptance = acceptanceFailureFindings(run, tests);");
+  expect(stage6).toContain("if (failingAcceptance.length > 0) return { pass: false, findings: failingAcceptance, specCompliance };");
   const accounts = stage6.indexOf("Role accounts ready");
   expect(accounts).toBeGreaterThan(0);
   expect(stage6.indexOf("runAcceptanceTests(")).toBeGreaterThan(accounts);

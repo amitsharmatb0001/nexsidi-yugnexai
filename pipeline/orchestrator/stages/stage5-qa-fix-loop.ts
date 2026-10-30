@@ -604,7 +604,7 @@ export async function runQAFixLoop(
     import("../../../agents/generators/pranav/src/index.ts"),
   ]);
 
-  return runQAFixLoopWithDeps(projectId, plan, stage4Result, {
+  const deps: QAFixDeps = {
     // includeTier3 stays at its default false — this is the pre-deployment
     // gate, per runStage5's own header comment. Wrapped so plan lands in
     // QAFixDeps.runStage5's 3rd positional slot instead of runStage5's own
@@ -681,5 +681,42 @@ export async function runQAFixLoop(
         console.log(`[qa-fix-loop] recordInstincts failed (non-fatal, memory is an enrichment): ${String(err)}`);
       }
     },
-  });
+  };
+  // 2026-10-30 (team plan, stage 5): the reviewers run once and their findings need proof (stage5-review-once.ts).
+  // REVIEW_ONCE=off brings back the review-and-fix rounds below.
+  if (process.env.REVIEW_ONCE !== "off") {
+    const { runReviewOnceWithDeps } = await import("./stage5-review-once.ts");
+    const { realGateDeps } = await import("../acceptance-gate-real.ts");
+    const { runAcceptanceGate } = await import("../acceptance-gate.ts");
+    const { recordReviewExamples } = await import("../review-proof.ts");
+    const real = realGateDeps(projectId, plan);
+    try {
+      return await runReviewOnceWithDeps(projectId, plan, stage4Result, {
+        ...deps,
+        runStage5: (pid, s4, p) => runStage5(pid, s4, false, p),
+        reproduce: (tests) => real.reproduce(tests),
+        recordExamples: (confirmed) => recordReviewExamples(projectId, confirmed),
+        gate: async () => {
+          try {
+            const g = await runAcceptanceGate(buildDirFor(projectId), {
+              ...real.deps,
+              // The spend cap stops the rounds; the step then raises the budget stop (activities/index.ts).
+              beforeRound: async () => {
+                if (await isOverBudget(projectId)) throw new SpendCapReached();
+              },
+            });
+            return { status: g.status, ...(g.reason ? { reason: g.reason } : {}), failing: (g.last?.results ?? []).filter((r) => r.status === "failed").map((r) => `${r.id} [${r.planItem}] ${r.detail.slice(0, 200)}`) };
+          } catch (err) {
+            if (err instanceof SpendCapReached) return { status: "failing" as const, reason: "the spend cap was reached before every test passed" };
+            throw err;
+          }
+        },
+      });
+    } finally {
+      await real.cleanup().catch((err) => console.warn(`[review-once] cleanup failed: ${String(err).slice(0, 200)}`));
+    }
+  }
+  return runQAFixLoopWithDeps(projectId, plan, stage4Result, deps);
 }
+
+class SpendCapReached extends Error {}

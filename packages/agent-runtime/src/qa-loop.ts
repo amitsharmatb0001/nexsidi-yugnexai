@@ -87,6 +87,9 @@ export interface Finding {
   // 2026-10-03 (evidence-only plan): the exact code from `file` that shows
   // the problem. Checked against the file; `line` is set from where it is.
   evidence?: string;
+  // 2026-10-30 (team plan, stage 5): an acceptance test (the tester's format, without id and phase) that fails on the
+  // running app while the finding is true. Required for a finding about what the customer asked for (review-proof.ts).
+  reproduction?: Record<string, unknown>;
 }
 
 export interface QAAgentConfig {
@@ -484,6 +487,41 @@ const QA_TOOL_DEFS: NimToolDef[] = [
                 file: { type: "string" },
                 line: { type: "integer", description: "1-indexed line number within `file` where the issue is." },
                 evidence: { type: "string", description: "The exact code from `file` that shows the problem, copied from read_file. For something missing, quote the code where it should be (e.g. the router that never mounts a route)." },
+                reproduction: {
+                  type: "object",
+                  description:
+                    "Required when the finding is about what the customer asked for (an SC, EP, ANS or ROLES item): a test that FAILS on the running app while the finding is true, because it expects what the approved plan says. The system runs it before any builder sees the finding; without it, or if it passes, the finding goes to the notes.",
+                  properties: {
+                    title: { type: "string", description: "What the test shows, in one line" },
+                    as: { type: "string", description: "Who runs it: \"anyone\" (signed out), \"user\" (an ordinary account) or a role of the plan" },
+                    kind: { type: "string", enum: ["api", "journey"] },
+                    steps: {
+                      type: "array",
+                      description: "API steps: method, path, optional as/body/expectBody/save, and expectStatus. Journey steps: do (open, fill, choose, click, see, notSee, atPath) with path, field+value, field+option or text. Values: {{email}}, {{password}}, {{unique}}, {{date+N}}, {{datetime+N HH:MM}}, or a name an earlier step saved.",
+                      items: {
+                        type: "object",
+                        properties: {
+                          method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+                          path: { type: "string" },
+                          as: { type: "string" },
+                          body: { type: "object", description: "The JSON request body" },
+                          expectStatus: { type: "array", items: { type: "integer" }, description: "The status codes the plan allows, e.g. [200] or [401, 403]" },
+                          expectBody: {
+                            type: "array",
+                            items: { type: "object", properties: { path: { type: "string" }, equals: { type: "string" }, contains: { type: "string" }, exists: { type: "boolean" } }, required: ["path"] },
+                          },
+                          save: { type: "object", description: "name → path in the answer, to use as {{name}} later" },
+                          do: { type: "string", enum: ["open", "fill", "choose", "click", "see", "notSee", "atPath"] },
+                          field: { type: "string" },
+                          value: { type: "string" },
+                          option: { type: "string" },
+                          text: { type: "string" },
+                        },
+                      },
+                    },
+                  },
+                  required: ["title", "as", "kind", "steps"],
+                },
               },
               required: ["severity", "category", "detail", "file", "evidence"],
             },

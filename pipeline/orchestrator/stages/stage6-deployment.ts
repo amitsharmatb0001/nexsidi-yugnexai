@@ -19,6 +19,7 @@ import { resolveFlags } from "../flags.ts";
 import { run as runRiya, purgeVerificationArtifacts, seedSampleData, limitedRolesFromContract, grantTestAccountRole, snapshotTableCounts, compareSnapshots, databaseNow, recordSeededRecords, type DeployResult } from "../../../agents/riya/src/index.ts";
 import { readAcceptanceTests, activeTests } from "../acceptance-tests.ts";
 import { runAcceptanceTests, recordAcceptanceRun, type RunnerAccount } from "../acceptance-runner.ts";
+import { acceptanceFailureFindings, liveReviewState, markLiveReview, proveLiveFindings } from "./live-review-once.ts";
 import { agentForFile, type Stage4Result } from "./stage4-multi-agent-dev.ts";
 import type { Stage5Result } from "./stage5-adversarial-qa.ts";
 import type { Finding } from "./stage4-multi-agent-dev.ts";
@@ -561,6 +562,9 @@ async function liveRetestChecks(
     // result does not decide anything (stage 4 makes passing tests the definition of done). Records a test creates are
     // added to the cleanup list, and the app's sign-in limiter is reset afterwards so the checks below are not refused.
     // Off switch: ACCEPTANCE_TESTS=off.
+    // 2026-10-30 (team plan, stage 5): with the reviewers run once, a failing test is a finding for its owner (proven by the
+    // runner) and stops the round like the other system checks; REVIEW_ONCE=off keeps the stage 3 behaviour (recorded only).
+    let failingAcceptance: Finding[] = [];
     if (process.env.ACCEPTANCE_TESTS !== "off" && !browserReviewOnly) {
       // Tests the Chief AI withdrew on a builder's dispute (acceptance-gate.ts) no longer count.
       const tests = activeTests(readAcceptanceTests(buildDirFor(projectId)));
@@ -577,6 +581,7 @@ async function liveRetestChecks(
           recordAcceptanceRun(buildDirFor(projectId), run);
           console.log(`[stage6] Acceptance tests: ${run.passed} passed, ${run.failed} failed, ${run.notChecked} not checked (of ${run.results.length})`);
           for (const r of run.results.filter((x) => x.status !== "passed")) console.log(`[stage6]   ${r.id} [${r.planItem}] ${r.status}: ${r.detail.slice(0, 240)}`);
+          if (process.env.REVIEW_ONCE !== "off") failingAcceptance = acceptanceFailureFindings(run, tests);
         } catch (err) {
           notChecked.push(`acceptance tests could not run: ${String(err).slice(0, 300)}`);
         }
@@ -584,6 +589,7 @@ async function liveRetestChecks(
         if (!reset.ok) console.warn(`[stage6] could not reset the app's rate limits after the acceptance tests: ${reset.reason}`);
       }
     }
+    if (failingAcceptance.length > 0) return { pass: false, findings: failingAcceptance, specCompliance };
 
     // 2026-10-05 (Ledgerly run 4): the route sweep opens EVERY page of the app in a real browser, signed out
     // and signed in (see route-sweep.ts) — the agents below only visit the pages they choose to click
@@ -612,6 +618,36 @@ async function liveRetestChecks(
     // false instead.
     // After a fix round the reviewers re-read only the files that changed; the
     // live review of the running app (Tier 3) still covers the whole app.
+    // 2026-10-30 (team plan, stage 5): the static reviewers ran once in the review step (stage5-review-once.ts); here the
+    // browser review and the design review each run once (live-review-once.ts). A browser finding reaches a builder only
+    // when its reproduction fails on the app; the later rounds run the system's checks and the acceptance tests above.
+    // REVIEW_ONCE=off brings back the review rounds below.
+    if (process.env.REVIEW_ONCE !== "off" && !browserReviewOnly) {
+      const dir = buildDirFor(projectId);
+      const once = liveReviewState(dir);
+      if (!once.browser) {
+        const { runTier3Review } = await import("../../../agents/tilotma/src/tier3-review.ts");
+        const t3 = await runTier3Review(projectId, stage4Result.frontendOutputDir);
+        if (t3.incomplete) {
+          notChecked.push(t3.incomplete);
+        } else {
+          markLiveReview(dir, "browser");
+          const { BrowserSession } = await import("../../../packages/agent-runtime/src/browser/client.ts");
+          const proven = await proveLiveFindings(projectId, t3.pass ? [] : t3.findings, (tests) =>
+            runAcceptanceTests(tests, { apiUrl: backendUrl, appUrl, accounts: runnerAccounts, openBrowser: async () => new BrowserSession(), onCreated: (id) => recordSeededRecords(dir, { acceptance: [id] }) }));
+          console.log(`[stage6] Browser review (once): ${t3.findings.length} finding(s), ${proven.findings.length} reproduced, ${proven.notes} to the notes`);
+          if (proven.findings.length > 0) return { pass: false, findings: proven.findings, specCompliance };
+        }
+      }
+      if (!once.design) {
+        const liveEval = await runLiveEval(projectId, appUrl, stage4Result.frontendOutputDir);
+        markLiveReview(dir, "design");
+        if (liveEval.unscored) notChecked.push("design review: the evaluator did not produce scores, even when asked again");
+        return { pass: liveEval.pass || liveEval.unscored === true, findings: designFindings(liveEval), liveEval, specCompliance };
+      }
+      return { pass: true, findings: [], specCompliance };
+    }
+
     let result: Stage5Result;
     if (browserReviewOnly) {
       // Only the live browser review (Tier 3), mapped exactly as runStage5 maps it.

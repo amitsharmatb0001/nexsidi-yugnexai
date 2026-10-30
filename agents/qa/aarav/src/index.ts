@@ -10,6 +10,7 @@ import { join } from "node:path";
 import {
   checkAcceptanceTests,
   normalizePath,
+  pathFits,
   planScope,
   saveAcceptanceTests,
   type AcceptanceSuite,
@@ -160,18 +161,18 @@ function parseTests(raw: string): unknown[] | null {
 
 /** What this phase lists that no accepted test of the phase uses yet. */
 function missingCoverage(tests: AcceptanceTest[], ph: Phase): string[] {
-  const used = new Set<string>();
-  const opened = new Set<string>();
+  const calls: Array<{ method: string; path: string }> = [];
+  const opened: string[] = [];
   for (const t of tests) {
-    if (t.kind === "api") for (const s of t.steps as ApiStep[]) used.add(`${String(s.method).toUpperCase()} ${normalizePath(s.path)}`);
-    else for (const s of t.steps as JourneyStep[]) if (s.do === "open") opened.add(normalizePath(s.path));
+    if (t.kind === "api") for (const s of t.steps as ApiStep[]) calls.push({ method: String(s.method).toUpperCase(), path: s.path });
+    else for (const s of t.steps as JourneyStep[]) if (s.do === "open") opened.push(s.path);
   }
   const missing: string[] = [];
   for (const e of ph.endpoints ?? []) {
     const [method, path] = e.trim().split(/\s+/);
-    if (method && path && !used.has(`${method.toUpperCase()} ${normalizePath(path)}`)) missing.push(`${method.toUpperCase()} ${path}`);
+    if (method && path && !calls.some((c) => c.method === method.toUpperCase() && pathFits(path, c.path))) missing.push(`${method.toUpperCase()} ${path}`);
   }
-  for (const p of ph.pages ?? []) if (!opened.has(normalizePath(p))) missing.push(`the page ${p}`);
+  for (const p of ph.pages ?? []) if (!opened.some((o) => pathFits(p, o))) missing.push(`the page ${p}`);
   return missing;
 }
 

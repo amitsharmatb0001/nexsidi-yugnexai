@@ -14,6 +14,8 @@ export interface Finding {
   detail: string;
   file?: string;
   line?: number; // P2: exact line so fixes target a location, not a whole-file re-scan
+  evidence?: string;
+  reproduction?: Record<string, unknown>; // 2026-10-30 (stage 5): see qa-loop.ts
 }
 
 export interface NavyaDeps {

@@ -201,3 +201,14 @@ test("in a one-pass team build every phase's tests are shown", () => {
   expect(text).toContain("AT-2-1 [INT1]");
   expect(text).toContain("ACCEPTANCE TESTS FOR THIS BUILD");
 });
+
+// 2026-10-30 (stage 5): a reviewer's reproduction calls an endpoint with a real id ("/api/v1/orders/1"); that is the
+// contract's "/api/v1/orders/:id", and a page "/orders/42" is the plan's "/orders/[id]".
+test("a concrete id fits the contract's parameter, on an endpoint and on a page", () => {
+  const t: AcceptanceTest = { ...itemNameKept, id: "AT-2-7", steps: [{ method: "PATCH", path: "/api/v1/menu/17", body: { name: "x" }, as: "staff", expectStatus: 200 }] };
+  expect(checkAcceptanceTests([t], dir).rejected).toEqual([]);
+  const page: AcceptanceTest = { ...signUpPage, id: "AT-2-8", phase: 2, as: "user", steps: [{ do: "open", path: "/orders/42" }, { do: "atPath", path: "/orders/42" }] };
+  expect(checkAcceptanceTests([page], dir).rejected).toEqual([]);
+  const wrong: AcceptanceTest = { ...itemNameKept, id: "AT-2-9", steps: [{ method: "PATCH", path: "/api/v1/menu/17/extra", expectStatus: 200 }] };
+  expect(checkAcceptanceTests([wrong], dir).rejected[0]!.reasons.join(" ")).toContain("is not in the approved API contract");
+});

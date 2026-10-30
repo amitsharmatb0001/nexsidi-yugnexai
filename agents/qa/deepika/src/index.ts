@@ -31,6 +31,8 @@ export interface Finding {
   detail:   string;
   file?:    string; // best-effort file path — lets Stage 5 fault-isolate to the responsible agent
   line?:    number; // P2: exact line so fixes target a location, not a whole-file re-scan
+  evidence?: string;
+  reproduction?: Record<string, unknown>; // 2026-10-30 (stage 5): see qa-loop.ts
 }
 
 // `deps` is injectable (defaults to the real agentChat) — matches this

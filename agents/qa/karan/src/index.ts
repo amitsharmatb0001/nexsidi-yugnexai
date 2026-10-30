@@ -29,6 +29,8 @@ export interface SecurityFinding {
   description: string;
   file?: string; // best-effort file path — lets Stage 5 fault-isolate to the responsible agent
   line?: number; // P2: exact line so fixes target a location, not a whole-file re-scan
+  evidence?: string;
+  reproduction?: Record<string, unknown>; // 2026-10-30 (stage 5): see qa-loop.ts
 }
 
 export interface QAResult {
@@ -87,7 +89,7 @@ export async function run(
 // file never actually read is rejected. Preferred path; run() (text-dump)
 // kept as the tested fallback call shape.
 function qaLoopFindingToSecurityFinding(f: QALoopFinding): SecurityFinding {
-  return { severity: f.severity, description: `${f.category}: ${f.detail}`, file: f.file, line: f.line };
+  return { severity: f.severity, description: `${f.category}: ${f.detail}`, file: f.file, line: f.line, evidence: f.evidence, reproduction: f.reproduction };
 }
 
 // Token-waste-reduction plan, Task 1 (2026-08-16): the inverse of
@@ -99,7 +101,7 @@ function qaLoopFindingToSecurityFinding(f: QALoopFinding): SecurityFinding {
 // native category field) — detail carries the original description text
 // unmodified so nothing is lost in the round trip.
 function securityFindingToQaLoopFinding(f: SecurityFinding): QALoopFinding {
-  return { severity: f.severity, category: "security", detail: f.description, file: f.file, line: f.line };
+  return { severity: f.severity, category: "security", detail: f.description, file: f.file, line: f.line, evidence: f.evidence, reproduction: f.reproduction };
 }
 
 export interface KaranExploringDeps {

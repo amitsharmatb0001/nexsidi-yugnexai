@@ -1016,3 +1016,39 @@ Approved by Amit as stage 1. It reverses the reading half of his 2 October decis
 **Cost note:** until stage 5 (the reviewers as the final gate, run once), a build runs both the gate's fix rounds and the existing review loop, so it may cost more than before.
 
 **Not checked:** a real build through the gate (real deploy, model fix runs, the Chief AI's ruling): a paid run, needing Amit's OK.
+
+## Batch 65 — stage 5: the reviewers run once, and every finding needs proof (2026-10-30)
+
+**Why (root cause 6 of 29 Oct):** the review loop was the main engine of a build, about 80% of the spend. The reviewers ran again after every fix round, each round brought findings in files nobody had touched, and a finding reached a builder as text a model had judged. Brewline 3 ran 14 rounds; one finding (the item's name at order time) came back in 11 wordings.
+
+**Built:**
+- **The proof rule** (`pipeline/orchestrator/review-proof.ts`). A finding reaches a builder only with proof:
+  - a finding about what the customer asked for (an SC, EP, ANS or ROLES item) carries a reproduction, an acceptance test in the tester's format, and the fixed runner must see it fail on the running app;
+  - a finding about the rules every app keeps (SEC, INT) or the approved design may instead stand on its quoted code (checked when the reviewer submits it), and the Chief AI's existing check judges it;
+  - the system's own checks are proven already.
+
+  A finding without proof goes to `<build>/review-notes.jsonl`, not to a builder. A reproduction that passes on the app is "not reproduced", and goes to the notes too.
+- **A reproduced finding becomes a permanent acceptance test** (`AT-R-n`, source "review"). It also becomes an example in the adversarial example database (claim 4): caught by the reviewer that found it, missed by the other two, so it is fed into their next review through the existing training feedback.
+- **The review step runs the reviewers once** (`stage5-review-once.ts`, the default; `REVIEW_ONCE=off` restores the old loop).
+  - The confirmed code findings and the system's checks get one fix run per owner; hand-offs and disputes work as before.
+  - Then the acceptance gate runs every test, the review's new ones included, and fixes until they pass.
+  - Anything still open holds the build for a person: a test still failing, or a fix run that could not finish. A review that did not complete is run again twice at most, then held, never passed.
+- **The live step runs the browser review and the design review once** (`live-review-once.ts`).
+  - The static reviewers are not run again there.
+  - A browser finding carries its reproduction at the end of its line (`REPRO: {…}`) and goes through the same rule.
+  - Later live rounds run the system's checks and the acceptance tests only. A failing test is a finding for its owner (proven by the runner), counted with the system's own checks.
+- **The reviewers are told what proof is:** a `reproduction` field with its full shape on the findings tool, a PROOF paragraph in the static reviewers' plan rule, and the REPRO instruction for the browser reviewer.
+- **Fixed on the way:** the plan check refused a test that called a contract endpoint with a real id (`/api/v1/orders/1` for `/api/v1/orders/:id`). Reviewers write real ids, so a concrete value now fits a parameter. The tester's coverage check uses the same rule.
+
+**Proof:**
+- Tests first: proof rule 8, review once 8, live review once 5, wiring 3, plan check 1.
+- Two older wiring tests were updated: stage 3's "acceptance results decide nothing" is now "a failing test is a finding", and the machine-finding list now includes `[acceptance]`.
+- All 2,733 tests in the pipeline, agents, packages and API pass, and all 92 in the web app. Type checks: only the two errors of 25 Oct.
+- **Free, on every recorded finding of Brewline 1, 2 and 3:**
+  - **Brewline 1:** 10 rounds and 53 findings. Its first review had 16: 9 from the system's checks would reach a builder, 6 name no plan item (notes; this build predates plan-item tags), and 1 was an unfinished review. The later rounds brought 32 more.
+  - **Brewline 2:** 6 rounds and 6 findings. Its first review's only finding (an SC2 mismatch) has no reproduction, so it goes to the notes. The later rounds brought 4 more.
+  - **Brewline 3:** 14 rounds and 39 findings. Its first review had 6: 5 quoted-code findings on INT1, INT2 and SEC go to the Chief AI's check, and 1 was an unfinished review. The later rounds brought 32 more, among them the item-name finding in 11 wordings.
+  - Under review-once, the later rounds' model findings would not be produced. The system's checks in later live rounds still run, so part of those 32 would remain.
+  - Of all 97 recorded findings, the ones about the customer's request with no reproduction (9) and those naming no plan item (34) would have gone to the notes.
+
+**Not checked:** a reviewer actually writing reproductions (model calls), a build through the new review (a paid run), and the browser reviewer following the REPRO format.

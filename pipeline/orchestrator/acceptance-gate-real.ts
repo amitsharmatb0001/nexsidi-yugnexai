@@ -8,7 +8,7 @@ import type { BuildPlan } from "../../agents/arjun/src/index.ts";
 import { run as runRiya, redeployRunningApp, grantTestAccountRole, limitedRolesFromContract, recordSeededRecords, purgeVerificationArtifacts, databaseNow } from "../../agents/riya/src/index.ts";
 import { createReviewAccount } from "./stages/route-sweep.ts";
 import { resetAppRateLimits } from "./stages/limiter-reset.ts";
-import { runAcceptanceTests, recordAcceptanceRun, type RunnerAccount } from "./acceptance-runner.ts";
+import { runAcceptanceTests, recordAcceptanceRun, type RunnerAccount, type RunSummary } from "./acceptance-runner.ts";
 import { acceptanceFixCheck, type GateDeps, type GateUrls, type Owner } from "./acceptance-gate.ts";
 import { activeTests, readAcceptanceTests, type AcceptanceTest } from "./acceptance-tests.ts";
 import { resolveDisputes } from "./disputes.ts";
@@ -54,7 +54,7 @@ function testsNamedIn(texts: string[], projectDir: string): AcceptanceTest[] {
   return activeTests(readAcceptanceTests(projectDir)).filter((t) => ids.has(t.id));
 }
 
-export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDeps; cleanup(): Promise<void> } {
+export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDeps; cleanup(): Promise<void>; reproduce(tests: AcceptanceTest[]): Promise<RunSummary> } {
   const dir = buildDirFor(projectId);
   const serial = oneAtATime();
   let accounts: Record<string, RunnerAccount> | null = null;
@@ -143,6 +143,15 @@ export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDe
 
   return {
     deps,
+    // 2026-10-30 (team plan, stage 5): a review finding's reproduction, run on the app (started if it is not running yet).
+    // Not recorded as an acceptance run; an app that cannot be started leaves every reproduction not checked.
+    reproduce: async (tests) => {
+      const urls = current ?? (await deps.deploy());
+      if ("reason" in urls) {
+        return { at: new Date().toISOString(), results: tests.map((t) => ({ id: t.id, phase: t.phase, planItem: t.planItem, title: t.title, status: "not_checked" as const, detail: `the app could not be started: ${urls.reason}` })), passed: 0, failed: 0, notChecked: tests.length };
+      }
+      return runTests(tests, urls);
+    },
     // The test accounts, everything under them and every record the tests created are removed; the limiter is reset so
     // the review that follows (and the customer) starts fresh.
     cleanup: async () => {
