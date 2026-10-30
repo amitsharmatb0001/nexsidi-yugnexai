@@ -13,6 +13,8 @@ import { contractRouteFindings, staffOnlyEndpoint, type ContractEndpoint } from 
 import { migrationFindings } from "./migration-check.ts";
 import { metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings, schemaMigrationSyncFindings, projectHygieneFindings, dedupeAgainstHygiene } from "./shipping-hygiene.ts";
 import { planItemsFor, type PlanItem } from "../chief-check.ts";
+import { buildAppMap } from "../app-map/index.ts";
+import { checkRules, ruleFindings } from "../app-map/rules.ts";
 
 const SKIP = new Set(["node_modules", ".next", "dist", "build", ".git"]);
 
@@ -435,4 +437,20 @@ export function keepHistoryInMigrations(projectDir: string): string[] {
     if (rewritten !== original) writeFileSync(join(dir, name), rewritten, "utf-8");
   }
   return changed;
+}
+
+// 2026-10-30 (understanding plan, step 3): the rules every app keeps, checked by code on the app map (app-map/rules.ts) when a
+// builder says "done" — INT1 history, INT2 atomic stock check, SEC1 SQL text, SEC2 sign-in and role, SEC9 self-chosen role, and
+// the map's own gaps. Before, these were prompt text the reviewers judged rounds later. The builder gets only the ones it owns
+// (the file's owner, decided from the facts); the schema file against the migrations is the database builder's own check
+// already (schemaMigrationSyncFindings). A folder the map cannot read is not checked here, and blocks nothing.
+export function mapRuleFindings(projectDir: string, owner: "shubham" | "aanya" | "pranav"): string[] {
+  try {
+    const map = buildAppMap(projectDir);
+    const violations = checkRules(projectDir, map).filter((v) => !(v.rule === "MAP" && v.file === "db/src/schema.ts"));
+    return ruleFindings(violations, owner);
+  } catch (err) {
+    console.warn(`[map-rules] not checked for ${owner}: ${String(err).slice(0, 160)}`);
+    return [];
+  }
 }

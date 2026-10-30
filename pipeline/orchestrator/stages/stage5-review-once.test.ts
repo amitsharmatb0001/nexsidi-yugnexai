@@ -129,3 +129,18 @@ test("a question for the customer stops the step before the gate", async () => {
   expect(calls).not.toContain("gate");
   expect(existsSync(join(dir, "review-notes.jsonl"))).toBe(true);
 });
+
+// 2026-10-30 (understanding plan, step 3): a rule the code breaks is found by the system's check on the app map, whether or
+// not a reviewer saw it, and goes to its owner's one fix run as a system finding (no proof needed: the map read it from the code).
+test("a rule the code breaks goes to its owner's fix run even when no reviewer reported it", async () => {
+  writeFileSync(join(dir, "backend", "src", "routes", "search.ts"), "export const search = async (req, res) => {\n  await db.query(`SELECT id FROM orders WHERE note = '${req.query.q}'`);\n};\n");
+  const sent: string[] = [];
+  const { deps, calls } = standIns({
+    runStage5: async () => (calls.push("review"), { pass: true, findings: [] }),
+    fixShubham: async (_p, f) => (sent.push(...f), calls.push(`fix shubham ${f.length}`), { success: true, filesWritten: [] }),
+  });
+  const r = await runReviewOnceWithDeps("p1", plan, s4, deps);
+  expect(r.pass).toBe(true);
+  expect(calls).toContain("fix shubham 1");
+  expect(sent[0]).toContain("[map-rule SEC1] backend/src/routes/search.ts:2");
+});

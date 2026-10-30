@@ -19,6 +19,8 @@ import type { RunSummary } from "../acceptance-runner.ts";
 import { dropSettledNotTrue, resolveDisputes } from "../disputes.ts";
 import { isReviewerFailure } from "../chief-check.ts";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
+import { buildAppMap } from "../app-map/index.ts";
+import { checkRules, ruleFindings } from "../app-map/rules.ts";
 import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
 
 export interface ReviewOnceDeps extends Pick<QAFixDeps, "fixShubham" | "fixAanya" | "fixPranav" | "settleDisputes" | "chiefChat" | "openQuestions" | "recordInstincts"> {
@@ -29,6 +31,17 @@ export interface ReviewOnceDeps extends Pick<QAFixDeps, "fixShubham" | "fixAanya
   gate(): Promise<{ status: "passed" | "failing" | "not_checked" | "waiting_for_customer"; reason?: string; failing?: string[] }>;
   /** claim 4: confirmed findings into the adversarial example database */
   recordExamples?(confirmed: Array<{ finding: ReviewFinding; planItem: string; evidence?: string }>): Promise<void>;
+}
+
+/** The broken rules, as findings in the file each names (its owner's folder: app-map/rules.test.ts). */
+function mapRuleViolations(dir: string): Finding[] {
+  try {
+    const v = checkRules(dir, buildAppMap(dir));
+    return ruleFindings(v).map((issue, i) => ({ file: v[i]!.file, issue }));
+  } catch (err) {
+    console.warn(`[review-once] the rules were not checked on the app map: ${String(err).slice(0, 160)}`);
+    return [];
+  }
 }
 
 const REVIEW_RERUNS = 2;
@@ -92,7 +105,11 @@ export async function runReviewOnceWithDeps(projectId: string, plan: BuildPlan, 
       `${confirmedCode.length} confirmed in the code, ${proven.machine.length} from the system's checks, ${proven.notes.length} to the notes`,
   );
 
-  const unfixed = await fixOnce(projectId, plan, [...proven.machine, ...confirmedCode], deps);
+  // 2026-10-30 (understanding plan, step 3): the rules every app keeps, checked by code on the app map — whether or not a
+  // reviewer reported them. A system finding (the map read it from the code), sent to the owner of the file it names.
+  const ruleFindingsNow = mapRuleViolations(dir);
+  if (ruleFindingsNow.length) console.log(`[review-once] ${ruleFindingsNow.length} rule(s) broken in the code, by the app map`);
+  const unfixed = await fixOnce(projectId, plan, [...proven.machine, ...ruleFindingsNow, ...confirmedCode], deps);
   if ((deps.openQuestions?.() ?? 0) > 0) {
     console.log(`[review-once] a builder asked the customer a question — the step stops until it is answered`);
     return { ...review, pass: false, iterations: 1, stuck: false };

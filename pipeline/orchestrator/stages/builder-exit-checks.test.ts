@@ -435,3 +435,35 @@ test("a reviewer finding that restates a hygiene finding is dropped; a different
   expect(dropped.length).toBe(3);
   expect(kept.map((f) => f.issue)).toEqual([others[3]!.issue, others[4]!.issue]);
 });
+
+// 2026-10-30 (understanding plan, step 3): the rules every app keeps, checked on the app map when a builder says "done". Each
+// builder gets only the broken rules it owns; the schema file against the migrations is already the database builder's own check.
+test("mapRuleFindings: each builder gets the broken rules it owns, as finding lines with the file and line", async () => {
+  const { mapRuleFindings } = await import("./builder-exit-checks.ts");
+  project("p-rules", {
+    "db/migrations/0000.sql": `CREATE TABLE "users" ("id" uuid PRIMARY KEY, "email" text NOT NULL, "password_hash" text NOT NULL, "role" text NOT NULL);
+CREATE TABLE "menu_items" ("id" uuid PRIMARY KEY, "name" text NOT NULL, "price" numeric NOT NULL);
+CREATE TABLE "orders" ("id" uuid PRIMARY KEY);
+CREATE TABLE "order_items" ("id" uuid PRIMARY KEY, "order_id" uuid REFERENCES "orders"("id"), "menu_item_id" uuid REFERENCES "menu_items"("id"), "quantity" integer);`,
+    "db/src/schema.ts": `export const users = pgTable("users", { id: uuid("id") });`,
+    "backend/src/app.ts": `import auth from "./auth";\nconst app = express();\napp.use("/api/v1/auth", auth);`,
+    "backend/src/auth.ts": `const router = Router();
+router.post("/sign-up", async (req, res) => {
+  const { email, role } = req.body;
+  await pool.query("INSERT INTO users (email, role) VALUES ($1, $2)", [email, role]);
+});
+export default router;`,
+  }, "A cafe");
+  const dir = join(root, "p-rules");
+  const backend = mapRuleFindings(dir, "shubham");
+  expect(backend).toEqual([expect.stringMatching(/^\[map-rule SEC9\] backend\/src\/auth\.ts:4 — POST \/api\/v1\/auth\/sign-up: users\.role is written from the request/)]);
+  const database = mapRuleFindings(dir, "pranav");
+  expect(database.some((f) => f.includes("order_items keeps no copy of menu_items.name"))).toBe(true);
+  expect(database.some((f) => f.includes("db/src/schema.ts"))).toBe(false);
+  expect(mapRuleFindings(dir, "aanya")).toEqual([]);
+});
+
+test("mapRuleFindings: a folder the map cannot read gives no findings, not a failed finish", async () => {
+  const { mapRuleFindings } = await import("./builder-exit-checks.ts");
+  expect(mapRuleFindings(join(tmpdir(), "no-such-build-folder-xyz"), "shubham")).toEqual([]);
+});

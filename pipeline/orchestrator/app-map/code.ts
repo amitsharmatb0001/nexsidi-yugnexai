@@ -45,7 +45,9 @@ function resolveModule(fromAbs: string, spec: string, aliasRoot: string | null):
   if (spec.startsWith(".")) base = resolve(dirname(fromAbs), spec);
   else if (spec.startsWith("@/") && aliasRoot) base = join(aliasRoot, spec.slice(2));
   if (!base) return null;
-  for (const c of [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.jsx`, join(base, "index.ts"), join(base, "index.tsx"), join(base, "index.js")]) {
+  // ESM-style TypeScript imports name the compiled file: './routes/tasks.js' is routes/tasks.ts (test9003).
+  const ts_ = base.replace(/\.(m?)js(x?)$/, ".$1ts$2");
+  for (const c of [base, ...(ts_ !== base ? [ts_] : []), `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.jsx`, join(base, "index.ts"), join(base, "index.tsx"), join(base, "index.js")]) {
     try {
       if (existsSync(c) && statSync(c).isFile()) return c;
     } catch {
@@ -64,6 +66,7 @@ function parse(abs: string, projectRoot: string, aliasRoot: string | null): Pars
     const file = resolveModule(abs, st.moduleSpecifier.text, aliasRoot);
     if (st.importClause.name) imports.set(st.importClause.name.text, { file, name: "default" });
     const nb = st.importClause.namedBindings;
+    if (nb && ts.isNamespaceImport(nb)) imports.set(nb.name.text, { file, name: "*" });
     if (nb && ts.isNamedImports(nb)) for (const el of nb.elements) imports.set(el.name.text, { file, name: (el.propertyName ?? el.name).text });
   }
   return { abs, rel: relative(projectRoot, abs).replace(/\\/g, "/"), sf, imports };
@@ -121,20 +124,40 @@ function enclosingFunction(node: ts.Node): ts.Node | undefined {
  *   - a variable: each string it is given in the same function (an if/else gives two variants), or a constant of the file.
  * Any other substitution stays `${…}` and marks the SQL as built from values.
  */
-function sqlTextsOf(arg: ts.Expression, sf: ts.SourceFile, scope: ts.Node): Array<{ text: string; dynamic: boolean }> {
+function sqlTextsOf(arg: ts.Expression, sf: ts.SourceFile, scope: ts.Node): Array<{ text: string; dynamic: boolean; holes: ts.Expression[] }> {
+  const holes: ts.Expression[] = [];
+  /** list.join(sep), where every value pushed to the list in this function is a fixed string: the joined text. */
+  const joined = (x: ts.Expression): { text: string; dynamic: boolean } | null => {
+    if (!(ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression) && x.expression.name.text === "join" && ts.isIdentifier(x.expression.expression))) return null;
+    const list = x.expression.expression.text;
+    const sep = x.arguments[0] && ts.isStringLiteral(x.arguments[0]) ? x.arguments[0].text : ",";
+    const pushed: Array<{ text: string; dynamic: boolean } | null> = [];
+    visit(scope, (n) => {
+      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "push" && ts.isIdentifier(n.expression.expression) && n.expression.expression.text === list) {
+        for (const a of n.arguments) pushed.push(one(a));
+      }
+    });
+    if (pushed.length > 0 && pushed.every((p) => p && !p.dynamic)) return { text: pushed.map((p) => p!.text).join(sep), dynamic: false };
+    holes.push(x);
+    return { text: "${…}", dynamic: true };
+  };
   const one = (e: ts.Expression): { text: string; dynamic: boolean } | null => {
     if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return { text: e.text, dynamic: false };
     // "price = $" + (i++): strings joined with +, where a value right after "$" is a parameter number (shopbill-9).
     if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) {
       const left = one(e.left);
       if (!left) return { text: e.getText(sf), dynamic: true };
-      const right = one(e.right);
+      const right = one(e.right) ?? joined(e.right);
       if (right) return { text: left.text + right.text, dynamic: left.dynamic || right.dynamic };
       if (left.text.endsWith("$")) return { text: `${left.text}1`, dynamic: left.dynamic };
+      holes.push(e.right);
       return { text: `${left.text}\${…}`, dynamic: true };
     }
     if (ts.isParenthesizedExpression(e)) return one(e.expression);
-    if (ts.isBinaryExpression(e)) return { text: e.getText(sf), dynamic: true };
+    if (ts.isBinaryExpression(e)) {
+      holes.push(e);
+      return { text: e.getText(sf), dynamic: true };
+    }
     if (!ts.isTemplateExpression(e)) return null;
     let text = e.head.text;
     let dynamic = false;
@@ -142,47 +165,190 @@ function sqlTextsOf(arg: ts.Expression, sf: ts.SourceFile, scope: ts.Node): Arra
       const x = span.expression;
       if (text.endsWith("$")) {
         text += "1"; // a parameter number: the value is passed separately
-      } else if (ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression) && x.expression.name.text === "join" && ts.isIdentifier(x.expression.expression)) {
-        const list = x.expression.expression.text;
-        const sep = x.arguments[0] && ts.isStringLiteral(x.arguments[0]) ? x.arguments[0].text : ",";
-        const pushed: Array<{ text: string; dynamic: boolean } | null> = [];
-        visit(scope, (n) => {
-          if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "push" && ts.isIdentifier(n.expression.expression) && n.expression.expression.text === list) {
-            for (const a of n.arguments) pushed.push(one(a));
-          }
-        });
-        if (pushed.length > 0 && pushed.every((s) => s && !s.dynamic)) text += pushed.map((s) => s!.text).join(sep);
-        else {
+      } else {
+        const j = joined(x);
+        if (j) {
+          text += j.text;
+          dynamic ||= j.dynamic;
+        } else {
+          holes.push(x);
           text += "${…}";
           dynamic = true;
         }
-      } else {
-        text += "${…}";
-        dynamic = true;
       }
       text += span.literal.text;
     }
     return { text, dynamic };
   };
   const direct = one(arg);
-  if (direct) return [direct];
+  if (direct) return [{ ...direct, holes }];
   if (!ts.isIdentifier(arg)) return [];
   const name = arg.text;
-  const found: Array<{ text: string; dynamic: boolean }> = [];
+  const found: Array<{ text: string; dynamic: boolean; holes: ts.Expression[] }> = [];
   const collect = (root: ts.Node) =>
     visit(root, (n) => {
       if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === name && n.initializer) {
+        const before = holes.length;
         const s = one(n.initializer);
-        if (s) found.push(s);
+        if (s) found.push({ ...s, holes: holes.slice(before) });
       }
       if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left) && n.left.text === name) {
+        const before = holes.length;
         const s = one(n.right);
-        if (s) found.push(s);
+        if (s) found.push({ ...s, holes: holes.slice(before) });
       }
     });
   collect(scope);
   if (found.length === 0 && scope !== sf) collect(sf);
   return found;
+}
+
+/**
+ * Whether values come from the request (taint analysis, patent claim 8; 2026-10-30): the expressions, and every variable they
+ * use, followed through the function's declarations, assignments, list pushes and loops, four steps deep. True when any of it
+ * reads req.body, req.query, req.params or req.headers.
+ * Only what can become the value is followed (the recorded task builds, where 5 of 5 first findings were false): the branches of
+ * `a ? b : c` but not its test, a comparison (a true/false), a number conversion, a lookup in a fixed map of literals, and a
+ * variable the function checks against a fixed list (`SORTS.includes(x)`) carry no request text.
+ */
+const FROM_REQUEST = /\breq(?:uest)?\.(?:body|query|params|headers)\b/;
+const NUMBER_FNS = new Set(["parseInt", "parseFloat", "Number", "Math", "isNaN"]);
+const TEXT_KEEPING = new Set(["toUpperCase", "toLowerCase", "trim", "toString", "String"]);
+
+interface FixedFacts {
+  /** names declared as an object or array literal of literals only */
+  fixed: Set<string>;
+  /** the file's functions by name: what they return */
+  returns: Map<string, ts.Expression[]>;
+}
+
+/** Names declared anywhere in the file as an object or array literal of literals only, and what the file's functions return. */
+function fixedFacts(sf: ts.SourceFile): FixedFacts {
+  const returns = new Map<string, ts.Expression[]>();
+  const returnsOf = (fn: ts.Node) => {
+    const out: ts.Expression[] = [];
+    if ((ts.isArrowFunction(fn)) && !ts.isBlock(fn.body)) out.push(fn.body);
+    visit(fn, (n) => { if (ts.isReturnStatement(n) && n.expression) out.push(n.expression); });
+    return out;
+  };
+  visit(sf, (n) => {
+    if (ts.isFunctionDeclaration(n) && n.name) returns.set(n.name.text, returnsOf(n));
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && (ts.isArrowFunction(n.initializer) || ts.isFunctionExpression(n.initializer))) returns.set(n.name.text, returnsOf(n.initializer));
+  });
+  return { fixed: fixedConstants(sf), returns };
+}
+
+function fixedConstants(sf: ts.SourceFile): Set<string> {
+  const isFixed = (e: ts.Expression): boolean => {
+    if (ts.isStringLiteralLike(e) || ts.isNumericLiteral(e)) return true;
+    if (ts.isAsExpression(e) || ts.isParenthesizedExpression(e)) return isFixed(e.expression);
+    if (ts.isArrayLiteralExpression(e)) return e.elements.every((x) => isFixed(x as ts.Expression));
+    if (ts.isObjectLiteralExpression(e)) return e.properties.every((p) => ts.isPropertyAssignment(p) && isFixed(p.initializer));
+    return false;
+  };
+  const out = new Set<string>();
+  visit(sf, (n) => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && (ts.isArrayLiteralExpression(n.initializer) || ts.isObjectLiteralExpression(n.initializer) || ts.isAsExpression(n.initializer)) && isFixed(n.initializer)) out.add(n.name.text);
+  });
+  return out;
+}
+
+/** The variable at the root of `x`, `x.toLowerCase()`, `String(x)`. */
+function rootName(e: ts.Expression): string | null {
+  if (ts.isIdentifier(e)) return e.text;
+  if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isNonNullExpression(e)) return rootName(e.expression);
+  if (ts.isCallExpression(e)) {
+    if (ts.isPropertyAccessExpression(e.expression) && TEXT_KEEPING.has(e.expression.name.text)) return rootName(e.expression.expression);
+    if (ts.isIdentifier(e.expression) && e.expression.text === "String" && e.arguments[0]) return rootName(e.arguments[0]);
+  }
+  return null;
+}
+
+/** The parts of `e` whose value can become the value of `e`. */
+function valueParts(e: ts.Expression, ff: FixedFacts, depth = 0): ts.Expression[] {
+  const fixed = ff.fixed;
+  if (ts.isStringLiteralLike(e) || ts.isNumericLiteral(e) || e.kind === ts.SyntaxKind.TrueKeyword || e.kind === ts.SyntaxKind.FalseKeyword || e.kind === ts.SyntaxKind.NullKeyword) return [];
+  if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isNonNullExpression(e) || ts.isAwaitExpression(e)) return valueParts(e.expression, ff, depth);
+  if (ts.isConditionalExpression(e)) return [...valueParts(e.whenTrue, ff, depth), ...valueParts(e.whenFalse, ff, depth)];
+  if (ts.isPrefixUnaryExpression(e) || ts.isTypeOfExpression(e)) return [];
+  if (ts.isBinaryExpression(e)) {
+    const k = e.operatorToken.kind;
+    if (k === ts.SyntaxKind.BarBarToken || k === ts.SyntaxKind.QuestionQuestionToken || k === ts.SyntaxKind.PlusToken) return [...valueParts(e.left, ff, depth), ...valueParts(e.right, ff, depth)];
+    if (k === ts.SyntaxKind.AmpersandAmpersandToken) return valueParts(e.right, ff, depth);
+    return []; // comparisons, arithmetic other than +: a true/false or a number
+  }
+  if (ts.isTemplateExpression(e)) return e.templateSpans.flatMap((sp) => valueParts(sp.expression, ff, depth));
+  if (ts.isElementAccessExpression(e) && ts.isIdentifier(e.expression) && fixed.has(e.expression.text)) return [];
+  if (ts.isCallExpression(e)) {
+    const callee = e.expression;
+    if (ts.isIdentifier(callee) && NUMBER_FNS.has(callee.text)) return [];
+    if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === "Math") return [];
+    if (ts.isIdentifier(callee) && callee.text === "String") return e.arguments.flatMap((a) => valueParts(a, ff, depth));
+    if (ts.isPropertyAccessExpression(callee) && TEXT_KEEPING.has(callee.name.text)) return valueParts(callee.expression, ff, depth);
+    // A same-file function whose every return value is fixed text (stress6qafix: getOrderByClause returns ORDER_BY_MAP[x] || "...").
+    const rets = ts.isIdentifier(callee) ? ff.returns.get(callee.text) : undefined;
+    if (rets && rets.length > 0 && depth < 3 && rets.every((r) => valueParts(r, ff, depth + 1).length === 0)) return [];
+  }
+  return [e];
+}
+
+export function fromRequest(exprs: ts.Node[], scope: ts.Node, sf: ts.SourceFile): boolean {
+  const ff = fixedFacts(sf);
+  const fixed = ff.fixed;
+  // Variables the function checks against a fixed list: `SORTS.includes(x)`, `["a", "b"].includes(x.toLowerCase())`.
+  const checked = new Set<string>();
+  visit(scope, (n) => {
+    if (!(ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "includes" && n.arguments[0])) return;
+    const list = n.expression.expression;
+    const isFixedList = (ts.isIdentifier(list) && fixed.has(list.text)) || (ts.isArrayLiteralExpression(list) && list.elements.every((x) => ts.isStringLiteralLike(x)));
+    const name = rootName(n.arguments[0]);
+    if (isFixedList && name) checked.add(name);
+  });
+  const seen = new Set<string>();
+  let frontier = exprs.flatMap((e) => (ts.isExpression(e) ? valueParts(e, ff) : [e]));
+  for (let depth = 0; depth < 4 && frontier.length; depth++) {
+    const names: string[] = [];
+    for (const e of frontier) {
+      if (FROM_REQUEST.test(e.getText(sf))) return true;
+      visit(e, (n) => {
+        if (ts.isIdentifier(n) && !seen.has(n.text) && !checked.has(n.text)) {
+          seen.add(n.text);
+          names.push(n.text);
+        }
+      });
+    }
+    const declares = (n: ts.Node) => {
+      const ids: string[] = [];
+      visit(n, (x) => { if (ts.isIdentifier(x)) ids.push(x.text); });
+      return ids.some((id) => names.includes(id));
+    };
+    const next: ts.Node[] = [];
+    const add = (e: ts.Expression) => next.push(...valueParts(e, ff));
+    visit(scope, (n) => {
+      if (ts.isVariableDeclaration(n) && n.initializer && declares(n.name)) add(n.initializer);
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left) && names.includes(n.left.text)) add(n.right);
+      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "push" && ts.isIdentifier(n.expression.expression) && names.includes(n.expression.expression.text)) n.arguments.forEach(add);
+      if ((ts.isForOfStatement(n) || ts.isForInStatement(n)) && declares(n.initializer)) add(n.expression);
+    });
+    frontier = next;
+  }
+  return false;
+}
+
+/** For an INSERT or UPDATE with its values given as an array: the columns whose value comes from the request. */
+function writesFromRequest(text: string, values: ts.Expression | undefined, scope: ts.Node, sf: ts.SourceFile, table: string): string[] {
+  if (!values || !ts.isArrayLiteralExpression(values)) return [];
+  const ins = text.match(/INSERT\s+INTO\s+"?\w+"?\s*\(([^)]*)\)\s*VALUES\s*\(([^)]*)\)/i);
+  const pairs: Array<[string, string]> = ins
+    ? ins[1]!.split(",").map((c, i) => [c.trim().replace(/"/g, ""), (ins[2]!.split(",")[i] ?? "").trim()])
+    : [...text.matchAll(/("?\w+"?)\s*=\s*(\$\d+)/g)].map((m) => [m[1]!.replace(/"/g, ""), m[2]!]);
+  const out: string[] = [];
+  for (const [col, val] of pairs) {
+    const n = val.match(/^\$(\d+)$/)?.[1];
+    const el = n ? values.elements[Number(n) - 1] : undefined;
+    if (el && fromRequest([el], scope, sf)) out.push(`${table}.${col}`);
+  }
+  return out;
 }
 
 // ── Backend ─────────────────────────────────────────────────────────────────
@@ -193,6 +359,10 @@ export interface SqlUse {
   function: string;
   text: string;
   facts: QueryFacts;
+  /** SQL built from values: whether those values come from the request (null when it is not built from values) */
+  fromRequest: boolean | null;
+  /** columns written with a value that comes from the request */
+  writesFromRequest: string[];
 }
 
 export interface EndpointFacts {
@@ -204,6 +374,10 @@ export interface EndpointFacts {
   handlerFile: string;
   middleware: string[];
   sql: SqlUse[];
+  /** the handler's own code answers 401 (it checks sign-in itself, test9005); null when the handler was not found */
+  answers401: boolean | null;
+  /** the handler's own code answers 403 (it checks the caller's role or ownership itself) */
+  answers403: boolean | null;
 }
 
 export interface BackendFacts {
@@ -211,6 +385,11 @@ export interface BackendFacts {
   sql: SqlUse[];
   notes: string[];
 }
+
+const unwrap = (e: ts.Expression): ts.Expression => (ts.isAsExpression(e) || ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e) ? unwrap(e.expression) : e);
+
+// Body parsers, CORS, headers and loggers run for every request and decide nothing about who may call a route.
+const INFRA_MW = /^(express\.|cors\(|helmet\(|morgan\(|cookieParser\(|compression\()/;
 
 const ROUTE_METHODS = new Set(["get", "post", "put", "patch", "delete", "all"]);
 
@@ -220,10 +399,14 @@ export function readBackend(backendDir: string): BackendFacts {
   const byAbs = new Map(files.map((p) => [p.abs, p]));
   const notes: string[] = [];
   const sql: Array<SqlUse & { node: ts.Node; parsed: Parsed }> = [];
-  type Route = { p: Parsed; method: string; path: string; line: number; args: ts.Expression[] };
+  type Route = { p: Parsed; method: string; path: string; line: number; args: ts.Expression[]; obj: string; pos: number };
+  // 2026-10-30 (Brewline 3: router.use(requireAuth) before the routes): middleware at the router and at the mount counts too.
+  const routerMw: Array<{ file: string; obj: string; name: string; pos: number }> = [];
   const routes: Route[] = [];
-  const mounts: Array<{ from: string; prefix: string; to: string }> = [];
+  const mounts: Array<{ from: string; prefix: string; to: string; mw: string[] }> = [];
   const roots = new Set<string>();
+  // use() calls are sorted once every file is read: a mount when the last argument is a router file, otherwise middleware.
+  const uses: Array<{ p: Parsed; obj: string; prefix: string; rest: ts.Expression[]; to: string | null; pos: number }> = [];
 
   for (const p of files) {
     visit(p.sf, (n) => {
@@ -231,23 +414,33 @@ export function readBackend(backendDir: string): BackendFacts {
       if (ts.isIdentifier(n.expression) && n.expression.text === "express") roots.add(p.abs);
       if (!ts.isPropertyAccessExpression(n.expression)) return;
       const name = n.expression.name.text;
-      const [a0, a1] = n.arguments;
+      const [a0] = n.arguments;
       if (ROUTE_METHODS.has(name) && a0 && ts.isStringLiteral(a0) && n.arguments.length >= 2) {
-        routes.push({ p, method: name.toUpperCase(), path: a0.text, line: lineOf(p.sf, n), args: [...n.arguments.slice(1)] });
+        routes.push({ p, method: name.toUpperCase(), path: a0.text, line: lineOf(p.sf, n), args: n.arguments.slice(1).map(unwrap), obj: n.expression.expression.getText(p.sf), pos: n.pos });
       } else if (name === "use") {
         const prefix = a0 && ts.isStringLiteral(a0) ? a0.text : "";
-        const target = a0 && ts.isStringLiteral(a0) ? a1 : a0;
-        if (target && ts.isIdentifier(target)) {
-          const imp = p.imports.get(target.text);
-          if (imp?.file && byAbs.has(imp.file)) mounts.push({ from: p.abs, prefix, to: imp.file });
-        }
+        const rest = n.arguments.slice(a0 && ts.isStringLiteral(a0) ? 1 : 0).map(unwrap);
+        const mwName = (a: ts.Expression) => (ts.isIdentifier(a) ? a.text : a.getText(p.sf).slice(0, 40));
+        const target = rest[rest.length - 1];
+        const imp = target && ts.isIdentifier(target) ? p.imports.get(target.text) : undefined;
+        uses.push({ p, obj: n.expression.expression.getText(p.sf), prefix, rest, to: imp?.file && byAbs.has(imp.file) ? imp.file : null, pos: n.pos });
       } else if (name === "query" && a0) {
         const variants = sqlTextsOf(a0, p.sf, enclosingFunction(n) ?? p.sf);
         if (variants.length === 0) {
           notes.push(`${p.rel}:${lineOf(p.sf, n)}: the SQL of this query is not a string the map can read (${a0.getText(p.sf).slice(0, 60)})`);
           return;
         }
-        for (const s of variants) sql.push({ file: p.rel, line: lineOf(p.sf, n), function: enclosingName(n), text: s.text, facts: queryFacts(s.text, { dynamic: s.dynamic }), node: n, parsed: p });
+        const scope = enclosingFunction(n) ?? p.sf;
+        for (const v of variants) {
+          const facts = queryFacts(v.text, { dynamic: v.dynamic });
+          const table = facts.tables[0]?.table ?? "";
+          sql.push({
+            file: p.rel, line: lineOf(p.sf, n), function: enclosingName(n), text: v.text, facts,
+            fromRequest: v.dynamic ? fromRequest(v.holes, scope, p.sf) : null,
+            writesFromRequest: facts.kind === "insert" || facts.kind === "update" ? writesFromRequest(v.text, n.arguments[1], scope, p.sf, table) : [],
+            node: n, parsed: p,
+          });
+        }
       }
     });
   }
@@ -269,10 +462,20 @@ export function readBackend(backendDir: string): BackendFacts {
     }
     return abs;
   };
-  for (const m of mounts) m.to = definingFile(m.to);
+  // 2026-10-30 (stress-verify: `router.use(requireAuth)` with requireAuth imported from ../middleware was read as a mount):
+  // only a file that defines routes or mounts is a router.
+  const routerFiles = new Set(routes.map((r) => r.p.abs));
+  for (const u of uses) if (u.to && u.prefix) routerFiles.add(u.p.abs);
+  for (const u of uses) {
+    const to = u.to ? definingFile(u.to) : null;
+    const mwName = (a: ts.Expression) => (ts.isIdentifier(a) ? a.text : a.getText(u.p.sf).slice(0, 40));
+    if (to && (routerFiles.has(to) || uses.some((x) => x.p.abs === to && x.to))) mounts.push({ from: u.p.abs, prefix: u.prefix, to, mw: u.rest.slice(0, -1).map(mwName) });
+    else if (!u.prefix) for (const a of u.rest) if ((ts.isIdentifier(a) || ts.isCallExpression(a)) && !INFRA_MW.test(mwName(a))) routerMw.push({ file: u.p.abs, obj: u.obj, name: mwName(a), pos: u.pos });
+  }
 
   // Each router file's path prefix, from the app's own mounts.
   const prefixOf = new Map<string, string>();
+  const mwOf = new Map<string, string[]>();
   const queue: Array<[string, string]> = [...roots].map((r) => [r, ""]);
   for (const [r] of queue) prefixOf.set(r, "");
   while (queue.length) {
@@ -281,6 +484,7 @@ export function readBackend(backendDir: string): BackendFacts {
       if (prefixOf.has(m.to)) continue;
       const full = (prefix + m.prefix).replace(/\/+/g, "/");
       prefixOf.set(m.to, full);
+      mwOf.set(m.to, [...(mwOf.get(file) ?? []), ...routerMw.filter((x) => x.file === file).map((x) => x.name), ...m.mw]);
       queue.push([m.to, full]);
     }
   }
@@ -330,7 +534,15 @@ export function readBackend(backendDir: string): BackendFacts {
     let handler = "(inline)";
     let handlerParsed = r.p;
     let handlerNode: ts.Node | undefined = ts.isArrowFunction(last) || ts.isFunctionExpression(last) ? last : undefined;
-    if (ts.isIdentifier(last)) {
+    // `import * as taskController` … `taskController.getTasksController` (test9004)
+    const viaNamespace = ts.isPropertyAccessExpression(last) && ts.isIdentifier(last.expression) && r.p.imports.get(last.expression.text)?.name === "*" ? r.p.imports.get(last.expression.text)! : null;
+    if (viaNamespace?.file && byAbs.has(viaNamespace.file) && ts.isPropertyAccessExpression(last)) {
+      handler = last.name.text;
+      const found = findExport(viaNamespace.file, handler);
+      handlerParsed = byAbs.get(found?.file ?? viaNamespace.file)!;
+      handlerNode = found?.node;
+      if (!handlerNode) notes.push(`${r.p.rel}:${r.line}: the handler ${last.getText(r.p.sf)} of ${r.method} ${r.path} was not found in the app's code`);
+    } else if (ts.isIdentifier(last)) {
       handler = last.text;
       const local = fnsOf.get(r.p.abs)!.get(last.text);
       const imp = r.p.imports.get(last.text);
@@ -353,8 +565,14 @@ export function readBackend(backendDir: string): BackendFacts {
       line: r.line,
       handler,
       handlerFile: handlerParsed.rel,
-      middleware: r.args.slice(0, -1).map((a) => (ts.isIdentifier(a) ? a.text : a.getText(r.p.sf).slice(0, 40))),
+      middleware: [
+        ...(mwOf.get(r.p.abs) ?? []),
+        ...routerMw.filter((x) => x.file === r.p.abs && x.obj === r.obj && x.pos < r.pos).map((x) => x.name),
+        ...r.args.slice(0, -1).map((a) => (ts.isIdentifier(a) ? a.text : a.getText(r.p.sf).slice(0, 40))),
+      ],
       sql: [...new Set(used)].map(({ node: _n, parsed: _p, ...q }) => q),
+      answers401: handlerNode ? nodes.some((fn) => /\b401\b/.test(fn.getText(handlerParsed.sf))) : null,
+      answers403: handlerNode ? nodes.some((fn) => /\b403\b/.test(fn.getText(handlerParsed.sf))) : null,
     });
   }
   return { endpoints, sql: sql.map(({ node: _n, parsed: _p, ...q }) => q), notes };
@@ -375,7 +593,14 @@ export interface PageFacts {
   calls: ApiCall[];
 }
 
-export function readFrontend(frontendDir: string): { pages: PageFacts[]; notes: string[] } {
+/** A Next.js route handler: app/api/x/route.ts exporting GET, POST… — an endpoint the frontend serves itself. */
+export interface RouteHandler {
+  method: string;
+  path: string;
+  file: string;
+}
+
+export function readFrontend(frontendDir: string): { pages: PageFacts[]; handlers: RouteHandler[]; notes: string[] } {
   const projectRoot = dirname(frontendDir);
   const parsed = new Map<string, Parsed>();
   const get = (abs: string) => {
@@ -395,13 +620,19 @@ export function readFrontend(frontendDir: string): { pages: PageFacts[]; notes: 
       if (!viaMethod && !REQUEST_FN.test(named)) return;
       const s = stringOf(n.arguments[0]!, ":param");
       if (!s || !s.text.includes("/api/")) return;
-      const path = s.text.slice(s.text.indexOf("/api/")).split(/[?#]/)[0]!;
+      // A value joined straight onto the path, not after a "/", is the query string (f00dface0042: `/api/v1/tasks${query}`).
+      const path = s.text.slice(s.text.indexOf("/api/")).split(/[?#]/)[0]!.replace(/(?<!\/):param.*$/, "");
       let method = viaMethod && ROUTE_METHODS.has(viaMethod) ? viaMethod.toUpperCase() : "GET";
       const opts = n.arguments[viaMethod && ROUTE_METHODS.has(viaMethod) ? 2 : 1] ?? n.arguments[1];
       if (opts && ts.isObjectLiteralExpression(opts)) {
         for (const prop of opts.properties) {
           if (ts.isPropertyAssignment(prop) && prop.name.getText(p.sf) === "method" && ts.isStringLiteral(prop.initializer)) method = prop.initializer.text.toUpperCase();
         }
+      }
+      // request(path, "POST", body) (f00dface0042): the method as its own argument.
+      if (!(viaMethod && ROUTE_METHODS.has(viaMethod))) {
+        const given = n.arguments.slice(1, 3).find((a) => ts.isStringLiteral(a) && ROUTE_METHODS.has(a.text.toLowerCase()));
+        if (given && ts.isStringLiteral(given)) method = given.text.toUpperCase();
       }
       out.push({ method, path, file: p.rel, line: lineOf(p.sf, n) });
     });
@@ -423,7 +654,20 @@ export function readFrontend(frontendDir: string): { pages: PageFacts[]; notes: 
     const unique = [...new Map(calls.map((c) => [`${c.method} ${c.path}`, c])).values()];
     pages.push({ route, file: get(abs).rel, calls: unique });
   }
-  return { pages: pages.sort((a, b) => a.route.localeCompare(b.route)), notes: [] };
+  // 2026-10-30 (verify361300, stress-retry: /api/auth/token is served by frontend/app/api/auth/token/route.ts).
+  const handlers: RouteHandler[] = [];
+  for (const abs of walk(appDir, /^route\.(ts|js)$/)) {
+    const segs = relative(appDir, dirname(abs)).replace(/\\/g, "/").split("/").filter((s) => s && !/^\(.*\)$/.test(s));
+    const path = `/${segs.map((s) => (/^\[.*\]$/.test(s) ? ":param" : s)).join("/")}`;
+    const p = get(abs);
+    for (const st of p.sf.statements) {
+      const exported = ts.canHaveModifiers(st) && ts.getModifiers(st)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+      if (!exported) continue;
+      const names = ts.isFunctionDeclaration(st) && st.name ? [st.name.text] : ts.isVariableStatement(st) ? st.declarationList.declarations.map((d) => d.name.getText(p.sf)) : [];
+      for (const m of names) if (ROUTE_METHODS.has(m.toLowerCase()) && m === m.toUpperCase()) handlers.push({ method: m, path, file: p.rel });
+    }
+  }
+  return { pages: pages.sort((a, b) => a.route.localeCompare(b.route)), handlers, notes: [] };
 }
 
 // ── The Drizzle schema ──────────────────────────────────────────────────────

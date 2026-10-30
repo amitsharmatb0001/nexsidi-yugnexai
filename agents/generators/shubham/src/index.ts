@@ -16,7 +16,7 @@ import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-fi
 // 2026-10-24: the backend builder's own checks before it may finish (no hot-linked images in code or seed files) —
 // run by the system at task_complete, same as the frontend's. Dynamic import: the checks live in the pipeline package.
 async function backendExitChecksFor(projectId: string, summary?: string): Promise<string[]> {
-  const { backendExitChecks, backendContractFindings, keepHistoryInMigrations, checklistFindings } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
+  const { backendExitChecks, backendContractFindings, keepHistoryInMigrations, checklistFindings, mapRuleFindings } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
   // 2026-10-25: db/ is the database builder's folder; the system, not this builder, keeps order history safe in it.
   try {
     for (const change of keepHistoryInMigrations(buildDirFor(projectId))) console.log(`[shubham] history kept by the system: ${change}`);
@@ -26,6 +26,8 @@ async function backendExitChecksFor(projectId: string, summary?: string): Promis
   return [
     ...backendExitChecks(projectId),
     ...(await contractRouteFindingsFor(backendContractFindings, projectId)),
+    // 2026-10-30: the rules every app keeps, checked on the app map (the ones this builder owns).
+    ...mapRuleFindings(buildDirFor(projectId), "shubham"),
     // 2026-10-25: the first build (not a fix round) must account for every approved-plan item that concerns the backend.
     ...(summary !== undefined ? checklistFindings(projectId, "backend", summary) : []),
   ];

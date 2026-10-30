@@ -75,10 +75,12 @@ export function pranavFixFiles(appliedMigrations: Set<string>): WritableFile {
 export async function databaseExitChecks(projectDir: string, deps: Pick<PranavAgentDeps, "migrationCheck"> = {}): Promise<string[]> {
   const { schemaMigrationSyncFindings } = await import("../../../../pipeline/orchestrator/stages/shipping-hygiene.ts");
   const { migrationFindings } = await import("../../../../pipeline/orchestrator/stages/migration-check.ts");
+  const { mapRuleFindings } = await import("../../../../pipeline/orchestrator/stages/builder-exit-checks.ts");
   const sync = schemaMigrationSyncFindings(projectDir);
   const migrations = await (deps.migrationCheck ?? migrationFindings)(projectDir);
   if (!migrations.ran && migrations.note) console.log(`[pranav] ${migrations.note}`);
-  return [...sync, ...migrations.findings];
+  // 2026-10-30: the rules every app keeps, checked on the app map — for this builder, the history columns (INT1).
+  return [...sync, ...migrations.findings, ...mapRuleFindings(projectDir, "pranav")];
 }
 
 export function buildPranavFixTask(findings: string[], plan: BuildPlan): string {

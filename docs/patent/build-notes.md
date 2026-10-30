@@ -1127,3 +1127,68 @@ Approved by Amit as stage 1. It reverses the reading half of his 2 October decis
 **Note:** the map uses the TypeScript compiler at run time, as `code-map.ts` already does; it is a root dev dependency, so a production install without dev dependencies would need it moved to dependencies.
 
 **Not checked:** the map inside a live build (it needs a worker); apps written outside the generated stack (another router style or ORM would be listed as not read).
+
+## Batch 68 — understanding plan, step 3: the rules every app keeps, checked by code on the app map (2026-10-30)
+
+**Why:** the one rulebook (`baseline-rules.ts`) was text. The builders read it, the reviewers judged it, and a broken rule came back, if at all, rounds later in a model's words: Brewline 3's item-name rule returned for 18 rounds. The map (batch 67) already holds the facts these rules are about, so each rule is now a check on those facts.
+
+**Built** (`pipeline/orchestrator/app-map/rules.ts`, no model). Each broken rule names the fact, the file and line, the owner, and what keeping the rule takes:
+- **INT1, history:**
+  - An order line is a table with two references, a price or quantity of its own, and a header it is named after (`booking_items` → `bookings`). It must keep its own copy of the item's name and price.
+  - The reference to the item must not be ON DELETE CASCADE.
+  - Inserts must write the copies.
+  - A read of the history (its main table is the line or its header) must not take the name or price from the item. This is sent to the backend only when the copy exists. Without the copy, the missing column is the database builder's fact (Brewline 3: the backend was sent the finding before the column existed).
+  - An INNER JOIN on an item whose deletion empties the reference hides lines.
+- **INT2, atomic check-then-write:** a stock or availability read followed by a write must run in a transaction with `FOR UPDATE`.
+- **SEC1, SQL text from request values:** taint analysis (claim 8) on the syntax tree. It follows only what can become the value:
+  - the branches of `a ? b : c` (not its test);
+  - not comparisons or number conversions;
+  - not lookups in a fixed map of literals, or same-file helpers that return only those;
+  - not variables the function checks against a fixed list.
+- **SEC2, sign-in and role:**
+  - An endpoint the contract marks `auth: true` must have sign-in middleware (at the route, its router, or its mount), or a handler that answers 401 itself.
+  - A role-limited one must check the role, or answer 403 itself.
+  - An endpoint whose contract states no auth field is not checked, not assumed.
+- **SEC9, self-chosen role:** a role or permission column of the account table (the one that stores a password) must not be written from the request, except by a role-limited endpoint.
+- **MAP:** SQL naming a missing table or column, the schema file against the migrations, and a frontend call with no endpoint. Such a call goes to the backend when the contract lists it, and to the frontend when it does not. One violation per call site, whatever pages reach it.
+- **Invariant (tested):** every violation's file is in its owner's folder, so the review's routing by file sends it to the owner.
+
+**Wired:**
+- The builders' finish checks run `mapRuleFindings(build, owner)`: backend, frontend, and the database builder (the schema-file diff is already its own check).
+- Review-once adds the broken rules to the one fix run as system findings, whether or not a reviewer reported them.
+- `[map-rule …]` counts as a machine finding.
+
+**Reader fixes found by running the rules on recorded builds** (each with a test):
+- `router.use(requireAuth)` with the middleware imported from another backend file was read as a mount.
+- `as any` on middleware and handlers was not unwrapped.
+- Handlers named through `import * as controller` were not followed.
+- ESM-style `./routes/tasks.js` imports were not resolved to `.ts`.
+- `request(path, "POST", body)` was read as GET.
+- `` `/api/v1/tasks${query}` `` was read as a path parameter.
+- Next.js route handlers (`app/api/**/route.ts`) were not known as endpoints.
+- Postgres's catalog (`information_schema.columns`) was read as a missing table.
+- A contract entry `/orders/:id` matched the `/orders/public` endpoint before the exact one.
+
+**Proof on 94 recorded builds** (71 in C:/tmp, 23 in E:/tmp; the rules only read):
+- **Before the fixes:** 104 SEC2, 144 MAP, 5 SEC1, 4 SEC9 and 4 INT1 violations. Most were false. All 5 SEC1 hits were request values that reach the SQL only as fixed text.
+- **After:** every remaining violation was checked against the source:
+  - Brewline 2: 9 INT1 (no copies, CASCADE, reads of the current name and price), INT2 (BEGIN without `FOR UPDATE`), and SEC9 (sign-up takes the role). These are the criticals it shipped with.
+  - Brewline 1: INT2 (no transaction).
+  - Trailhead 1 and 2: bookings keep no copy of the gear name.
+  - Gatherly: order lines keep no copy of the drop title, and `POST /seller/drops` has no role check. It refuses users without a store with a 400 instead.
+  - Two task-app builds, 51a0f230ecc2 and 5462533422f6: sign-up accepts `z.enum(["client","admin"])`. complex1's sign-up takes `tenant`/`landlord`, which the rulebook's "lowest role only" also forbids.
+  - nextech8: the frontend calls `/inquiries` and `/products`, and the backend serves `/inquiry` and `/product`.
+  - 193c3080e582 and 9ae3eeaca80f: empty routers.
+  - test9004: `users` is not in its migrations.
+  - deadaffe1234: logout is marked signed-in in the contract and not checked.
+  - Schema-file gaps in 10 builds.
+- **Brewline 3**, final code and all 8 recorded commits (from 20:13 on 25 Oct): one violation, the same in every commit. It is `order_items.name_at_time` missing from schema.ts, owned by the database builder. This is the fact that kept returning under the item-name rule. The rules do not flag its read fallback (`COALESCE(NULLIF(name_at_time,''), mi.name, …)`): every insert writes `name_at_time`, so only rows from before the fix can show the current name, and they have nothing else to show.
+
+**Tests:** rules 18 (with the reader fixes), finish check 2, review-once 1, machine tag 1; the app-map suite 42. Run from the repo root: pipeline 1,028, packages 1,061, agents 611, API 101, web 92 — all pass (run from inside pipeline/ or packages/, 11 tests that import the database client fail on DATABASE_URL, which only the root .env sets; unchanged by this batch). Type checks: only the 25 Oct claude-loop.ts:518 error.
+
+**Not checked:**
+- the finish checks inside a live builder run (they need a worker);
+- the rules on apps outside the generated stack;
+- INT3 (one value for a business number across frontend and backend) and SEC3 (own records only), which the map does not read yet.
+
+**Found, not changed:** `historyIntegrityFindings` (`builder-exit-checks.ts`) is a text-matching INT1 check that nothing outside its tests calls. These rules replace it, and removing it belongs to stage 6.

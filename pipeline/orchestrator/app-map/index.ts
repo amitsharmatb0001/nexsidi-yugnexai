@@ -55,7 +55,7 @@ export function buildAppMap(projectDir: string): AppMap {
   for (const u of database.unread) notes.push(`${u.file}: a statement the map does not read: ${u.statement.slice(0, 120)}`);
   const schemaFile = existsSync(join(projectDir, "db")) ? readDrizzleSchema(join(projectDir, "db")) : null;
   const backend = existsSync(join(projectDir, "backend")) ? readBackend(join(projectDir, "backend")) : { endpoints: [], sql: [], notes: ["no backend folder"] };
-  const frontend = existsSync(join(projectDir, "frontend")) ? readFrontend(join(projectDir, "frontend")) : { pages: [], notes: ["no frontend folder"] };
+  const frontend = existsSync(join(projectDir, "frontend")) ? readFrontend(join(projectDir, "frontend")) : { pages: [], handlers: [], notes: ["no frontend folder"] };
   notes.push(...backend.notes, ...frontend.notes);
 
   // The schema file against the migrations.
@@ -82,9 +82,12 @@ export function buildAppMap(projectDir: string): AppMap {
         const [table, column] = ref.split(".") as [string, string];
         if (q.facts.ctes.includes(table)) continue; // a WITH name is this query's own table
         if (`${table}.${column}`.includes("${")) continue; // built in code from values: listed as SQL built from values
+        // Postgres's own catalog (7e1ab88dc56a verify-db.ts: information_schema.columns) is not the app's database.
+        if (/^pg_/.test(table) || new RegExp(`\\b(information_schema|pg_catalog)\\.${table}\\b`, "i").test(q.text)) continue;
         const t = database.tables[table];
         const why = !t ? `${table} is not a table of the database` : column !== "*" && !t.columns[column] ? `${table} has no column ${column}` : null;
-        const key = `${ref}|${q.file}|${q.line}`;
+        // A missing table is one fact per query, not one per column it names.
+        const key = `${t ? ref : table}|${q.file}|${q.line}`;
         if (why && !seen.has(key)) {
           seen.add(key);
           unknownColumns.push({ ref, file: q.file, line: q.line, why });
@@ -100,6 +103,7 @@ export function buildAppMap(projectDir: string): AppMap {
     for (const c of page.calls) {
       const e = backend.endpoints.find((x) => x.method === c.method && pathFits(x.path, c.path));
       if (e) called.add(`${e.method} ${e.path}`);
+      else if (frontend.handlers.some((h) => h.method === c.method && pathFits(h.path, c.path))) continue; // served by the frontend itself
       else unmatchedCalls.push({ method: c.method, path: c.path, page: page.route, file: c.file, line: c.line });
     }
   }

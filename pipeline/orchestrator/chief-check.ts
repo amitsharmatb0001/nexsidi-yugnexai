@@ -75,7 +75,8 @@ export function planSection(projectDir: string): string {
 }
 
 // 2026-10-30 (team plan, stage 5): "[acceptance]" — a test the runner saw fail on the running app.
-const MACHINE = /\[(route-sweep|spec-compliance|emoji-ui|auth-smoke|stack-conformance|perf-scan|hygiene|acceptance)\]|appears to be dead ui|^live design review failed/i;
+// 2026-10-30 (understanding plan, step 3): "[map-rule INT1]" — a rule the app map read broken in the code.
+const MACHINE = /\[(route-sweep|spec-compliance|emoji-ui|auth-smoke|stack-conformance|perf-scan|hygiene|acceptance|map-rule [A-Z0-9]+)\]|appears to be dead ui|^live design review failed/i;
 export function isMachineFinding(text: string): boolean {
   return MACHINE.test(text.replace(/^\|/, "").trim());
 }

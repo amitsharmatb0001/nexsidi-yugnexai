@@ -89,6 +89,7 @@ test("if the check itself fails, every finding is kept (nothing real is lost)", 
 test("machine findings skip the check and a reviewer's own failure is recognised", () => {
   expect(isMachineFinding("[route-sweep] on a phone (375px wide) ...")).toBe(true);
   expect(isMachineFinding("[spec-compliance] spec explicitly specifies color #faf6f0")).toBe(true);
+  expect(isMachineFinding("[map-rule INT1] db/migrations/0000.sql:1 — order_items keeps no copy of menu_items.name")).toBe(true);
   expect(isMachineFinding("[emoji-ui] emoji are used as ui graphics")).toBe(true);
   expect(isMachineFinding("broken footer logo image")).toBe(false);
   expect(isReviewerFailure("[logic/CRITICAL] review-incomplete: Navya's review did not complete: AbortError")).toBe(true);
