@@ -13,7 +13,7 @@
 //      as "failing" and the workflow holds the build for a person; fixes that left the code's facts unchanged are named.
 // The builders of a feature share its tests, so they own the feature together. With builder teams (the default) the
 // whole app is built in one pass, so the gate runs once, after the build; with several phases it runs after the last.
-import { readAcceptanceTests, activeTests, withdrawTest, testSteps, type AcceptanceTest } from "./acceptance-tests.ts";
+import { readAcceptanceTests, activeTests, withdrawTest, testSteps, contradictsPlan, planScope, type AcceptanceTest } from "./acceptance-tests.ts";
 import type { RunSummary, TestResult } from "./acceptance-runner.ts";
 import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 import { readDisputes } from "../../packages/agent-runtime/src/tools/dispute.ts";
@@ -71,6 +71,9 @@ export function acceptanceFinding(t: AcceptanceTest, r: TestResult): string {
     "The test (written from the approved plan; you cannot change it):",
     ...testSteps(t).map((l) => `  ${l}`),
     "A fix is done only when this test passes on the running app. If the test is wrong (it asks for something the approved plan does not), call dispute_finding with what you checked; if the cause is in another builder's folder, call escalate_finding.",
+    // 2026-10-31 (Brewline 4): to pass four wrong tests, the backend builder made every email containing "admin", "staff",
+    // "test" or "user" a staff account.
+    "Never change who may call an endpoint, or how an account gets its role, to make a test pass: a test that needs that is wrong — dispute it.",
   ].join("\n");
 }
 
@@ -83,6 +86,16 @@ export async function runAcceptanceGate(
   const stuckRounds = opts.stuckRounds ?? 2;
   const now = deps.now ?? (() => new Date());
   const withdrawn: string[] = [];
+  // 2026-10-31 (Brewline 4): a test that asks a role-limited endpoint to succeed for the wrong account contradicts the plan;
+  // it is withdrawn, with the fact, before any builder is asked to make the app pass it.
+  const scope = planScope(projectDir);
+  for (const t of activeTests(readAcceptanceTests(projectDir))) {
+    const why = contradictsPlan(t, scope);
+    if (why.length === 0) continue;
+    withdrawTest(projectDir, t.id, `contradicts the approved plan: ${why.join("; ")}`);
+    withdrawn.push(t.id);
+    console.log(`[acceptance-gate] ${t.id} withdrawn before the first round: ${why[0]}`);
+  }
   if (activeTests(readAcceptanceTests(projectDir)).length === 0) {
     return { status: "not_checked", rounds: 0, reason: "this build has no acceptance tests (none were written, or all were withdrawn)", withdrawn };
   }

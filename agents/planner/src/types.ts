@@ -36,7 +36,7 @@ export interface BuildPlan {
   // pages reached the build; the approved endpoints, tables and the brief's
   // exact rules (INV-2026-0001, 18%, Draft/Sent/Paid) were dropped.
   rules?: string[];
-  apiEndpoints?: Array<{ method: string; path: string; description: string }>;
+  apiEndpoints?: Array<{ method: string; path: string; description: string; roles?: string[] }>;
   dbTables?: Array<{ name: string; keyColumns: string[] }>;
   brief?: string;  // the customer's whole brief, word for word
   buildPhases?: BuildPhase[];  // agents work phase by phase, in this order (Part C)
@@ -75,7 +75,7 @@ export interface ProposedPlan {
   publicPages:    Array<{ name: string; path: string; description: string }>;
   protectedPages: Array<{ name: string; path: string; description: string }>;
   dbTables: Array<{ name: string; keyColumns: string[] }>;
-  apiEndpoints: Array<{ method: string; path: string; description: string }>;
+  apiEndpoints: Array<{ method: string; path: string; description: string; roles?: string[] }>;
   designDirection: string;
   techStack: { frontend: string; backend: string; database: string; auth: string };
   rules: string[];  // every exact rule, format and example from the brief, word for word

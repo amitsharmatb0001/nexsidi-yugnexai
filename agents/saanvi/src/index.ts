@@ -19,6 +19,8 @@ export interface ApiEndpoint {
   path: string;
   description: string;
   auth: boolean;
+  /** 2026-10-31: the roles that may call it besides being signed in ([] = any signed-in user) */
+  roles?: string[];
   requestBody: Record<string, unknown> | null;
   responseBody: Record<string, unknown>;
 }
@@ -381,6 +383,7 @@ Output a single JSON object (no markdown fences, no prose outside the object) ma
       "path": "/api/v1/...",
       "description": "string",
       "auth": true | false,
+      "roles": ["staff"] | [],
       "requestBody": { "field": "type" } | null,
       "responseBody": { "field": "type" }
     }
@@ -438,6 +441,10 @@ NEVER add without explicit mention in the request, or an explicit "yes" answer t
 question above: admin dashboard, invoice system, CRM, payment gateway,
 project tracker, analytics, multi-user roles, booking calendar, client portal, reporting screens.
 The build plan tells you exactly what to build — treat it as a contract, not a starting point for expansion.
+
+ROLES: every apiEndpoint has "roles": the roles that may call it besides being signed in. An endpoint for staff, baristas,
+managers or admins lists that role, e.g. ["staff"]; [] means any signed-in user, or public when auth is false. Use the
+planner's roles when it gives them. The tests, the review accounts and the security checks read this field.
 
 AUTH RULE:
 2026-08-25: real bug found live — this used to say "when authType is 'jwt' in

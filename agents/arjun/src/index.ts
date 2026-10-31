@@ -21,6 +21,8 @@ export interface RestEndpoint {
   path: string;           // e.g. /api/v1/tasks/:id
   description: string;
   auth: boolean;
+  /** 2026-10-31: the roles that may call it besides being signed in ([] = any signed-in user); kept from the spec */
+  roles?: string[];
   requestType: string;    // TypeScript interface/type literal
   responseType: string;   // TypeScript interface/type literal
   errorCodes: number[];
@@ -482,6 +484,7 @@ Output a single JSON object matching this schema exactly. No markdown fences, no
         "path": "/api/v1/tasks",
         "description": "List all tasks for the authenticated user",
         "auth": true,
+        "roles": [],
         "requestType": "null",
         "responseType": "{ tasks: Task[]; total: number }",
         "errorCodes": [401, 500]
@@ -524,6 +527,9 @@ Output a single JSON object matching this schema exactly. No markdown fences, no
 }
 
 Rules:
+- roles: keep each endpoint's "roles" from the spec. An endpoint only staff (or another role) may call lists that role,
+  e.g. ["staff"]; [] means any signed-in user (or public when auth=false). The tests, the review accounts and the
+  security checks read this field, not the description's wording.
 - sharedTypes: full TypeScript — interfaces, enums, no imports needed (standalone).
 - Every endpoint must have auth=true unless it's a public health check, registration, login
   endpoint, OR a public lead-generation/contact-inquiry submission endpoint (see PUBLIC FORMS

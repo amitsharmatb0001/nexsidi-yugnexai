@@ -78,3 +78,27 @@ test("a first deploy starts from the template and the system's own start-and-che
   expect(task).not.toContain("Start by writing docker-compose.yml");
   expect(buildAgentTask("p", "/b", 3200, 3300, 5435, "s")).toContain("Start by writing docker-compose.yml");
 });
+
+// 2026-10-31 (Brewline 4 proof run): the frontend builder's Dockerfile was only ever its own disposable test file (its
+// instructions say the deploy step writes the real one), so when it did not keep one, the standard compose file could not be
+// used and the deploy agent spent 20 minutes on a slow model writing one. The deploy step writes the standard frontend
+// Dockerfile itself — the one Brewline 2 and 3 shipped with — when a Next.js frontend has none.
+test("a Next.js frontend without a Dockerfile gets the standard one, and the standard compose file is used", () => {
+  dir = mkdtempSync(join(tmpdir(), "compose-"));
+  for (const [rel, body] of Object.entries({ "backend/Dockerfile": "FROM node", "db/migrations/0000_initial.sql": "SELECT 1;", "frontend/package.json": JSON.stringify({ dependencies: { next: "16.2.0" } }) })) {
+    mkdirSync(join(dir, rel, ".."), { recursive: true });
+    writeFileSync(join(dir, rel), body);
+  }
+  expect(composeFromTemplate(dir, "brewline", { ...ports, jwtSecret: "s" })).toEqual({ written: true });
+  expect(readFileSync(join(dir, "frontend", "Dockerfile"), "utf-8")).toContain('CMD ["npm", "start"]');
+});
+
+test("a frontend that is not Next.js is left to the deploy agent", () => {
+  dir = mkdtempSync(join(tmpdir(), "compose-"));
+  for (const [rel, body] of Object.entries({ "backend/Dockerfile": "FROM node", "db/migrations/0000_initial.sql": "SELECT 1;", "frontend/package.json": JSON.stringify({ dependencies: { vite: "5" } }) })) {
+    mkdirSync(join(dir, rel, ".."), { recursive: true });
+    writeFileSync(join(dir, rel), body);
+  }
+  expect(composeFromTemplate(dir, "x", { ...ports, jwtSecret: "s" })).toEqual({ written: false, reason: "frontend/Dockerfile is missing" });
+  expect(existsSync(join(dir, "frontend", "Dockerfile"))).toBe(false);
+});

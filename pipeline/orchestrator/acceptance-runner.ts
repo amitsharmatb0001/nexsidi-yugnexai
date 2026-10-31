@@ -110,8 +110,27 @@ function looseEqual(a: unknown, b: unknown): boolean {
   return a === b;
 }
 
+// 2026-10-31 (Brewline 4): the test wrote 14:00 local time ({{datetime+N HH:MM}} carries the local offset); the app answered
+// the same moment in UTC (…T08:30:00.000Z). A timestamp with a zone also reads as local time, the time the test wrote.
+const ZONED_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/;
+function localReadings(value: string): string[] {
+  if (!ZONED_TIMESTAMP.test(value)) return [];
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return [];
+  const p = (n: number) => String(n).padStart(2, "0");
+  const day = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  const time = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  return [`${day}T${time}`, `${day} ${time}`];
+}
+
+/** The runner's "contains": text, ignoring case; a zoned timestamp also in local time. */
+export function answerContains(value: unknown, wanted: unknown): boolean {
+  return contains(value, wanted);
+}
+
 function contains(value: unknown, wanted: unknown): boolean {
-  if (typeof value === "string") return value.toLowerCase().includes(String(wanted).toLowerCase());
+  const want = String(wanted).toLowerCase();
+  if (typeof value === "string") return [value, ...localReadings(value)].some((v) => v.toLowerCase().includes(want));
   if (Array.isArray(value)) return value.some((v) => looseEqual(v, wanted) || (typeof v === "string" && contains(v, wanted)) || (v && typeof v === "object" && contains(JSON.stringify(v), wanted)));
   if (value && typeof value === "object") return JSON.stringify(value).toLowerCase().includes(String(wanted).toLowerCase());
   return looseEqual(value, wanted);

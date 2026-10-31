@@ -5,6 +5,7 @@
 //   - a protected route that does not refuse a request with no token (must be 401/403),
 //   - a staff-only route that lets a customer's token in.
 // Auth runs before any database access in the generated apps, so these answers do not need data.
+import { limitedRolesOfEndpoint, type RoleFacts } from "../../../agents/riya/src/index.ts";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -25,9 +26,12 @@ export interface ContractRouteResult {
 const ROLE_ONLY = /\b(staff|admin|owner|manager)[- ]only\b/i;
 const UUID = "00000000-0000-4000-8000-0000000000aa";
 
-/** The contract says only staff/admin/owner/manager may call it (its own wording; nothing is inferred from code). */
+/**
+ * The contract limits it to a role: its roles field, its wording, or its path (agents/riya limitedRolesOfEndpoint; 2026-10-31,
+ * Brewline 4: "Staff adds a new menu item." under /admin/menu was missed). Nothing is inferred from code.
+ */
 export function staffOnlyEndpoint(e: ContractEndpoint): boolean {
-  return e.auth !== false && ROLE_ONLY.test(e.description ?? "");
+  return e.auth !== false && (ROLE_ONLY.test(e.description ?? "") || limitedRolesOfEndpoint(e as RoleFacts).length > 0);
 }
 
 const concrete = (path: string) => path.replace(/:[A-Za-z_]+/g, UUID);

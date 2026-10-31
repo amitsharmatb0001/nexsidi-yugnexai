@@ -302,3 +302,16 @@ test("every record a test creates is reported for the cleanup", async () => {
   expect(created.length).toBe(2);
   expect(created[1]).toMatch(/^o\d+$/);
 });
+
+// 2026-10-31 (Brewline 4 proof run): the test posted a pickup at 14:00 local time ({{datetime+1 14:00}} expands with the
+// local offset) and checked that the answer "contains 14:00"; the app answered the same moment in UTC,
+// 2026-11-01T08:30:00.000Z, and the check failed the app for a correct answer. A timestamp with a zone is compared in local
+// time too — the time the test wrote — and a different moment still fails.
+test("a timestamp answered in UTC contains the local time the test asked for", async () => {
+  const { answerContains } = await import("./acceptance-runner.ts");
+  const local = new Date(2026, 10, 1, 14, 0);
+  expect(answerContains(local.toISOString(), "14:00")).toBe(true);
+  expect(answerContains(local.toISOString(), "2026-11-01")).toBe(true);
+  expect(answerContains(new Date(2026, 10, 1, 15, 0).toISOString(), "14:00")).toBe(false);
+  expect(answerContains("Latte", "latte")).toBe(true);
+});

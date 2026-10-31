@@ -202,3 +202,21 @@ test("fix rounds that leave the code's facts unchanged are named as such in the 
   expect(r.status).toBe("failing");
   expect(r.reason).toContain("changed nothing the app map reads in the code");
 });
+
+// 2026-10-31 (Brewline 4 proof run): a suite written before tests were checked against the plan's roles still held four
+// tests that had a customer manage the menu. The gate withdraws such a test before its first round, with the fact, so no
+// builder is ever asked to make the app break its own access rules.
+test("a test that contradicts the plan's roles is withdrawn before the first round, and no builder sees it", async () => {
+  writeFileSync(join(dir, "p1", "api-contract.json"), JSON.stringify({ endpoints: [
+    { method: "GET", path: "/api/v1/orders/:id", auth: true, description: "One order." },
+    { method: "POST", path: "/api/v1/admin/menu", auth: true, description: "Staff adds a new menu item." },
+  ] }));
+  const wrong: AcceptanceTest = { id: "AT-2-6", phase: 1, planItem: "EP2", title: "user can add a menu item", as: "user", kind: "api", steps: [{ method: "POST", path: "/api/v1/admin/menu", expectStatus: [200, 201] }] };
+  saveAcceptanceTests(join(dir, "p1"), { writtenAt: "t", tests: [api, wrong], rejected: [], notWritten: [] });
+  const { deps, calls } = standIns({ "AT-1-1": true, "AT-2-6": false });
+  const r = await runAcceptanceGate(join(dir, "p1"), deps);
+  expect(r.status).toBe("passed");
+  expect(r.withdrawn).toEqual(["AT-2-6"]);
+  expect(calls.some((c) => c.startsWith("fix"))).toBe(false);
+  expect(readAcceptanceTests(join(dir, "p1"))!.withdrawn![0]!.evidence).toContain("limited to staff by the approved plan");
+});

@@ -142,7 +142,8 @@ export function checkRules(projectDir: string, map: AppMap): RuleViolation[] {
     if (c.auth === true && !e.middleware.some(isSignIn) && e.answers401 !== true) {
       out.push({ rule: "SEC2", kind: "no-sign-in", owner: ownerOf(e.file), file: e.file, line: e.line, fact: `${e.method} ${e.path} needs sign-in by the contract, but no sign-in check runs before ${e.handler}`, fix: "put the sign-in middleware on the route or on its router before it" });
     }
-    if (roles.length > 0 && e.answers403 !== true && !e.middleware.some((m) => roles.some((r) => m.toLowerCase().includes(r)) || /role/i.test(m))) {
+    // A role check is what refuses with 403: a middleware whose code does (whatever its name), or the handler itself.
+    if (roles.length > 0 && e.answers403 !== true && (e.roleChecks ?? []).length === 0 && !e.middleware.some((m) => roles.some((r) => m.toLowerCase().includes(r)) || /role/i.test(m))) {
       out.push({ rule: "SEC2", kind: "no-role-check", owner: ownerOf(e.file), file: e.file, line: e.line, fact: `${e.method} ${e.path} is limited to ${roles.join(" or ")} by the contract, but no role check runs before ${e.handler} (middleware: ${e.middleware.join(", ") || "none"})`, fix: `add the ${roles.join("/")} role check to the route` });
     }
   }

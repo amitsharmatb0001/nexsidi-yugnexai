@@ -14,6 +14,7 @@
 // error?}. NOTHING else may be written to stdout (Chrome's dbus/gpu noise
 // goes to stderr on its own) — the Bun-side client parses stdout line-by-line.
 import { chromium } from "playwright";
+import { valueForInputType } from "./input-value.mjs";
 
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
 const log = (...a) => process.stderr.write(`[browser-worker] ${a.join(" ")}\n`);
@@ -118,7 +119,9 @@ async function handle(req) {
       const p = await ensurePage();
       const el = await firstVisible(fieldCandidates(p, req.field), req.timeoutMs ?? 8_000);
       if (!el) throw new Error(`no field labelled "${req.field}" on the page`);
-      await el.fill(String(req.value ?? ""), { timeout: 5_000 });
+      // 2026-10-31 (Brewline 4): a date/time field takes its own form (input-value.mjs), not the test's full timestamp.
+      const type = await el.getAttribute("type").catch(() => null);
+      await el.fill(valueForInputType(type, String(req.value ?? "")), { timeout: 5_000 });
       return { filled: req.field };
     }
     case "chooseOption": {

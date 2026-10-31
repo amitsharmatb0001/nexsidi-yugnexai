@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   checkAcceptanceTests,
+  contradictsPlan,
   planScope,
   expandPlaceholders,
   testContext,
@@ -92,7 +93,7 @@ test("the plan's scope: pages, endpoints and roles, each with the phase that bui
   const s = planScope(dir);
   expect(s.phaseCount).toBe(2);
   expect(s.roles).toEqual(["staff"]);
-  expect(s.endpoints).toContainEqual({ method: "PATCH", path: "/api/v1/menu/:id", phase: 2 });
+  expect(s.endpoints).toContainEqual({ method: "PATCH", path: "/api/v1/menu/:id", phase: 2, roles: ["staff"] });
   expect(s.pages).toContainEqual({ path: "/sign-up", phase: 1 });
   expect(s.itemIds.has("INT1")).toBe(true);
   expect(s.itemIds.has("SC2")).toBe(true);
@@ -211,4 +212,22 @@ test("a concrete id fits the contract's parameter, on an endpoint and on a page"
   expect(checkAcceptanceTests([page], dir).rejected).toEqual([]);
   const wrong: AcceptanceTest = { ...itemNameKept, id: "AT-2-9", steps: [{ method: "PATCH", path: "/api/v1/menu/17/extra", expectStatus: 200 }] };
   expect(checkAcceptanceTests([wrong], dir).rejected[0]!.reasons.join(" ")).toContain("is not in the approved API contract");
+});
+
+// 2026-10-31 (Brewline 4 proof run): four tests had an ordinary customer add, edit and delete menu items and expected
+// success, while the plan limits those endpoints to staff. The backend builder then bent sign-up to pass them. A test that
+// asks a role-limited endpoint to succeed for an account without that role contradicts the plan, by fact; it is refused
+// when written, and a test already in the suite is withdrawn before the gate's first round.
+test("a step that expects success from a staff-only endpoint as an account without that role is refused", () => {
+  const asCustomer: AcceptanceTest = {
+    id: "AT-2-6", phase: 2, planItem: "SC1", title: "user can add a new menu item", as: "user", kind: "api",
+    steps: [{ method: "POST", path: "/api/v1/menu", body: { name: "Latte" }, expectStatus: [200, 201] }],
+  };
+  const refusedForCustomer: AcceptanceTest = { ...asCustomer, id: "AT-2-3", title: "a customer cannot add menu items", steps: [{ method: "POST", path: "/api/v1/menu", body: { name: "x" }, expectStatus: 403 }] };
+  const asStaff: AcceptanceTest = { ...asCustomer, id: "AT-2-7", as: "staff" };
+  const r = checkAcceptanceTests([asCustomer, refusedForCustomer, asStaff], dir);
+  expect(r.accepted.map((t) => t.id)).toEqual(["AT-2-3", "AT-2-7"]);
+  expect(r.rejected[0]!.reasons.join(" ")).toContain("POST /api/v1/menu is limited to staff by the approved plan");
+  expect(contradictsPlan(asCustomer, planScope(dir))).toHaveLength(1);
+  expect(contradictsPlan(asStaff, planScope(dir))).toEqual([]);
 });

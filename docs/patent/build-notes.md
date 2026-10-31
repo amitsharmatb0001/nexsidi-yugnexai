@@ -1304,3 +1304,52 @@ Under the old triggers each of these would have been a new pattern seen once.
 **Tests:** mistakes 3; review-once 1 (map findings are not model-summarised).
 
 **Not checked:** a write to the live store (it needs the database during a build); the reviewers' own findings still get model-summary triggers.
+
+## Batch 72 — fixes from proof run 1 (Brewline 4, 2026-10-31)
+
+**The run:** frozen version f9518ab, the benchmark brief, driven in Amit's Chrome, $30 cap.
+- **It stopped at the acceptance gate after 1 h 31 min and $10.95.** The backend builder was blocked and the block went to a person.
+- **What worked:**
+  - INT1 was caught at the database builder's finish (the `name_at_time` column was added, and the backend writes and reads it inside a locked transaction);
+  - the finish checks refused "done" 7 times;
+  - 29 of 36 acceptance tests passed on the first gate round;
+  - paid work stopped at once on the block.
+- **What failed, cause first:**
+  1. The contract said "Staff adds a new menu item." under `/api/v1/admin/menu`. The role reader knew only wordings like "(staff only)", so the ROLES plan item said no other role exists.
+  2. The tester therefore wrote 4 menu tests as an ordinary customer. The app correctly answered 403.
+  3. To pass them, the backend builder made every email containing "admin", "staff", "test" or "user" a staff account. SEC9 caught the first version (the role chosen in the insert). The second version (insert 'customer', then `UPDATE users SET role = 'staff'` under a branch on the email) passed SEC9.
+  4. The builder then tried Docker and netstat, was refused 6 times, and stopped. That is the hold.
+- **Smaller failures:**
+  - no `frontend/Dockerfile`, so the deploy agent spent 20 minutes on `meta/muse-glimmer-30b` before Gemini deployed in 2.5;
+  - a test compared "14:00" as text against a UTC timestamp;
+  - a journey filled a `datetime-local` field with a full timestamp, and the browser refused it;
+  - one sign-in journey is not checked.
+
+**Fixes** (each with tests, each proved on the run's recorded files, which were only read):
+1. **Roles as facts.** `limitedRolesOfEndpoint` reads, in order:
+   - the endpoint's `roles` field;
+   - the description's wordings;
+   - the path (a signed-in endpoint under `/admin`, `/staff`, `/barista`, `/manager`, `/owner` or `/employee`; `/admin` means staff).
+
+   Both readers use it (`limitedRolesFromContract` and the contract route check's `staffOnlyEndpoint`). The planner's schema, the spec writer's and the contract writer's prompts and types now carry `roles` on every endpoint.
+
+   On Brewline 4's contract: ROLES reads "plus these roles: staff", and all 5 admin endpoints are staff-only.
+2. **SEC9 by control flow, for any write.** An INSERT or UPDATE that a branch on the request decides has every column it sets decided by the request, whatever the values are. On Brewline 4's code SEC9 now reports the promotion (`authController.ts:32`). Across all recorded builds, no new violations elsewhere.
+3. **SEC2 role checks by what they do.** A middleware whose own code answers 403 is a role check, whatever its name (`requireAdmin`). Before, the new role facts made SEC2 report 5 false alarms on Brewline 4; now its code shows only the real SEC9 violation.
+4. **Tests that contradict the plan are refused.** `contradictsPlan`: a step that expects success from a role-limited endpoint as an account without that role.
+   - It is refused when the test is written.
+   - A test already in a suite is withdrawn before the gate's first round, with the fact, so no builder sees it.
+   - On Brewline 4's suite it finds exactly AT-2-6 to AT-2-9 and none of the other 32.
+   - Every failing test a builder receives now says that who may call an endpoint, or how an account gets its role, is never changed to pass a test.
+5. **The standard frontend Dockerfile.** The deploy step writes the one Brewline 2 and 3 shipped with when a Next.js frontend has none. The builder's own was only ever a disposable test file, as its instructions say. The standard compose file is then used.
+6. **The deploy agent starts on Gemini** (`DEPLOY_AGENT_MODEL = gemini-3.5-flash`) with no NIM fallback leg, as the reality checker already does, for the same measured reason.
+7. **Times in the runner.**
+   - A zoned timestamp in an answer also reads as local time, the time the test wrote.
+   - A `date`, `time` or `datetime-local` field gets the value in the form it takes (`input-value.mjs`, used by the browser worker).
+
+**Found while tracing, fixed by 1:** the generated frontend treats only the role "admin" as staff, while the backend gives "staff", so a real staff member would be sent away from /admin. The contract now names the role, so both builders read the same one.
+
+**Not checked:**
+- AT-1-2, sign-in then the home page: running it would add an account to the held build's database;
+- the datetime fill live;
+- a new frozen run with these fixes.

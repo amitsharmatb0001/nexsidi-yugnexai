@@ -161,7 +161,9 @@ export const PROPOSE_PLAN_TOOL = {
           type: "array",
           description: "REST API endpoints the backend will expose",
           items: { type: "object", required: ["method","path","description"], properties: {
-            method: { type: "string" }, path: { type: "string" }, description: { type: "string" }
+            method: { type: "string" }, path: { type: "string" }, description: { type: "string" },
+            // 2026-10-31 (Brewline 4): who may call it, as data — the role reader missed "Staff adds a new menu item."
+            roles: { type: "array", items: { type: "string" }, description: "The roles that may call it besides being signed in, e.g. [\"staff\"]. Empty for a public endpoint or one any signed-in user may call." }
           }},
         },
         designDirection: { type: "string", description: "Color palette, tone, what it should NOT look like" },

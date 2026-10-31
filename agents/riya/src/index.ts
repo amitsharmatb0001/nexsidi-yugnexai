@@ -125,7 +125,35 @@ export function isTestAccountEmail(email: string): boolean {
 // reality checker hunted for a staff login and had a sub-check overwrite the real staff password. The review stage now
 // makes one test account per limited role. The roles are the ones the contract marks, e.g. "(staff only)".
 const NOT_A_ROLE = new Set(["owner", "authenticated", "signed-in", "logged-in", "self", "user", "users", "public", "internal"]);
-export function limitedRolesFromContract(endpoints: Array<{ description?: string }>): string[] {
+// 2026-10-31 (Brewline 4 proof run): "Staff adds a new menu item." under /api/v1/admin/menu matched none of the wordings
+// below, so the plan said no staff role exists, the tester wrote the staff tests as a customer, and the backend builder bent
+// sign-up to pass them. Facts first: the endpoint's own `roles` field (the planner writes it); then the wordings; then the
+// path — a signed-in endpoint under one of these segments is limited to that role (/admin is a shop's staff dashboard).
+const ROLE_SEGMENTS: Record<string, string> = { admin: "staff", staff: "staff", barista: "barista", baristas: "barista", manager: "manager", managers: "manager", owner: "owner", employee: "employee", employees: "employee" };
+
+export interface RoleFacts {
+  path?: string;
+  auth?: boolean;
+  description?: string;
+  /** the roles the plan allows; [] means any signed-in user */
+  roles?: unknown;
+}
+
+/** The limited roles one endpoint allows: [] for public or any signed-in user. */
+export function limitedRolesOfEndpoint(ep: RoleFacts): string[] {
+  if (Array.isArray(ep.roles)) return ep.roles.filter((r): r is string => typeof r === "string").map((r) => r.toLowerCase()).filter((r) => !NOT_A_ROLE.has(r) && r !== "customer");
+  const fromWords = limitedRolesFromWording([ep]);
+  if (fromWords.length || ep.auth === false) return fromWords;
+  if (ep.auth !== true) return [];
+  const segment = (ep.path ?? "").split("/").map((s) => s.toLowerCase()).find((s) => s in ROLE_SEGMENTS);
+  return segment ? [ROLE_SEGMENTS[segment]!] : [];
+}
+
+export function limitedRolesFromContract(endpoints: RoleFacts[]): string[] {
+  return [...new Set(endpoints.flatMap(limitedRolesOfEndpoint))];
+}
+
+function limitedRolesFromWording(endpoints: Array<{ description?: string }>): string[] {
   const roles = new Set<string>();
   for (const ep of endpoints) {
     const d = ep.description ?? "";
@@ -2167,8 +2195,9 @@ export async function run(
     agentName: "riya",
     // 2026-09-28: kimi-k2.6 / mistral-nemotron were retired (see llm-client
     // RETIRED_NIM_MODELS); Riya's chain now comes from the model registry.
-    model: AGENT_MODELS.riya,
-    fallbackModels: FALLBACK_CHAIN.riya,
+    // 2026-10-31 (Brewline 4): starts on Gemini — see DEPLOY_AGENT_MODEL.
+    model: DEPLOY_AGENT_MODEL as typeof AGENT_MODELS.riya,
+    fallbackModels: DEPLOY_AGENT_FALLBACKS as typeof FALLBACK_CHAIN.riya,
     apiKey: process.env.NIM_API_KEY ?? "",
     systemPrompt: "",
     initialMessage: buildAgentTask(projectId, buildDir, frontendPort, backendPort, dbPort, jwtSecret, composeTemplated),
@@ -2439,6 +2468,33 @@ export function backendEnvNames(buildDir: string): { all: string[]; needsValue: 
   return { all: [...all].sort(), needsValue: [...needsValue].sort() };
 }
 
+// 2026-10-31 (Brewline 4 proof run): on meta/muse-glimmer-30b the deploy agent took 1 to 2.5 minutes a step and spent 19
+// steps and 20 minutes only reading files; gemini-3.5-flash then deployed in 21 steps and 2.5 minutes. The reality checker
+// moved off NIM for the same measured reason (tier3-review.ts). A non-NIM model id runs that provider directly.
+export const DEPLOY_AGENT_MODEL = "gemini-3.5-flash";
+/** No NIM fallbacks: runAgentEscalated runs the NIM leg first whenever one is in the chain. */
+export const DEPLOY_AGENT_FALLBACKS: string[] = [];
+
+// The frontend's API address is in frontend/.env.local, which the deploy step writes before the build and COPY . . includes.
+const STANDARD_FRONTEND_DOCKERFILE = `FROM node:22-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build
+EXPOSE 3000
+CMD ["npm", "start"]
+`;
+
+function isNextFrontend(frontendDir: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(frontendDir, "package.json"), "utf-8")) as { dependencies?: Record<string, string> };
+    return typeof pkg.dependencies?.next === "string";
+  } catch {
+    return false;
+  }
+}
+
 /** Writes the standard docker-compose.yml when the app is a standard one; otherwise says why not (the agent writes it). */
 export function composeFromTemplate(
   buildDir: string,
@@ -2447,6 +2503,13 @@ export function composeFromTemplate(
 ): { written: true } | { written: false; reason: string } {
   const composePath = join(buildDir, "docker-compose.yml");
   if (existsSync(composePath)) return { written: false, reason: "a docker-compose.yml already exists" };
+  // 2026-10-31 (Brewline 4): the frontend builder's Dockerfile was only its own disposable test file; when it kept none, the
+  // deploy agent spent 20 minutes writing one. A Next.js frontend without one gets the standard file Brewline 2 and 3 shipped.
+  const frontendDockerfile = join(buildDir, "frontend", "Dockerfile");
+  if (!existsSync(frontendDockerfile) && isNextFrontend(join(buildDir, "frontend"))) {
+    writeFileSync(frontendDockerfile, STANDARD_FRONTEND_DOCKERFILE, "utf-8");
+    console.log(`[riya-orchestrator] wrote the standard frontend/Dockerfile (the frontend had none)`);
+  }
   for (const need of ["backend/Dockerfile", "frontend/Dockerfile", "db/migrations"]) {
     if (!existsSync(join(buildDir, need))) return { written: false, reason: `${need} is missing` };
   }

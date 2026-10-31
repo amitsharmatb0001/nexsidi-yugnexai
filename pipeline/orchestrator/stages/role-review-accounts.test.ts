@@ -102,3 +102,23 @@ test("'restricted to authenticated staff accounts' names the staff role", () => 
   ])).toEqual(["staff"]);
   expect(limitedRolesFromContract([{ description: "Restricted to manager or admin users." }]).sort()).toEqual(["admin", "manager"]);
 });
+
+// 2026-10-31 (Brewline 4 proof run): the contract said "Staff adds a new menu item." under /api/v1/admin/menu. The reader
+// knew only wordings like "(staff only)", so the plan's ROLES item said no other role exists, the tester wrote four menu
+// tests as an ordinary customer, and the backend builder bent sign-up to make them pass. Roles now come from facts first:
+// the endpoint's own `roles` field, then the description's patterns, then the path — a signed-in endpoint under /admin,
+// /staff, /barista, /manager or /owner is limited to that role (/admin is named "staff", the role a shop's dashboard is for).
+test("roles come from the endpoint's roles field, then the wording, then the path structure", () => {
+  const brewline4 = [
+    { method: "POST", path: "/api/v1/auth/sign-up", auth: false, description: "Register a new customer account, defaulting to 'customer' role." },
+    { method: "GET", path: "/api/v1/menu", auth: false, description: "List all menu items." },
+    { method: "POST", path: "/api/v1/admin/menu", auth: true, description: "Staff adds a new menu item." },
+    { method: "GET", path: "/api/v1/orders/me", auth: true, description: "Customer views their own orders." },
+  ];
+  expect(limitedRolesFromContract(brewline4)).toEqual(["staff"]);
+  expect(limitedRolesFromContract([brewline4[3]!])).toEqual([]);
+  expect(limitedRolesFromContract([{ path: "/api/v1/manager/reports", auth: true, description: "Weekly totals." }])).toEqual(["manager"]);
+  expect(limitedRolesFromContract([{ path: "/api/v1/admin/menu", auth: false, description: "Public listing." }])).toEqual([]);
+  expect(limitedRolesFromContract([{ path: "/api/v1/reports", auth: true, description: "x", roles: ["accountant"] }])).toEqual(["accountant"]);
+  expect(limitedRolesFromContract([{ path: "/api/v1/admin/menu", auth: true, description: "x", roles: [] }])).toEqual([]);
+});

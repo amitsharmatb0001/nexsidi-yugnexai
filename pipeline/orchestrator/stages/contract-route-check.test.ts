@@ -93,3 +93,9 @@ test("the backend builder's finish check runs it", () => {
   expect(exit).toContain("contractRouteFindings(");
   expect(exit).toContain("statSync(dist).mtimeMs < newestSource");
 });
+
+// 2026-10-31 (Brewline 4): the same facts as the plan's role reader — a signed-in /admin route is staff-only.
+test("staffOnlyEndpoint reads the roles field and the path, not only the wording", () => {
+  expect(staffOnlyEndpoint({ method: "POST", path: "/api/v1/admin/menu", auth: true, description: "Staff adds a new menu item." } as ContractEndpoint)).toBe(true);
+  expect(staffOnlyEndpoint({ method: "GET", path: "/api/v1/orders/me", auth: true, description: "Customer views their own orders." } as ContractEndpoint)).toBe(false);
+});

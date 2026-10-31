@@ -9,7 +9,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { planItemsFor } from "./chief-check.ts";
-import { limitedRolesFromContract } from "../../agents/riya/src/index.ts";
+import { limitedRolesFromContract, limitedRolesOfEndpoint } from "../../agents/riya/src/index.ts";
 
 export const TESTS_FILE = "acceptance-tests.json";
 
@@ -76,7 +76,8 @@ export interface AcceptanceSuite {
 export interface PlanScope {
   itemIds: Set<string>;
   roles: string[];
-  endpoints: Array<{ method: string; path: string; phase: number }>;
+  /** each endpoint's limited roles ([] = any signed-in user or public) */
+  endpoints: Array<{ method: string; path: string; phase: number; roles: string[] }>;
   pages: Array<{ path: string; phase: number }>;
   phaseCount: number;
 }
@@ -112,7 +113,7 @@ export function pathFits(planPath: string, testPath: string): boolean {
 type Phase = { endpoints?: string[]; pages?: string[] };
 
 export function planScope(projectDir: string): PlanScope {
-  const contract = readJson<{ endpoints?: Array<{ method?: string; path?: string; description?: string }> }>(join(projectDir, "api-contract.json"));
+  const contract = readJson<{ endpoints?: Array<{ method?: string; path?: string; description?: string; auth?: boolean; roles?: unknown }> }>(join(projectDir, "api-contract.json"));
   const plan = readJson<{ buildPhases?: Phase[] }>(join(projectDir, "build-plan.json"));
   const planner = readJson<{ pages?: Array<{ path?: string }>; buildPhases?: Phase[] }>(join(projectDir, "planner-plan.json"));
   const phases = plan?.buildPhases?.length ? plan.buildPhases : (planner?.buildPhases ?? []);
@@ -129,7 +130,7 @@ export function planScope(projectDir: string): PlanScope {
   for (const p of planner?.pages ?? []) if (p.path && !pages.has(normalizePath(p.path))) pages.set(normalizePath(p.path), { path: p.path, phase: 1 });
   const endpoints = (contract?.endpoints ?? [])
     .filter((e) => e.method && e.path)
-    .map((e) => ({ method: e.method!.toUpperCase(), path: e.path!, phase: phaseOfEndpoint.get(`${e.method!.toUpperCase()} ${normalizePath(e.path!)}`) ?? 1 }));
+    .map((e) => ({ method: e.method!.toUpperCase(), path: e.path!, phase: phaseOfEndpoint.get(`${e.method!.toUpperCase()} ${normalizePath(e.path!)}`) ?? 1, roles: limitedRolesOfEndpoint(e) }));
   return {
     itemIds: new Set(planItemsFor(projectDir).map((i) => i.id)),
     roles: limitedRolesFromContract(contract?.endpoints ?? []),
@@ -223,9 +224,32 @@ const JOURNEY_FIELDS: Record<string, string[]> = {
   atPath: ["path"],
 };
 
+/**
+ * 2026-10-31 (Brewline 4 proof run): a step that asks a role-limited endpoint to succeed for an account without that role
+ * contradicts the approved plan — four such tests made the backend builder bend sign-up to pass them. By fact: the
+ * endpoint's roles in the contract, the account the step runs as, and the statuses it expects.
+ */
+export function contradictsPlan(t: AcceptanceTest, scope: PlanScope): string[] {
+  if (!t || t.kind !== "api" || !Array.isArray(t.steps)) return [];
+  const out: string[] = [];
+  (t.steps as ApiStep[]).forEach((s, i) => {
+    if (!s || typeof s !== "object") return;
+    const method = String(s.method ?? "").toUpperCase();
+    const ep = scope.endpoints.find((e) => e.method === method && pathFits(e.path, String(s.path ?? "")));
+    if (!ep || ep.roles.length === 0) return;
+    const who = String(s.as ?? t.as ?? "").toLowerCase();
+    const statuses = (Array.isArray(s.expectStatus) ? s.expectStatus : [s.expectStatus]).filter((x): x is number => typeof x === "number");
+    if (!ep.roles.includes(who) && statuses.length > 0 && statuses.every((x) => x >= 200 && x < 300)) {
+      out.push(`step ${i + 1}: ${method} ${ep.path} is limited to ${ep.roles.join(" or ")} by the approved plan, so as "${who}" it must be refused (401 or 403) — run the step as ${ep.roles.map((r) => `"${r}"`).join(" or ")}, or expect the refusal`);
+    }
+  });
+  return out;
+}
+
 function checkOne(t: AcceptanceTest, scope: PlanScope): string[] {
   const reasons: string[] = [];
   if (!t || typeof t !== "object") return ["not a test object"];
+  reasons.push(...contradictsPlan(t, scope));
   if (!String(t.title ?? "").trim()) reasons.push("give the test a title that says what it proves");
   if (!scope.itemIds.has(String(t.planItem ?? "").toUpperCase())) reasons.push(`${t.planItem || "(no plan item)"} is not an item of the approved plan`);
   const people = ["anyone", "user", ...scope.roles];

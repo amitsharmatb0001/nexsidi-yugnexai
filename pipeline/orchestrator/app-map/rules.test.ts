@@ -284,3 +284,64 @@ test("the shared record for the reviewers and the Chief AI: the app as the syste
   expect(mapSection(join(tmpdir(), "no-such-build-folder-xyz"))).toBe("");
   expect(mapSection(dir, { maxChars: 500 }).length).toBeLessThan(900);
 });
+
+// 2026-10-31 (Brewline 4 proof run): after SEC9 caught `role = "staff"` in the insert, the backend builder inserted
+// 'customer' and then promoted the account in a second query — `UPDATE users SET role = 'staff'` with the role as fixed
+// text — when the email contained "admin", "staff", "test" or "user". The request still chose the role: the branch that
+// runs the write depends on it. A role write the request's branch decides is the caller choosing their role.
+test("SEC9: a fixed role written by a query that a branch on the request decides is a self-chosen role", () => {
+  const d = mkdtempSync(join(tmpdir(), "rules-sec9b-"));
+  const put = (rel: string, text: string) => { mkdirSync(dirname(join(d, rel)), { recursive: true }); writeFileSync(join(d, rel), text); };
+  put("db/migrations/0000.sql", `CREATE TABLE "users" ("id" uuid PRIMARY KEY, "email" text NOT NULL, "password_hash" text NOT NULL, "role" text NOT NULL);`);
+  put("backend/src/app.ts", `import auth from "./auth";\nconst app = express();\napp.use("/api/v1/auth", auth);`);
+  put("backend/src/auth.ts", [
+    `const router = Router();`,
+    `router.post("/sign-up", async (req, res) => {`,
+    `  const { email, password } = req.body;`,
+    `  const r = await pool.query("INSERT INTO users (email, password_hash, role) VALUES ($1, $2, 'customer') RETURNING id", [email, password]);`,
+    `  const lowerEmail = email.toLowerCase();`,
+    `  if (lowerEmail.includes("admin") || lowerEmail.includes("staff")) {`,
+    `    await pool.query("UPDATE users SET role = 'staff' WHERE id = $1", [r.rows[0].id]);`,
+    `  }`,
+    `});`,
+    `router.post("/promote-first", async (req, res) => {`,
+    `  const count = await pool.query("SELECT count(*) AS n FROM users");`,
+    `  if (count.rows[0].n === 1) await pool.query("UPDATE users SET role = 'staff' WHERE id = $1", [req.userId]);`,
+    `});`,
+    `export default router;`,
+  ].join("\n"));
+  const v = checkRules(d, buildAppMap(d)).filter((x) => x.rule === "SEC9");
+  rmSync(d, { recursive: true, force: true });
+  expect(v.map((x) => `${x.file}:${x.line}`)).toEqual(["backend/src/auth.ts:7"]);
+});
+
+// 2026-10-31 (Brewline 4): /admin endpoints are limited to staff, and each runs `requireAdmin`, whose code answers 403 to any
+// other role. SEC2 looked for the role's name in the middleware's name and reported "no role check". A middleware whose own
+// code answers 403 is a role check, whatever it is called; one that never answers 403 is not.
+test("SEC2: a middleware whose code answers 403 is a role check, whatever its name", () => {
+  const d = mkdtempSync(join(tmpdir(), "rules-sec2b-"));
+  const put = (rel: string, text: string) => { mkdirSync(dirname(join(d, rel)), { recursive: true }); writeFileSync(join(d, rel), text); };
+  put("api-contract.json", JSON.stringify({ endpoints: [
+    { method: "POST", path: "/api/v1/admin/menu", auth: true, description: "Staff adds a new menu item." },
+    { method: "DELETE", path: "/api/v1/admin/menu/:id", auth: true, description: "Staff removes a menu item." },
+  ] }));
+  put("backend/src/middleware/auth.ts", [
+    `export const requireAuth = (req, res, next) => { if (!req.headers.authorization) return res.status(401).json({}); next(); };`,
+    `export const requireAdmin = (req, res, next) => {`,
+    `  if (req.userRole !== "admin" && req.userRole !== "staff") return res.status(403).json({ error: "Forbidden" });`,
+    `  next();`,
+    `};`,
+    `export const logIt = (req, res, next) => { console.log(req.path); next(); };`,
+  ].join("\n"));
+  put("backend/src/app.ts", `import menu from "./menu";\nconst app = express();\napp.use("/api/v1", menu);`);
+  put("backend/src/menu.ts", [
+    `import { requireAuth, requireAdmin, logIt } from "./middleware/auth";`,
+    `const router = Router();`,
+    `router.post("/admin/menu", requireAuth, requireAdmin, async (req, res) => { res.json({}); });`,
+    `router.delete("/admin/menu/:id", requireAuth, logIt, async (req, res) => { res.json({}); });`,
+    `export default router;`,
+  ].join("\n"));
+  const v = checkRules(d, buildAppMap(d)).filter((x) => x.rule === "SEC2");
+  rmSync(d, { recursive: true, force: true });
+  expect(v.map((x) => x.fact.slice(0, 40))).toEqual(["DELETE /api/v1/admin/menu/:id is limited"]);
+});

@@ -405,6 +405,8 @@ export interface EndpointFacts {
   answers401: boolean | null;
   /** the handler's own code answers 403 (it checks the caller's role or ownership itself) */
   answers403: boolean | null;
+  /** 2026-10-31 (Brewline 4): the middleware on the endpoint whose own code answers 403 — role checks, by what they do */
+  roleChecks: string[];
   /** the first and last line of the handler in handlerFile (a finding's line inside it is about this endpoint) */
   handlerSpan: [number, number] | null;
 }
@@ -475,7 +477,11 @@ export function readBackend(backendDir: string): BackendFacts {
           sql.push({
             file: p.rel, line: lineOf(p.sf, n), function: enclosingName(n), text: v.text, facts,
             fromRequest: v.dynamic ? fromRequest(v.holes, scope, p.sf) : null,
-            writesFromRequest: facts.kind === "insert" || facts.kind === "update" ? writesFromRequest(v.text, n.arguments[1], scope, p.sf, table) : [],
+            // 2026-10-31 (Brewline 4): a write the request's branches decide (`if (email.includes("admin")) UPDATE users SET role = 'staff'`) has
+            // every column it sets decided by the request, whatever the values are.
+            writesFromRequest: facts.kind === "insert" || facts.kind === "update"
+              ? fromRequest(branchConditions(n, scope), scope, p.sf, { controlFlow: true }) ? facts.writes.filter((w) => w.startsWith(`${table}.`)) : writesFromRequest(v.text, n.arguments[1], scope, p.sf, table)
+              : [],
             node: n, parsed: p,
           });
         }
@@ -528,6 +534,9 @@ export function readBackend(backendDir: string): BackendFacts {
   }
 
   const fnsOf = new Map(files.map((p) => [p.abs, namedFunctions(p)]));
+  // Middleware that refuses with 403 in its own code (requireAdmin, checkStaff, …), by name across the backend's files.
+  const refuses403 = new Set<string>();
+  for (const p of files) for (const [name, node] of fnsOf.get(p.abs)!) if (/\b403\b/.test(node.getText(p.sf))) refuses403.add(name);
   /** Every node of the functions reachable from `start` in its file (it, and the same-file functions it calls). */
   const reachable = (p: Parsed, start: ts.Node): ts.Node[] => {
     const fns = fnsOf.get(p.abs)!;
@@ -611,6 +620,11 @@ export function readBackend(backendDir: string): BackendFacts {
       sql: [...new Set(used)].map(({ node: _n, parsed: _p, ...q }) => q),
       answers401: handlerNode ? nodes.some((fn) => /\b401\b/.test(fn.getText(handlerParsed.sf))) : null,
       answers403: handlerNode ? nodes.some((fn) => /\b403\b/.test(fn.getText(handlerParsed.sf))) : null,
+      roleChecks: [
+        ...(mwOf.get(r.p.abs) ?? []),
+        ...routerMw.filter((x) => x.file === r.p.abs && x.obj === r.obj && x.pos < r.pos).map((x) => x.name),
+        ...r.args.slice(0, -1).map((a) => (ts.isIdentifier(a) ? a.text : "")),
+      ].filter((m) => refuses403.has(m.replace(/\(.*$/, ""))),
       handlerSpan: handlerNode ? [lineOf(handlerParsed.sf, handlerNode), handlerParsed.sf.getLineAndCharacterOfPosition(handlerNode.end).line + 1] : null,
     });
   }
