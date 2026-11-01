@@ -3,6 +3,7 @@
 // No longer does one-shot LLM generation. Agent ACTS on real tool feedback.
 
 import { resolveGeneratorRunner, isBuilderFixFile, recordClaimEvidence, type Escalation } from "@nexsidi/agent-runtime";
+import { backendFoundationFiles, foundationPlan, isFoundationFile, writeFoundation } from "../../../../packages/foundation/src/index.ts";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "fs";
 import { join, resolve } from "path";
@@ -381,6 +382,8 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
     preloadOwnFiles: !!phase && !phase.scaffold,
     maxIterations: phase?.maxSteps ?? 90,
     // 2026-10-24: a team step's settings win (helpers: flash, own files only, type check only; lead: pro, plan-vs-code check).
+    // The foundation's files are not the builder's to change (a helper's own limit below replaces this one, and is narrower).
+    writableFile: (p: string) => !isFoundationFile(outputDir, p),
     exitChecks: !phase || phase.isLast ? (summary: string) => backendExitChecksFor(plan.projectId, summary) : undefined,
     ...teamRunOverrides(phase, outputDir, { taskFiles: plan.shubhamTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: !phase || phase.isLast ? (summary: string) => backendExitChecksFor(plan.projectId, summary) : undefined, runBackendTests: true }),
   });
@@ -521,7 +524,7 @@ export async function runFix(plan: BuildPlan, findings: string[], team?: { role?
     // diagnose.
     enableEscalation: true,
     // 2026-10-08: a fix round may not change or delete deploy files (Dockerfile, compose, .env) — they are the deploy agent's.
-    writableFile: isBuilderFixFile,
+    writableFile: (p: string) => isBuilderFixFile(p) && !isFoundationFile(outputDir, p),
     requiredVerificationCommands: ["npx tsc --noEmit", "npm run build"],
     // 2026-08-06: real bug found live (project bae438767bed) — the LIVE
     // AUTH-BOUNDARY VERIFICATION section above is prompt text only, and the
@@ -615,6 +618,13 @@ export function renderTaskManifest(tasks: GeneratorTask[]): string {
     .join("\n\n");
 }
 
+function foundationNote(plan: BuildPlan): string {
+  const f = foundationPlan(plan);
+  return f.auth
+    ? "SIGN-UP AND SIGN-IN ARE ALREADY BUILT (src/controllers/auth.controller.ts, src/routes/auth.routes.ts). Do not write them again."
+    : `THE LOGIN IS YOURS TO WRITE IN THIS APP${f.authLeftToBuilder ? ` (${f.authLeftToBuilder})` : ""}, using requireAuth, signToken and the answer helpers already in place.`;
+}
+
 function buildAgentTask(plan: BuildPlan): string {
   const taskDetails = renderTaskManifest(plan.shubhamTasks ?? []);
 
@@ -643,6 +653,8 @@ the complete, exhaustive manifest; nothing outside this workflow's plan is
 expected, and nothing in it should be skipped):
 ${taskDetails}
 
+${foundationNote(plan)}
+
 Start by using list_files to see what scaffold files are already present.
 Then write EVERY planned file above completely, batching several write_file
 calls per turn — do not pause to type-check between individual files. Only
@@ -651,7 +663,7 @@ pass described in your system prompt.` + answersBlock(plan.projectId);
 }
 
 // ── Static scaffold — written before agent starts ────────────────────────────
-function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
+export function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
   const port = plan.apiContract.baseUrl?.match(/:(\d+)/)?.[1] ?? "3001";
 
   const files: Array<{ path: string; content: string }> = [
@@ -721,26 +733,6 @@ CMD ["node", "dist/index.js"]
 `,
     },
     {
-      path: "src/index.ts",
-      content: `import "dotenv/config";
-import express from "express";
-import helmet from "helmet";
-import cors from "cors";
-import routes from "./routes/index";
-
-const app = express();
-const port = Number(process.env.PORT) || ${port};
-
-app.use(express.json());
-app.use(helmet());
-app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:3000", credentials: true }));
-app.use("/api/v1", routes);
-app.get("/health", (_req, res) => res.json({ status: "ok" }));
-
-app.listen(port, () => console.log(\`[backend] listening on :\${port}\`));
-`,
-    },
-    {
       path: "src/routes/index.ts",
       // Placeholder — autoWireRoutes() replaces this after agent writes route files
       content: `import { Router } from "express";
@@ -770,4 +762,6 @@ export interface UpdateTaskRequest {
     mkdirSync(join(outputDir, relPath.split("/").slice(0, -1).join("/")), { recursive: true });
     writeFileSync(absPath, content, "utf-8");
   }
+  // Login, roles, the answer format, secrets and the entry point: tested once, the same in every app (packages/foundation).
+  writeFoundation(outputDir, backendFoundationFiles(foundationPlan(plan)));
 }

@@ -5,6 +5,7 @@
 import { resolveGeneratorRunner, isBuilderFixFile, recordClaimEvidence } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import { frontendFoundationFiles, isFoundationFile, writeFoundation } from "../../../../packages/foundation/src/index.ts";
 import { execSync, exec } from "child_process";
 import { randomBytes } from "crypto";
 import { join, resolve } from "path";
@@ -253,6 +254,8 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?
     // 2026-10-23: a later phase starts with the files already written, whole (builder-preload.ts).
     preloadOwnFiles: !!phase && !phase.scaffold,
     // 2026-10-24: emoji, dead buttons and missing spec colours are checked by the system before the last phase may finish.
+    // The foundation's files are not the builder's to change (a helper's own limit below replaces this one, and is narrower).
+    writableFile: (p: string) => !isFoundationFile(outputDir, p),
     exitChecks: !phase || phase.isLast ? (summary: string) => frontendExitChecksFor(plan.projectId, summary) : undefined,
     maxIterations: phase?.maxSteps ?? 90,
     // 2026-10-24: a team step's settings win (helpers: flash, own files only, type check only; lead: pro, plan-vs-code check).
@@ -360,7 +363,7 @@ export async function runFix(plan: BuildPlan, findings: string[], team?: { role?
     // see that file for the full rationale.
     enableEscalation: true,
     // 2026-10-08: a fix round may not change or delete deploy files (Dockerfile, compose, .env) — they are the deploy agent's.
-    writableFile: isBuilderFixFile,
+    writableFile: (p: string) => isBuilderFixFile(p) && !isFoundationFile(outputDir, p),
     enableDockerTools: true,
     // 2026-08-24 (Workstream 4): not-found.tsx/error.tsx/global-error.tsx/
     // icon.svg are Next.js App Router FILE CONVENTIONS — auto-discovered by
@@ -1023,6 +1026,8 @@ export function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  // The API client's base and the session: tested once, the same in every app (packages/foundation).
+  writeFoundation(outputDir, frontendFoundationFiles());
 }
 
 html {

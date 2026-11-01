@@ -1,5 +1,9 @@
 import { test, expect } from "bun:test";
-import { buildFixTask, renderTaskManifest, countTestableResources } from "./index.ts";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildFixTask, renderTaskManifest, countTestableResources, writeStaticScaffold } from "./index.ts";
+import { isFoundationFile } from "../../../../packages/foundation/src/index.ts";
 import type { BuildPlan } from "../../../arjun/src/index.ts";
 import { assembleSystemPrompt } from "../../../../packages/agent-runtime/src/prompt-assembly.ts";
 
@@ -164,4 +168,26 @@ test("renderTaskManifest lists every task's description and output files", () =>
 
 test("renderTaskManifest returns an empty string for an empty/missing task list — never a dangling header", () => {
   expect(renderTaskManifest([])).toBe("");
+});
+
+// 2026-11-01: a new build starts from the foundation; the record of its files sits beside the folder, not in what is delivered.
+test("the scaffold writes the foundation's files, and sign-up and sign-in on the contract's paths", () => {
+  const root = mkdtempSync(join(tmpdir(), "scaffold-"));
+  const out = join(root, "backend");
+  try {
+    writeStaticScaffold({
+      projectId: "p1",
+      apiContract: { baseUrl: "http://localhost:3001", endpoints: [{ method: "POST", path: "/api/v1/auth/register" }, { method: "POST", path: "/api/v1/auth/login" }] },
+      dbSchema: { tables: [{ name: "users", columns: [{ name: "id" }, { name: "email" }, { name: "password_hash" }, { name: "role" }] }] },
+    } as unknown as BuildPlan, out);
+    expect(readFileSync(join(out, "src/routes/auth.routes.ts"), "utf-8")).toContain('router.post("/register"');
+    expect(readFileSync(join(out, "src/config.ts"), "utf-8")).toContain('required("JWT_SECRET")');
+    expect(readFileSync(join(out, "src/index.ts"), "utf-8")).toContain('from "./app"');
+    expect(existsSync(join(out, "package.json"))).toBe(true);
+    expect(existsSync(join(out, ".nexsidi"))).toBe(false);
+    expect(isFoundationFile(out, "src/middleware/auth.ts")).toBe(true);
+    expect(isFoundationFile(out, "src/routes/index.ts")).toBe(false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -28,19 +28,21 @@ Your workflow:
 
 STACK (non-negotiable):
 - Express 4.x / TypeScript / Node 22 / commonjs
-- Auth: Custom JWT authentication. You MUST write:
-  1. A User database table containing email (text, unique), password_hash (text).
-  2. A registration endpoint (POST /api/v1/auth/register) that hashes passwords using bcryptjs (salt rounds = 10) and saves the user.
-  3. A login endpoint (POST /api/v1/auth/login) that verifies passwords using bcryptjs and returns a signed JWT token (expires in 24h, signed with process.env.JWT_SECRET). Fail-closed: if JWT_SECRET is not set, throw at startup and refuse to start the server — NEVER fall back to a hardcoded string or a randomly-generated secret (a random fallback silently invalidates every session on every restart, which is a real bug just as bad as a hardcoded secret).
-  4. An auth middleware (src/middleware/auth.ts) that reads the Authorization header (Bearer <token>), verifies it using jsonwebtoken, and sets req.userId.
+- Auth: Custom JWT, already built (see below).
 - DB: PostgreSQL via "pg" Pool with parameterized queries ($1, $2)
 - Security: helmet() + cors with CORS_ORIGIN env var
 
-STATIC FILES ALREADY WRITTEN (DO NOT write these):
+FILES ALREADY WRITTEN AND TESTED. You cannot change them; a change is refused. Use them:
 - package.json, tsconfig.json, Dockerfile
-- src/index.ts (entry point with helmet, cors, route mounting)
+- src/index.ts, src/app.ts (helmet, CORS, routes under /api/v1, 404 and error answers)
+- src/config.ts (config.jwtSecret, config.databaseUrl: required from the environment, fail-closed: the app does not start without them)
+- src/db/pool.ts: import { pool } from "../db/pool"
+- src/http/respond.ts: ok(res, data, status?) and fail(res, status, "message") are the ONLY way to answer. handler(async (req, res) => {...}) wraps every async route, so a thrown error answers 500 without its cause.
+- src/middleware/auth.ts: requireAuth (401; sets req.user = { id, email, role }), requireRole("staff") after it (403), signToken
+- src/middleware/rateLimiter.ts: authLimiter
+- src/controllers/auth.controller.ts, src/routes/auth.routes.ts: sign-up and sign-in, when the plan has them. Sign-up gives the table's default role; a caller never chooses one.
 - src/routes/index.ts (auto-generated after you write route files)
-- src/types/requests.ts (CreateTaskRequest, UpdateTaskRequest)
+If one of these truly cannot do what the plan needs, call report_blocked with what you checked. Never work around it with a second copy.
 
 DATABASE SCHEMA OWNERSHIP — DO NOT write any .sql file, any migration file,
 or any schema-definition file (init.sql, schema.ts, drizzle config, etc.).
@@ -54,9 +56,6 @@ application code that reads/writes against Pranav's schema, never the
 schema itself.
 
 FILES YOU MUST WRITE:
-- src/middleware/auth.ts (custom JWT verification middleware)
-- src/routes/auth.routes.ts and src/controllers/auth.ts (registration/login endpoints)
 - src/routes/{resource}.routes.ts (one file per resource)
 - src/controllers/{resource}.ts (business logic per resource)
-- src/db/pool.ts (PostgreSQL Pool instance)
 

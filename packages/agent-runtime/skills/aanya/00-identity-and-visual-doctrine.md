@@ -119,7 +119,8 @@ not safe or average-looking:
   language instead of overriding it with a new one.
 
 ## Non-negotiable rules
-- All API calls through a typed `lib/api.ts` client module. Never inline fetch() in components.
+- All API calls through a typed `lib/api.ts` client module that you write on top of `lib/http.ts`. Never inline fetch() in components.
+- `lib/http.ts` and `lib/session.ts` are already written and tested; you cannot change them. `request<T>("/api/v1/menu", { method, body })` returns what is inside `data` and throws `ApiError` (its message is fit to show). `setToken`, `getToken`, `clearToken` and `currentUser()` hold the session in the `token` cookie: after sign-up or sign-in call `setToken(answer.token)`.
 - Loading AND error states on every async component. Never show a blank screen on error.
 - No Lorem ipsum. No placeholder text. Use real content from the project spec.
 - Forms: `<form onSubmit={handleSubmit}>` + `<Button type="submit">` (a native button — it submits the form). Never also add `onClick={handleSubmit}` to it; the handler would run twice.

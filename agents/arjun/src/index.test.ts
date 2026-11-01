@@ -477,3 +477,19 @@ test("the contract keeps each endpoint's roles from the spec, matched by method 
   const out = withSpecRoles(contract, spec);
   expect(out.map((e) => e.roles)).toEqual([[], ["staff"], ["staff"]]);
 });
+
+// 2026-11-01: every app starts from the foundation's tested files, so the plan asks no builder to write them again.
+test("the plan's tasks do not ask for the foundation's files", async () => {
+  const content = JSON.stringify({
+    apiContract: { endpoints: [{ method: "POST", path: "/api/v1/auth/sign-up", auth: false, requestType: "{ email: string; password: string }" }, { method: "POST", path: "/api/v1/auth/sign-in", auth: false, requestType: "{ email: string; password: string }" }] },
+    dbSchema: { tables: [{ name: "users", columns: [{ name: "id" }, { name: "email", notNull: true }, { name: "password_hash", notNull: true }] }] },
+    shubhamTasks: [{ description: "entry", outputFiles: ["src/index.ts", "package.json"] }, { description: "menu", outputFiles: ["src/routes/menu.routes.ts", "src/controllers/auth.controller.ts"] }],
+    aanyaTasks: [{ description: "lib", outputFiles: ["lib/http.ts", "lib/api.ts"] }],
+    pranavTasks: [],
+    independenceVerified: true,
+  });
+  const spec = { projectId: "p1", name: "A", description: "d", features: [], apiEndpoints: [] } as unknown as ProjectSpec;
+  const plan = await run(spec, { chat: async () => ({ content }) as never, runVanya: stubRunVanya });
+  expect(plan.shubhamTasks.flatMap((t) => t.outputFiles)).toEqual(["src/routes/menu.routes.ts"]);
+  expect(plan.aanyaTasks.flatMap((t) => t.outputFiles)).toEqual(["lib/api.ts"]);
+});

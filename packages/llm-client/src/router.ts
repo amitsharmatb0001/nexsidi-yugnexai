@@ -353,6 +353,12 @@ export function isGeminiRateLimitCoolingDown(model: string, now = Date.now()): b
   return true;
 }
 
+/** Why the pool's first model did not answer: it failed on this call, or it was in its cooldown and was not tried. */
+export function firstModelNote(first: string | undefined, errors: string[]): string {
+  const tried = errors.some((e) => e.startsWith(`${first}:`) && !e.includes("skipped"));
+  return `pool[0]=${first} ${tried ? "failed" : "cooling down, not tried"}`;
+}
+
 export function shouldSkipGeminiModel(model: string): boolean {
   return getState(circuitKeyFor(model)) === "OPEN" || isGeminiRateLimitCoolingDown(model);
 }
@@ -385,7 +391,7 @@ export async function routeWithFallback(
         fastFailOn429: true,
       });
       if (model !== pool[0]) {
-        console.log(`[routeWithFallback:${tier}] used fallback model ${model} (pool[0]=${pool[0]} failed)`);
+        console.log(`[routeWithFallback:${tier}] used fallback model ${model} (${firstModelNote(pool[0], errors)})`);
       }
       return { content, modelUsed: model };
     } catch (err) {
@@ -476,7 +482,7 @@ export async function routeToolsWithFallback(
         continue;
       }
       if (model !== pool[0]) {
-        console.log(`[routeToolsWithFallback:${tier}] used fallback model ${model} (pool[0]=${pool[0]} failed)`);
+        console.log(`[routeToolsWithFallback:${tier}] used fallback model ${model} (${firstModelNote(pool[0], errors)})`);
       }
       return { ...result, modelUsed: model };
     } catch (err) {

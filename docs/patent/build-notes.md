@@ -1443,3 +1443,24 @@ Each with a test first, and proved on Brewline 5's recorded files (read only).
 All suites pass: pipeline 1,066, packages 1,062, agents 618, API 101, web 92.
 
 **Still open:** the remaining finding in the notes ("money-exact": the order total is computed in floating point) names no plan item, so it goes to the notes. Not changed.
+
+## Batch 75 — proof run 3 (Brewline 6, 2026-11-01) and what it forced
+
+Amit stopped run 3 at $17.23 of $30 to save the cost, and approved the changes below, with no paid run until they are proven on saved builds.
+
+**What run 3 showed.** The gate reached 38 of 38 for the first time, and the review then found what those tests had missed: past pickup times were accepted. To pass five old tests holding a fixed clock time ("today at 3 PM"), the backend builder then turned the 15-minute rule off for today, and reported the fix verified. Nothing stopped it: no test touched the limit, and no review read the fixed code. Two serious findings (store hours compared in the wrong time zone; two orders locking each other) went to the notes because they named no plan item. A "reproduced" finding had stopped at its setup step.
+
+**Changes.**
+1. **Limits are tested on both sides.** A plan item that states a limit gets an API test that succeeds and one that is refused; missing ones are asked for once and recorded. The times are relative: `{{minutes+N}}`. A fixed time today is refused.
+2. **A second look.** When the fixes changed code, the reviewers read the changed files once more, and what they find is fixed and tested once. There is no third review. (Amit asked for this before run 1; it was put off until after the proof runs, and run 3 showed he was right.)
+3. **No serious finding dies in the notes.** A high or critical finding that names its file goes to the Chief AI, with or without a plan item or a reproduction. A reproduction proves a finding only when it fails at its last step.
+4. **The foundation (`packages/foundation`).** Login, roles, the answer format, secrets, the entry point, error answers, the rate limit and the frontend's request and session helpers are written once and proven once. Every build starts from them, the plan no longer asks a builder for them, and a builder cannot change them (the write guard refuses; a finish check finds a change made any other way). Nothing in the delivered files marks them as shared.
+
+**Proof, with no model call.**
+- The foundation runs as a real server on a real database (10 tests): forged, unsigned and expired tokens refused; a caller cannot choose a role; a crash does not leak its cause; sign-in is rate limited; the app does not start without its secret.
+- From Brewline 6's recorded plan, the backend builder's files drop from 13 to 6. The result compiles with the generated app's own settings, and the app map reads it with no rule broken.
+- On a copy of Brewline 6's code, the new limit tests fail on the weakened rule: a pickup 5 minutes away and one an hour ago are both accepted (201). The suite the run really had shows the limit gap.
+
+**Correction.** I told Amit that one timeout moved most of a build onto the weaker model. Measured: a timeout skips the model for 10 minutes by design; in run 3 that put 72 of 144 design calls on the fast models, including 39 of the backend lead's 52, and the main model then came back. Only the log was wrong ("failed" for a model it never tried); it is fixed. Whether the 10 minutes is right was not changed.
+
+**Not proven yet.** Nothing here has run in a full build. No build has yet been made from the foundation by the real builders, so whether they use it well is unknown. A limit test near closing time can fail for the clock's reason. The time-zone rule itself is not checked by any code rule.

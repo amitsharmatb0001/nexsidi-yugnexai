@@ -4,6 +4,7 @@
 // D22: ambitious — not minimal. D23: sprint contracts in files before code starts.
 
 import { agentChat } from "@nexsidi/llm-client";
+import { backendHeldFiles, foundationPlan, frontendHeldFiles, withoutFoundationFiles } from "../../../packages/foundation/src/index.ts";
 import { hashContext } from "@nexsidi/context-chain";
 import { skillPromptSection } from "../../../packages/agent-runtime/src/skill-library.ts";
 import type { ProjectSpec, Feature } from "../../saanvi/src/index.ts";
@@ -245,8 +246,9 @@ export async function run(
     dbSchema: {
       tables: Array.isArray(raw.dbSchema?.tables) ? raw.dbSchema.tables : [],
     },
-    shubhamTasks:        Array.isArray(raw.shubhamTasks)        ? raw.shubhamTasks        : [],
-    aanyaTasks:          Array.isArray(raw.aanyaTasks)          ? raw.aanyaTasks          : [],
+    // 2026-11-01: every app starts from the foundation's tested files; no builder is asked to write them again.
+    shubhamTasks:        withoutFoundationFiles(Array.isArray(raw.shubhamTasks) ? raw.shubhamTasks : [], backendHeldFiles(foundationPlan({ apiContract: { endpoints: sanitizedEndpoints }, dbSchema: { tables: Array.isArray(raw.dbSchema?.tables) ? raw.dbSchema.tables : [] } }))),
+    aanyaTasks:          withoutFoundationFiles(Array.isArray(raw.aanyaTasks) ? raw.aanyaTasks : [], frontendHeldFiles()),
     pranavTasks:         Array.isArray(raw.pranavTasks)         ? raw.pranavTasks         : [],
     independenceVerified: raw.independenceVerified === true,
   };

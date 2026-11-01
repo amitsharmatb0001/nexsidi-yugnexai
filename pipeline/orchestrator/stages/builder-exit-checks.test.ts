@@ -2,7 +2,8 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { frontendExitChecks, externalImageUrls, backendExitChecks, historyIntegrityFindings, keepHistoryInMigrations, metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings, schemaMigrationSyncFindings, projectHygieneFindings, dedupeAgainstHygiene, checklistFor, checklistFindings } from "./builder-exit-checks.ts";
+import { writeFoundation } from "../../../packages/foundation/src/index.ts";
+import { foundationChangeFindings, frontendExitChecks, externalImageUrls, backendExitChecks, historyIntegrityFindings, keepHistoryInMigrations, metadataLeakFindings, cookieSecureFindings, secretLoggingFindings, strayShippedFileFindings, schemaMigrationSyncFindings, projectHygieneFindings, dedupeAgainstHygiene, checklistFor, checklistFindings } from "./builder-exit-checks.ts";
 
 // 2026-10-24 (Brewline root cause): 8 emoji findings and the missing-colour findings were raised in review, after the
 // frontend builder had said "done" — its instructions said "no emoji", and the checks existed, but they only ran later.
@@ -488,4 +489,17 @@ export default router;`,
 test("mapRuleFindings: a folder the map cannot read gives no findings, not a failed finish", async () => {
   const { mapRuleFindings } = await import("./builder-exit-checks.ts");
   expect(mapRuleFindings(join(tmpdir(), "no-such-build-folder-xyz"), "shubham")).toEqual([]);
+});
+
+test("a tested foundation file that was changed stops a builder from finishing, by name", () => {
+  const root = mkdtempSync(join(tmpdir(), "base-"));
+  const dir = join(root, "backend");
+  try {
+    writeFoundation(dir, [{ path: "src/middleware/auth.ts", content: "// as written\n" }]);
+    expect(foundationChangeFindings(dir, "backend/")).toEqual([]);
+    writeFileSync(join(dir, "src/middleware/auth.ts"), "// weakened\n");
+    expect(foundationChangeFindings(dir, "backend/")[0]).toContain("backend/src/middleware/auth.ts: this tested file was changed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

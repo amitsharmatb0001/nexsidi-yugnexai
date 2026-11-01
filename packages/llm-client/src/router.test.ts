@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { allPoolModels, shouldUseGeminiForQA, poolForTier, thinkingLevelForTier, pipelineTierFor, shouldSkipGeminiModel, rotatedPoolForAgent, routeToolsWithFallback } from "./router.ts";
+import { firstModelNote, allPoolModels, shouldUseGeminiForQA, poolForTier, thinkingLevelForTier, pipelineTierFor, shouldSkipGeminiModel, rotatedPoolForAgent, routeToolsWithFallback } from "./router.ts";
 import { recordFailure } from "./circuit-breaker.ts";
 import { circuitKeyFor } from "./gemini.ts";
 
@@ -274,4 +274,11 @@ test("gemini-3.8-flash is the last fallback in the planning, design, critical an
     expect(pool[pool.length - 1]).toBe("gemini-3.8-flash");
   }
   expect(poolForTier("generation")).toContain("gemini-3.8-flash");
+});
+
+// 2026-11-01 (Brewline 6): the log said "pool[0] failed" for calls that never tried it, during the model's 10-minute cooldown.
+test("the fallback note says whether the first model failed or was never tried", () => {
+  expect(firstModelNote("pro", ["pro: timed out"])).toBe("pool[0]=pro failed");
+  expect(firstModelNote("pro", [])).toBe("pool[0]=pro cooling down, not tried");
+  expect(firstModelNote("pro", ["pro: circuit breaker OPEN — skipped"])).toBe("pool[0]=pro cooling down, not tried");
 });

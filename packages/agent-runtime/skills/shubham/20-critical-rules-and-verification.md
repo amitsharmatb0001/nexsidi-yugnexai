@@ -42,10 +42,9 @@ CRITICAL RULES:
       values,
     );
     if (result.rows.length === 0) {
-      res.status(404).json({ error: "Task not found" });
-      return;
+      return fail(res, 404, "Task not found");
     }
-    res.json(formatTask(result.rows[0]));
+    ok(res, formatTask(result.rows[0]));
     ---
     Same pattern for DELETE: "DELETE FROM tasks WHERE id = $1 AND user_id = $2 RETURNING id", check rows.length === 0 for 404, no separate existence SELECT first.
 12. Validate EVERY value from req.params and req.body BEFORE using it —
