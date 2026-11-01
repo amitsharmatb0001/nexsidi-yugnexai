@@ -129,6 +129,7 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?
     // 2. Write static scaffold (includes the in-house fonts — see fonts.ts).
     writeStaticScaffold(plan, outputDir);
   }
+  putBackFoundation(outputDir, frontendFoundationFiles());
 
   // 3. Run real agent loop
   // Primary history: kimi-k2.6 (failed, F7) -> z-ai/glm-5.2 (2026-07-03) ->
@@ -254,12 +255,12 @@ export async function run(plan: BuildPlan, mode: "preview" | "integrate", phase?
     // 2026-10-23: a later phase starts with the files already written, whole (builder-preload.ts).
     preloadOwnFiles: !!phase && !phase.scaffold,
     // 2026-10-24: emoji, dead buttons and missing spec colours are checked by the system before the last phase may finish.
-    // The foundation's files are not the builder's to change (a helper's own limit below replaces this one, and is narrower).
+    // The foundation's files are not the builder's to change (a team step's limit below keeps this one).
     writableFile: (p: string) => !isFoundationFile(outputDir, p),
     exitChecks: !phase || phase.isLast ? (summary: string) => frontendExitChecksFor(plan.projectId, summary) : undefined,
     maxIterations: phase?.maxSteps ?? 90,
     // 2026-10-24: a team step's settings win (helpers: flash, own files only, type check only; lead: pro, plan-vs-code check).
-    ...teamRunOverrides(phase, outputDir, { taskFiles: plan.aanyaTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: !phase || phase.isLast ? (summary: string) => frontendExitChecksFor(plan.projectId, summary) : undefined }),
+    ...teamRunOverrides(phase, outputDir, { baseWritable: (p: string) => !isFoundationFile(outputDir, p), taskFiles: plan.aanyaTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: !phase || phase.isLast ? (summary: string) => frontendExitChecksFor(plan.projectId, summary) : undefined }),
   });
 
   return {
@@ -328,6 +329,7 @@ export const FIX_MAX_STEPS = 60;
 export async function runFix(plan: BuildPlan, findings: string[], team?: { role?: "helper" | "integrate"; ownFiles?: string[]; helperIndex?: number }, extra?: { exitChecks?: () => Promise<string[]> }): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
+  putBackFoundation(outputDir, frontendFoundationFiles());
   // F7 (agent-autonomy-assessment): mirrors Shubham's identical fix — see
   // that file for the full rationale.
   const knownMistakesPrefix = await loadKnownMistakesPrefix(plan.projectId);
@@ -391,7 +393,7 @@ export async function runFix(plan: BuildPlan, findings: string[], team?: { role?
     // 2026-10-24: the same system checks before a fix round may finish.
     exitChecks: () => withExtraChecks(frontendExitChecksFor(plan.projectId), extra),
     maxIterations: FIX_MAX_STEPS,
-    ...teamRunOverrides(team, outputDir, { taskFiles: [], baseExitChecks: () => withExtraChecks(frontendExitChecksFor(plan.projectId), extra) }),
+    ...teamRunOverrides(team, outputDir, { baseWritable: (p: string) => !isFoundationFile(outputDir, p), taskFiles: [], baseExitChecks: () => withExtraChecks(frontendExitChecksFor(plan.projectId), extra) }),
   });
 
   return {
@@ -1026,8 +1028,6 @@ export function writeStaticScaffold(plan: BuildPlan, outputDir: string): void {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
-  // The API client's base and the session: tested once, the same in every app (packages/foundation).
-  writeFoundation(outputDir, frontendFoundationFiles());
 }
 
 html {
@@ -1229,4 +1229,6 @@ export const config = {
 
   vendorInHouseFonts(outputDir, usedInHouseFonts(plan.designBrief));
   vendorYugnexLogo(outputDir);
+  // The API client's base and the session: tested once, the same in every app (packages/foundation).
+  writeFoundation(outputDir, frontendFoundationFiles());
 }

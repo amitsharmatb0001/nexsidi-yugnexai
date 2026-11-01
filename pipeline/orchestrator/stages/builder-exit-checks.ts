@@ -3,7 +3,7 @@
 // instructions said "no emoji" and the checks existed, but they ran only in the review stage. The same checks now run,
 // by the system, when the builder calls task_complete (last phase and fix rounds), and what they find is handed back to
 // it first. Pure file reads; no model call.
-import { foundationChanges } from "../../../packages/foundation/src/index.ts";
+import { backendFoundationFiles, foundationChanges, foundationPlan, frontendFoundationFiles, putBackFoundation, type FoundationFile } from "../../../packages/foundation/src/index.ts";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { buildDirFor } from "../../../packages/agent-runtime/src/build-dir.ts";
@@ -97,15 +97,28 @@ const imageFindings = (where: string, found: Array<{ file: string; url: string }
   found.map((f) => `${where}${f.file}: the image ${f.url} is loaded from another site — use a designed placeholder saved in the app (an SVG under public/images) or no image`);
 
 /** The backend builder's own checks before it may finish: no hot-linked images in its code or the database seed files. */
-/** A tested foundation file that is no longer as written (a write guard refuses the tools; a command could still change one). */
-export function foundationChangeFindings(dir: string, prefix: string): string[] {
-  return foundationChanges(dir).map((f) => `${prefix}${f}: this tested file was changed. Put it back exactly as it was, and solve the problem in your own files; if it truly cannot do what the plan needs, call report_blocked with what you checked.`);
+/**
+ * A tested foundation file that is no longer as written (a write guard refuses the tools; a command could still change one).
+ * The builder may not write it, so the system puts it back and the builder makes its own files work with it.
+ */
+export function foundationChangeFindings(dir: string, prefix: string, files: FoundationFile[]): string[] {
+  const changed = foundationChanges(dir);
+  const putBack = new Set(putBackFoundation(dir, files));
+  return changed.map((f) => `${prefix}${f}: this tested file was changed${putBack.has(f) ? ", and has been put back as it was" : ""}. Make your own files work with it; if it truly cannot do what the plan needs, call report_blocked with what you checked.`);
+}
+
+function backendFiles(dir: string): FoundationFile[] {
+  try {
+    return backendFoundationFiles(foundationPlan(JSON.parse(readFileSync(join(dir, "build-plan.json"), "utf-8"))));
+  } catch {
+    return [];
+  }
 }
 
 export function backendExitChecks(projectId: string): string[] {
   const dir = buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds");
   return [
-    ...foundationChangeFindings(join(dir, "backend"), "backend/"),
+    ...foundationChangeFindings(join(dir, "backend"), "backend/", backendFiles(dir)),
     ...imageFindings("backend/", externalImageUrls(join(dir, "backend", "src"))),
     ...imageFindings("db/", externalImageUrls(join(dir, "db"))),
     ...starterContentFindings(dir),
@@ -235,7 +248,7 @@ export function attributionLogoFindings(frontendDir: string): string[] {
 }
 
 export function frontendExitChecks(projectId: string): string[] {
-  const out: string[] = [...foundationChangeFindings(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend"), "")];
+  const out: string[] = [...foundationChangeFindings(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend"), "", frontendFoundationFiles())];
   out.push(...imageFindings("", externalImageUrls(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend"))));
   out.push(...attributionLogoFindings(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend")));
   for (const f of scanProjectForEmojiUi(projectId)) out.push(`${f.file}: ${f.issue}`);

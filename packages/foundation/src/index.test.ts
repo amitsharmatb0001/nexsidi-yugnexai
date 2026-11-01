@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { foundationPlan, backendFoundationFiles, frontendFoundationFiles, writeFoundation, foundationChanges, withoutFoundationFiles, isFoundationFile } from "./index.ts";
+import { backendHeldFiles, putBackFoundation, foundationPlan, backendFoundationFiles, frontendFoundationFiles, writeFoundation, foundationChanges, withoutFoundationFiles, isFoundationFile } from "./index.ts";
 
 // 2026-11-01 (Amit approved, after proof run 3): each build wrote login, roles, the answer format and the entry point from
 // scratch, so the same kinds of bug could come back every time. These files are written once, tested once (backend.test.ts
@@ -91,4 +91,41 @@ test("the plan's tasks no longer ask a builder for a foundation file; a task lef
   ];
   const out = withoutFoundationFiles(tasks, ["src/index.ts", "src/app.ts", "src/middleware/auth.ts", "src/controllers/auth.controller.ts", "src/routes/auth.routes.ts"]);
   expect(out).toEqual([{ id: "b", outputFiles: ["src/controllers/menu.ts"] }]);
+});
+
+// 2026-11-01 (Brewline 7): a changed tested file could not be put back by the builder (the guard refuses it), so the build stopped.
+test("putBackFoundation restores changed and deleted files, and leaves the builder's alone", () => {
+  const root = mkdtempSync(join(tmpdir(), "base-"));
+  const dir = join(root, "backend");
+  const files = [{ path: "src/a.ts", content: "// a\n" }, { path: "src/b.ts", content: "// b\n" }];
+  try {
+    writeFoundation(dir, files);
+    writeFileSync(join(dir, "src/own.ts"), "// mine\n");
+    expect(putBackFoundation(dir, files)).toEqual([]);
+    writeFileSync(join(dir, "src/a.ts"), "// changed\n");
+    rmSync(join(dir, "src/b.ts"));
+    expect(putBackFoundation(dir, files).sort()).toEqual(["src/a.ts", "src/b.ts"]);
+    expect(foundationChanges(dir)).toEqual([]);
+    expect(readFileSync(join(dir, "src/own.ts"), "utf-8")).toBe("// mine\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("putBackFoundation does not write a file other than the one recorded", () => {
+  const root = mkdtempSync(join(tmpdir(), "base-"));
+  const dir = join(root, "backend");
+  try {
+    writeFoundation(dir, [{ path: "src/a.ts", content: "// a\n" }]);
+    writeFileSync(join(dir, "src/a.ts"), "// changed\n");
+    expect(putBackFoundation(dir, [{ path: "src/a.ts", content: "// another version\n" }])).toEqual([]);
+    expect(readFileSync(join(dir, "src/a.ts"), "utf-8")).toBe("// changed\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a plan's other names for the rate limiter are held too", () => {
+  const held = backendHeldFiles(foundationPlan({ apiContract: { endpoints: [] }, dbSchema: { tables: [] } }));
+  for (const f of ["src/middleware/rateLimit.ts", "src/middleware/rate-limit.ts", "src/middleware/rateLimiter.ts"]) expect(held).toContain(f);
 });

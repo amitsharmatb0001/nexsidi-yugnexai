@@ -3,7 +3,7 @@
 // No longer does one-shot LLM generation. Agent ACTS on real tool feedback.
 
 import { resolveGeneratorRunner, isBuilderFixFile, recordClaimEvidence, type Escalation } from "@nexsidi/agent-runtime";
-import { backendFoundationFiles, foundationPlan, isFoundationFile, writeFoundation } from "../../../../packages/foundation/src/index.ts";
+import { backendFoundationFiles, foundationPlan, isFoundationFile, putBackFoundation, writeFoundation } from "../../../../packages/foundation/src/index.ts";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "fs";
 import { join, resolve } from "path";
@@ -276,6 +276,7 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
   if (!phase || phase.scaffold) {
     writeStaticScaffold(plan, outputDir);
   }
+  putBackFoundation(outputDir, backendFoundationFiles(foundationPlan(plan)));
 
   // Primary history: kimi-k2.6 (failed, F7) -> z-ai/glm-5.2 (2026-07-03) ->
   // mistral-medium-3.5-128b (2026-07-04). glm-5.2 demoted after
@@ -382,10 +383,10 @@ export async function run(plan: BuildPlan, phase?: GeneratorPhaseRun): Promise<G
     preloadOwnFiles: !!phase && !phase.scaffold,
     maxIterations: phase?.maxSteps ?? 90,
     // 2026-10-24: a team step's settings win (helpers: flash, own files only, type check only; lead: pro, plan-vs-code check).
-    // The foundation's files are not the builder's to change (a helper's own limit below replaces this one, and is narrower).
+    // The foundation's files are not the builder's to change (a team step's limit below keeps this one).
     writableFile: (p: string) => !isFoundationFile(outputDir, p),
     exitChecks: !phase || phase.isLast ? (summary: string) => backendExitChecksFor(plan.projectId, summary) : undefined,
-    ...teamRunOverrides(phase, outputDir, { taskFiles: plan.shubhamTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: !phase || phase.isLast ? (summary: string) => backendExitChecksFor(plan.projectId, summary) : undefined, runBackendTests: true }),
+    ...teamRunOverrides(phase, outputDir, { baseWritable: (p: string) => !isFoundationFile(outputDir, p), taskFiles: plan.shubhamTasks.flatMap((t) => t.outputFiles ?? []), baseExitChecks: !phase || phase.isLast ? (summary: string) => backendExitChecksFor(plan.projectId, summary) : undefined, runBackendTests: true }),
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see
@@ -481,6 +482,7 @@ Workflow:
 export async function runFix(plan: BuildPlan, findings: string[], team?: { role?: "helper" | "integrate"; ownFiles?: string[]; helperIndex?: number }, extra?: { exitChecks?: () => Promise<string[]> }): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
+  putBackFoundation(outputDir, backendFoundationFiles(foundationPlan(plan)));
   // F7 (agent-autonomy-assessment): instincts were written by the fix loop
   // (recordInstincts, stage5-qa-fix-loop.ts) but never read by it — the one
   // call site that most needs "you already made this mistake" had it
@@ -549,7 +551,7 @@ export async function runFix(plan: BuildPlan, findings: string[], team?: { role?
     preloadOwnFiles: true,
     maxIterations: FIX_MAX_STEPS,
     exitChecks: () => withExtraChecks(backendExitChecksFor(plan.projectId), extra),
-    ...teamRunOverrides(team, outputDir, { taskFiles: [], baseExitChecks: () => withExtraChecks(backendExitChecksFor(plan.projectId), extra), runBackendTests: true }),
+    ...teamRunOverrides(team, outputDir, { baseWritable: (p: string) => !isFoundationFile(outputDir, p), taskFiles: [], baseExitChecks: () => withExtraChecks(backendExitChecksFor(plan.projectId), extra), runBackendTests: true }),
   });
 
   // Deterministically mount the *.routes.ts files into routes/index.ts (see

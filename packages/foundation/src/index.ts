@@ -129,11 +129,29 @@ export function foundationChanges(dir: string): string[] {
     .map(([path]) => path);
 }
 
+/**
+ * Writes changed or deleted foundation files back, only with the content recorded when the build started. The builders may
+ * not write these files, so this cannot be left to them. Returns what was put back.
+ */
+export function putBackFoundation(dir: string, files: FoundationFile[]): string[] {
+  const record = readRecord(dir);
+  const put: string[] = [];
+  for (const path of foundationChanges(dir)) {
+    const file = files.find((f) => f.path === path);
+    if (!file || hash(file.content) !== record[path]) continue;
+    const abs = join(dir, path);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, file.content, "utf-8");
+    put.push(path);
+  }
+  return put;
+}
+
 /** What a plan's tasks must no longer ask the backend builder for. */
 export function backendHeldFiles(plan: FoundationPlan): string[] {
   const written = backendFoundationFiles(plan).map((f) => f.path);
   // Names a plan may give the same files.
-  const sameJob = ["package.json", "tsconfig.json", "Dockerfile", "src/server.ts", ...(plan.auth ? ["src/controllers/auth.ts", "src/routes/auth.ts"] : [])];
+  const sameJob = ["package.json", "tsconfig.json", "Dockerfile", "src/server.ts", "src/middleware/rateLimit.ts", "src/middleware/rate-limit.ts", "src/middleware/rate-limiter.ts", ...(plan.auth ? ["src/controllers/auth.ts", "src/routes/auth.ts"] : [])];
   return [...written, ...sameJob];
 }
 

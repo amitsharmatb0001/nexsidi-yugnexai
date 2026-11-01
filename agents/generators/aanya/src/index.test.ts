@@ -953,3 +953,16 @@ test("vendorNexui retries the components the CLI silently failed to fetch, then 
     rmSync(outputDir, { recursive: true, force: true });
   }
 });
+
+// 2026-11-01 (Brewline 7): the call that writes the foundation had landed inside the CSS text, so no app got these files.
+test("the scaffold writes the frontend foundation and keeps its stylesheet clean", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aanya-scaffold-"));
+  try {
+    writeStaticScaffold(FIX_TEST_PLAN, dir);
+    expect(existsSync(join(dir, "lib/http.ts"))).toBe(true);
+    expect(existsSync(join(dir, "lib/session.ts"))).toBe(true);
+    expect(readFileSync(join(dir, "app/globals.css"), "utf-8")).not.toContain("writeFoundation");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -1464,3 +1464,23 @@ Amit stopped run 3 at $17.23 of $30 to save the cost, and approved the changes b
 **Correction.** I told Amit that one timeout moved most of a build onto the weaker model. Measured: a timeout skips the model for 10 minutes by design; in run 3 that put 72 of 144 design calls on the fast models, including 39 of the backend lead's 52, and the main model then came back. Only the log was wrong ("failed" for a model it never tried); it is fixed. Whether the 10 minutes is right was not changed.
 
 **Not proven yet.** Nothing here has run in a full build. No build has yet been made from the foundation by the real builders, so whether they use it well is unknown. A limit test near closing time can fail for the clock's reason. The time-zone rule itself is not checked by any code rule.
+
+## Batch 76 \u2014 proof run 4 (Brewline 7, 2026-11-01): the foundation's first real use
+
+The run stopped at $4.94 of $20, in the backend step, with no working app yet. Two faults, both in the foundation work of batch 75, and neither reached by its proofs, which called the foundation directly instead of running the builders' team steps.
+
+**What happened.** The plan asked for src/middleware/rateLimit.ts; the foundation holds src/middleware/rateLimiter.ts. A plan is only stripped of exact names, so the builder was asked to write the same thing under another name. In the shared-files step it edited the tested auth.routes.ts and deleted rateLimiter.ts, and the write guard did not refuse: a team step's limit replaced the builder's limit instead of adding to it. The finish check then caught the change, as designed, but the lead step's guard refused the repair. The builder could not finish and could not fix it, spent about 8 minutes trying, and reported itself blocked. Nothing was hidden: the finish check and the blocker rule both worked.
+
+**Second fault.** The line writing the frontend foundation had landed inside the text of the stylesheet template, so no app ever got lib/http.ts or lib/session.ts. Batch 75's statement that every build starts from them was true of the backend only.
+
+**Changes.**
+1. A team step narrows what a builder may write and never widens it; both builders hand their guard to every team step.
+2. The system puts a changed foundation file back itself, at the start of each builder run and at the finish check, only with the content recorded when the build started. The builder is told, and makes its own files work with it.
+3. The plan's other names for the rate limiter are held too.
+4. The frontend scaffold writes its foundation, and a test reads the files and the stylesheet.
+
+**Proof, with no model call.** On a copy of Brewline 7's backend the two files went back, no change remained, and the builder's code compiled. Tests: pipeline 1077, packages 1085, agents 623, api 101, web 92.
+
+**Not proven.** Brewline 7 resumes without a frontend foundation, because its frontend scaffold was already written, so only a later build can show the frontend foundation in use. Its plan still lists rateLimit.ts, which stays as an unused file in this app.
+
+**What did work for the first time.** The real tester wrote 38 tests with relative times and no limit gaps; the backend plan dropped to 6 files.

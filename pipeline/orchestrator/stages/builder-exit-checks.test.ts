@@ -495,10 +495,13 @@ test("a tested foundation file that was changed stops a builder from finishing, 
   const root = mkdtempSync(join(tmpdir(), "base-"));
   const dir = join(root, "backend");
   try {
-    writeFoundation(dir, [{ path: "src/middleware/auth.ts", content: "// as written\n" }]);
-    expect(foundationChangeFindings(dir, "backend/")).toEqual([]);
+    const files = [{ path: "src/middleware/auth.ts", content: "// as written\n" }];
+    writeFoundation(dir, files);
+    expect(foundationChangeFindings(dir, "backend/", files)).toEqual([]);
     writeFileSync(join(dir, "src/middleware/auth.ts"), "// weakened\n");
-    expect(foundationChangeFindings(dir, "backend/")[0]).toContain("backend/src/middleware/auth.ts: this tested file was changed");
+    expect(foundationChangeFindings(dir, "backend/", files)[0]).toContain("backend/src/middleware/auth.ts: this tested file was changed, and has been put back");
+    expect(readFileSync(join(dir, "src/middleware/auth.ts"), "utf-8")).toBe("// as written\n");
+    expect(foundationChangeFindings(dir, "backend/", files)).toEqual([]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

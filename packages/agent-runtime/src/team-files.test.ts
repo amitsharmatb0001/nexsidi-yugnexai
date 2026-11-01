@@ -75,3 +75,25 @@ test("both builders apply the team settings, and the loop starts a helper on its
   const loop = readFileSync(new URL("./gemini-loop.ts", import.meta.url), "utf-8");
   expect(loop).toContain("firstModelIndex: config.firstModelIndex");
 });
+
+// 2026-11-01 (Brewline 7): a team step's limit replaced the foundation's guard, so the shared step changed a tested file.
+test("a team step keeps the builder's own limit as well as its own", () => {
+  const d = folder();
+  const foundation = (p: string) => p !== "src/middleware/auth.ts";
+  const shared = teamRunOverrides({ role: "shared", avoidFiles: ["app/order/page.tsx"] }, d, { taskFiles: [], baseWritable: foundation }).writableFile!;
+  expect(shared("src/middleware/auth.ts")).toBe(false);
+  expect(shared("lib/api.ts")).toBe(true);
+  expect(shared("app/order/page.tsx")).toBe(false);
+  const helper = teamRunOverrides({ role: "helper", ownFiles: ["src/middleware/auth.ts", "app/order/page.tsx"] }, d, { taskFiles: [], baseWritable: foundation }).writableFile!;
+  expect(helper("src/middleware/auth.ts")).toBe(false);
+  expect(helper("app/order/page.tsx")).toBe(true);
+});
+
+test("both builders hand their foundation guard to every team step", () => {
+  for (const b of ["shubham", "aanya"]) {
+    const src = readFileSync(join(import.meta.dir, "../../../agents/generators", b, "src/index.ts"), "utf-8");
+    const calls = src.split("\n").filter((l) => l.includes("...teamRunOverrides("));
+    expect(calls.length).toBe(2);
+    for (const c of calls) expect({ b, ok: c.includes("baseWritable") }).toEqual({ b, ok: true });
+  }
+});

@@ -66,9 +66,11 @@ type Overrides = Partial<Pick<AgentRunConfig,
 export function teamRunOverrides(
   phase: { role?: "shared" | "helper" | "integrate"; ownFiles?: string[]; avoidFiles?: string[]; helperIndex?: number } | undefined,
   sandboxDir: string,
-  opts: { taskFiles: string[]; baseExitChecks?: (summary: string) => string[] | Promise<string[]>; runBackendTests?: boolean },
+  opts: { taskFiles: string[]; baseExitChecks?: (summary: string) => string[] | Promise<string[]>; runBackendTests?: boolean; baseWritable?: (relPath: string) => boolean },
 ): Overrides {
   if (!phase?.role) return {};
+  // A team step narrows what the builder may write; it never widens it (the foundation's files stay refused).
+  const within = (limit: (relPath: string) => boolean) => (relPath: string) => limit(relPath) && (opts.baseWritable?.(relPath) ?? true);
   // Helpers and the shared step share the folder with other runs at the same time: no whole-folder rollback, no containers,
   // no nested sub-agents.
   const quiet = {
@@ -85,14 +87,14 @@ export function teamRunOverrides(
       ...quiet,
       geminiTier: "generation",
       firstModelIndex: phase.helperIndex ?? 0,
-      writableFile: helperWritable(sandboxDir, own),
+      writableFile: within(helperWritable(sandboxDir, own)),
       requiredVerificationCommands: ["npx tsc --noEmit"],
       preloadOwnFiles: true,
       exitChecks: () => missingFiles(sandboxDir, own),
     };
   }
   if (phase.role === "shared") {
-    return { ...quiet, geminiTier: "design", writableFile: leadSharedWritable(phase.avoidFiles ?? []), requiredVerificationCommands: ["npx tsc --noEmit"] };
+    return { ...quiet, geminiTier: "design", writableFile: within(leadSharedWritable(phase.avoidFiles ?? [])), requiredVerificationCommands: ["npx tsc --noEmit"] };
   }
   return {
     geminiTier: "design",
