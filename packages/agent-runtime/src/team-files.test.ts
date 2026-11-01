@@ -95,5 +95,7 @@ test("both builders hand their foundation guard to every team step", () => {
     const calls = src.split("\n").filter((l) => l.includes("...teamRunOverrides("));
     expect(calls.length).toBe(2);
     for (const c of calls) expect({ b, ok: c.includes("baseWritable") }).toEqual({ b, ok: true });
+    // Brewline 7: the call was there and the import was not, so the step crashed at once.
+    expect(src.split("\n").find((l) => l.includes("packages/foundation/src/index.ts"))).toContain("putBackFoundation");
   }
 });

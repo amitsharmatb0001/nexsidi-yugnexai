@@ -5,7 +5,7 @@
 import { resolveGeneratorRunner, isBuilderFixFile, recordClaimEvidence } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
-import { frontendFoundationFiles, isFoundationFile, writeFoundation } from "../../../../packages/foundation/src/index.ts";
+import { frontendFoundationFiles, isFoundationFile, putBackFoundation, writeFoundation } from "../../../../packages/foundation/src/index.ts";
 import { execSync, exec } from "child_process";
 import { randomBytes } from "crypto";
 import { join, resolve } from "path";
