@@ -54,7 +54,7 @@ import type { ModelId } from "@nexsidi/llm-client";
 import { isNimHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice, StepBudget, isProgressStep } from "./step-budget.ts";
 import { BlockedActionTracker } from "./blocked-actions.ts";
-import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
+import { openBlockers, recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { timeBudgetExceeded } from "./nim-time-budget.ts";
 import { runStopReason } from "./run-abort.ts";
 import { LOAD_SKILL_TOOL_DEF, loadSkillText, skillsForAgent } from "./skill-library.ts";
@@ -88,6 +88,8 @@ export interface AgentRunConfig {
   // The deploy agent changes only deployment files (Ledgerly run 4: it
   // edited the database builder's migration).
   writableFile?: WritableFile;
+  // A helper among others: an open blocker report ends the step for all of them, so it stops before its next model call.
+  stopOnOpenBlocker?: boolean;
   // Tilotma settling disputed findings: offers settle_dispute (tools/settle.ts).
   enableDisputeSettling?: boolean;
   // A builder may ask for a fact the task does not give (tools/ask.ts, 2026-10-29).
@@ -898,6 +900,10 @@ export async function runAgent(config: AgentRunConfig): Promise<AgentRunResult> 
     }
 
     consecutiveTransportFailures = 0;
+    if (config.stopOnOpenBlocker && config.projectId && openBlockers(config.projectId).length > 0) {
+      errors.push(`a blocker report is open — ${config.agentName} stopped before its next model call`);
+      break;
+    }
     iterations++;
     console.log(`[${config.agentName}:agent] Iteration ${iterations} (model: ${currentModel})`);
 

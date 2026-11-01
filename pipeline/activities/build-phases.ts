@@ -278,7 +278,7 @@ async function runAsTeam(
           ? "Write unit tests for the logic you write (validation, calculations, data mapping) as <file>.test.ts beside it, using " +
             "node:test and node:assert with relative imports; they run when the lead builds. "
           : "") +
-        "Get `npx tsc --noEmit` passing. Do not run a build, containers or a browser — the lead does that once for the whole team.",
+        "Get `npx tsc --noEmit` passing. A type error in another helper's file is not a blocker, because that helper may still be writing it: do not call report_blocked for it. Check again when your own files are done; if only other helpers' files still fail, name them in your task_complete summary and the lead finishes it. Do not run a build, containers or a browser — the lead does that once for the whole team.",
     ].join("\n\n");
     const run: PhaseRun = { ...base, role: "helper", helperIndex: i, ownFiles: group.flatMap((t) => t.outputFiles), header, scaffold: false, isLast: false, maxSteps: phaseStepBudget(group), conversationKey: `${builder}-phase-${phase}-helper-${i}` };
     let r = await args.runAgent(planWith(group), run);

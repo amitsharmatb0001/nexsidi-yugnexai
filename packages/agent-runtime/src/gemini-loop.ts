@@ -60,7 +60,7 @@ import { assembleSystemPrompt } from "./prompt-assembly.ts";
 import { isGeminiHistory, resumesSavedHistory } from "./history-format.ts";
 import { stepBudgetNotice, StepBudget, isProgressStep } from "./step-budget.ts";
 import { BlockedActionTracker } from "./blocked-actions.ts";
-import { recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
+import { openBlockers, recordBlocked, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { recordDispute } from "./tools/dispute.ts";
 import { recordVerdict } from "./tools/settle.ts";
 import { execAskQuestion } from "./tools/ask.ts";
@@ -659,6 +659,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   const browserToolset = config.enableBrowser ? new BrowserToolset(config.sandboxDir) : null;
   try {
   while (stepBudget.canContinue(iterations)) {
+    if (config.stopOnOpenBlocker && config.projectId && openBlockers(config.projectId).length > 0) {
+      errors.push(`a blocker report is open — ${config.agentName} stopped before its next model call`);
+      break;
+    }
     // 2026-10-23: the spend cap is checked before every model call, not only when a step starts (cost-budget.ts isOverBudget).
     if (config.projectId && await isOverBudget(config.projectId)) {
       errors.push(`budget_exceeded: the project's spend cap was reached — ${config.agentName} stopped before its next model call`);

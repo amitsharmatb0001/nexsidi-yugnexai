@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { teamRunOverrides } from "./team-files.ts";
+import { recordBlocked } from "./tools/blocked.ts";
 
 // 2026-10-24 (builder teams): rollback_workspace resets the whole project folder to its last checkpoint. With helpers
 // working in the same folder at the same time, one helper's rollback would wipe the others' work. Team helpers and the
@@ -55,3 +56,28 @@ test("helpers and the shared step have rollback, containers and sub-agents block
   for (const o of [helper, shared]) expect(o.blockedTools).toEqual(expect.arrayContaining(["rollback_workspace", "docker_compose", "spawn_subagent"]));
   expect(lead.blockedTools).toBeUndefined();
 });
+
+// 2026-11-01 (Brewline 7): one helper's blocker ended its step, and the other helpers went on spending with nobody waiting.
+test("a helper stops before its next model call while a blocker report is open", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "blocked-"));
+  const prev = process.env.BUILD_DIR;
+  process.env.BUILD_DIR = dir;
+  n = 0;
+  sent = [];
+  active = true;
+  try {
+    recordBlocked("stopped-team", "shubham", { owner: "shubham", what: "another helper is stuck", checked: "tsc" });
+    const r = await runAgentWithGemini({
+      agentName: "aanya", model: "meta/muse-glimmer-30b", apiKey: "x", systemPrompt: "s", initialMessage: "build", sandboxDir: dir, maxIterations: 3, skipEvidenceGate: true, projectId: "stopped-team",
+      ...teamRunOverrides({ role: "helper", helperIndex: 0, ownFiles: [] }, dir, { taskFiles: [] }),
+    } as never);
+    expect(n).toBe(0);
+    expect(r.success).toBe(false);
+    expect(r.errors.join(" ")).toContain("blocker");
+  } finally {
+    active = false;
+    if (prev === undefined) delete process.env.BUILD_DIR;
+    else process.env.BUILD_DIR = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);

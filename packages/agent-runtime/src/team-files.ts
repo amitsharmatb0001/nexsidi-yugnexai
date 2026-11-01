@@ -55,7 +55,7 @@ export function backendUnitTestFailures(backendDir: string): string[] {
 
 type Overrides = Partial<Pick<AgentRunConfig,
   "geminiTier" | "firstModelIndex" | "writableFile" | "requiredVerificationCommands" | "requiredEvidenceKinds" |
-  "requiredEvidenceCounts" | "enableDockerTools" | "enableHttpTools" | "enableBrowser" | "preloadOwnFiles" | "exitChecks" | "blockedTools">>;
+  "requiredEvidenceCounts" | "enableDockerTools" | "enableHttpTools" | "enableBrowser" | "preloadOwnFiles" | "exitChecks" | "blockedTools" | "stopOnOpenBlocker">>;
 
 /**
  * The settings a team step adds to a builder's run (spread last, so they win). Helpers: the flash tier starting on their
@@ -80,6 +80,7 @@ export function teamRunOverrides(
     enableHttpTools: false,
     enableBrowser: false,
     blockedTools: ["rollback_workspace", "docker_compose", "spawn_subagent"],
+    stopOnOpenBlocker: true,
   };
   if (phase.role === "helper") {
     const own = phase.ownFiles ?? [];
