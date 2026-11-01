@@ -78,7 +78,7 @@ const errText = (err: unknown) => String(err instanceof Error ? err.message : er
 
 function at(value: unknown, path: string): { found: boolean; value: unknown } {
   let cur: unknown = value;
-  for (const part of path.split(".").filter(Boolean)) {
+  for (const part of path.replace(/\[(\d+)\]/g, ".$1").split(".").filter(Boolean)) {
     if (Array.isArray(cur) && /^\d+$/.test(part)) cur = cur[Number(part)];
     else if (Array.isArray(cur) && part === "length") cur = cur.length;
     else if (cur && typeof cur === "object" && part in (cur as Record<string, unknown>)) cur = (cur as Record<string, unknown>)[part];

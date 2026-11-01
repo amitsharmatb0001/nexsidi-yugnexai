@@ -7,7 +7,9 @@
 //   3. a reproduced finding becomes a permanent acceptance test (and a claim-4 example); the system's own checks and the
 //      confirmed code findings get one fix run by their owner (disputes go to the Chief AI);
 //   4. the acceptance gate runs every test, the review's new ones included, and fixes until they pass — a fix is done when
-//      its test passes. There is no second review round.
+//      its test passes;
+//   5. when the fixes changed code, the reviewers read the changed files once more, and steps 2 to 4 run once more. That is
+//      the last round (2026-11-01, Brewline 6: after the only review, a fix gutted a rule of the plan and nothing read it).
 // What is still open at the end (a test that still fails, a fix run that could not finish) holds the build for a person.
 import type { BuildPlan } from "../../../agents/arjun/src/index.ts";
 import { agentForFile, groupFindingsByAgent, type Finding, type Stage4Result } from "./stage4-multi-agent-dev.ts";
@@ -23,7 +25,8 @@ import { buildAppMap, type AppMap } from "../app-map/index.ts";
 import { checkRules, ruleFindings } from "../app-map/rules.ts";
 import { findingIdentity, recordSent, sentBefore } from "../app-map/identity.ts";
 import { recordMistakePatterns } from "../app-map/mistakes.ts";
-import { basename } from "node:path";
+import { hashFiles, changedSince } from "../review-cache.ts";
+import { basename, join } from "node:path";
 import type { Escalation } from "../../../packages/agent-runtime/src/tools/escalate.ts";
 
 export interface ReviewOnceDeps extends Pick<QAFixDeps, "fixShubham" | "fixAanya" | "fixPranav" | "settleDisputes" | "chiefChat" | "openQuestions" | "recordInstincts"> {
@@ -102,11 +105,24 @@ async function fixOnce(projectId: string, plan: BuildPlan, findings: Finding[], 
 
 export async function runReviewOnceWithDeps(projectId: string, plan: BuildPlan, stage4Result: Stage4Result, deps: ReviewOnceDeps): Promise<QAFixLoopResult> {
   const dir = buildDirFor(projectId);
-  let review = applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan), projectId);
+  const codeNow = () => hashFiles(["backend", "frontend", "db"].map((label) => ({ label, path: join(dir, label) })));
+  const before = codeNow();
+  const first = await reviewPass(projectId, plan, stage4Result, deps);
+  if (!first.pass) return first;
+  const changed = changedSince(before, codeNow());
+  if (changed.length === 0) return first;
+  console.log(`[review-once] the fixes changed ${changed.length} file(s) — the reviewers read them once more`);
+  return reviewPass(projectId, plan, stage4Result, deps, changed);
+}
+
+/** One review and what follows from it; with `changed`, the second look, which reads only those files. */
+async function reviewPass(projectId: string, plan: BuildPlan, stage4Result: Stage4Result, deps: ReviewOnceDeps, changed?: string[]): Promise<QAFixLoopResult> {
+  const dir = buildDirFor(projectId);
+  let review = applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan, changed), projectId);
   // A review that did not complete is not a pass: run it again, twice at most.
   for (let n = 0; n < REVIEW_RERUNS && review.findings.length > 0 && review.findings.every(isNotice); n++) {
     console.log(`[review-once] a reviewer did not finish — running the review again (${n + 1} of ${REVIEW_RERUNS})`);
-    review = applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan), projectId);
+    review = applyEvidenceGate(await deps.runStage5(projectId, stage4Result, plan, changed), projectId);
   }
   if (review.findings.length > 0 && review.findings.every(isNotice)) {
     return { ...review, pass: false, iterations: 1, stuck: true, hold: { reason: "the review did not complete, even when run again", evidence: review.findings.map(formatFinding) } };
@@ -144,6 +160,9 @@ export async function runReviewOnceWithDeps(projectId: string, plan: BuildPlan, 
     console.log(`[review-once] a builder asked the customer a question — the step stops until it is answered`);
     return { ...review, pass: false, iterations: 1, stuck: false };
   }
+
+  // A second look that found nothing changed nothing: the gate already passed on this code.
+  if (changed && toFix.length === 0 && added.length === 0) return { ...review, findings: [], pass: true, iterations: 2, stuck: false };
 
   // Every test, the review's new ones included: a fix is done when its test passes.
   const gate = await deps.gate();

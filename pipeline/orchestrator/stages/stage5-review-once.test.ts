@@ -191,3 +191,66 @@ test("the map's broken rules are not sent to the model-summary memory; the revie
   expect(summarised.some((t) => t.includes("[map-rule"))).toBe(false);
   expect(summarised.some((t) => t.includes("[route-sweep]"))).toBe(true);
 });
+
+// 2026-11-01 (Brewline 6): after the only review, a fix gutted the 15-minute rule and nothing looked at that code again. When
+// the fixes changed code, the reviewers read the changed files once more; that is the last round.
+test("when the fixes change code, the reviewers read the changed files once more; a clean second look passes", async () => {
+  const seen: Array<string[] | undefined> = [];
+  const { deps, calls } = standIns({
+    runStage5: async (_p, _s, _pl, changed) => {
+      calls.push("review");
+      seen.push(changed);
+      return changed ? { pass: true, findings: [] } : { pass: false, findings: [codeFinding] };
+    },
+    fixShubham: async (_p, f) => {
+      calls.push(`fix shubham ${f.length}`);
+      writeFileSync(join(dir, "backend", "src", "routes", "orders.ts"), "// changed by the fix\n");
+      return { success: true, filesWritten: ["src/routes/orders.ts"] };
+    },
+  });
+  const r = await runReviewOnceWithDeps("p1", plan, s4, deps);
+  expect(r.pass).toBe(true);
+  expect(calls.filter((c) => c === "review")).toHaveLength(2);
+  expect(seen[0]).toBeUndefined();
+  expect(seen[1]).toEqual(["backend/src/routes/orders.ts"]);
+  expect(calls.filter((c) => c === "gate")).toHaveLength(1);
+});
+
+test("no code changed: there is no second look", async () => {
+  const { deps, calls } = standIns({ runStage5: async () => (calls.push("review"), { pass: true, findings: [] }) });
+  await runReviewOnceWithDeps("p1", plan, s4, deps);
+  expect(calls.filter((c) => c === "review")).toHaveLength(1);
+});
+
+test("what the second look finds is fixed and tested once; there is no third review", async () => {
+  let n = 0;
+  const { deps, calls } = standIns({
+    runStage5: async () => (calls.push("review"), ++n <= 2 ? { pass: false, findings: [codeFinding] } : { pass: true, findings: [] }),
+    fixShubham: async (_p, f) => {
+      calls.push(`fix shubham ${f.length}`);
+      writeFileSync(join(dir, "backend", "src", "routes", "orders.ts"), `// fix ${n}\n`);
+      return { success: true, filesWritten: ["src/routes/orders.ts"] };
+    },
+  });
+  const r = await runReviewOnceWithDeps("p1", plan, s4, deps);
+  expect(r.pass).toBe(true);
+  expect(calls.filter((c) => c === "review")).toHaveLength(2);
+  expect(calls.filter((c) => c === "gate")).toHaveLength(2);
+});
+
+test("a second look that cannot run does not pass the build", async () => {
+  let n = 0;
+  const { deps } = standIns({
+    runStage5: async () => {
+      if (++n === 1) return { pass: false, findings: [codeFinding] };
+      return { pass: false, findings: [{ file: "", issue: "[logic/CRITICAL] review-incomplete: the review did not complete" }] };
+    },
+    fixShubham: async () => {
+      writeFileSync(join(dir, "backend", "src", "routes", "orders.ts"), "// changed\n");
+      return { success: true, filesWritten: ["src/routes/orders.ts"] };
+    },
+  });
+  const r = await runReviewOnceWithDeps("p1", plan, s4, deps);
+  expect(r.pass).toBe(false);
+  expect(r.hold?.reason).toContain("did not complete");
+});

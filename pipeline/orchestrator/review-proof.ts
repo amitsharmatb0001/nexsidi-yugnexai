@@ -5,8 +5,10 @@
 //     test in the tester's format — and the fixed runner must see it FAIL on the running app;
 //   - a finding about the rules every app keeps (SEC, INT, DESIGN) may instead stand on its quoted code (checked when the
 //     reviewer submitted it) and the rule it breaks; the Chief AI's check (chief-check.ts) judges those;
-//   - the system's own checks (route sweep, sign-in check, colour check …) are proven by code already.
-// A finding without proof goes to the notes (<build>/review-notes.jsonl), not to a builder. A reproduced finding becomes
+//   - the system's own checks (route sweep, sign-in check, colour check …) are proven by code already;
+//   - a high or critical finding that names its file goes to the Chief AI's check too, with or without a plan item or a
+//     reproduction (2026-11-01, Brewline 6: a time-zone bug and a lock-up died in the notes because they named no plan item).
+// Any other finding without proof goes to the notes (<build>/review-notes.jsonl), not to a builder. A reproduced finding becomes
 // a permanent acceptance test (AT-R-n), and an example in the adversarial example database (patent claim 4): caught by the
 // reviewer that found it, missed by the other two.
 import { appendFileSync } from "node:fs";
@@ -28,6 +30,9 @@ export interface ReviewFinding {
 const BEHAVIOUR_ITEM = /^(SC|EP|ANS)\d+$|^ROLES$/;
 /** The rules every app keeps and the approved design: may be proven by the quoted code and the rule. */
 const CODE_ITEM = /^(SEC|INT)\d+$|^DESIGN$/;
+
+/** A finding its reviewer rates high or critical: when it names its file, a filter does not drop it; the Chief AI decides. */
+const SERIOUS = /\/(critical|high)\b/i;
 
 const NOTICE = /review-incomplete|review did not complete/i;
 
@@ -60,8 +65,9 @@ export function classifyFinding(f: ReviewFinding, scope: PlanScope): Classified 
   if (NOTICE.test(f.issue) || isReviewerFailure(f.issue)) return { kind: "notice" };
   if (isMachineFinding(f.issue)) return { kind: "machine" };
   const planItem = planItemOf(f, scope.itemIds);
-  if (!planItem) return { kind: "note", reason: "names no item of the approved plan" };
-  const codeOk = CODE_ITEM.test(planItem) && Boolean(f.file);
+  const serious = SERIOUS.test(f.issue) && Boolean(f.file);
+  if (!planItem) return serious ? { kind: "code", planItem: "" } : { kind: "note", reason: "names no item of the approved plan" };
+  const codeOk = (CODE_ITEM.test(planItem) && Boolean(f.file)) || serious;
   const test = reproductionTest(f, planItem, scope);
   if (test) {
     const checked = checkAcceptanceTests([test], "", scope);
@@ -104,7 +110,8 @@ export async function proveReviewFindings(
   const run = await deps.reproduce(toRun.map((t) => t.test));
   toRun.forEach((t, i) => {
     const r = run.results[i];
-    if (r?.status === "failed") out.confirmedTests.push({ finding: t.finding, test: t.test, detail: r.detail });
+    // Only a failure at the last step shows the bug; an earlier step is the test's own setup (Brewline 6: a misread answer path).
+    if (r?.status === "failed" && (r.step === undefined || r.step === t.test.steps.length)) out.confirmedTests.push({ finding: t.finding, test: t.test, detail: r.detail });
     else if (r?.status === "passed") out.notes.push({ finding: t.finding, reason: "not reproduced: its reproduction passes on the running app" });
     // Not run is not disproved (Brewline 5: two critical bugs went to the notes this way): a finding that names its file
     // goes to the Chief AI's check of the code, whatever its plan item.

@@ -41,8 +41,8 @@ test("each finding is sorted by its proof", () => {
   const scope = planScope(dir);
   expect(classifyFinding({ file: "frontend/app", issue: "[route-sweep] /order answered 500" }, scope).kind).toBe("machine");
   expect(classifyFinding({ file: "", issue: "[logic/HIGH] review-incomplete: the reviewer did not finish" }, scope).kind).toBe("notice");
-  expect(classifyFinding({ file: "backend/a.ts", issue: "backend/a.ts:3 — [logic/high] naming is unclear" }, scope)).toMatchObject({ kind: "note", reason: expect.stringContaining("names no item of the approved plan") });
-  expect(classifyFinding({ file: "frontend/app/order/page.tsx", issue: "frontend/app/order/page.tsx:40 — [logic/high] [SC2] the order page never submits" }, scope)).toMatchObject({ kind: "note", reason: expect.stringContaining("needs a reproduction") });
+  expect(classifyFinding({ file: "backend/a.ts", issue: "backend/a.ts:3 — [logic/medium] naming is unclear" }, scope)).toMatchObject({ kind: "note", reason: expect.stringContaining("names no item of the approved plan") });
+  expect(classifyFinding({ file: "frontend/app/order/page.tsx", issue: "frontend/app/order/page.tsx:40 — [logic/medium] [SC2] the order page never submits" }, scope)).toMatchObject({ kind: "note", reason: expect.stringContaining("needs a reproduction") });
   expect(classifyFinding({ file: "backend/src/routes/orders.ts", issue: "backend/src/routes/orders.ts:293 — [security/high] [INT1] the order joins menu_items for the name" }, scope)).toMatchObject({ kind: "code", planItem: "INT1" });
   const withTest = classifyFinding({ file: "backend/src/routes/orders.ts", issue: "backend/src/routes/orders.ts:293 — [logic/high] [SC2] the order shows the current name", reproduction }, scope);
   expect(withTest).toMatchObject({ kind: "test", planItem: "SC2" });
@@ -52,7 +52,7 @@ test("each finding is sorted by its proof", () => {
 test("a reproduction outside the plan is refused; a rule-of-every-app finding can still stand on its quoted code", () => {
   const scope = planScope(dir);
   const bad = { ...reproduction, steps: [{ method: "DELETE", path: "/api/v1/orders/1", expectStatus: 204 }] };
-  expect(classifyFinding({ file: "backend/x.ts", issue: "backend/x.ts:1 — [logic/high] [SC2] orders cannot be deleted", reproduction: bad }, scope)).toMatchObject({ kind: "note", reason: expect.stringContaining("not in the approved API contract") });
+  expect(classifyFinding({ file: "backend/x.ts", issue: "backend/x.ts:1 — [logic/medium] [SC2] orders cannot be deleted", reproduction: bad }, scope)).toMatchObject({ kind: "note", reason: expect.stringContaining("not in the approved API contract") });
   expect(classifyFinding({ file: "backend/x.ts", issue: "backend/x.ts:1 — [security/high] [INT1] history lost", reproduction: bad }, scope)).toMatchObject({ kind: "code", planItem: "INT1" });
 });
 
@@ -109,4 +109,26 @@ test("claim 4: a confirmed finding is an example the reviewer caught and the oth
   expect(bumps[0]![1]).toMatch(/^review:p1:/);
   // A store that fails never stops the review.
   await recordReviewExamples("p1", [{ finding: { file: "a", issue: "[security/high] [INT1] x" }, planItem: "INT1" }], { bumpExample: async () => { throw new Error("db down"); } });
+});
+
+// 2026-11-01 (Brewline 6): a reproduction stopped at its setup step and counted as "reproduced"; it had not reached what it was
+// meant to show.
+test("a reproduction proves a finding only when it fails at its last step; a failed setup step goes to the code check", async () => {
+  const twoSteps = { ...reproduction, steps: [{ method: "POST", path: "/api/v1/auth/sign-up", expectStatus: 201 }, reproduction.steps[0]] };
+  const f = { file: "backend/x.ts", issue: "backend/x.ts:1 — [logic/high] [SC2] the order shows the current name", reproduction: twoSteps };
+  const atStep = (step: number): RunSummary => ({ at: "t", results: [{ ...summary("failed").results[0]!, step }], passed: 0, failed: 1, notChecked: 0 });
+  expect((await proveReviewFindings([f], dir, { reproduce: async () => atStep(2) })).confirmedTests).toHaveLength(1);
+  const setup = await proveReviewFindings([f], dir, { reproduce: async () => atStep(1) });
+  expect(setup.confirmedTests).toHaveLength(0);
+  expect(setup.code.map((c) => c.planItem)).toEqual(["SC2"]);
+});
+
+// 2026-11-01 (Brewline 6): the time-zone bug in the store hours and a lock-up between orders went to the notes because the
+// finding named no plan item. The Chief AI decides whether a serious finding belongs to the plan; a filter does not.
+test("a serious finding that names its file reaches the Chief AI's check, with or without a plan item or a reproduction", () => {
+  const scope = planScope(dir);
+  expect(classifyFinding({ file: "backend/x.ts", issue: "backend/x.ts:13 — [logic/HIGH] the hour is read in UTC and compared to local store hours" }, scope)).toMatchObject({ kind: "code", planItem: "" });
+  expect(classifyFinding({ file: "backend/x.ts", issue: "backend/x.ts:13 — [logic/CRITICAL] [SC2] the order page never submits" }, scope)).toMatchObject({ kind: "code", planItem: "SC2" });
+  expect(classifyFinding({ file: "backend/x.ts", issue: "backend/x.ts:13 — [logic/MEDIUM] naming is unclear" }, scope).kind).toBe("note");
+  expect(classifyFinding({ file: "", issue: "[logic/HIGH] something somewhere" }, scope).kind).toBe("note");
 });

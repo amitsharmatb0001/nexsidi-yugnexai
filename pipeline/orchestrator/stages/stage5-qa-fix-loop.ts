@@ -695,7 +695,7 @@ export async function runQAFixLoop(
     try {
       return await runReviewOnceWithDeps(projectId, plan, stage4Result, {
         ...deps,
-        runStage5: (pid, s4, p) => runStage5(pid, s4, false, p),
+        runStage5: (pid, s4, p, changed) => runStage5(pid, s4, false, p, changed),
         reproduce: (tests) => real.reproduce(tests),
         recordExamples: (confirmed) => recordReviewExamples(projectId, confirmed),
         gate: async () => {

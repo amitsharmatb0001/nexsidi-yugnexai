@@ -2,7 +2,7 @@ import { test, expect, beforeAll, afterAll, beforeEach } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runAcceptanceTests, recordAcceptanceRun, acceptanceFacts, pathMatches, type BrowserLike } from "./acceptance-runner.ts";
+import { runAcceptanceTests, recordAcceptanceRun, acceptanceFacts, pathMatches, lookup, type BrowserLike } from "./acceptance-runner.ts";
 import type { AcceptanceTest } from "./acceptance-tests.ts";
 
 // 2026-10-29 (team plan, stage 3): the fixed runner (no model) runs the acceptance tests against the running app. A test it
@@ -326,4 +326,12 @@ test("an API step's answer checks can use the signed-in account's email, {{as.em
   const r = await run([t], { apiUrl: `http://localhost:${stub.port}`, appUrl: "http://unused", accounts: { user: { email: "me@example.com", password: "p", token: "me@example.com" } }, sleep: async () => undefined });
   stub.stop(true);
   expect(r.results[0]).toMatchObject({ id: "AT-9-1", status: "passed" });
+});
+
+// 2026-11-01 (Brewline 6): a reproduction wrote data.items[0].id; the runner read only data.items.0.id, so it stopped at its
+// setup step and never reached what it was meant to show.
+test("an answer path may write a list position with brackets", () => {
+  const body = { data: { items: [{ id: "a" }] } };
+  expect(lookup(body, "data.items[0].id")).toEqual({ found: true, value: "a" });
+  expect(lookup(body, "items[0].id")).toEqual({ found: true, value: "a" });
 });

@@ -88,6 +88,8 @@ export function acceptanceFinding(t: AcceptanceTest, r: TestResult): string {
     // 2026-10-31 (Brewline 4): to pass four wrong tests, the backend builder made every email containing "admin", "staff",
     // "test" or "user" a staff account.
     "Never change who may call an endpoint, or how an account gets its role, to make a test pass: a test that needs that is wrong — dispute it.",
+    // 2026-11-01 (Brewline 6): to pass tests with past pickup times, the backend builder turned the 15-minute rule off for today.
+    "Never weaken, narrow or skip a rule of the approved plan to make a test pass: a test that needs that is wrong — dispute it.",
   ].join("\n");
 }
 

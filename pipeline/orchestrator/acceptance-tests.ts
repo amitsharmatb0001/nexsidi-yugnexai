@@ -156,6 +156,8 @@ export function testContext(opts: { now?: Date; stamp?: string; account?: { emai
 const PLACEHOLDER = /\{\{\s*([^}]+?)\s*\}\}/g;
 const DATE = /^date([+-]\d+)$/;
 const DATETIME = /^datetime([+-]\d+) (\d{2}):(\d{2})$/;
+const MINUTES = /^minutes([+-]\d+)$/;
+const FIXED_TODAY = /^datetime[+-]0+ /;
 const BUILTIN = ["unique", "email", "password", "as.email", "as.password"];
 
 const pad = (n: number) => String(Math.abs(n)).padStart(2, "0");
@@ -176,11 +178,13 @@ function builtin(name: string, ctx: TestContext): unknown {
   if (d) return localDate(new Date(ctx.now.getFullYear(), ctx.now.getMonth(), ctx.now.getDate() + Number(d[1])));
   const t = name.match(DATETIME);
   if (t) return localDateTime(new Date(ctx.now.getFullYear(), ctx.now.getMonth(), ctx.now.getDate() + Number(t[1]), Number(t[2]), Number(t[3])));
+  const m = name.match(MINUTES);
+  if (m) return localDateTime(new Date(ctx.now.getTime() + Number(m[1]) * 60_000));
   return name in ctx.saved ? ctx.saved[name] : undefined;
 }
 
 function isKnownBuiltin(name: string): boolean {
-  return BUILTIN.includes(name) || DATE.test(name) || DATETIME.test(name);
+  return BUILTIN.includes(name) || DATE.test(name) || DATETIME.test(name) || MINUTES.test(name);
 }
 
 /** Every {{name}} replaced. A value that is only a placeholder keeps the saved value's type (an id stays a number). */
@@ -266,11 +270,13 @@ function checkOne(t: AcceptanceTest, scope: PlanScope): string[] {
   const saved = new Set<string>();
   const checkPlaceholders = (value: unknown, n: number) => {
     for (const name of placeholdersIn(value)) {
+      // 2026-11-01 (Brewline 6): "today at 15:00" is a past time from 15:00 on, and a rule about the time then refuses it.
+      if (FIXED_TODAY.test(name)) reasons.push(`step ${n}: {{${name}}} is a fixed time today, which turns into a past time as the day goes on: use {{minutes+N}} (N minutes from now)`);
       if (isKnownBuiltin(name) || saved.has(name)) continue;
       if (steps.some((s) => s && typeof s === "object" && "save" in s && (s as ApiStep).save && name in (s as ApiStep).save!)) {
         reasons.push(`step ${n}: {{${name}}} is used before a step saves it`);
       } else {
-        reasons.push(`step ${n}: {{${name}}} is not a known value (use a value from the plan, a saved value, or one of {{unique}}, {{email}}, {{password}}, {{date+N}}, {{datetime+N HH:MM}}, {{as.email}}, {{as.password}})`);
+        reasons.push(`step ${n}: {{${name}}} is not a known value (use a value from the plan, a saved value, or one of {{unique}}, {{email}}, {{password}}, {{date+N}}, {{datetime+N HH:MM}}, {{minutes+N}}, {{as.email}}, {{as.password}})`);
       }
     }
   };
@@ -346,6 +352,31 @@ export function checkAcceptanceTests(tests: AcceptanceTest[], projectDir: string
     }
   }
   return { accepted, rejected };
+}
+
+// ── Limits ──────────────────────────────────────────────────────────────────
+
+// 2026-11-01 (Brewline 6): "at least 15 minutes from now" had tests that never touched the limit, so a fix gutted the rule and
+// every test still passed. An item of what the customer asked for that states a limit is tested on each side of it.
+const STATES_LIMIT = /\b(at least|at most|no more than|no fewer than|no later than|no earlier than|minimum|maximum|up to)\b[^.;]*\d|\d[^.;]*\b(or more|or fewer|minimum|maximum)\b/i;
+
+export function limitItems<T extends { id: string; text: string }>(items: T[]): T[] {
+  return items.filter((i) => /^(SC|ANS)\d+$/.test(i.id) && STATES_LIMIT.test(i.text));
+}
+
+/** The limit items without an API test that succeeds and one that is refused, each named with what is missing. */
+export function limitGaps(items: Array<{ id: string; text: string }>, tests: AcceptanceTest[]): string[] {
+  const out: string[] = [];
+  for (const item of limitItems(items)) {
+    const ends = tests.filter((t) => t.kind === "api" && t.planItem === item.id && t.steps.length > 0).map((t) => {
+      const s = (t.steps as ApiStep[]).at(-1)!.expectStatus;
+      return Array.isArray(s) ? s : [s];
+    });
+    const inside = ends.some((st) => st.every((x) => x >= 200 && x < 300));
+    const outside = ends.some((st) => st.every((x) => x >= 400 && x < 500));
+    if (!inside || !outside) out.push(`${item.id} ("${item.text.slice(0, 160)}") states a limit and has no API test ${!inside && !outside ? "on either side" : inside ? "just outside it that is refused" : "just inside it that succeeds"}`);
+  }
+  return out;
 }
 
 // ── Storage ─────────────────────────────────────────────────────────────────

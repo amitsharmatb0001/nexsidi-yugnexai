@@ -10,6 +10,8 @@ import {
   testContext,
   saveAcceptanceTests,
   readAcceptanceTests,
+  limitItems,
+  limitGaps,
   acceptanceTestsForPhase,
   type AcceptanceTest,
 } from "./acceptance-tests.ts";
@@ -230,4 +232,35 @@ test("a step that expects success from a staff-only endpoint as an account witho
   expect(r.rejected[0]!.reasons.join(" ")).toContain("POST /api/v1/menu is limited to staff by the approved plan");
   expect(contradictsPlan(asCustomer, planScope(dir))).toHaveLength(1);
   expect(contradictsPlan(asStaff, planScope(dir))).toEqual([]);
+});
+
+// 2026-11-01 (Brewline 6): the tester could only write a fixed time, "today at 15:00". After 15:00 that was a past time, the
+// new 15-minute rule refused it, and the backend builder weakened the rule until the tests passed.
+test("{{minutes+N}} is that many minutes from now, in local time with its offset; a negative N is in the past", () => {
+  const ctx = testContext({ now: new Date(2026, 10, 1, 16, 50) });
+  const soon = new Date(String(expandPlaceholders("{{minutes+30}}", ctx)));
+  expect(soon.getTime()).toBe(new Date(2026, 10, 1, 17, 20).getTime());
+  expect(new Date(String(expandPlaceholders("{{minutes-60}}", ctx))).getTime()).toBe(new Date(2026, 10, 1, 15, 50).getTime());
+});
+
+test("a test with a fixed time today is refused, because it turns into a past time; {{minutes+N}} and a later day are fine", () => {
+  const scope = { itemIds: new Set(["SC1"]), roles: [], endpoints: [{ method: "POST", path: "/api/v1/orders", phase: 1, roles: [] }], pages: [], phaseCount: 1 };
+  const withTime = (at: string) => ({ id: "AT-1-1", phase: 1, planItem: "SC1", title: "t", as: "user", kind: "api" as const, steps: [{ method: "POST" as const, path: "/api/v1/orders", body: { at }, expectStatus: 201 }] });
+  const fixed = checkAcceptanceTests([withTime("{{datetime+0 15:00}}")], "", scope);
+  expect(fixed.rejected[0]!.reasons.join(" ")).toContain("{{minutes+N}}");
+  expect(checkAcceptanceTests([withTime("{{minutes+30}}")], "", scope).accepted).toHaveLength(1);
+  expect(checkAcceptanceTests([withTime("{{datetime+1 15:00}}")], "", scope).accepted).toHaveLength(1);
+});
+
+test("the items that state a limit are found; a test on each side of the limit covers one", () => {
+  const items = [
+    { id: "SC1", text: "Customers choose a pickup window today starting at least 15 minutes from now." },
+    { id: "SC2", text: "Visitors can view the store hours (7:00 AM – 10:00 PM) on the home page." },
+    { id: "SEC1", text: "at least 1 rule of every app" },
+  ];
+  expect(limitItems(items).map((i) => i.id)).toEqual(["SC1"]);
+  const test1 = (planItem: string, status: number) => ({ id: "x", phase: 1, planItem, title: "t", as: "user", kind: "api" as const, steps: [{ method: "POST" as const, path: "/a", expectStatus: status }] });
+  expect(limitGaps(items, [test1("SC1", 201)])).toEqual([expect.stringContaining("SC1")]);
+  expect(limitGaps(items, [test1("SC1", 400)])).toEqual([expect.stringContaining("SC1")]);
+  expect(limitGaps(items, [test1("SC1", 201), test1("SC1", 400)])).toEqual([]);
 });

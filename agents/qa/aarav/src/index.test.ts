@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testerPrompt, writeAcceptanceTests } from "./index.ts";
@@ -131,4 +131,22 @@ test("the tester is told to give each test its own records to change", async () 
   rmSync(d, { recursive: true, force: true });
   expect(p).toContain("A test that changes a record other tests use");
   expect(p).toContain("never the first item of a list");
+});
+
+test("the tester is told to test each limit on both sides, with times relative to now", () => {
+  const p = testerPrompt(dir, 1);
+  expect(p).toContain("{{minutes+N}}");
+  expect(p).toContain("on each side of the limit");
+});
+
+// 2026-11-01 (Brewline 6): the 15-minute rule was never tested on either side, so a fix could gut it and every test still passed.
+test("a plan item that states a limit, with no test on each side, is asked for once more and recorded when still missing", async () => {
+  const spec = JSON.parse(readFileSync(join(dir, "spec.json"), "utf-8"));
+  spec.successCriteria = ["Customers choose a pickup window starting at least 15 minutes from now."];
+  writeFileSync(join(dir, "spec.json"), JSON.stringify(spec));
+  const prompts: string[] = [];
+  await writeAcceptanceTests(dir, { chat: async (p) => (prompts.push(p), "[]") });
+  expect(prompts.at(-1)).toContain("SC1");
+  expect(prompts.at(-1)).toContain("on each side");
+  expect(readAcceptanceTests(dir)!.gaps!.flatMap((g) => g.missing).join(" ")).toContain("SC1");
 });

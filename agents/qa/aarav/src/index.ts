@@ -18,8 +18,9 @@ import {
   type ApiStep,
   type JourneyStep,
   type PlanScope,
+  limitGaps,
 } from "../../../../pipeline/orchestrator/acceptance-tests.ts";
-import { planSection } from "../../../../pipeline/orchestrator/chief-check.ts";
+import { planItemsFor, planSection } from "../../../../pipeline/orchestrator/chief-check.ts";
 
 export type TesterChat = (prompt: string) => Promise<string>;
 
@@ -88,7 +89,7 @@ answer shape exactly.
 Journey steps: {"do": "open", "path"}, {"do": "fill", "field", "value"}, {"do": "choose", "field", "option"},
 {"do": "click", "text"}, {"do": "see", "text"}, {"do": "notSee", "text"}, {"do": "atPath", "path"}. A journey starts with "open".
 Values: {{email}} and {{password}} (a new account, the same within one test), {{unique}}, {{date+N}} (the date N days from
-today), {{datetime+N HH:MM}} (that day at that local time), {{as.email}} and {{as.password}} (the test's own account), and
+today), {{datetime+N HH:MM}} (that day at that local time; N is 1 or more), {{minutes+N}} (N minutes from now; {{minutes-60}} is an hour ago), {{as.email}} and {{as.password}} (the test's own account), and
 any value an earlier step saved.`;
 
 const RULES = `RULES:
@@ -109,7 +110,10 @@ const RULES = `RULES:
 9. The tests run one after another in ONE database, and nothing undoes them. A test that changes a record other tests use
    (marks an item out of stock, renames or deletes an item, changes an order's status) first creates its own record with
    {{unique}} in its name, as a person who may, and changes only that record: never the first item of a list, never a
-   record another test reads. A test that needs an item to order creates or picks one by name, not by position.`;
+   record another test reads. A test that needs an item to order creates or picks one by name, not by position.
+10. A plan item that states a limit ("at least 15 minutes from now", "at most 5 per order") gets API tests on each side of the limit:
+   one just inside it that succeeds, one just outside it that is refused (400), and for a time, one earlier today that is refused.
+   A time relative to now is written {{minutes+N}}; never a fixed clock time today, which stops being valid as the day goes on.`;
 
 /** The tester's task for one phase. */
 export function testerPrompt(projectDir: string, phase: number, scope: PlanScope = planScope(projectDir)): string {
@@ -236,6 +240,25 @@ export async function writeAcceptanceTests(projectDir: string, deps: TesterDeps)
     suite.rejected.push(...rejected);
     if (missing.length) suite.gaps!.push({ phase, missing });
     console.log(`[aarav] phase ${phase}: ${accepted.length} test(s) accepted, ${rejected.length} refused${missing.length ? `, no test for ${missing.join(", ")}` : ""}`);
+  }
+  // Each stated limit is tested on both sides; the tests go in the last phase, when everything is built.
+  const items = planItemsFor(projectDir);
+  let gaps = limitGaps(items, suite.tests);
+  if (gaps.length > 0 && phases.length > 0) {
+    const last = phases.length;
+    const ask = [testerPrompt(projectDir, last, scope), "", "YOUR TESTS SO FAR NEED WORK. Reply with ONLY a JSON list of the new tests. These plan items state a limit: write API tests on each side of it (rule 10).", ...gaps.map((g) => `- ${g}`)].join("\n");
+    try {
+      const more = parseTests(await deps.chat(ask)) ?? [];
+      const count = suite.tests.filter((t) => t.phase === last).length;
+      const numbered = more.map((t, i) => ({ ...(t as object), id: `AT-${last}-${count + i + 1}`, phase: last }) as AcceptanceTest);
+      const r = checkAcceptanceTests(numbered, projectDir, scope);
+      suite.tests.push(...r.accepted);
+      suite.rejected.push(...r.rejected.map((x) => ({ test: stripSystemFields(x.test), reasons: x.reasons })));
+    } catch (err) {
+      console.warn(`[aarav] the limit tests could not be written: ${String(err).slice(0, 160)}`);
+    }
+    gaps = limitGaps(items, suite.tests);
+    if (gaps.length) suite.gaps!.push({ phase: last, missing: gaps });
   }
   saveAcceptanceTests(projectDir, suite);
   return suite;
