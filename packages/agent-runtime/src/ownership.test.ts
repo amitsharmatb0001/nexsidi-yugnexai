@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -269,3 +270,26 @@ test("a builder given the whole project lists and reads every folder but writes 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// 2026-11-01 (Brewline 7): builders are told to write node:test tests, and node --test starts a child process, which the
+// folder lock refuses. Without child processes the tests run inside the lock.
+test("guardCommand runs node --test without a child process", () => {
+  const g = guardCommand("node", ["--test", "dist/routes/orders.test.js"], "/b/backend");
+  expect(g.error).toBeUndefined();
+  expect(g.args).toContain("--experimental-test-isolation=none");
+  expect(g.args).not.toContain("--allow-child-process");
+  expect(guardCommand("node", ["verify.js"], "/b/backend").args).not.toContain("--experimental-test-isolation=none");
+});
+
+test("node --test really runs inside the folder lock (real run)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "node-test-"));
+  try {
+    writeFileSync(join(dir, "a.test.cjs"), 'const test = require("node:test");\ntest("runs", () => {});\n');
+    const g = guardCommand("node", ["--test", "a.test.cjs"], dir);
+    const r = spawnSync("node", g.args, { cwd: dir, encoding: "utf-8", timeout: 30_000 });
+    expect(r.stdout + r.stderr).not.toContain("ERR_ACCESS_DENIED");
+    expect(r.status).toBe(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 40_000);

@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { blockerFacts, ruleByFacts, ruleByChief, resolveBlockers } from "./blockers.ts";
+import { blockerFacts, ruleByFacts, ruleByChief, resolveBlockers, sameFacts } from "./blockers.ts";
 import { openBlockers, blockerId, type BlockedReport } from "../../packages/agent-runtime/src/tools/blocked.ts";
 import { readAnswers, openCustomerQuestions } from "../../packages/agent-runtime/src/tools/ask.ts";
 import { internalTermsIn } from "../../packages/agent-runtime/src/customer-text.ts";
@@ -148,4 +148,12 @@ test("a file inside a named folder is the same fact as the folder: one fix, not 
   await resolveBlockers("p1", { chat: async () => "{}", fix: async () => (fixes++, { success: true, filesWritten: [] }), systemFindings: () => [] });
   expect(fixes).toBe(1);
   expect(openBlockers("p1")).toEqual([]);
+});
+
+// 2026-11-01 (Brewline 7): a report about node --test was held as the earlier report about tested files "coming back",
+// because neither named a path the system could read. With nothing to compare, they are not the same facts.
+test("two reports that name no place and no refusal are not the same facts", () => {
+  expect(sameFacts("shubham|shubham|", "shubham|shubham|")).toBe(false);
+  expect(sameFacts("shubham|tilotma|outside", "shubham|tilotma|outside")).toBe(true);
+  expect(sameFacts("shubham|backend/src/a.ts|", "shubham|backend/src/a.ts|")).toBe(true);
 });

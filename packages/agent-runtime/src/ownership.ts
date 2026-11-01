@@ -96,7 +96,9 @@ export function guardCommand(cmd: string, args: string[], cwd: string, writableF
     const own = resolve(cwd);
     // a file-limited agent's scripts may read its folder but write nothing
     const write = writableFile ? [] : [`--allow-fs-write=${own}`];
-    return { args: ["--permission", `--allow-fs-read=${own}`, ...write, "--allow-addons", ...args] };
+    // node --test starts a child process for each file, which the lock refuses; without them the tests run inside it.
+    const tests = args.includes("--test") ? ["--experimental-test-isolation=none"] : [];
+    return { args: ["--permission", `--allow-fs-read=${own}`, ...write, "--allow-addons", ...tests, ...args] };
   }
   return { args };
 }

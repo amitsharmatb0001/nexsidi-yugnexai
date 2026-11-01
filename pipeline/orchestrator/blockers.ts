@@ -168,12 +168,14 @@ export function factsKey(b: BlockedReport, facts: BlockerFacts): string {
 /**
  * Two reports stand on the same facts when the same builder reports the same kind of refusal (or none) about the same
  * place: the same paths, or a file inside a folder the other names (Brewline 3: "db/migrations" and
- * "db/migrations/0000_initial.sql"). With no paths, the owner they name stands for the place.
+ * "db/migrations/0000_initial.sql"). With no paths, the owner they name stands for the place only when our own tool
+ * refused the same kind of thing; with neither there is nothing to compare, so they are not the same facts.
  */
 export function sameFacts(a: string, b: string): boolean {
   const [agentA, placeA = "", kindA = ""] = a.split("|");
   const [agentB, placeB = "", kindB = ""] = b.split("|");
   if (agentA !== agentB || kindA !== kindB) return false;
+  if (!kindA && !placeA.includes("/") && !placeB.includes("/")) return false;
   if (placeA === placeB) return true;
   const pa = placeA.split(",");
   const pb = placeB.split(",");
