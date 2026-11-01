@@ -223,8 +223,9 @@ export async function run(
   // same sanitized list to also clean any named shared-type interface a
   // public endpoint references — see sanitizeSharedTypesForPublicEndpoints'
   // header comment for why both are needed.
-  const sanitizedEndpoints = sanitizePublicEndpointContracts(
-    Array.isArray(raw.apiContract?.endpoints) ? raw.apiContract.endpoints : [],
+  const sanitizedEndpoints = withSpecRoles(
+    sanitizePublicEndpointContracts(Array.isArray(raw.apiContract?.endpoints) ? raw.apiContract.endpoints : []),
+    Array.isArray(spec.apiEndpoints) ? spec.apiEndpoints : [],
   );
   const rawSharedTypes = typeof raw.sharedTypes === "string" ? raw.sharedTypes : "";
 
@@ -437,6 +438,20 @@ export function sanitizeSharedTypesForPublicEndpoints(sharedTypes: string, endpo
 
 // ── Write contract files so each agent can read their tasks ───────────────────
 // Exported 2026-10-22: a plan reused from a saved step result (step-memo.ts) writes its files again the same way.
+/**
+ * Each endpoint's roles as the approved spec states them (2026-11-01, Brewline 5: the spec marked four endpoints staff-only
+ * and the contract the model wrote had no roles at all). Matched by method and path; an endpoint the spec does not list
+ * keeps what the contract says.
+ */
+export function withSpecRoles(endpoints: RestEndpoint[], specEndpoints: Array<{ method?: string; path?: string; roles?: string[] }>): RestEndpoint[] {
+  const key = (method?: string, path?: string) => `${String(method ?? "").toUpperCase()} ${String(path ?? "").replace(/\/+$/, "")}`;
+  const roles = new Map(specEndpoints.filter((e) => Array.isArray(e.roles)).map((e) => [key(e.method, e.path), e.roles!]));
+  return endpoints.map((e) => {
+    const r = roles.get(key(e.method, e.path));
+    return r ? { ...e, roles: [...r] } : e;
+  });
+}
+
 export function writePlanFiles(projectId: string, plan: Omit<BuildPlan, "buildPlanHash">): void {
   const dir = getBuildDir(projectId);
   mkdirSync(dir, { recursive: true });

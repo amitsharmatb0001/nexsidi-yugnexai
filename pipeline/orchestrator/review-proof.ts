@@ -106,7 +106,9 @@ export async function proveReviewFindings(
     const r = run.results[i];
     if (r?.status === "failed") out.confirmedTests.push({ finding: t.finding, test: t.test, detail: r.detail });
     else if (r?.status === "passed") out.notes.push({ finding: t.finding, reason: "not reproduced: its reproduction passes on the running app" });
-    else if (CODE_ITEM.test(t.planItem) && t.finding.file) out.code.push({ finding: t.finding, planItem: t.planItem });
+    // Not run is not disproved (Brewline 5: two critical bugs went to the notes this way): a finding that names its file
+    // goes to the Chief AI's check of the code, whatever its plan item.
+    else if (t.finding.file) out.code.push({ finding: t.finding, planItem: t.planItem });
     else out.notes.push({ finding: t.finding, reason: `its reproduction could not be run: ${r?.detail ?? "no result"}` });
   });
   return out;

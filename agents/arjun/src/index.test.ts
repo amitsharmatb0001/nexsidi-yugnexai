@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { run, ARJUN_SYSTEM_PROMPT, findMissingLockedPages, synthesizeTaskForPage, buildSystemContext, sanitizePublicEndpointContracts, sanitizeSharedTypesForPublicEndpoints, isDesignRelatedFeedback, type LockedPage, type BuildPlan, type RestEndpoint } from "./index.ts";
+import { run, ARJUN_SYSTEM_PROMPT, findMissingLockedPages, synthesizeTaskForPage, buildSystemContext, sanitizePublicEndpointContracts, sanitizeSharedTypesForPublicEndpoints, isDesignRelatedFeedback, withSpecRoles, type LockedPage, type BuildPlan, type RestEndpoint } from "./index.ts";
 import type { ProjectSpec } from "../../saanvi/src/index.ts";
 import { FALLBACK_BRIEF, type DesignBrief } from "../../vanya/src/index.ts";
 
@@ -459,4 +459,21 @@ test("the planner is given the same rules the reviewers check", async () => {
   };
   await run(MINIMAL_SPEC, { chat: stubChat as never, runVanya: stubRunVanya });
   expect(system).toContain(baselineRulesSection());
+});
+
+// 2026-11-01 (Brewline 5): the spec marked four endpoints staff-only, and the contract the plan wrote had no roles at all —
+// the model did not copy them. The roles are the spec's, so they are carried over in code, by method and path.
+test("the contract keeps each endpoint's roles from the spec, matched by method and path", () => {
+  const contract: RestEndpoint[] = [
+    { method: "GET", path: "/api/v1/menu", description: "menu", auth: false } as RestEndpoint,
+    { method: "PATCH", path: "/api/v1/menu/:id", description: "edit an item", auth: true } as RestEndpoint,
+    { method: "GET", path: "/api/v1/orders", description: "all orders", auth: true, roles: ["admin"] } as RestEndpoint,
+  ];
+  const spec = [
+    { method: "GET", path: "/api/v1/menu", roles: [] },
+    { method: "patch", path: "/api/v1/menu/:id/", roles: ["staff"] },
+    { method: "GET", path: "/api/v1/orders", roles: ["staff"] },
+  ];
+  const out = withSpecRoles(contract, spec);
+  expect(out.map((e) => e.roles)).toEqual([[], ["staff"], ["staff"]]);
 });

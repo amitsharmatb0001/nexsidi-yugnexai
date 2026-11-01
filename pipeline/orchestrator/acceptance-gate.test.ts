@@ -103,6 +103,31 @@ test("an app that cannot be started is not checked, and nothing is sent to a bui
   expect(calls).toEqual(["deploy"]);
 });
 
+// 2026-11-01 (Brewline 4): the deploy's own record check failed on an app that was running, and the gate stopped as "the app
+// could not be started" — no test ran, and no builder was told. A running app is tested; the check's findings go to the backend.
+test("a running app whose deploy record check fails is still tested, and the check goes to the backend builder", async () => {
+  const app = { "AT-1-1": true, "AT-1-2": true };
+  const { deps, calls } = standIns(app);
+  let broken = true;
+  deps.deploy = async () => (calls.push("deploy"), { appUrl: "http://app", backendUrl: "http://api", ...(broken ? { findings: ["CRUD verification: PUT /api/v1/menu/1 returned 500"] } : {}) });
+  const seen: string[] = [];
+  deps.fix = async (owner, findings) => (calls.push(`fix ${owner}`), seen.push(...findings), (broken = false), { filesWritten: 1, escalations: [] });
+  const r = await runAcceptanceGate(join(dir, "p1"), deps);
+  expect(r.status).toBe("passed");
+  expect(calls).toEqual(["deploy", "run AT-1-1,AT-1-2", "fix shubham", "settle", "deploy", "run AT-1-1,AT-1-2"]);
+  expect(seen[0]).toContain("[deploy check]");
+  expect(seen[0]).toContain("PUT /api/v1/menu/1 returned 500");
+});
+
+test("the gate does not pass while a deploy record check fails, even when every test passes", async () => {
+  const { deps } = standIns({ "AT-1-1": true, "AT-1-2": true });
+  deps.deploy = async () => ({ appUrl: "http://app", backendUrl: "http://api", findings: ["Live authenticated round-trip failed: POST /api/v1/orders returned 500"] });
+  const r = await runAcceptanceGate(join(dir, "p1"), deps, { maxFixRounds: 4, stuckRounds: 2 });
+  expect(r.status).toBe("failing");
+  expect(r.reason).toContain("deploy checks still failing");
+  expect(r.reason).toContain("POST /api/v1/orders returned 500");
+});
+
 test("a build without acceptance tests is not checked", async () => {
   const { deps } = standIns({});
   const r = await runAcceptanceGate(join(dir, "nothing-here"), deps);
@@ -159,6 +184,15 @@ test("a dispute or hand-off from an earlier round does not excuse this round's f
 test("a change that breaks the app's build blocks finishing, with the reason", async () => {
   const blocks = await acceptanceFixCheck("p1", [api], recheck(true, { ok: false, reason: "docker compose up --build failed: TS2304" }), "2026-10-30T00:00:00Z");
   expect(blocks).toEqual([expect.stringContaining("did not rebuild and start after your change: docker compose up --build failed: TS2304")]);
+});
+
+test("a fix run sent a deploy check may finish only when the check passes on the rebuilt app, or it disputed it", async () => {
+  const still = { ...recheck(true), records: async () => ["CRUD verification: PUT /api/v1/menu/1 returned 500"] };
+  const blocks = await acceptanceFixCheck("p1", [], still, "2026-10-30T00:00:00Z");
+  expect(blocks).toEqual([expect.stringContaining("PUT /api/v1/menu/1 returned 500")]);
+  expect(await acceptanceFixCheck("p1", [], { ...recheck(true), records: async () => [] }, "2026-10-30T00:00:00Z")).toEqual([]);
+  appendFileSync(join(dir, "p1", "disputes.jsonl"), JSON.stringify({ agent: "shubham", finding: "[deploy check] CRUD verification: …", checked: "c", observed: "o", at: "2026-10-30T01:00:00Z" }) + "\n");
+  expect(await acceptanceFixCheck("p1", [], still, "2026-10-30T00:00:00Z")).toEqual([]);
 });
 
 test("fix accounting counts tests, not files: fixed, still failing, and newly broken", () => {

@@ -68,12 +68,17 @@ test("the runner decides a reproduced finding: it fails on the app → confirmed
   expect(passing.notes[0]!.reason).toContain("its reproduction passes on the running app");
 });
 
-test("a reproduction that cannot be run: a rule-of-every-app finding falls back to its code, any other goes to the notes", async () => {
+// 2026-11-01 (Brewline 5): two critical bugs (staff could not edit the menu; no pre-order could be placed) had reproductions
+// that could not be run, and went to the notes: no builder ever saw them. Not run is not disproved: a finding that names the
+// line goes to the Chief AI's check of the code; one that names no line still goes to the notes.
+test("a reproduction that cannot be run: a finding that names its line falls back to the code check, one without goes to the notes", async () => {
   const sc = { file: "backend/x.ts", issue: "backend/x.ts:1 — [logic/high] [SC2] the order shows the current name", reproduction };
   const int = { file: "backend/x.ts", issue: "backend/x.ts:1 — [security/high] [INT1] the order shows the current name", reproduction };
-  const r = await proveReviewFindings([sc, int], dir, { reproduce: async () => ({ ...summary("not_checked"), results: [{ ...summary("not_checked").results[0]!, id: "a" }, { ...summary("not_checked").results[0]!, id: "b" }] }) });
+  const noLine = { file: "", issue: "[logic/high] [SC2] the order shows the current name", reproduction };
+  const notRun = summary("not_checked").results[0]!;
+  const r = await proveReviewFindings([sc, int, noLine], dir, { reproduce: async () => ({ ...summary("not_checked"), results: [{ ...notRun, id: "a" }, { ...notRun, id: "b" }, { ...notRun, id: "c" }] }) });
+  expect(r.code.map((c) => c.planItem)).toEqual(["SC2", "INT1"]);
   expect(r.notes.map((n) => n.reason)).toEqual([expect.stringContaining("could not be run")]);
-  expect(r.code.map((c) => c.planItem)).toEqual(["INT1"]);
 });
 
 test("a confirmed finding becomes a permanent acceptance test, numbered after the review's earlier ones", () => {

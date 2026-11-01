@@ -58,6 +58,8 @@ test("a live round resets the limiter before its account-making checks and again
 test("the deploy's own checks start with fresh counters too (a redeploy with an unchanged image keeps the old container)", () => {
   const riya = readFileSync(new URL("../../../agents/riya/src/index.ts", import.meta.url), "utf-8");
   expect(riya).toContain('limiter-reset.ts');
-  const run = riya.slice(riya.indexOf("const migrationOk = applyMigrationsToDeployedDb(buildDir);") - 900, riya.indexOf("const migrationOk = applyMigrationsToDeployedDb(buildDir);"));
-  expect(run).toContain("resetAppRateLimits(buildDir, backendUrl)");
+  // The checks live in liveRecordChecks (the deploy and the acceptance gate both run them): the reset comes before the first.
+  const checks = riya.slice(riya.indexOf("export async function liveRecordChecks("), riya.indexOf("await verifyLiveAuthenticatedRoundTrip(buildDir, backendUrl)"));
+  expect(checks).toContain("resetAppRateLimits(buildDir, backendUrl)");
+  expect(riya).toContain("await liveRecordChecks(buildDir, backendUrl, migrationOk)");
 });

@@ -24,6 +24,11 @@ export type Owner = "shubham" | "aanya" | "pranav";
 export interface GateUrls {
   appUrl: string;
   backendUrl: string;
+  /**
+   * The deploy's own record checks that failed on the running app (a write that did not persist, a 500). The app is still
+   * tested; each check goes to the backend builder like a failing test (2026-11-01, Brewline 4).
+   */
+  findings?: string[];
 }
 
 export interface GateFixResult {
@@ -64,6 +69,15 @@ export function ownerOfTest(t: AcceptanceTest): Owner {
 
 const TEST_ID = /\bAT-\d+-\d+\b/g;
 
+/** A failed deploy record check as the backend builder sees it. */
+export function deployCheckFinding(check: string): string {
+  return [
+    `[deploy check] ${check}`,
+    "The system's own check of the running app after the deploy: a record written through the API must be stored, read back, changed and deleted, with no 500.",
+    "A fix is done only when this check passes on the rebuilt app. If the check is wrong, call dispute_finding with what you checked; if the cause is in another builder's folder, call escalate_finding.",
+  ].join("\n");
+}
+
 /** A failing test as a builder sees it: what failed, the whole test, and what a finished fix means. */
 export function acceptanceFinding(t: AcceptanceTest, r: TestResult): string {
   return [
@@ -100,6 +114,7 @@ export async function runAcceptanceGate(
     return { status: "not_checked", rounds: 0, reason: "this build has no acceptance tests (none were written, or all were withdrawn)", withdrawn };
   }
   let best = -1;
+  let fewestChecks = Number.POSITIVE_INFINITY;
   let fewestOpen = Number.POSITIVE_INFINITY;
   let lastDigest: string | undefined;
   let unchangedRounds = 0;
@@ -114,19 +129,22 @@ export async function runAcceptanceGate(
     if ("reason" in urls) return { status: "not_checked", rounds: fixRounds, reason: `the app could not be started: ${urls.reason}`, withdrawn };
     const run = await deps.run(tests, urls);
     const failing = run.results.filter((r) => r.status === "failed");
-    console.log(`[acceptance-gate] round ${fixRounds + 1}: ${run.passed} passed, ${run.failed} failed, ${run.notChecked} not checked`);
-    if (failing.length === 0) return { status: "passed", rounds: fixRounds, last: run, withdrawn };
+    const checks = urls.findings ?? [];
+    console.log(`[acceptance-gate] round ${fixRounds + 1}: ${run.passed} passed, ${run.failed} failed, ${run.notChecked} not checked${checks.length ? `; ${checks.length} deploy checks failing` : ""}`);
+    if (failing.length === 0 && checks.length === 0) return { status: "passed", rounds: fixRounds, last: run, withdrawn };
     // Progress is facts: tests passing, or broken rules closed in the code — not files written (enforce/fix-accounting.ts).
     const facts = deps.facts?.();
     const testsUp = run.passed > best;
     const factsDown = facts !== undefined && facts.open.length < fewestOpen;
+    const checksDown = checks.length < fewestChecks;
     if (testsUp) best = run.passed;
+    fewestChecks = Math.min(fewestChecks, checks.length);
     if (facts) fewestOpen = Math.min(fewestOpen, facts.open.length);
-    if (testsUp || factsDown) stale = 0;
+    if (testsUp || factsDown || checksDown) stale = 0;
     else if (fixRounds > 0 && !withdrewLastRound) stale++;
     if (facts && fixRounds > 0) unchangedRounds = facts.digest === lastDigest ? unchangedRounds + 1 : 0;
     lastDigest = facts?.digest;
-    const open = `still failing: ${failing.map((f) => `${f.id} [${f.planItem}]`).join(", ")}${facts?.open.length ? `; rules still broken: ${facts.open.join(", ")}` : ""}`;
+    const open = `still failing: ${failing.map((f) => `${f.id} [${f.planItem}]`).join(", ") || "no test"}${checks.length ? `; deploy checks still failing: ${checks.join(" | ").slice(0, 600)}` : ""}${facts?.open.length ? `; rules still broken: ${facts.open.join(", ")}` : ""}`;
     const why = `${stale} fix rounds in a row made no more tests pass${facts ? " and closed no broken rule" : ""}${unchangedRounds >= stale ? "; the fixes changed nothing the app map reads in the code" : ""}`;
     if (stale >= stuckRounds) return { status: "failing", rounds: fixRounds, last: run, reason: `${why}; ${open}`, withdrawn };
     if (fixRounds >= maxFixRounds) return { status: "failing", rounds: fixRounds, last: run, reason: `${maxFixRounds} fix rounds did not make every test pass; ${open}`, withdrawn };
@@ -145,6 +163,7 @@ export async function runAcceptanceGate(
       const t = byId.get(r.id)!;
       route(ownerOfTest(t), acceptanceFinding(t, r), [t]);
     }
+    for (const c of checks) route("shubham", deployCheckFinding(c), []);
     const first = [...routed.entries()];
     const results = await Promise.all(first.map(([owner, w]) => deps.fix(owner, w.findings, w.tests, { sinceIso, urls }).then((res) => ({ owner, res }))));
     // A test handed to another owner is that owner's in the same round (once: no ping-pong).
@@ -172,33 +191,47 @@ export async function runAcceptanceGate(
   }
 }
 
-/** The tests a fix run disputed or handed on since the round began (by their ids in the recorded text). */
+const DEPLOY_CHECK = "[deploy check]";
+
+/** The tests a fix run disputed or handed on since the round began (by their ids in the recorded text); DEPLOY_CHECK for the deploy's checks. */
 function handledSince(projectId: string, sinceIso: string): Set<string> {
   const ids = new Set<string>();
-  for (const d of readDisputes(projectId, sinceIso)) for (const id of d.finding.match(TEST_ID) ?? []) ids.add(id);
-  for (const e of readEscalations(projectId, sinceIso)) for (const id of e.finding.match(TEST_ID) ?? []) ids.add(id);
+  const texts = [...readDisputes(projectId, sinceIso).map((d) => d.finding), ...readEscalations(projectId, sinceIso).map((e) => e.finding)];
+  for (const t of texts) {
+    for (const id of t.match(TEST_ID) ?? []) ids.add(id);
+    if (t.includes(DEPLOY_CHECK)) ids.add(DEPLOY_CHECK);
+  }
   return ids;
 }
 
 /**
  * A fix run's finish check for its acceptance tests: the app is rebuilt with its change and its tests are run again. It may
  * finish when each one passes, or when it disputed the test or handed it on this round. A change that breaks the build blocks.
+ * With `records`, the fix run was also sent the deploy's record checks: they are run again on the rebuilt app.
  */
 export async function acceptanceFixCheck(
   projectId: string,
   tests: AcceptanceTest[],
-  deps: { redeploy(): Promise<{ ok: true } | { ok: false; reason: string }>; run(tests: AcceptanceTest[]): Promise<RunSummary> },
+  deps: { redeploy(): Promise<{ ok: true } | { ok: false; reason: string }>; run(tests: AcceptanceTest[]): Promise<RunSummary>; records?(): Promise<string[]> },
   sinceIso: string,
 ): Promise<string[]> {
   const handled = handledSince(projectId, sinceIso);
   const mine = tests.filter((t) => !handled.has(t.id));
-  if (mine.length === 0) return [];
+  const records = deps.records && !handled.has(DEPLOY_CHECK) ? deps.records : undefined;
+  if (mine.length === 0 && !records) return [];
   const rebuilt = await deps.redeploy();
   if (!rebuilt.ok) return [`The app did not rebuild and start after your change: ${rebuilt.reason}. Make the app build and start again, then finish.`];
-  const run = await deps.run(mine);
-  return run.results
-    .filter((r) => r.status === "failed")
-    .map((r) => `${r.id} [${r.planItem}] still fails on the running app${r.step ? ` at step ${r.step}` : ""}: ${r.detail}. A fix is done only when the test passes. If the test is wrong, call dispute_finding with what you checked; if the cause is in another builder's folder, call escalate_finding.`);
+  const blocks: string[] = [];
+  if (mine.length > 0) {
+    const run = await deps.run(mine);
+    for (const r of run.results.filter((x) => x.status === "failed")) {
+      blocks.push(`${r.id} [${r.planItem}] still fails on the running app${r.step ? ` at step ${r.step}` : ""}: ${r.detail}. A fix is done only when the test passes. If the test is wrong, call dispute_finding with what you checked; if the cause is in another builder's folder, call escalate_finding.`);
+    }
+  }
+  if (records) {
+    for (const c of await records()) blocks.push(`${DEPLOY_CHECK} ${c} — still fails on the rebuilt app. A fix is done only when the check passes. If the check is wrong, call dispute_finding with what you checked.`);
+  }
+  return blocks;
 }
 
 /** The project folder of a project id (for callers that hold only the id). */

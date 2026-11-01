@@ -30,6 +30,10 @@ export interface DeployResult {
   // app's message. Not a failure and not a pass — the delivery is not
   // verified until it is checked.
   notChecked?: string[];
+  /** the containers answered and the migrations applied (the record checks may still have failed) */
+  started?: boolean;
+  /** with started: the record checks that failed on the running app */
+  recordFindings?: string[];
 }
 
 // Stage 6's deployTarget gate (Task 13). "gcp" is explicitly not yet
@@ -2068,6 +2072,72 @@ export async function verifyAllResourceCrud(
   return { ok: realFailures.length === 0, findings, ...(notChecked.length > 0 ? { notChecked } : {}) };
 }
 
+/**
+ * The deploy's checks of the running app's records (2026-11-01: split out of run() so the acceptance gate can run them again
+ * on a rebuilt app after a fix): one signed-in user's record round-trips through the API into the database and back, then
+ * every resource's create/read/update/delete. The accounts and rows the checks add are removed afterwards.
+ */
+export async function liveRecordChecks(
+  buildDir: string,
+  backendUrl: string,
+  migrationOk = true,
+): Promise<{ roundTrip: { ok: boolean; reason: string; notChecked?: string }; crudCheck: { ok: boolean; findings: string[]; notChecked?: string[] }; findings: string[] }> {
+  // Rows the checks below add to public form tables are removed again from this moment on (see PUBLIC_FORM_TABLES_SQL).
+  const verificationStartedAt = databaseNow(buildDir);
+  // 2026-10-25 (brewline2): the checks below sign accounts up and in; the app limits those to 10 a window, and a redeploy
+  // with an unchanged image keeps the old container and its counters, so they are reset first (limiter-reset.ts).
+  const limiterReset = await resetAppRateLimits(buildDir, backendUrl);
+  if (!limiterReset.ok) console.warn(`[riya] could not reset the app's rate limits before the checks: ${limiterReset.reason}`);
+
+  // 2026-07-12: the REAL end-to-end test — a genuine authenticated user's
+  // input actually round-tripping through the live API into the DB and back
+  // out. Only attempted if the DB layer already checked out (no point hitting
+  // a backend whose tables don't exist) and Clerk creds are present. See the
+  // function's own header for why this closes the gap every other layer missed.
+  const roundTrip: { ok: boolean; reason: string; notChecked?: string } = migrationOk
+    ? await verifyLiveAuthenticatedRoundTrip(buildDir, backendUrl)
+    : { ok: false, reason: "skipped — database verification already failed" };
+  if (!roundTrip.ok) {
+    console.warn(`[riya] live authenticated round-trip FAILED: ${roundTrip.reason}`);
+  } else {
+    console.log(`[riya] live authenticated round-trip OK: ${roundTrip.reason}`);
+  }
+
+  // 2026-08-09: real gap found live (project meridianbk4) — the roundTrip
+  // check above only ever verifies ONE hardcoded resource. Every OTHER
+  // resource's full CRUD surface (does a form submission actually reach the
+  // DB, does an update actually persist, does a delete actually remove the
+  // row) had nothing checking it — see verifyAllResourceCrud's header
+  // comment for the concrete instance this closes. Only attempted after the
+  // single-resource roundTrip already passed (no point iterating every
+  // resource against a backend already known to be broken).
+  const crudCheck: { ok: boolean; findings: string[]; notChecked?: string[] } = roundTrip.ok
+    ? await verifyAllResourceCrud(buildDir, backendUrl)
+    : { ok: true, findings: [] }; // not a separate failure — roundTrip.ok already covers this case
+  if (!crudCheck.ok) {
+    for (const finding of crudCheck.findings) console.warn(`[riya] CRUD verification finding: ${finding}`);
+  } else if (roundTrip.ok && crudCheck.notChecked?.length) {
+    console.log(`[riya] CRUD verification: no failures; CRUD verification: not checked — ${crudCheck.notChecked.join("; ")}`);
+  } else if (roundTrip.ok) {
+    console.log(`[riya] full CRUD verification OK — every resource's create/read/update/delete confirmed in the database, none skipped`);
+  }
+
+  // Runs unconditionally once verification is done (pass OR fail) — a FAILED
+  // run still registered accounts before it failed, so skipping cleanup on
+  // failure would leave exactly the artifacts this exists to remove. See
+  // purgeVerificationArtifacts's own header comment for why this matters
+  // beyond tidiness: it also frees the one-time admin-bootstrap slot.
+  purgeVerificationArtifacts(buildDir, verificationStartedAt);
+
+  const findings = [...(roundTrip.ok ? [] : [`Live authenticated round-trip failed: ${roundTrip.reason}`]), ...(crudCheck.ok ? [] : crudCheck.findings.map((f) => `CRUD verification: ${f}`))];
+  // What a builder needs to see behind a 500.
+  if (findings.some((e) => /returned 5\d\d\b/.test(e))) {
+    const log = backendErrorLog(buildDir);
+    if (log) findings.push(`Backend log (errors): ${log.slice(0, 1500)}`);
+  }
+  return { roundTrip, crudCheck, findings };
+}
+
 // 2026-07-28 (live, complex1): real gap found live — a POST-FIX redeploy
 // (inside Stage 6's live-retest fix loop, after Shubham/Aanya/Pranav have
 // just changed code) is a genuinely different task shape than the FIRST
@@ -2229,53 +2299,8 @@ export async function run(
   // socket (docker exec — no host-TCP auth issues) and confirms the tables
   // exist, independent of whatever the agent did. Belt-and-suspenders with the
   // prompt-level requirement.
-  // Rows the checks below add to public form tables are removed again from this moment on (see PUBLIC_FORM_TABLES_SQL).
-  const verificationStartedAt = databaseNow(buildDir);
-  // 2026-10-25 (brewline2): the checks below sign accounts up and in; the app limits those to 10 a window, and a redeploy
-  // with an unchanged image keeps the old container and its counters, so they are reset first (limiter-reset.ts).
-  const limiterReset = await resetAppRateLimits(buildDir, backendUrl);
-  if (!limiterReset.ok) console.warn(`[riya] could not reset the app's rate limits before the checks: ${limiterReset.reason}`);
   const migrationOk = applyMigrationsToDeployedDb(buildDir);
-
-  // 2026-07-12: the REAL end-to-end test — a genuine authenticated user's
-  // input actually round-tripping through the live API into the DB and back
-  // out. Only attempted if the DB layer already checked out (no point hitting
-  // a backend whose tables don't exist) and Clerk creds are present. See the
-  // function's own header for why this closes the gap every other layer missed.
-  const roundTrip = migrationOk
-    ? await verifyLiveAuthenticatedRoundTrip(buildDir, backendUrl)
-    : { ok: false, reason: "skipped — database verification already failed" };
-  if (!roundTrip.ok) {
-    console.warn(`[riya] live authenticated round-trip FAILED: ${roundTrip.reason}`);
-  } else {
-    console.log(`[riya] live authenticated round-trip OK: ${roundTrip.reason}`);
-  }
-
-  // 2026-08-09: real gap found live (project meridianbk4) — the roundTrip
-  // check above only ever verifies ONE hardcoded resource. Every OTHER
-  // resource's full CRUD surface (does a form submission actually reach the
-  // DB, does an update actually persist, does a delete actually remove the
-  // row) had nothing checking it — see verifyAllResourceCrud's header
-  // comment for the concrete instance this closes. Only attempted after the
-  // single-resource roundTrip already passed (no point iterating every
-  // resource against a backend already known to be broken).
-  const crudCheck: { ok: boolean; findings: string[]; notChecked?: string[] } = roundTrip.ok
-    ? await verifyAllResourceCrud(buildDir, backendUrl)
-    : { ok: true, findings: [] }; // not a separate failure — roundTrip.ok already covers this case
-  if (!crudCheck.ok) {
-    for (const finding of crudCheck.findings) console.warn(`[riya] CRUD verification finding: ${finding}`);
-  } else if (roundTrip.ok && crudCheck.notChecked?.length) {
-    console.log(`[riya] CRUD verification: no failures; CRUD verification: not checked — ${crudCheck.notChecked.join("; ")}`);
-  } else if (roundTrip.ok) {
-    console.log(`[riya] full CRUD verification OK — every resource's create/read/update/delete confirmed in the database, none skipped`);
-  }
-
-  // Runs unconditionally once verification is done (pass OR fail) — a FAILED
-  // run still registered accounts before it failed, so skipping cleanup on
-  // failure would leave exactly the artifacts this exists to remove. See
-  // purgeVerificationArtifacts's own header comment for why this matters
-  // beyond tidiness: it also frees the one-time admin-bootstrap slot.
-  purgeVerificationArtifacts(buildDir, verificationStartedAt);
+  const { roundTrip, crudCheck, findings: recordFindings } = await liveRecordChecks(buildDir, backendUrl, migrationOk);
 
   // Archive to GitHub (fire-and-forget, errors non-fatal)
   const githubRepo = await archiveToGitHub(projectId, buildDir).catch(() => null);
@@ -2297,9 +2322,8 @@ export async function run(
         : "Deployed database has no tables (migrations did not apply) — app cannot persist data",
     );
   }
-  if (!roundTrip.ok) errors.push(`Live authenticated round-trip failed: ${roundTrip.reason}`);
-  if (!crudCheck.ok) errors.push(...crudCheck.findings.map((f) => `CRUD verification: ${f}`));
-  if (errors.some((e) => /returned 5\d\d\b/.test(e))) {
+  errors.push(...recordFindings);
+  if (!errors.some((e) => e.startsWith("Backend log")) && errors.some((e) => /returned 5\d\d\b/.test(e))) {
     const log = backendErrorLog(buildDir);
     if (log) errors.push(`Backend log (errors): ${log.slice(0, 1500)}`);
   }
@@ -2310,7 +2334,9 @@ export async function run(
     .where(eq(projects.id, projectId));
 
   const notChecked = [...("notChecked" in roundTrip && roundTrip.notChecked ? [roundTrip.notChecked] : []), ...(crudCheck.notChecked ?? [])];
-  return { success: deploySucceeded, appUrl, backendUrl, githubRepo, errors, ...(notChecked.length > 0 ? { notChecked } : {}) };
+  // The app is up and its tables exist; only the record checks failed: the acceptance gate still tests it (2026-11-01).
+  const started = result.success && migrationOk;
+  return { success: deploySucceeded, appUrl, backendUrl, githubRepo, errors, started, ...(started && !deploySucceeded ? { recordFindings } : {}), ...(notChecked.length > 0 ? { notChecked } : {}) };
 }
 
 // 2026-09-29: real bug (project a034f90ba50e). This step used to write

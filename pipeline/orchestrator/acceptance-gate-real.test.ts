@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { oneAtATime } from "./acceptance-gate-real.ts";
+import { oneAtATime, gateUrlsOfDeploy } from "./acceptance-gate-real.ts";
 
 // 2026-10-30 (team plan, stage 4): fix runs finish in parallel, and each one's finish check rebuilds the app. Two
 // `docker compose up --build` at once on the same project would fight; the rebuilds run one after another, and a failed
@@ -56,4 +56,13 @@ test("test accounts are made again after a redeploy, and kept between runs on th
   const c = await cache.get();
   expect(made).toBe(2);
   expect(c.user!.email).toBe("e2@example.com");
+});
+
+// 2026-11-01 (Brewline 4): the deploy's record check failed on a running app and the gate stopped as "could not be started".
+test("a deploy that started the app but failed its record checks gives the gate the app and the checks; one that did not start gives a reason", () => {
+  const base = { appUrl: "http://localhost:3201", backendUrl: "http://localhost:3301", githubRepo: null };
+  expect(gateUrlsOfDeploy({ ...base, success: true, errors: [], started: true })).toEqual({ appUrl: base.appUrl, backendUrl: base.backendUrl });
+  expect(gateUrlsOfDeploy({ ...base, success: false, errors: ["CRUD verification: PUT /api/v1/menu/1 returned 500"], started: true, recordFindings: ["CRUD verification: PUT /api/v1/menu/1 returned 500"] }))
+    .toEqual({ appUrl: base.appUrl, backendUrl: base.backendUrl, findings: ["CRUD verification: PUT /api/v1/menu/1 returned 500"] });
+  expect(gateUrlsOfDeploy({ ...base, success: false, errors: ["docker compose up failed"], started: false })).toEqual({ reason: "docker compose up failed" });
 });

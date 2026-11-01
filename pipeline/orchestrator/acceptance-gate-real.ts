@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BuildPlan } from "../../agents/arjun/src/index.ts";
-import { run as runRiya, redeployRunningApp, grantTestAccountRole, limitedRolesFromContract, recordSeededRecords, purgeVerificationArtifacts, databaseNow } from "../../agents/riya/src/index.ts";
+import { run as runRiya, redeployRunningApp, grantTestAccountRole, limitedRolesFromContract, recordSeededRecords, purgeVerificationArtifacts, databaseNow, liveRecordChecks, type DeployResult } from "../../agents/riya/src/index.ts";
 import { createReviewAccount } from "./stages/route-sweep.ts";
 import { resetAppRateLimits } from "./stages/limiter-reset.ts";
 import { runAcceptanceTests, recordAcceptanceRun, type RunnerAccount, type RunSummary } from "./acceptance-runner.ts";
@@ -70,6 +70,17 @@ export function accountCache(make: () => Promise<{ accounts: Record<string, Runn
   };
 }
 
+/**
+ * What the gate gets from a deploy. An app that started but failed the deploy's record checks is tested; the checks go with
+ * it (2026-11-01, Brewline 4: a failed record check on a running app stopped the gate as "the app could not be started").
+ */
+export function gateUrlsOfDeploy(r: DeployResult): GateUrls | { reason: string } {
+  const urls = { appUrl: r.appUrl, backendUrl: r.backendUrl };
+  if (r.success) return urls;
+  if (r.started && r.recordFindings?.length) return { ...urls, findings: r.recordFindings };
+  return { reason: r.errors.join("; ").slice(0, 600) || "the deploy step failed" };
+}
+
 const TEST_ID = /\bAT-\d+-\d+\b/g;
 
 /** The tests a text names by id. */
@@ -101,8 +112,12 @@ export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDe
   };
 
   const fixWith = async (owner: Owner, findings: string[], tests: AcceptanceTest[], sinceIso: string, urls: GateUrls) => {
+    // A fix run sent the deploy's record checks finishes when they pass on the rebuilt app.
+    const records = findings.some((f) => f.startsWith("[deploy check]"))
+      ? async () => (accountsHeld.invalidate(), (await serial(() => liveRecordChecks(dir, urls.backendUrl))).findings)
+      : undefined;
     const check = {
-      exitChecks: () => acceptanceFixCheck(projectId, tests, { redeploy: () => serial(async () => (accountsHeld.invalidate(), redeployRunningApp(dir, urls.appUrl, urls.backendUrl))), run: (ts) => runTests(ts, urls) }, sinceIso),
+      exitChecks: () => acceptanceFixCheck(projectId, tests, { redeploy: () => serial(async () => (accountsHeld.invalidate(), redeployRunningApp(dir, urls.appUrl, urls.backendUrl))), run: (ts) => runTests(ts, urls), ...(records ? { records } : {}) }, sinceIso),
     };
     if (owner === "pranav") {
       const { runFix } = await import("../../agents/generators/pranav/src/index.ts");
@@ -119,11 +134,11 @@ export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDe
       // 2026-10-30 (understanding plan, step 2): each round starts from the code as the fixes left it.
       refreshAppMap(dir);
       accountsHeld.invalidate(); // the deploy purges the test accounts
-      const r = await serial(() => runRiya(projectId));
-      if (!r.success) return { reason: r.errors.join("; ").slice(0, 600) || "the deploy step failed" };
-      current = { appUrl: r.appUrl, backendUrl: r.backendUrl };
+      const urls = gateUrlsOfDeploy(await serial(() => runRiya(projectId)));
+      if ("reason" in urls) return urls;
+      current = { appUrl: urls.appUrl, backendUrl: urls.backendUrl };
       testingStartedAt ??= databaseNow(dir);
-      return current;
+      return urls;
     },
     run: async (tests, urls) => {
       const run = await runTests(tests, urls);

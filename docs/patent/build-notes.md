@@ -1424,3 +1424,22 @@ Under the old triggers each of these would have been a new pattern seen once.
   - the cost in dollars;
   - the pickup-time and 15-minute-rule bugs the backend was sent;
   - the final review of the code.
+
+## Batch 74 — the three open items from proof run 2 (2026-11-01)
+
+Each with a test first, and proved on Brewline 5's recorded files (read only).
+
+1. **A deploy record check no longer stops the gate.**
+   - Before: when the deploy's own record check failed (Brewline 5: `PATCH /api/v1/menu/:id returned 500`) on an app that was running, the deploy counted as failed and the gate stopped with "the app could not be started". No test ran, and no builder was told.
+   - Now: the deploy step says whether the app itself started (`started`) and which record checks failed (`recordFindings`). A started app is tested. Each failed check goes to the backend builder as a `[deploy check]` finding, and the gate does not pass while one is open. Fewer failing checks count as progress.
+   - The record checks now live in one function (`liveRecordChecks`), which the deploy and the gate both use. A fix run sent a check may finish only when the check passes on the rebuilt app, or when it disputed the check.
+2. **A reproduction that could not run is no longer a dropped finding.**
+   - Brewline 5's notes show the cause: 4 of the 5 findings sent to the notes had reproductions that "could not be run: the app could not be started: CRUD verification…". They are item 1's block. Two were critical: staff could not edit the menu (`WHERE id = ${i}`), and no pre-order could be placed (`pickup_time` "8:30 AM" read with `new Date()`).
+   - Item 1 lets those reproductions run. As well, a finding whose reproduction could not run, and that names its file, now goes to the Chief AI's check of the code for any plan item, not only SEC and INT. Not run is not disproved. A finding with no file still goes to the notes.
+3. **The contract keeps the spec's roles.**
+   - Brewline 5's spec marked four endpoints `staff`, but its contract had no `roles` field at all: the model did not copy them.
+   - The plan step now copies each endpoint's roles from the approved spec in code, matched by method and path. On Brewline 5's recorded files it gives exactly the four staff endpoints.
+
+All suites pass: pipeline 1,066, packages 1,062, agents 618, API 101, web 92.
+
+**Still open:** the remaining finding in the notes ("money-exact": the order total is computed in floating point) names no plan item, so it goes to the notes. Not changed.
