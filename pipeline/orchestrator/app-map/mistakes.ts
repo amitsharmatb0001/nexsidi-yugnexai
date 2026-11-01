@@ -27,13 +27,15 @@ const GUIDANCE: Record<string, string> = {
   "SEC2/no-sign-in": "Every endpoint the contract marks as signed-in has the sign-in check before its handler.",
   "SEC2/no-role-check": "Every role-limited endpoint checks the caller's role before its handler.",
   "SEC9/role-from-request": "No endpoint lets the caller choose a role: sign-up sets the lowest role in code; staff come from a seed or an existing staff account.",
+  "ENV/payload-outside-data": "Every success answer keeps its payload inside data: { success: true, data: { ... } }, as the frontend reads it.",
+  "SEC4/secret-fallback": "A secret, key, token or password is read only from the environment, never with a literal fallback; startup fails when it is missing.",
   "MAP/unknown-column": "SQL names only tables and columns the migrations create.",
   "MAP/schema-file-differs": "The schema file lists exactly the columns the migrations create.",
   "MAP/contract-endpoint-not-served": "The backend serves every endpoint of the approved contract at its exact path.",
   "MAP/call-outside-contract": "The frontend calls only endpoints of the approved contract, at their exact paths.",
 };
 
-const DOMAIN: Record<RuleViolation["rule"], MistakePattern["domain"]> = { SEC1: "security", SEC2: "security", SEC9: "security", INT1: "architecture", INT2: "architecture", MAP: "code-style" };
+const DOMAIN: Record<RuleViolation["rule"], MistakePattern["domain"]> = { SEC1: "security", SEC2: "security", SEC4: "security", SEC9: "security", ENV: "architecture", INT1: "architecture", INT2: "architecture", MAP: "code-style" };
 
 /** One pattern per key, in the order first seen. */
 export function mistakePatterns(violations: RuleViolation[]): MistakePattern[] {

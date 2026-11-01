@@ -39,3 +39,21 @@ test("the real gate reads the code's facts: the broken rules by identity and the
   expect(f.open).toEqual(["SEC1|function:backend/src/q.ts#q"]);
   expect(f.digest).toMatch(/^[0-9a-f]{64}$/);
 });
+
+// 2026-10-31 (Brewline 5, run 2): the gate made its test accounts once and kept them for every round, but each redeploy
+// purges every account on the reserved test domain. Round 2 signed in as accounts that no longer existed, every order insert
+// failed on the foreign key to users, and 8 tests failed for a fault of the gate, not of the app. The accounts are now made
+// again after every deploy.
+test("test accounts are made again after a redeploy, and kept between runs on the same deploy", async () => {
+  const { accountCache } = await import("./acceptance-gate-real.ts");
+  let made = 0;
+  const cache = accountCache(async () => ({ accounts: { user: { email: `e${++made}@example.com`, password: "p", token: "t" } }, notes: [] }));
+  const a = await cache.get();
+  const b = await cache.get();
+  expect(made).toBe(1);
+  expect(b).toBe(a);
+  cache.invalidate();
+  const c = await cache.get();
+  expect(made).toBe(2);
+  expect(c.user!.email).toBe("e2@example.com");
+});

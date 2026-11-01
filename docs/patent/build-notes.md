@@ -1353,3 +1353,74 @@ Under the old triggers each of these would have been a new pattern seen once.
 - AT-1-2, sign-in then the home page: running it would add an account to the held build's database;
 - the datetime fill live;
 - a new frozen run with these fixes.
+
+## Batch 73 — proof run 2 (Brewline 5, 2026-11-01) and the fixes it forced
+
+**The run:** commit 28aa063 (batch 72's fixes), the same benchmark brief, driven in Amit's Chrome, $30 cap.
+- **Timing:** it began at 05:09 UTC and I stopped the worker at 06:30, after the gate's second round, because the gate had a bug of its own (below). It had not delivered.
+- **Size:**
+  - 354 model calls and 24.4M input tokens;
+  - run 1 had 335 calls and 15.5M tokens, and cost $10.95 on the projects page;
+  - the dollar cost of run 2 was not read.
+
+**What worked, each seen live:**
+1. **The roles fix.**
+   - The tester wrote 34 tests and none contradicted the plan's roles.
+   - Staff work ran as staff, and 401 (signed out) and 403 (customer) were tested explicitly.
+   - Run 1's four wrong tests did not appear.
+2. **The plan kept item history from the start.**
+   - `order_items` was created with `item_name` and `unit_price`, and no cascade.
+   - Run 1's planner forgot them.
+3. **The deploy.**
+   - The standard frontend Dockerfile and compose file were written in 2 seconds, and the fast path redeployed without the deploy agent. Run 1 lost 20 minutes here.
+   - Every redeploy ran the fast path.
+4. **The dispute path.**
+   - The backend builder disputed two wrong tests (AT-1-7, AT-1-8) with evidence.
+   - The Chief AI read the controller, tested the live API, and ruled "not true".
+   - The gate withdrew both tests, and nobody bent the app.
+5. **The deploy's record check** caught a typo in `PATCH /menu/:id` (`WHERE id = ${i}` for `$${i}`, a 500). Two reviewers also found it.
+
+**What failed, with cause (all fixed below):**
+- **Test accounts purged between gate rounds.**
+  - The gate made its accounts once and reused them, but every deploy purges all accounts on the reserved test domain.
+  - Round 2 signed in as accounts that no longer existed, every order insert failed on the foreign key, and 8 tests failed through no fault of the app (23 passed, down from 30).
+  - Left running, the backend builder would have chased a bug that did not exist. I stopped the worker.
+- **INT2 gave a false alarm and caused a real bug.**
+  - The map reported a check-then-write in `PATCH /menu/:id`, but its read sat in a branch that returns before any write.
+  - The builder rewrote the handler to satisfy it and introduced the `${i}` typo, a 500 on the main staff action.
+- **The menu page showed no menu** ("Failed to load menu items").
+  - The backend answered `{ success: true, items }` and the frontend read `res.data.items`.
+  - Both builders were told the envelope is `{ success, data }`, and the backend broke it.
+  - **Brewline 4 had the same broken menu page.** Its AT-2-8 failed with the same text; I did not look into it then.
+- **A known default for the staff login.** The seed fell back to the password `password123` and reset the staff password on every start. No check of ours flagged it. A reviewer found the same pattern in the JWT secret (`|| "default_jwt_secret_brewline"`).
+- **A test left shared data changed.** A staff test marked "House Cortado" out of stock, and the deploy's own order check then failed on it.
+- **The proof rule dropped real bugs to the notes.**
+  - The reviewers reported the PATCH typo (twice, once as CRITICAL) and an unreadable pickup time ("8:30 AM", CRITICAL) as findings about what the customer asked for.
+  - None carried a reproduction test, so none reached a builder.
+  - The gate is meant to catch exactly these, but it had reported "not checked" because the deploy's record check had found the same 500 (see "Not changed").
+- **A wrong verdict of mine, corrected.** I called AT-2-7 a runner bug. The on-screen check does fill `{{unique}}`; the test failed in round 1 for a cause I did not find, and passed in round 2.
+
+**Fixes** (each with a test first; each proved on this run's recorded code, read only):
+1. **Accounts per deploy.** `accountCache` makes the accounts on first use and drops them at every deploy and redeploy.
+2. **`{{as.email}}` in API answer checks.** The API runner now sets the account for each step; only journeys did before.
+3. **INT2 follows the path.** A stock read whose own block returns or throws without running another query is not the check of a write elsewhere. It still reports Brewline 1 (no transaction) and Brewline 2 (no row lock).
+4. **SEC4, no secret with a literal fallback.**
+   - Environment names with SECRET, PASSWORD, KEY or TOKEN, with `||`, `??` or an `if (!x) x = "…"` fallback to a literal.
+   - It finds Brewline 5's `password123`.
+   - Database credentials are excluded (`DB_PASSWORD || "postgres"` is the local container's own password, and flagging it would cost builders rounds for little). It found 6 across the 25 builds in the second set and 39 across the 71 older ones, almost all JWT secrets.
+5. **ENV, the envelope.**
+   - A success answer whose payload is outside `data`.
+   - It finds exactly Brewline 2, 4 and 5, the three runs of this brief, and none of the 71 older builds.
+   - On Brewline 5 it names the menu list at `menu.controller.ts:43`.
+6. **The tester's rule 9.** A test that changes a record other tests use creates its own, and orders pick items by name, not position.
+
+**Not changed (decisions or open):**
+- **A deploy finding blocks the gate.**
+  - When the deploy's record check finds a problem but the app answers, the gate still reports "not checked — the app could not be started" and runs no tests.
+  - It should run the tests and hand the finding to its owner. Needs a decision on how to count it.
+- **The proof rule.** A critical functional finding with no reproduction goes to the notes. It should become a test the gate can run, or be kept as a finding of the gate's own.
+- **The planner and contract writer leave `roles` empty.** Run 2's contract had no `roles` field; the wording fallback carried it. Not enforced.
+- **Not read:**
+  - the cost in dollars;
+  - the pickup-time and 15-minute-rule bugs the backend was sent;
+  - the final review of the code.

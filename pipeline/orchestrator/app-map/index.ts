@@ -8,7 +8,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { applyMigrations, type DatabaseFacts } from "./sql.ts";
-import { readBackend, readDrizzleSchema, readFrontend, type EndpointFacts, type FunctionSpan, type PageFacts, type SqlUse } from "./code.ts";
+import { readBackend, readDrizzleSchema, readFrontend, type EndpointFacts, type FunctionSpan, type PageFacts, type SecretFallback, type EnvelopeBreak, type SqlUse } from "./code.ts";
 import { pathFits, readAcceptanceTests } from "../acceptance-tests.ts";
 import { planItemsFor } from "../chief-check.ts";
 
@@ -25,6 +25,10 @@ export interface AppMap {
   endpoints: EndpointFacts[];
   /** the backend's named functions and their lines */
   functions: FunctionSpan[];
+  /** secrets the code reads from the environment and falls back to a literal for */
+  secretFallbacks: SecretFallback[];
+  /** success answers whose payload is outside data */
+  envelopeBreaks: EnvelopeBreak[];
   sql: SqlUse[];
   pages: PageFacts[];
   /** SQL that names a table or column the database does not have */
@@ -56,7 +60,7 @@ export function buildAppMap(projectDir: string): AppMap {
   if (migs.length === 0) notes.push("no migrations in db/migrations: the database is not known");
   for (const u of database.unread) notes.push(`${u.file}: a statement the map does not read: ${u.statement.slice(0, 120)}`);
   const schemaFile = existsSync(join(projectDir, "db")) ? readDrizzleSchema(join(projectDir, "db")) : null;
-  const backend = existsSync(join(projectDir, "backend")) ? readBackend(join(projectDir, "backend")) : { endpoints: [], sql: [], functions: [], notes: ["no backend folder"] };
+  const backend = existsSync(join(projectDir, "backend")) ? readBackend(join(projectDir, "backend")) : { endpoints: [], sql: [], functions: [], secretFallbacks: [], envelopeBreaks: [], notes: ["no backend folder"] };
   const frontend = existsSync(join(projectDir, "frontend")) ? readFrontend(join(projectDir, "frontend")) : { pages: [], handlers: [], notes: ["no frontend folder"] };
   notes.push(...backend.notes, ...frontend.notes);
 
@@ -140,6 +144,8 @@ export function buildAppMap(projectDir: string): AppMap {
     endpoints: backend.endpoints,
     sql: backend.sql,
     functions: backend.functions,
+    secretFallbacks: backend.secretFallbacks,
+    envelopeBreaks: backend.envelopeBreaks,
     pages: frontend.pages,
     unknownColumns,
     links: { unmatchedCalls, uncalledEndpoints },

@@ -113,3 +113,22 @@ test("a tester that fails outright leaves a record, not an exception", async () 
   expect(suite.notWritten[0]!.reason).toContain("quota");
   expect(readAcceptanceTests(dir)?.notWritten.length).toBe(2);
 });
+
+// 2026-10-31 (Brewline 5, run 2): a staff test marked "House Cortado" out of stock and left it so, and later order tests that
+// picked the first menu item failed with "Item 'House Cortado' is out of stock". Tests run in one shared database, in one
+// order, and nothing undoes them. A test that changes a record other tests rely on makes its own record first, with
+// {{unique}} in its name, and changes only that one.
+test("the tester is told to give each test its own records to change", async () => {
+  const { testerPrompt } = await import("./index.ts");
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const d = mkdtempSync(join(tmpdir(), "aarav-"));
+  writeFileSync(join(d, "spec.json"), JSON.stringify({ successCriteria: ["Customers order."] }));
+  writeFileSync(join(d, "api-contract.json"), JSON.stringify({ endpoints: [{ method: "GET", path: "/api/v1/menu", auth: false, description: "List." }] }));
+  writeFileSync(join(d, "build-plan.json"), JSON.stringify({ buildPhases: [{ name: "A", goal: "g", pages: ["/menu"], endpoints: ["GET /api/v1/menu"], tables: [] }] }));
+  const p = testerPrompt(d, 1);
+  rmSync(d, { recursive: true, force: true });
+  expect(p).toContain("A test that changes a record other tests use");
+  expect(p).toContain("never the first item of a list");
+});

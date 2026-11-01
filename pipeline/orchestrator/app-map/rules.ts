@@ -18,7 +18,7 @@ import { pathFits } from "../acceptance-tests.ts";
 import { limitedRolesFromContract } from "../../../agents/riya/src/index.ts";
 
 export interface RuleViolation {
-  rule: "INT1" | "INT2" | "SEC1" | "SEC2" | "SEC9" | "MAP";
+  rule: "INT1" | "INT2" | "SEC1" | "SEC2" | "SEC4" | "SEC9" | "ENV" | "MAP";
   /** the kind of break, the same in every project (mistakes.ts keys repeats by rule and kind) */
   kind: string;
   owner: FileOwner;
@@ -103,7 +103,8 @@ export function checkRules(projectDir: string, map: AppMap): RuleViolation[] {
 
   // ── INT2: a stock check and the write that follows are one atomic step ────
   for (const e of map.endpoints) {
-    const checkAt = e.sql.findIndex((q) => q.facts.kind === "select" && [...q.facts.reads, ...q.facts.filters].some((r) => STOCK_COL.test(r.split(".")[1] ?? "")));
+    // A read that ends its own path (answers and returns) is not the check of a write that runs on another path.
+    const checkAt = e.sql.findIndex((q) => q.facts.kind === "select" && !q.leavesBeforeWrite && [...q.facts.reads, ...q.facts.filters].some((r) => STOCK_COL.test(r.split(".")[1] ?? "")));
     if (checkAt < 0) continue;
     const writes = e.sql.slice(checkAt + 1).filter((q) => q.facts.kind === "insert" || q.facts.kind === "update");
     if (writes.length === 0) continue;
@@ -159,6 +160,16 @@ export function checkRules(projectDir: string, map: AppMap): RuleViolation[] {
         }
       }
     }
+  }
+
+  // ── ENV: a success answer keeps its payload in data ──────────────────────
+  for (const b of map.envelopeBreaks ?? []) {
+    out.push({ rule: "ENV", kind: "payload-outside-data", owner: ownerOf(b.file), file: b.file, line: b.line, fact: `a success answer carries ${b.keys.join(", ")} beside success, not inside data, so a frontend that reads res.data.${b.keys[0]} finds nothing`, fix: "answer { success: true, data: { ... } }, the envelope the contract and the frontend use" });
+  }
+
+  // ── SEC4: no secret has a text of its own to fall back on ─────────────────
+  for (const s of map.secretFallbacks ?? []) {
+    out.push({ rule: "SEC4", kind: "secret-fallback", owner: ownerOf(s.file), file: s.file, line: s.line, fact: `${s.name} is read from the environment and falls back to a literal in the code, so anyone who reads the source can sign in or sign tokens`, fix: `read ${s.name} only from the environment and fail at startup when it is missing; for a staff account, generate a random password and log it once` });
   }
 
   // ── The map's own gaps ────────────────────────────────────────────────────

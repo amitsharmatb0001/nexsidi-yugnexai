@@ -315,3 +315,15 @@ test("a timestamp answered in UTC contains the local time the test asked for", a
   expect(answerContains(new Date(2026, 10, 1, 15, 0).toISOString(), "14:00")).toBe(false);
   expect(answerContains("Latte", "latte")).toBe(true);
 });
+
+// 2026-10-31 (Brewline 5, run 2): two API tests checked that the answer's email equals {{as.email}}. The API runner never put
+// the account in the placeholder context (only journeys did), so the expected value stayed the literal text and the tests
+// failed an app that answered with the right address.
+test("an API step's answer checks can use the signed-in account's email, {{as.email}}", async () => {
+  const { runAcceptanceTests: run } = await import("./acceptance-runner.ts");
+  const stub = Bun.serve({ port: 0, fetch: (req) => new Response(JSON.stringify({ email: (req.headers.get("authorization") ?? "").replace("Bearer ", "") }), { headers: { "content-type": "application/json" } }) });
+  const t: AcceptanceTest = { id: "AT-9-1", phase: 1, planItem: "EP3", title: "me", as: "user", kind: "api", steps: [{ method: "GET", path: "/api/v1/users/me", expectStatus: 200, expectBody: [{ path: "email", equals: "{{as.email}}" }] }] };
+  const r = await run([t], { apiUrl: `http://localhost:${stub.port}`, appUrl: "http://unused", accounts: { user: { email: "me@example.com", password: "p", token: "me@example.com" } }, sleep: async () => undefined });
+  stub.stop(true);
+  expect(r.results[0]).toMatchObject({ id: "AT-9-1", status: "passed" });
+});

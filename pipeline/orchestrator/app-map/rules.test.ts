@@ -345,3 +345,86 @@ test("SEC2: a middleware whose code answers 403 is a role check, whatever its na
   rmSync(d, { recursive: true, force: true });
   expect(v.map((x) => x.fact.slice(0, 40))).toEqual(["DELETE /api/v1/admin/menu/:id is limited"]);
 });
+
+// 2026-10-31 (Brewline 5, run 2): PATCH /menu/:id read is_out_of_stock in a branch that answers and returns when there is
+// nothing to update, and wrote in the code after that branch. The two never run on one path, yet INT2 reported a check-then-
+// write, and the builder rewrote the handler to satisfy it and introduced a typo that broke the endpoint. A read that leaves
+// the handler before any write after it is not a check for that write.
+test("INT2: a stock read in a branch that returns before any write is not a check-then-write", () => {
+  const d = mkdtempSync(join(tmpdir(), "rules-int2b-"));
+  const put = (rel: string, text: string) => { mkdirSync(dirname(join(d, rel)), { recursive: true }); writeFileSync(join(d, rel), text); };
+  put("db/migrations/0000.sql", `CREATE TABLE "menu_items" ("id" uuid PRIMARY KEY, "name" text NOT NULL, "is_out_of_stock" boolean NOT NULL DEFAULT false);`);
+  put("backend/src/app.ts", `import menu from "./menu";\nconst app = express();\napp.use("/api/v1", menu);`);
+  put("backend/src/menu.ts", [
+    `const router = Router();`,
+    `router.patch("/menu/:id", async (req, res) => {`,
+    `  const fields = [];`,
+    `  if (fields.length === 0) {`,
+    `    const existing = await pool.query("SELECT id, name, is_out_of_stock FROM menu_items WHERE id = $1", [req.params.id]);`,
+    `    res.status(200).json(existing.rows[0]);`,
+    `    return;`,
+    `  }`,
+    `  await pool.query("UPDATE menu_items SET name = $1 WHERE id = $2", [req.body.name, req.params.id]);`,
+    `  res.json({});`,
+    `});`,
+    `router.post("/menu/:id/order", async (req, res) => {`,
+    `  const item = await pool.query("SELECT is_out_of_stock FROM menu_items WHERE id = $1", [req.params.id]);`,
+    `  if (item.rows[0].is_out_of_stock) return res.status(400).json({});`,
+    `  await pool.query("UPDATE menu_items SET name = name WHERE id = $1", [req.params.id]);`,
+    `});`,
+    `export default router;`,
+  ].join("\n"));
+  const v = checkRules(d, buildAppMap(d)).filter((x) => x.rule === "INT2").map((x) => x.fact.slice(0, 42));
+  rmSync(d, { recursive: true, force: true });
+  expect(v).toEqual(["POST /api/v1/menu/:id/order reads menu_ite"]);
+});
+
+// 2026-10-31 (Brewline 5, run 2): `process.env.JWT_SECRET || "default_jwt_secret_brewline"` was found by a reviewer, and a
+// staff seed that fell back to the password "password123" was found by hand — nothing of ours checked either. A secret, key,
+// token or password that is read from the environment and has a text of its own to fall back on means anyone who can read
+// the source can sign in or sign tokens. By fact: the environment name, and the literal it falls back to.
+test("SEC4: a secret read from the environment with a literal fallback is reported, whichever way the fallback is written", () => {
+  const d = mkdtempSync(join(tmpdir(), "rules-sec4-"));
+  const put = (rel: string, text: string) => { mkdirSync(dirname(join(d, rel)), { recursive: true }); writeFileSync(join(d, rel), text); };
+  put("backend/src/app.ts", `const app = express();`);
+  put("backend/src/auth.ts", [
+    `const JWT_SECRET = process.env.JWT_SECRET || "default_jwt_secret";`,
+    `const other = process.env.SESSION_KEY ?? "dev-key";`,
+    `const port = process.env.PORT || "3001";`,
+    `const dbPassword = process.env.DB_PASSWORD || "postgres";`,
+    `const origin = process.env.CORS_ORIGIN || "http://localhost:3000";`,
+    `const needed = process.env.API_TOKEN;`,
+    `if (!needed) throw new Error("API_TOKEN is not set");`,
+  ].join("\n"));
+  put("backend/src/db/seedStaff.ts", [
+    `export async function seedStaff() {`,
+    `  let password = process.env.STAFF_PASSWORD;`,
+    `  if (!password) {`,
+    `    password = "password123";`,
+    `  }`,
+    `}`,
+  ].join("\n"));
+  const v = checkRules(d, buildAppMap(d)).filter((x) => x.rule === "SEC4").map((x) => `${x.file}:${x.line}`).sort();
+  rmSync(d, { recursive: true, force: true });
+  expect(v).toEqual(["backend/src/auth.ts:1", "backend/src/auth.ts:2", "backend/src/db/seedStaff.ts:4"]);
+});
+
+// 2026-10-31 (Brewline 5, run 2): both builders were told the answer envelope is { success, data }. The backend answered
+// { success: true, items: [...] } and the frontend read res.data.items, so the menu page — the shop's main page — said
+// "Failed to load menu items" while the API answered correctly. A success answer keeps its payload in `data`.
+test("ENV: a success answer with its payload outside data is reported; data, message-only and error answers are not", () => {
+  const d = mkdtempSync(join(tmpdir(), "rules-env-"));
+  const put = (rel: string, text: string) => { mkdirSync(dirname(join(d, rel)), { recursive: true }); writeFileSync(join(d, rel), text); };
+  put("backend/src/app.ts", `const app = express();`);
+  put("backend/src/menu.ts", [
+    `export const list = (req, res) => { res.status(200).json({ success: true, items: [] }); };`,
+    `export const one = (req, res) => { res.status(200).json({ success: true, id: 1, name: "x" }); };`,
+    `export const good = (req, res) => { res.status(200).json({ success: true, data: { items: [] } }); };`,
+    `export const done = (req, res) => { res.status(200).json({ success: true, message: "ok" }); };`,
+    `export const bad = (req, res) => { res.status(400).json({ success: false, error: "no" }); };`,
+    `export const spread = (req, res) => { res.json({ success: true, ...rest }); };`,
+  ].join("\n"));
+  const v = checkRules(d, buildAppMap(d)).filter((x) => x.rule === "ENV").map((x) => x.line).sort();
+  rmSync(d, { recursive: true, force: true });
+  expect(v).toEqual([1, 2]);
+});

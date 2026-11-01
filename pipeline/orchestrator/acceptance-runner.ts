@@ -169,6 +169,8 @@ async function runApiTest(t: AcceptanceTest, opts: RunnerOptions, ctx: TestConte
     const n = i + 1;
     const s = steps[i]!;
     const account = accountFor(s.as ?? t.as, opts, n);
+    // 2026-10-31 (Brewline 5): {{as.email}} in the step's answer checks is the account the step runs as.
+    ctx.account = account;
     const path = String(expandPlaceholders(s.path, ctx));
     const label = `step ${n} (${s.method} ${path})`;
     if (/\{\{[^}]+\}\}/.test(path)) throw notChecked(n, `${label}: a value in the path was never saved`);

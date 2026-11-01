@@ -49,6 +49,27 @@ export async function createTestAccounts(
   return { accounts, notes };
 }
 
+/**
+ * The test accounts, made on first use and kept while the same deploy runs. A deploy purges every account on the reserved test
+ * domain (Brewline 5, run 2: round 2 signed in as accounts that no longer existed), so each deploy invalidates them.
+ */
+export function accountCache(make: () => Promise<{ accounts: Record<string, RunnerAccount>; notes: string[] }>) {
+  let held: Record<string, RunnerAccount> | null = null;
+  return {
+    async get(): Promise<Record<string, RunnerAccount>> {
+      if (!held) {
+        const made = await make();
+        for (const n of made.notes) console.warn(`[acceptance-gate] ${n}`);
+        held = made.accounts;
+      }
+      return held;
+    },
+    invalidate(): void {
+      held = null;
+    },
+  };
+}
+
 const TEST_ID = /\bAT-\d+-\d+\b/g;
 
 /** The tests a text names by id. */
@@ -60,18 +81,15 @@ function testsNamedIn(texts: string[], projectDir: string): AcceptanceTest[] {
 export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDeps; cleanup(): Promise<void>; reproduce(tests: AcceptanceTest[]): Promise<RunSummary> } {
   const dir = buildDirFor(projectId);
   const serial = oneAtATime();
-  let accounts: Record<string, RunnerAccount> | null = null;
   let current: GateUrls | null = null;
+  const accountsHeld = accountCache(() => createTestAccounts(dir, current?.backendUrl ?? "", plan.apiContract.endpoints));
   let testingStartedAt: string | null = null;
 
   const runTests = async (tests: AcceptanceTest[], urls: GateUrls) => {
     // The app's sign-up/sign-in limiter counts in memory; the tests sign up and sign in, so they start with fresh counters.
     await resetAppRateLimits(dir, urls.backendUrl).catch(() => undefined);
-    if (!accounts) {
-      const made = await createTestAccounts(dir, urls.backendUrl, plan.apiContract.endpoints);
-      for (const n of made.notes) console.warn(`[acceptance-gate] ${n}`);
-      accounts = made.accounts;
-    }
+    current = urls;
+    const accounts = await accountsHeld.get();
     const { BrowserSession } = await import("../../packages/agent-runtime/src/browser/client.ts");
     return runAcceptanceTests(tests, {
       apiUrl: urls.backendUrl,
@@ -84,7 +102,7 @@ export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDe
 
   const fixWith = async (owner: Owner, findings: string[], tests: AcceptanceTest[], sinceIso: string, urls: GateUrls) => {
     const check = {
-      exitChecks: () => acceptanceFixCheck(projectId, tests, { redeploy: () => serial(() => redeployRunningApp(dir, urls.appUrl, urls.backendUrl)), run: (ts) => runTests(ts, urls) }, sinceIso),
+      exitChecks: () => acceptanceFixCheck(projectId, tests, { redeploy: () => serial(async () => (accountsHeld.invalidate(), redeployRunningApp(dir, urls.appUrl, urls.backendUrl))), run: (ts) => runTests(ts, urls) }, sinceIso),
     };
     if (owner === "pranav") {
       const { runFix } = await import("../../agents/generators/pranav/src/index.ts");
@@ -100,6 +118,7 @@ export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDe
     deploy: async () => {
       // 2026-10-30 (understanding plan, step 2): each round starts from the code as the fixes left it.
       refreshAppMap(dir);
+      accountsHeld.invalidate(); // the deploy purges the test accounts
       const r = await serial(() => runRiya(projectId));
       if (!r.success) return { reason: r.errors.join("; ").slice(0, 600) || "the deploy step failed" };
       current = { appUrl: r.appUrl, backendUrl: r.backendUrl };

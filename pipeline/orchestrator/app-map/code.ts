@@ -390,6 +390,8 @@ export interface SqlUse {
   fromRequest: boolean | null;
   /** columns written with a value that comes from the request */
   writesFromRequest: string[];
+  /** the code after this query, in its own block, answers or throws without running another query (a read that ends its path) */
+  leavesBeforeWrite: boolean;
 }
 
 export interface EndpointFacts {
@@ -419,14 +421,108 @@ export interface FunctionSpan {
   end: number;
 }
 
+/** A secret, key, token or password the code reads from the environment and falls back to a literal for (2026-10-31, SEC4). */
+export interface SecretFallback {
+  file: string;
+  line: number;
+  name: string;
+}
+
+const SECRETISH = /(SECRET|PASSWORD|PASSWD|PRIVATE_?KEY|API_?KEY|ACCESS_?KEY|AUTH_?KEY|SESSION_?KEY|SIGNING_?KEY|TOKEN)/i;
+const isSecretName = (name: string) => SECRETISH.test(name) && !DB_CREDENTIAL.test(name);
+// The local database container's own password (DB_PASSWORD || "postgres") is not a way into the app: left out, so a builder is
+// not sent round after round for it.
+const DB_CREDENTIAL = /^(PG|DB|POSTGRES|DATABASE|MYSQL)_?(PASSWORD|PASSWD|PASS)$/i;
+const envName = (e: ts.Node, sf: ts.SourceFile): string | null => {
+  const m = e.getText(sf).match(/^process\.env\.([A-Z0-9_]+)$|^process\.env\[["']([A-Z0-9_]+)["']\]$/);
+  return m ? (m[1] ?? m[2]!) : null;
+};
+const isLiteralText = (e: ts.Node) => (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) && e.text.length > 0;
+
+export function readSecretFallbacks(files: Parsed[]): SecretFallback[] {
+  const out: SecretFallback[] = [];
+  for (const p of files) {
+    const fromEnv = new Set<string>(); // variables initialised from a secret-like environment name
+    visit(p.sf, (n) => {
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
+        const name = envName(n.initializer, p.sf);
+        if (name && isSecretName(name)) fromEnv.add(n.name.text);
+      }
+    });
+    visit(p.sf, (n) => {
+      // process.env.X || "literal", process.env.X ?? "literal"
+      if (ts.isBinaryExpression(n) && (n.operatorToken.kind === ts.SyntaxKind.BarBarToken || n.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)) {
+        const name = envName(n.left, p.sf);
+        if (name && isSecretName(name) && isLiteralText(n.right)) out.push({ file: p.rel, line: lineOf(p.sf, n), name });
+      }
+      // let password = process.env.X; … password = "literal"
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left) && fromEnv.has(n.left.text) && isLiteralText(n.right)) {
+        out.push({ file: p.rel, line: lineOf(p.sf, n), name: n.left.text });
+      }
+    });
+  }
+  return out;
+}
+
+/** A success answer whose payload is outside `data` (2026-10-31): { success: true, items } where the envelope is { success, data }. */
+export interface EnvelopeBreak {
+  file: string;
+  line: number;
+  keys: string[];
+}
+
+export function readEnvelopeBreaks(files: Parsed[]): EnvelopeBreak[] {
+  const out: EnvelopeBreak[] = [];
+  const meta = new Set(["success", "message", "meta", "pagination", "total", "count", "page", "limit"]);
+  for (const p of files) {
+    visit(p.sf, (n) => {
+      if (!(ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "json")) return;
+      const arg = n.arguments[0];
+      if (!arg || !ts.isObjectLiteralExpression(arg)) return;
+      if (arg.properties.some((x) => ts.isSpreadAssignment(x))) return; // not readable: left alone
+      const names = arg.properties.map((x) => (x.name ? x.name.getText(p.sf).replace(/^["']|["']$/g, "") : ""));
+      const success = arg.properties.find((x) => ts.isPropertyAssignment(x) && x.name.getText(p.sf) === "success") as ts.PropertyAssignment | undefined;
+      if (!success || success.initializer.kind !== ts.SyntaxKind.TrueKeyword) return;
+      if (names.includes("data")) return;
+      const payload = names.filter((k) => k && !meta.has(k));
+      if (payload.length > 0) out.push({ file: p.rel, line: lineOf(p.sf, n), keys: payload });
+    });
+  }
+  return out;
+}
+
 export interface BackendFacts {
   endpoints: EndpointFacts[];
   sql: SqlUse[];
   functions: FunctionSpan[];
+  secretFallbacks: SecretFallback[];
+  envelopeBreaks: EnvelopeBreak[];
   notes: string[];
 }
 
 const unwrap = (e: ts.Expression): ts.Expression => (ts.isAsExpression(e) || ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e) ? unwrap(e.expression) : e);
+
+/**
+ * 2026-10-31 (Brewline 5): after this query, does its own block return or throw without running another query? Then what the
+ * query read cannot reach a write on this path (a stock read in `if (nothingToUpdate) { read; respond; return; }`).
+ */
+function leavesBeforeQuery(call: ts.Node): boolean {
+  let stmt: ts.Node | undefined = call;
+  while (stmt && !(stmt.parent && ts.isBlock(stmt.parent))) stmt = stmt.parent;
+  const block = stmt?.parent;
+  if (!stmt || !block || !ts.isBlock(block)) return false;
+  const after = block.statements.slice(block.statements.indexOf(stmt as ts.Statement) + 1);
+  let leaves = false;
+  let queries = false;
+  for (const st of after) {
+    if (ts.isReturnStatement(st) || ts.isThrowStatement(st)) leaves = true;
+    visit(st, (x) => {
+      if (ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression) && x.expression.name.text === "query") queries = true;
+      if (ts.isReturnStatement(x) || ts.isThrowStatement(x)) leaves = true;
+    });
+  }
+  return leaves && !queries;
+}
 
 // Body parsers, CORS, headers and loggers run for every request and decide nothing about who may call a route.
 const INFRA_MW = /^(express\.|cors\(|helmet\(|morgan\(|cookieParser\(|compression\()/;
@@ -482,6 +578,7 @@ export function readBackend(backendDir: string): BackendFacts {
             writesFromRequest: facts.kind === "insert" || facts.kind === "update"
               ? fromRequest(branchConditions(n, scope), scope, p.sf, { controlFlow: true }) ? facts.writes.filter((w) => w.startsWith(`${table}.`)) : writesFromRequest(v.text, n.arguments[1], scope, p.sf, table)
               : [],
+            leavesBeforeWrite: leavesBeforeQuery(n),
             node: n, parsed: p,
           });
         }
@@ -631,7 +728,7 @@ export function readBackend(backendDir: string): BackendFacts {
   const functions: FunctionSpan[] = files.flatMap((p) =>
     [...fnsOf.get(p.abs)!.entries()].map(([name, n]) => ({ file: p.rel, name, start: lineOf(p.sf, n), end: p.sf.getLineAndCharacterOfPosition(n.end).line + 1 })),
   );
-  return { endpoints, sql: sql.map(({ node: _n, parsed: _p, ...q }) => q), functions, notes };
+  return { endpoints, sql: sql.map(({ node: _n, parsed: _p, ...q }) => q), functions, secretFallbacks: readSecretFallbacks(files), envelopeBreaks: readEnvelopeBreaks(files), notes };
 }
 
 // ── Frontend ────────────────────────────────────────────────────────────────

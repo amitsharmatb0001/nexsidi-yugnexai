@@ -105,7 +105,11 @@ const RULES = `RULES:
 6. "as" is who runs the test: "anyone" (signed out), "user" (an ordinary signed-up account) or a role of the plan. A
    signed-in journey starts already signed in; to test the sign-in itself, run as "anyone" and sign in on the page.
 7. Include failure cases: wrong input refused (400), no sign-in refused (401), the wrong person refused (403 or 404).
-8. Between 4 and 12 tests for the phase, each 1 to 8 steps. Do not test colours or fonts: the design review covers them.`;
+8. Between 4 and 12 tests for the phase, each 1 to 8 steps. Do not test colours or fonts: the design review covers them.
+9. The tests run one after another in ONE database, and nothing undoes them. A test that changes a record other tests use
+   (marks an item out of stock, renames or deletes an item, changes an order's status) first creates its own record with
+   {{unique}} in its name, as a person who may, and changes only that record: never the first item of a list, never a
+   record another test reads. A test that needs an item to order creates or picks one by name, not by position.`;
 
 /** The tester's task for one phase. */
 export function testerPrompt(projectDir: string, phase: number, scope: PlanScope = planScope(projectDir)): string {
