@@ -95,6 +95,21 @@ export function lookup(body: unknown, path: string): { found: boolean; value: un
   return direct;
 }
 
+/** The id of the first record in an answer, however deep ({"data":{"item":{"id":…}}}). */
+function firstId(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    for (const v of value) {
+      const id = firstId(v);
+      if (id !== undefined) return id;
+    }
+    return undefined;
+  }
+  if (!value || typeof value !== "object") return undefined;
+  const own = (value as Record<string, unknown>).id;
+  if (typeof own === "string" || typeof own === "number") return String(own);
+  return firstId(Object.values(value as Record<string, unknown>));
+}
+
 const numeric = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v)) ? Number(v) : null);
 
 /** Equal, where a number and the same number as text count as equal (Postgres numeric columns arrive as text). */
@@ -213,8 +228,8 @@ async function runApiTest(t: AcceptanceTest, opts: RunnerOptions, ctx: TestConte
       /* not JSON: kept as text */
     }
     if (s.method === "POST" && res!.status >= 200 && res!.status < 300 && opts.onCreated) {
-      const id = lookup(answer, "id");
-      if (id.found && (typeof id.value === "string" || typeof id.value === "number")) opts.onCreated(String(id.value));
+      const id = firstId(answer);
+      if (id !== undefined) opts.onCreated(id);
     }
     const statuses = Array.isArray(s.expectStatus) ? s.expectStatus : [s.expectStatus];
     if (!statuses.includes(res!.status)) throw fail(n, `${label}: expected ${statuses.join(" or ")}, got ${res!.status}${text ? ` — ${excerpt(text)}` : ""}`);

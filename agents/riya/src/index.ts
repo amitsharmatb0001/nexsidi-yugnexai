@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 
 import { runAgentEscalated, parseServiceHostPort, ensureDeliveryGitignore, stripRestartPoliciesInFile } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from "fs";
 import { execSync, exec as execCallback } from "child_process";
 import { randomBytes } from "crypto";
 import { join } from "path";
@@ -252,6 +252,41 @@ export const PUBLIC_FORM_TABLES_SQL =
   "AND NOT EXISTS (SELECT 1 FROM information_schema.columns p WHERE p.table_schema='public' AND p.table_name=c.table_name " +
   "AND p.column_name IN ('password_hash','password','hashed_password','password_digest'))";
 
+// 2026-11-02 (Brewline 8): 63 of the 78 menu items a customer would see came from the checks. No account owns them, the recorded ids
+// missed them, and the window covered only public form tables and only one activity. Before delivery the app has no customer, so every
+// row since testing began is the checks'. The start is kept across rounds and restarts, and forgotten at delivery (markProjectDone), so
+// a customer's rows are never in a window. The seeded catalog is older: it is written when the app first starts, before the first test.
+export const TEST_WINDOW_TABLES_SQL =
+  "SELECT t.table_name FROM information_schema.columns t WHERE t.table_schema='public' AND t.column_name='created_at' " +
+  "AND NOT EXISTS (SELECT 1 FROM information_schema.columns p WHERE p.table_schema='public' AND p.table_name=t.table_name " +
+  "AND p.column_name IN ('password_hash','password','hashed_password','password_digest'))";
+
+const TESTING_START_FILE = join(".nexsidi", "testing-started-at");
+const A_TIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}(:?\d{2})?)?$/;
+
+export function readTestingStart(buildDir: string): string | null {
+  try {
+    const at = readFileSync(join(buildDir, TESTING_START_FILE), "utf-8").trim();
+    return A_TIME.test(at) ? at : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keeps the first start of testing; later rounds and restarts answer with that one. */
+export function rememberTestingStart(buildDir: string, at: string | null): string | null {
+  const kept = readTestingStart(buildDir);
+  if (kept) return kept;
+  if (!at || !A_TIME.test(at)) return null;
+  mkdirSync(join(buildDir, ".nexsidi"), { recursive: true });
+  writeFileSync(join(buildDir, TESTING_START_FILE), at);
+  return at;
+}
+
+export function clearTestingStart(buildDir: string): void {
+  try { rmSync(join(buildDir, TESTING_START_FILE), { force: true }); } catch { /* nothing kept */ }
+}
+
 /** Public-form rows made at or after `since` (a database timestamp). The value goes into SQL text, so only a timestamp is accepted. */
 export function testWindowCondition(since: string): string {
   if (!/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}(:?\d{2})?)?$/.test(since)) throw new Error(`not a timestamp: ${JSON.stringify(since.slice(0, 40))}`);
@@ -388,6 +423,24 @@ export function purgeVerificationArtifacts(buildDir: string, since?: string | nu
         }
       }
       if (formRemoved > 0) console.log(`[riya] purged ${formRemoved} test row(s) made during the checks from public form table(s)`);
+    }
+
+    const first = readTestingStart(buildDir);
+    if (first) {
+      const windowWhere = testWindowCondition(first);
+      const windowTables = sh(`docker exec ${cid} psql -U ${user} -d ${dbName} -tAc "${TEST_WINDOW_TABLES_SQL}"`).split("\n").map((t) => t.trim()).filter(Boolean);
+      let windowRemoved = 0;
+      for (const table of windowTables) {
+        try {
+          const count = parseInt(psql(`SELECT count(*) FROM "${table}" WHERE ${windowWhere};`), 10) || 0;
+          if (count === 0) continue;
+          psql(buildPurgeStatements(table, windowWhere, fks).map((s) => s + ";").join("\n"));
+          windowRemoved += count;
+        } catch (e) {
+          console.warn(`[riya] could not remove test rows from "${table}" (non-fatal): ${String(e).split("\n")[0]}`);
+        }
+      }
+      if (windowRemoved > 0) console.log(`[riya] removed ${windowRemoved} row(s) the checks made since testing began`);
     }
   } catch (e) {
     console.warn(`[riya] verification-artifact cleanup skipped (non-fatal): ${String(e).split("\n")[0]}`);

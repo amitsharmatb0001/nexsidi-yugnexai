@@ -32,6 +32,7 @@ import { runStage6 } from "../orchestrator/stages/stage6-deployment.ts";
 // hash produce false-positive rollbacks).
 import { recordHandoff, verifyHandoff } from "./context-chain-activities.ts";
 import { stopBuilderContainers } from "./private-containers.ts";
+import { clearTestingStart } from "../../agents/riya/src/index.ts";
 import { buildHandoffContext } from "./handoff-context.ts";
 // Phase 5 (full agentic upgrade): Firecrawl's page-fetch capability existed
 // but was reachable ONLY from agents/planner/src/index.ts. Saanvi is a
@@ -1280,6 +1281,8 @@ export async function markProjectDone(projectId: string, appUrl: string): Promis
     .update(projects)
     .set({ status: "done", appUrl, failureReason: null, updatedAt: new Date() })
     .where(eq(projects.id, projectId));
+  // From here the rows are a customer's: no later cleanup may treat them as the checks'.
+  clearTestingStart(buildDirFor(projectId));
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

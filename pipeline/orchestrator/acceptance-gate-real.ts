@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BuildPlan } from "../../agents/arjun/src/index.ts";
-import { run as runRiya, redeployRunningApp, grantTestAccountRole, limitedRolesFromContract, recordSeededRecords, purgeVerificationArtifacts, databaseNow, liveRecordChecks, type DeployResult } from "../../agents/riya/src/index.ts";
+import { run as runRiya, redeployRunningApp, grantTestAccountRole, limitedRolesFromContract, recordSeededRecords, rememberTestingStart, purgeVerificationArtifacts, databaseNow, liveRecordChecks, type DeployResult } from "../../agents/riya/src/index.ts";
 import { createReviewAccount } from "./stages/route-sweep.ts";
 import { resetAppRateLimits } from "./stages/limiter-reset.ts";
 import { runAcceptanceTests, recordAcceptanceRun, type RunnerAccount, type RunSummary } from "./acceptance-runner.ts";
@@ -137,7 +137,7 @@ export function realGateDeps(projectId: string, plan: BuildPlan): { deps: GateDe
       const urls = gateUrlsOfDeploy(await serial(() => runRiya(projectId)));
       if ("reason" in urls) return urls;
       current = { appUrl: urls.appUrl, backendUrl: urls.backendUrl };
-      testingStartedAt ??= databaseNow(dir);
+      testingStartedAt ??= rememberTestingStart(dir, databaseNow(dir));
       return urls;
     },
     run: async (tests, urls) => {

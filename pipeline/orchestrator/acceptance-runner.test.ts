@@ -397,3 +397,13 @@ test("a page that times out twice is not checked, never failed", async () => {
   expect(r.results[0]!.detail).toContain("no answer");
   expect(b.loads()).toBe(2);
 });
+
+// 2026-11-02 (Brewline 8): the app answers {data:{item:{id}}}, so the id of a test's new record was not seen and never cleaned up.
+test("the id of a new record is seen wherever the answer holds it", async () => {
+  const ids: string[] = [];
+  const stub = Bun.serve({ port: 0, fetch: () => new Response(JSON.stringify({ success: true, data: { item: { id: "abc-1", name: "x" } } }), { status: 201, headers: { "content-type": "application/json" } }) });
+  const t: AcceptanceTest = { id: "AT-9-5", phase: 1, planItem: "SC1", title: "add", as: "anyone", kind: "api", steps: [{ method: "POST", path: "/x", body: {}, expectStatus: 201 }] };
+  await runAcceptanceTests([t], { apiUrl: "http://localhost:" + stub.port, appUrl: "http://unused", accounts: {}, sleep: async () => undefined, onCreated: (id) => void ids.push(id) });
+  stub.stop(true);
+  expect(ids).toEqual(["abc-1"]);
+});
