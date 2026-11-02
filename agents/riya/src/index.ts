@@ -8,6 +8,7 @@ import { runAgentEscalated, parseServiceHostPort, ensureDeliveryGitignore, strip
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from "fs";
 import { provisionOwnerLogins } from "./owner-login.ts";
+import { execFile } from "child_process";
 import { execSync, exec as execCallback } from "child_process";
 import { randomBytes } from "crypto";
 import { join } from "path";
@@ -1689,26 +1690,30 @@ const PASSWORD_COLUMNS = ["password_hash", "password", "hashed_password", "passw
 export async function provisionOwnerLoginFor(buildDir: string, appUrl: string): Promise<{ ok: true; logins: string[] } | { ok: false; reason: string }> {
   const endpoints = (JSON.parse(readFileSync(join(buildDir, "api-contract.json"), "utf-8")) as { endpoints?: Array<{ method: string; path: string; auth?: boolean; roles?: unknown; description?: string }> }).endpoints ?? [];
   const compose = join(buildDir, "docker-compose.yml");
-  const sh = (cmd: string, input?: string) => execSync(cmd, { input, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+  // Async on purpose: synchronous child processes fail with ETIMEDOUT inside the long-running worker.
+  const run = (file: string, args: string[], input?: string) => new Promise<string>((done, fail) => {
+    const child = execFile(file, args, { encoding: "utf-8", timeout: 60_000 }, (err, stdout) => (err ? fail(err) : done(stdout.trim())));
+    child.stdin?.end(input ?? "");
+  });
   // The port the backend is really published on; a generated app's backend listens on 3001 inside its container.
   const published = readFileSync(compose, "utf-8").match(/["'\s](?:127\.0\.0\.1:)?(\d+):3001["'\s]/)?.[1];
   const backendUrl = `http://localhost:${published ?? Number(new URL(appUrl).port) + 100}`;
   try {
-    const cid = sh(`docker compose -f "${compose}" ps -q postgres`);
-    const user = sh(`docker exec ${cid} printenv POSTGRES_USER`) || "postgres";
-    const dbName = sh(`docker exec ${cid} printenv POSTGRES_DB`) || user;
-    const psql = (text: string) => sh(`docker exec -i ${cid} psql -U ${user} -d ${dbName} -tA -v ON_ERROR_STOP=1 -f -`, text);
-    const table = psql(ACCOUNT_TABLES_SQL + ";").split("\n").map((t) => t.trim()).find(Boolean);
+    const cid = await run("docker", ["compose", "-f", compose, "ps", "-q", "postgres"]);
+    const user = (await run("docker", ["exec", cid, "printenv", "POSTGRES_USER"])) || "postgres";
+    const dbName = (await run("docker", ["exec", cid, "printenv", "POSTGRES_DB"])) || user;
+    const psql = (text: string) => run("docker", ["exec", "-i", cid, "psql", "-U", user, "-d", dbName, "-tA", "-v", "ON_ERROR_STOP=1", "-f", "-"], text);
+    const table = (await psql(ACCOUNT_TABLES_SQL + ";")).split("\n").map((t) => t.trim()).find(Boolean);
     if (!table) return { ok: false, reason: "the app has no table of accounts" };
-    const columns = psql(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='${table}';`).split("\n").map((c) => c.trim());
+    const columns = (await psql(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='${table}';`)).split("\n").map((c) => c.trim());
     const column = PASSWORD_COLUMNS.find((c) => columns.includes(c));
     if (!column) return { ok: false, reason: `${table} has no password column` };
     const { loginPath } = resolveAuthPaths(endpoints);
     return await provisionOwnerLogins(buildDir, limitedRolesFromContract(endpoints).filter((r) => /^[a-z_-]+$/.test(r)), {
-      accounts: (role) => psql(`SELECT email FROM "${table}" WHERE role = '${role}' ORDER BY created_at;`).split("\n").map((e) => e.trim()).filter((e) => e && !isTestAccountEmail(e) && !/['"\s]/.test(e)),
+      accounts: async (role) => (await psql(`SELECT email FROM "${table}" WHERE role = '${role}' ORDER BY created_at;`)).split("\n").map((e) => e.trim()).filter((e) => e && !isTestAccountEmail(e) && !/['"\s]/.test(e)),
       setPassword: async (email, password) => {
         const hash = await Bun.password.hash(password, { algorithm: "bcrypt", cost: 12 });
-        psql(`UPDATE "${table}" SET "${column}" = '${hash}' WHERE email = '${email}';`);
+        await psql(`UPDATE "${table}" SET "${column}" = '${hash}' WHERE email = '${email}';`);
       },
       signIn: async (email, password) => {
         const r = await fetch(backendUrl + loginPath, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) });

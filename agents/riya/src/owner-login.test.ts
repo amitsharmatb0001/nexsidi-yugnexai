@@ -12,7 +12,7 @@ function setup(over: Partial<OwnerLoginDeps> = {}) {
   const hashes: Record<string, string> = {};
   const signIns: string[] = [];
   const deps: OwnerLoginDeps = {
-    accounts: () => ["staff@shop.local"],
+    accounts: async () => ["staff@shop.local"],
     setPassword: async (email, password) => void (hashes[email] = password),
     signIn: async (email, password) => (signIns.push(email), hashes[email] === password ? "a-token" : null),
     rolePageStatus: async () => 200,
@@ -50,7 +50,7 @@ test("a later delivery keeps a password that still works", async () => {
 });
 
 test("no real account for a role is a fault, not a delivery", async () => {
-  const s = setup({ accounts: () => [] });
+  const s = setup({ accounts: async () => [] });
   const r = await provisionOwnerLogins(s.dir, ["staff"], s.deps);
   expect(r.ok).toBe(false);
   expect(r.ok ? "" : r.reason).toContain("staff");

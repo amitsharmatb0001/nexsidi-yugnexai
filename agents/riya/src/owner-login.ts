@@ -15,7 +15,7 @@ export interface OwnerLogin {
 
 export interface OwnerLoginDeps {
   /** the role's real accounts, without test accounts */
-  accounts: (role: string) => string[];
+  accounts: (role: string) => Promise<string[]>;
   setPassword: (email: string, password: string) => Promise<void>;
   /** the session token, or null when the sign-in is refused */
   signIn: (email: string, password: string) => Promise<string | null>;
@@ -38,7 +38,7 @@ export async function provisionOwnerLogins(buildDir: string, roles: string[], de
   const kept = readOwnerLogins(buildDir);
   const logins: OwnerLogin[] = [];
   for (const role of roles) {
-    const email = deps.accounts(role)[0];
+    const email = (await deps.accounts(role))[0];
     if (!email) return { ok: false, reason: `the app has no ${role} account a person could sign in with` };
     const earlier = kept.find((l) => l.role === role && l.email === email);
     let password = earlier?.password;

@@ -3,23 +3,23 @@
 // Chief AI routed it, and the backend builder changed tested settings to answer it. They end with the step that started them. Found
 // by the folder they were started from, not by their name: Compose names them after the folder ("backend"), which every build shares,
 // and the builder may already have deleted its compose file. The real deployment runs from the build's top folder, so it is never touched.
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { resolve } from "node:path";
 
-export type DockerRun = (args: string[]) => string;
+export type DockerRun = (args: string[]) => Promise<string>;
 
-const docker: DockerRun = (args) => {
-  const r = spawnSync("docker", args, { encoding: "utf-8", timeout: 60_000 });
-  if (r.error || r.status !== 0) throw new Error(String(r.error ?? r.stderr).slice(0, 200));
-  return r.stdout;
-};
+// Async on purpose: synchronous child processes fail with ETIMEDOUT inside the long-running worker.
+const docker: DockerRun = (args) =>
+  new Promise((done, fail) => {
+    execFile("docker", args, { encoding: "utf-8", timeout: 60_000 }, (err, stdout) => (err ? fail(err) : done(stdout)));
+  });
 
 /** Removes the containers started from this folder, with their private data. Returns what it removed. */
-export function stopBuilderContainers(dir: string, run: DockerRun = docker): string[] {
+export async function stopBuilderContainers(dir: string, run: DockerRun = docker): Promise<string[]> {
   try {
-    const ids = run(["ps", "-aq", "--filter", `label=com.docker.compose.project.working_dir=${resolve(dir)}`]).split(/\s+/).filter(Boolean);
+    const ids = (await run(["ps", "-aq", "--filter", `label=com.docker.compose.project.working_dir=${resolve(dir)}`])).split(/\s+/).filter(Boolean);
     if (ids.length === 0) return [];
-    run(["rm", "-f", "-v", ...ids]);
+    await run(["rm", "-f", "-v", ...ids]);
     console.log(`[containers] removed ${ids.length} private container(s) started from ${dir}`);
     return ids;
   } catch (err) {

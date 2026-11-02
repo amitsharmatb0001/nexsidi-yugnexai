@@ -331,7 +331,7 @@ export async function runFix(plan: BuildPlan, findings: string[], team?: { role?
   try {
     return await fixOnce(plan, findings, team, extra);
   } finally {
-    if (team?.role !== "helper") stopBuilderContainers(getOutputDir(plan.projectId));
+    if (team?.role !== "helper") await stopBuilderContainers(getOutputDir(plan.projectId));
   }
 }
 

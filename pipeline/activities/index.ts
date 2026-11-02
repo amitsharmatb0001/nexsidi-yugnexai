@@ -704,7 +704,7 @@ ${tests}` } : run;
   } finally {
     // 2026-10-30 (understanding plan, step 2): the app map follows every change of the code.
     refreshAppMap(buildDirFor(projectId));
-    stopBuilderContainers(outputDirOf(projectId, builder));
+    await stopBuilderContainers(outputDirOf(projectId, builder));
     clearInterval(hb);
   }
 }
@@ -1254,6 +1254,17 @@ export interface ChangeRequestResult {
 }
 
 export async function applyChangeRequestActivity(projectId: string, changeText: string): Promise<ChangeRequestResult> {
+  // 2026-11-02 (Brewline 8): this step never said it was alive, so it was killed after 3 minutes and started over, 5 times, paying each time.
+  const ctx = Context.current();
+  const hb = setInterval(() => ctx.heartbeat("running"), 30_000);
+  try {
+    return await applyChangeRequest(projectId, changeText);
+  } finally {
+    clearInterval(hb);
+  }
+}
+
+async function applyChangeRequest(projectId: string, changeText: string): Promise<ChangeRequestResult> {
   const plan = getPlan(projectId);
   // buildFixTask's surrounding scaffold (both agents) frames its findings
   // list as "an adversarial QA review found the following issues" — wrong
