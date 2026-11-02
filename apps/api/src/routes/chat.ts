@@ -48,6 +48,9 @@ chatRouter.post("/", async (c) => {
 
   const state = (await loadSession(sessionId)) ?? newSession(userId, sessionId);
   state.messages.push({ role: "user", content: message.trim(), ts: Date.now() });
+  // 2026-11-02: the session id is the project's id; what the customer wrote in New project belongs to this conversation.
+  const [project] = await db.select({ context: projects.context }).from(projects).where(eq(projects.id, sessionId)).limit(1).catch(() => []);
+  state.projectContext = project?.context ?? undefined;
   // Suggested features the customer ticked when accepting the plan — only
   // names the planner actually suggested are kept (proposedPlanToBuildPlan).
   if (Array.isArray(body.acceptedSuggestions)) {

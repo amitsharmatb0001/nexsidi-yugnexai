@@ -6,9 +6,9 @@ function required(name: string): string {
   return value;
 }
 
-export const config = {
+export const config = Object.freeze({
   port: Number(process.env.PORT) || 3001,
   databaseUrl: required("DATABASE_URL"),
   jwtSecret: required("JWT_SECRET"),
   corsOrigin: required("CORS_ORIGIN"),
-};
+});

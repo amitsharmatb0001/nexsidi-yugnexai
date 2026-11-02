@@ -118,6 +118,11 @@ export function writeFoundation(dir: string, files: FoundationFile[]): void {
 
 const normal = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "");
 
+/** The tested files of this folder, as recorded when the build started. */
+export function foundationFileList(dir: string): string[] {
+  return Object.keys(readRecord(dir));
+}
+
 export function isFoundationFile(dir: string, path: string): boolean {
   return normal(path) in readRecord(dir);
 }

@@ -264,3 +264,11 @@ test("the items that state a limit are found; a test on each side of the limit c
   expect(limitGaps(items, [test1("SC1", 400)])).toEqual([expect.stringContaining("SC1")]);
   expect(limitGaps(items, [test1("SC1", 201), test1("SC1", 400)])).toEqual([]);
 });
+
+// 2026-11-02 (Brewline 7): {{as.email}} in a test run as "anyone" has no account to come from.
+test("a test run as anyone may not use {{as.email}}", () => {
+  const t = (as: string, stepAs?: string) => ({ id: "AT-1-1", phase: 1, planItem: "SC1", title: "sign in", as, kind: "api", steps: [{ ...(stepAs ? { as: stepAs } : {}), method: "POST", path: "/api/v1/auth/sign-in", body: { email: "{{as.email}}" }, expectStatus: 200 }] }) as AcceptanceTest;
+  const reasons = (x: AcceptanceTest) => checkAcceptanceTests([x], dir).rejected.flatMap((r) => r.reasons).join(" | ");
+  expect(reasons(t("anyone"))).toContain("{{as.email}}");
+  expect(reasons(t("user", "anyone"))).not.toContain("{{as.email}}");
+});

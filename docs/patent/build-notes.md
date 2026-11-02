@@ -1492,3 +1492,24 @@ Then the backend lead reported that node --test could not run under its tools at
 **Where the run ended.** Stopped by the $20 cap ($20.02) during the first round of fixes after the acceptance gate; not delivered, and the reviewers never ran, so the second look was not exercised. The first gate round on the running app: 32 passed, 3 failed, 3 not checked of 38, including the 15-minute limit on both sides, past times refused, and an order keeping an item's name and price after the item is deleted.
 
 **Faults still open.** The gate's own test AT-1-6 signs in "as anyone", which has no email. The foundation's sign-in rate limit (10 in 15 minutes) stopped three gate tests. The frontend lead ran its own test setup on a private port, reported the resulting CORS refusal, and the Chief AI routed that false report to the backend builder, who could not edit the tested file and so overwrote the tested setting at run time from routes/index.ts, with two hardcoded local origins. The write guard cannot see that; no code check does yet. Commands a builder simply may not use count toward the "reaching outside its work" stop. Input was 37.5M tokens to 0.36M output: builder histories above 100K tokens per call, and the restarts repeated team steps. The foundation cut the backend plan's files but did not make this run cheaper than the last.
+
+
+## Batch 77 (2026-11-02): fixes from Brewline 7, proven with no model call
+
+**Tested settings.** The backend builder could not edit the tested CORS file, so it wrote "(config as any).corsOrigin = ..." in its own routes file. A check now reads the syntax tree of every builder file and finds any assignment, delete, Object.assign or Object.defineProperty on what a tested file exports, through casts and named copies. The settings object is also frozen, so such a change crashes at start.
+
+**False CORS report.** The cause was the backend builder's private containers, still running with another address when the frontend builder ran its check. A step's private containers are now removed when it ends, found by the folder they were started from. Proven on real Docker: the builder's container went, the deployed app's stayed.
+
+**Checks.** {{as.email}} in a step sent as anyone now uses the test's own account, and a test with no account at all is refused when written. The sign-in limit counts failed attempts only, with a second limit of 100 of any kind; a Retry-After is waited out up to 16 minutes; a page that gives no answer twice is not checked instead of failed. AT-2-2's cause is now established: menu descriptions say "steamed milk", so the test was wrong; the tester is told what notSee reads, which is an instruction, not a check.
+
+**Helpers.** The system type-checks a helper's own files when it finishes and hands back only those errors; the lead makes the whole folder pass. A refused command is counted apart from reaching outside, told as what it is, and stops at 12 instead of 6.
+
+**Cost, measured on Brewline 7's records.** Of $20.02, about $13.7 was 9.16M full-price tokens, because a call gets the reuse discount only for what the same model saw before. 82 changes of model were 3.69M of those: after a rate limit a builder moved model, and its next call started from the first model again. A builder now stays on the model that answered and tries the first again after 15 calls. Restarts added whole tasks again: one helper held four copies. Older copies now go, and first messages leave out compiled output and other helpers' files. Saved conversations: 2.42M to 1.76M characters; one helper's first message: 87K to 65K. History cuts were looked at and left alone: 20 calls, 0.5M tokens, no evidence that changing them saves money. No lower cost is proven until a paid run shows it.
+
+**Project description.** The planning chat never read what the customer wrote in New project. It now goes to the research, the brief and the planner.
+
+**Real team steps.** The proofs before Brewline 7 called the foundation directly. team-steps-real.test.ts runs the real phase steps, builders and tools with only the model scripted. Seven of Brewline 7's faults were put back one at a time and each made it fail.
+
+**Tests.** pipeline 1102, packages 1104, agents 626, api 101, web 92, none failing.
+
+**Not proven.** The frontend foundation has still not run in a paid build; the scripted test shows it written and held, not an app built on it. The second review has not run on a real build. Stray builder files (backend/fix.js, find-kill.js, list-users.js, start-bg.js, dist-test) are still not caught.

@@ -88,6 +88,8 @@ API steps: method, path, optional "as" (who sends this step when not the test's 
 answer shape exactly.
 Journey steps: {"do": "open", "path"}, {"do": "fill", "field", "value"}, {"do": "choose", "field", "option"},
 {"do": "click", "text"}, {"do": "see", "text"}, {"do": "notSee", "text"}, {"do": "atPath", "path"}. A journey starts with "open".
+"notSee" reads all the text on the page, so use it only for text a correct page can never show: an item's description may well
+say "steamed milk" on a menu with no milk choices, so "Milk" proves nothing there.
 Values: {{email}} and {{password}} (a new account, the same within one test), {{unique}}, {{date+N}} (the date N days from
 today), {{datetime+N HH:MM}} (that day at that local time; N is 1 or more), {{minutes+N}} (N minutes from now; {{minutes-60}} is an hour ago), {{as.email}} and {{as.password}} (the test's own account), and
 any value an earlier step saved.`;

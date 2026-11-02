@@ -335,3 +335,65 @@ test("an answer path may write a list position with brackets", () => {
   expect(lookup(body, "data.items[0].id")).toEqual({ found: true, value: "a" });
   expect(lookup(body, "items[0].id")).toEqual({ found: true, value: "a" });
 });
+
+// 2026-11-02 (Brewline 7): a sign-in test runs as "user" with a step "as anyone" (nobody is signed in yet) and {{as.email}} in
+// the form. The step's own "anyone" has no account, so the text stayed literal and the app answered "Enter a valid email".
+test("a step run as anyone can still send the test's own account, {{as.email}}", async () => {
+  const seen: unknown[] = [];
+  const stub = Bun.serve({ port: 0, fetch: async (req) => { seen.push(await req.json()); return new Response("{}", { headers: { "content-type": "application/json" } }); } });
+  const t: AcceptanceTest = { id: "AT-9-2", phase: 1, planItem: "EP2", title: "sign in", as: "user", kind: "api", steps: [{ as: "anyone", method: "POST", path: "/api/v1/auth/sign-in", body: { email: "{{as.email}}", password: "{{as.password}}" }, expectStatus: 200 }] };
+  const r = await runAcceptanceTests([t], { apiUrl: `http://localhost:${stub.port}`, appUrl: "http://unused", accounts: { user: { email: "me@example.com", password: "p", token: "t" } }, sleep: async () => undefined });
+  stub.stop(true);
+  expect(r.results[0]!.status).toBe("passed");
+  expect(seen[0]).toEqual({ email: "me@example.com", password: "p" });
+});
+
+// 2026-11-02 (Brewline 7): the sign-in limit answers 429 with Retry-After near 15 minutes; the runner waited 2 minutes, asked again
+// and marked the test not checked. Waiting is free, and the wait ends when the app says it does.
+test("the runner waits as long as the app's Retry-After says, up to a full sign-in window", async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  const stub = Bun.serve({ port: 0, fetch: () => (++calls === 1 ? new Response("{}", { status: 429, headers: { "retry-after": "900" } }) : new Response("{}", { status: 200 })) });
+  const t: AcceptanceTest = { id: "AT-9-3", phase: 1, planItem: "EP2", title: "limit", as: "anyone", kind: "api", steps: [{ method: "GET", path: "/x", expectStatus: 200 }] };
+  const r = await runAcceptanceTests([t], { apiUrl: `http://localhost:${stub.port}`, appUrl: "http://unused", accounts: {}, sleep: async (ms) => void waits.push(ms) });
+  stub.stop(true);
+  expect(r.results[0]!.status).toBe("passed");
+  expect(waits).toEqual([901_000]);
+});
+
+// 2026-11-02 (Brewline 7): one page load took over 20 s while the machine was busy; the same page answered in 0.04 s afterwards.
+// The test failed, which sent a builder to fix a page that was not broken. A page that gives no answer is tried once more, and if
+// it still gives none the test is not checked: nothing was learned about the page.
+function slowBrowser(timeouts: number): { browser: BrowserLike; loads: () => number } {
+  let loads = 0;
+  return {
+    loads: () => loads,
+    browser: {
+      close: async () => undefined,
+      send: async (action) => {
+        if (action === "navigate") {
+          loads++;
+          if (loads <= timeouts) throw new Error("page.goto: Timeout 20000ms exceeded.");
+          return { status: 200 };
+        }
+        return "/order";
+      },
+    },
+  };
+}
+const openOrder: AcceptanceTest = { id: "AT-9-4", phase: 1, planItem: "SC1", title: "order page", as: "anyone", kind: "journey", steps: [{ do: "open", path: "/order" }] };
+
+test("a page that times out once is opened again, and the test goes on", async () => {
+  const b = slowBrowser(1);
+  const r = await runAcceptanceTests([openOrder], { apiUrl: "http://unused", appUrl: "http://unused", accounts: {}, openBrowser: async () => b.browser, sleep: async () => undefined });
+  expect(r.results[0]!.status).toBe("passed");
+  expect(b.loads()).toBe(2);
+});
+
+test("a page that times out twice is not checked, never failed", async () => {
+  const b = slowBrowser(5);
+  const r = await runAcceptanceTests([openOrder], { apiUrl: "http://unused", appUrl: "http://unused", accounts: {}, openBrowser: async () => b.browser, sleep: async () => undefined });
+  expect(r.results[0]!.status).toBe("not_checked");
+  expect(r.results[0]!.detail).toContain("no answer");
+  expect(b.loads()).toBe(2);
+});

@@ -159,3 +159,37 @@ test("searches keep the wording the model gave them (shown in the chat)", async 
   const r = await researchBrief("brief", deps);
   expect(r.queries).toEqual(["Practo Ray vs Clinicia"]);
 });
+
+// 2026-11-02 (Brewline 7): the customer described the app in New project, and the planning chat never read it: the chat said "Build the
+// Brewline site as described", and the research looked up breweries. What they wrote is part of the brief, word for word.
+test("what the customer wrote in New project reaches the research, the brief and the planner", async () => {
+  const state = newSession("u1", "s1");
+  state.projectContext = "Brewline is a pre-order site for a coffee shop";
+  state.messages.push({ role: "user", content: "Build it as described", ts: 1 });
+  let searched = "";
+  const gen = streamReply(state, "", { research: async (b) => { searched = b; return { notes: "", sources: [], queries: [] }; } });
+  await gen.next();
+  await gen.next();
+  await gen.return(undefined);
+  expect(searched).toContain("pre-order site for a coffee shop");
+  expect(searched).toContain("Build it as described");
+  expect(state.brief).toContain("pre-order site for a coffee shop");
+  expect(buildPlannerSystemPrompt(state)).toContain("pre-order site for a coffee shop");
+});
+
+test("a project with no description gets no empty section", async () => {
+  const state = newSession("u1", "s1");
+  state.projectContext = "   ";
+  state.messages.push({ role: "user", content: "Build a shop", ts: 1 });
+  expect(buildPlannerSystemPrompt(state)).not.toContain("wrote when they created");
+  const gen = streamReply(state, "", { research: async () => ({ notes: "", sources: [], queries: [] }) });
+  await gen.next();
+  await gen.next();
+  await gen.return(undefined);
+  expect(state.brief).toBe("Build a shop");
+});
+
+test("the chat route gives the planner the project's description", () => {
+  const chat = readFileSync(new URL("../../../apps/api/src/routes/chat.ts", import.meta.url), "utf-8");
+  expect(chat).toContain("state.projectContext = project?.context");
+});

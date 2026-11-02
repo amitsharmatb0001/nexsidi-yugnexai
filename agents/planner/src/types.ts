@@ -66,6 +66,7 @@ export interface PlannerState {
   research?: ResearchNotes;  // done once, before the first question (Part B, 2 Oct 2026)
   acceptedSuggestions?: string[];  // suggested features the customer ticked when accepting the plan
   brief?: string;  // the customer's brief as first sent, kept word for word for the build
+  projectContext?: string;  // what the customer wrote when creating the project (read fresh on every message: it can be edited)
 }
 
 // Structured plan shown to the user before the build starts (the "plan panel")

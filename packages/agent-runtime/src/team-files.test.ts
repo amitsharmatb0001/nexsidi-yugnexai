@@ -1,9 +1,9 @@
 import { test, expect, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { helperWritable, leadSharedWritable } from "./team-files.ts";
-import { teamRunOverrides, missingFiles } from "./team-files.ts";
+import { teamRunOverrides, missingFiles, ownTypeErrors } from "./team-files.ts";
 import { readFileSync } from "node:fs";
 
 // 2026-10-24 (builder teams): helpers of one builder write at the same time, so each may write only its own work — its
@@ -50,7 +50,7 @@ test("team settings: helpers on the flash tier starting on their own model, type
   const o = teamRunOverrides({ role: "helper", helperIndex: 2, ownFiles: ["app/menu/page.tsx"] }, d, { taskFiles: ["app/menu/page.tsx"] });
   expect(o.geminiTier).toBe("generation");
   expect(o.firstModelIndex).toBe(2);
-  expect(o.requiredVerificationCommands).toEqual(["npx tsc --noEmit"]);
+  expect(o.requiredVerificationCommands).toEqual([]);
   expect(o.requiredEvidenceKinds).toEqual([]);
   expect([o.enableDockerTools, o.enableHttpTools, o.enableBrowser]).toEqual([false, false, false]);
   expect(o.writableFile!("lib/api.ts")).toBe(false);
@@ -98,4 +98,46 @@ test("both builders hand their foundation guard to every team step", () => {
     // Brewline 7: the call was there and the import was not, so the step crashed at once.
     expect(src.split("\n").find((l) => l.includes("packages/foundation/src/index.ts"))).toContain("putBackFoundation");
   }
+});
+
+// 2026-11-02 (Brewline 7): helpers write at the same time, so the type check of the whole folder failed on each other's unfinished
+// files. A helper could not finish, and reported other helpers' work as blockers. The system runs the check when a helper finishes
+// and hands it only what is in its own files; the lead makes the whole folder pass.
+test("a helper is held to type errors in its own files only", async () => {
+  const d = folder();
+  const out = "src/mine.ts(3,5): error TS2322: Type 'string' is not assignable.\nsrc/theirs.ts(1,1): error TS2304: Cannot find name 'x'.\n";
+  const found = await ownTypeErrors(d, ["src/mine.ts"], async () => ({ ran: true, output: out }));
+  expect(found.length).toBe(1);
+  expect(found[0]).toContain("src/mine.ts(3,5)");
+  expect(await ownTypeErrors(d, ["src/other.ts"], async () => ({ ran: true, output: out }))).toEqual([]);
+});
+
+test("a type check that could not run holds nobody back", async () => {
+  expect(await ownTypeErrors(folder(), ["src/mine.ts"], async () => ({ ran: false, output: "" }))).toEqual([]);
+});
+
+test("the real type check runs and finds a real error in the helper's file", async () => {
+  const d = mkdtempSync(join(tmpdir(), "team-tsc-"));
+  dir = d;
+  mkdirSync(join(d, "src"));
+  mkdirSync(join(d, "node_modules"));
+  symlinkSync(join(import.meta.dir, "../../../node_modules/typescript"), join(d, "node_modules/typescript"), "junction");
+  writeFileSync(join(d, "tsconfig.json"), JSON.stringify({ compilerOptions: { noEmit: true, strict: true, skipLibCheck: true, types: [] }, include: ["src"] }));
+  writeFileSync(join(d, "src/mine.ts"), "export const a: number = 'x';\n");
+  writeFileSync(join(d, "src/theirs.ts"), "export const b: number = 'y';\n");
+  const found = await ownTypeErrors(d, ["src/mine.ts"]);
+  rmSync(join(d, "node_modules/typescript"), { recursive: true, force: true });
+  expect(found.length).toBe(1);
+  expect(found[0]).toContain("src/mine.ts");
+}, 60_000);
+
+test("a helper does not have the whole-folder type check as a condition of finishing", () => {
+  const o = teamRunOverrides({ role: "helper", ownFiles: ["app/menu/page.tsx"] }, folder(), { taskFiles: [] });
+  expect(o.requiredVerificationCommands).toEqual([]);
+});
+
+// 2026-11-02 (Brewline 7): each helper's first message carried 34 whole files, 53K characters: compiled output and other helpers' work.
+test("a helper's first message leaves out the other helpers' files", () => {
+  const o = teamRunOverrides({ role: "helper", ownFiles: ["a.ts"], avoidFiles: ["b.ts"] }, folder(), { taskFiles: [] });
+  expect(o.preloadSkip).toEqual(["b.ts"]);
 });

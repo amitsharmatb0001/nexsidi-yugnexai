@@ -174,6 +174,19 @@ export default router;
     expect(r.headers.get("access-control-allow-origin")).toBe(ORIGIN);
   });
 
+  // 2026-11-02 (Brewline 7): every sign-in counted, so a busy morning at a shop, or the checks on a finished app, were refused.
+  test("signing in correctly is not limited", async () => {
+    for (let i = 0; i < 15; i++) expect((await post("/auth/sign-in", { email: "ana@example.com", password: "long-enough-1" })).status).toBe(200);
+  }, 30_000);
+
+  // 2026-11-02 (Brewline 7): the builder changed this setting while the app ran, from its own file.
+  test("the settings cannot be changed while the app runs", () => {
+    const code = `"use strict"; const { config } = await import(${JSON.stringify(join(appDir, "src/config.ts"))}); config.corsOrigin = "x";`;
+    const r = spawnSync("bun", ["-e", code], { cwd: appDir, env: { ...process.env, JWT_SECRET: "s", DATABASE_URL: "postgres://x", CORS_ORIGIN: "http://a" }, encoding: "utf-8" });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("TypeError");
+  });
+
   test("sign-in is rate limited, and the refusal is in the same format", async () => {
     let last: Response | undefined;
     for (let i = 0; i < 12; i++) {

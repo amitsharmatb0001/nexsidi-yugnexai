@@ -17,6 +17,7 @@ import { planItemsFor, type PlanItem } from "../chief-check.ts";
 import { buildAppMap } from "../app-map/index.ts";
 import { checkRules, ruleFindings } from "../app-map/rules.ts";
 import { recordMistakePatterns } from "../app-map/mistakes.ts";
+import { foundationTamperFindings } from "./foundation-tamper-check.ts";
 
 const SKIP = new Set(["node_modules", ".next", "dist", "build", ".git"]);
 
@@ -119,6 +120,7 @@ export function backendExitChecks(projectId: string): string[] {
   const dir = buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds");
   return [
     ...foundationChangeFindings(join(dir, "backend"), "backend/", backendFiles(dir)),
+    ...foundationTamperFindings(join(dir, "backend"), "backend/"),
     ...imageFindings("backend/", externalImageUrls(join(dir, "backend", "src"))),
     ...imageFindings("db/", externalImageUrls(join(dir, "db"))),
     ...starterContentFindings(dir),
@@ -248,7 +250,10 @@ export function attributionLogoFindings(frontendDir: string): string[] {
 }
 
 export function frontendExitChecks(projectId: string): string[] {
-  const out: string[] = [...foundationChangeFindings(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend"), "", frontendFoundationFiles())];
+  const out: string[] = [
+    ...foundationChangeFindings(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend"), "", frontendFoundationFiles()),
+    ...foundationTamperFindings(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend")),
+  ];
   out.push(...imageFindings("", externalImageUrls(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend"))));
   out.push(...attributionLogoFindings(join(buildDirFor(projectId, process.env.BUILD_DIR ?? "E:/tmp/nexsidi-builds"), "frontend")));
   for (const f of scanProjectForEmojiUi(projectId)) out.push(`${f.file}: ${f.issue}`);

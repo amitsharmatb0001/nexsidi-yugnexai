@@ -13,6 +13,7 @@ import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts
 import { answersBlock } from "../../../../packages/agent-runtime/src/tools/ask.ts";
 import { withExtraChecks } from "../../../../packages/agent-runtime/src/enforce/fix-accounting.ts";
 import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-files.ts";
+import { stopBuilderContainers } from "../../../../pipeline/activities/private-containers.ts";
 
 // 2026-10-24: the backend builder's own checks before it may finish (no hot-linked images in code or seed files) —
 // run by the system at task_complete, same as the frontend's. Dynamic import: the checks live in the pipeline package.
@@ -480,6 +481,14 @@ Workflow:
 // failing test passes on the rebuilt app" (pipeline/orchestrator/acceptance-gate.ts). It runs only once the builder's own
 // checks pass, since a rebuild of an app that fails them would only fail again.
 export async function runFix(plan: BuildPlan, findings: string[], team?: { role?: "helper" | "integrate"; ownFiles?: string[]; helperIndex?: number }, extra?: { exitChecks?: () => Promise<string[]> }): Promise<GeneratorResult> {
+  try {
+    return await fixOnce(plan, findings, team, extra);
+  } finally {
+    if (team?.role !== "helper") stopBuilderContainers(getOutputDir(plan.projectId));
+  }
+}
+
+async function fixOnce(plan: BuildPlan, findings: string[], team?: { role?: "helper" | "integrate"; ownFiles?: string[]; helperIndex?: number }, extra?: { exitChecks?: () => Promise<string[]> }): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
   putBackFoundation(outputDir, backendFoundationFiles(foundationPlan(plan)));

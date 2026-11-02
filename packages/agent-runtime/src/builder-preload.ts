@@ -18,7 +18,32 @@ export interface OwnFilesPreload {
   omitted: string[];
 }
 
-export function buildOwnFilesPreload(root: string, budgetChars = BUILDER_PRELOAD_CHARS): OwnFilesPreload {
+const FILES_HEADING = "\n\nYOUR CURRENT FILES — ";
+// Two copies of a task are the same when they start the same: the file list and the plan differ only further on.
+const SAME_TASK_CHARS = 400;
+
+function withoutFiles(text: string): string {
+  const at = text.indexOf(FILES_HEADING);
+  return at < 0 ? text : text.slice(0, at);
+}
+
+/**
+ * 2026-11-02 (Brewline 7): every restart of a step added its whole task and files again: one helper's conversation held four copies,
+ * 360K characters, resent on every call. On a restart, older copies of the files are out of date, and an older copy of the same task
+ * says nothing the new one does not.
+ */
+export function withoutOldCopies<T extends { role: string; content: unknown }>(messages: T[], task: string): T[] {
+  const same = withoutFiles(task).slice(0, SAME_TASK_CHARS);
+  return messages.map((m) => {
+    if (m.role !== "user" || typeof m.content !== "string") return m;
+    const kept = withoutFiles(m.content);
+    if (kept.slice(0, SAME_TASK_CHARS) === same) return { ...m, content: "(An earlier copy of your task was here; the current one comes later.)" };
+    return kept === m.content ? m : { ...m, content: kept };
+  });
+}
+
+export function buildOwnFilesPreload(root: string, budgetChars = BUILDER_PRELOAD_CHARS, skip: string[] = []): OwnFilesPreload {
+  const leaveOut = new Set(skip.flatMap((f) => [f, f.replace(/\.(tsx?|jsx?)$/, ".test.$1")]));
   const files: string[] = [];
   const walk = (rel: string) => {
     let names: string[];
@@ -28,8 +53,10 @@ export function buildOwnFilesPreload(root: string, budgetChars = BUILDER_PRELOAD
       return;
     }
     for (const n of names) {
-      if (SKIP.has(n) || SKIP_FILES.has(n)) continue;
+      // Compiled output under any name (a builder made dist-test and dist-test-2 for itself).
+      if (SKIP.has(n) || SKIP_FILES.has(n) || n.startsWith("dist")) continue;
       const r = rel ? `${rel}/${n}` : n;
+      if (leaveOut.has(r)) continue;
       try {
         if (statSync(join(root, r)).isDirectory()) walk(r);
         else if (CODE.has(extname(n)) || n === ".env.example") files.push(r);
@@ -64,12 +91,12 @@ export function buildOwnFilesPreload(root: string, budgetChars = BUILDER_PRELOAD
 }
 
 /** The first-message section for a builder whose files already exist. "" when there is nothing to preload. */
-export function ownFilesSection(root: string): string {
-  const p = buildOwnFilesPreload(root);
+export function ownFilesSection(root: string, skip: string[] = []): string {
+  const p = buildOwnFilesPreload(root, BUILDER_PRELOAD_CHARS, skip);
   if (p.included.length === 0) return "";
   const rest = p.omitted.length ? `\nNot included (read them with read_files when you need them): ${p.omitted.join(", ")}` : "";
   return (
-    `\n\nYOUR CURRENT FILES — ${p.included.length} file(s) you already wrote, whole, as they are on disk right now. Do not ` +
+    `${FILES_HEADING}${p.included.length} file(s) you already wrote, whole, as they are on disk right now. Do not ` +
     `read these again with read_file/read_files unless you changed them in this run; work from this copy.${rest}\n\n${p.text}`
   );
 }

@@ -25,8 +25,8 @@ test("the sign-up and sign-in paths come from the contract", () => {
   const p = foundationPlan({ apiContract: contract("/api/v1/auth/register", "/api/v1/auth/login"), dbSchema: { tables: [users()] } });
   expect(p.auth).toMatchObject({ signUp: "register", signIn: "login" });
   const route = backendFoundationFiles(p).find((f) => f.path === "src/routes/auth.routes.ts")!.content;
-  expect(route).toContain('router.post("/register", authLimiter, signUp)');
-  expect(route).toContain('router.post("/login", authLimiter, signIn)');
+  expect(route).toContain('router.post("/register", authVolumeLimiter, authLimiter, signUp)');
+  expect(route).toContain('router.post("/login", authVolumeLimiter, authLimiter, signIn)');
 });
 
 test("sign-up never takes a role from the caller, and fills the name column only when the table has one", () => {

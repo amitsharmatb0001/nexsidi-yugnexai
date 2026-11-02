@@ -421,7 +421,7 @@ export async function routeToolsWithFallback(
   tier: GeminiTier,
   messages: GeminiMessage[],
   tools: GeminiToolDef[],
-  opts?: { model?: string; cachedContent?: string; agentName?: string; firstModelIndex?: number },
+  opts?: { model?: string; cachedContent?: string; agentName?: string; firstModelIndex?: number; preferModel?: string },
   deps: { chat?: typeof geminiChatWithTools } = {},
 ): Promise<GeminiChatWithToolsResult & { modelUsed: string }> {
   // 2026-10-23: agents kept off Gemini on purpose (nim-only.ts) go to NVIDIA and never reach the Gemini pool.
@@ -433,13 +433,16 @@ export async function routeToolsWithFallback(
   // fallback model's rate limit when the shared primary is exhausted.
   // opts.model still takes precedence when set (collapses to one model,
   // existing override semantics unchanged).
-  const pool = opts?.model
+  const usualPool = opts?.model
     ? poolForTier(tier, opts.model)
     : opts?.firstModelIndex !== undefined
       ? poolStartingAt(tier, opts.firstModelIndex)
       : opts?.agentName
         ? rotatedPoolForAgent(tier, opts.agentName)
         : poolForTier(tier);
+  // 2026-11-02: the model that answered this agent last goes first, because the reuse discount belongs to one model.
+  const prefer = opts?.preferModel;
+  const pool = prefer && usualPool.includes(prefer) ? [prefer, ...usualPool.filter((m) => m !== prefer)] : usualPool;
   const thinkingLevel = thinkingLevelForTier(tier);
   const errors: string[] = [];
 

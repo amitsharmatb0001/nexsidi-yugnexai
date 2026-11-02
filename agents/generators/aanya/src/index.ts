@@ -20,6 +20,7 @@ import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts
 import { answersBlock } from "../../../../packages/agent-runtime/src/tools/ask.ts";
 import { withExtraChecks } from "../../../../packages/agent-runtime/src/enforce/fix-accounting.ts";
 import { teamRunOverrides } from "../../../../packages/agent-runtime/src/team-files.ts";
+import { stopBuilderContainers } from "../../../../pipeline/activities/private-containers.ts";
 
 // 2026-10-24: the system's own frontend checks (pipeline/orchestrator/stages/builder-exit-checks.ts), loaded when used.
 // 2026-10-25: the approved plan's checklist for this builder (the same items the reviewers judge against), for the build task.
@@ -327,6 +328,14 @@ export const FIX_MAX_STEPS = 60;
 // failing test passes on the rebuilt app" (pipeline/orchestrator/acceptance-gate.ts). It runs only once the builder's own
 // checks pass, since a rebuild of an app that fails them would only fail again.
 export async function runFix(plan: BuildPlan, findings: string[], team?: { role?: "helper" | "integrate"; ownFiles?: string[]; helperIndex?: number }, extra?: { exitChecks?: () => Promise<string[]> }): Promise<GeneratorResult> {
+  try {
+    return await fixOnce(plan, findings, team, extra);
+  } finally {
+    if (team?.role !== "helper") stopBuilderContainers(getOutputDir(plan.projectId));
+  }
+}
+
+async function fixOnce(plan: BuildPlan, findings: string[], team?: { role?: "helper" | "integrate"; ownFiles?: string[]; helperIndex?: number }, extra?: { exitChecks?: () => Promise<string[]> }): Promise<GeneratorResult> {
   const apiKey = process.env.NIM_API_KEY ?? "";
   const outputDir = getOutputDir(plan.projectId); // SAME dir run() wrote to — not regenerated
   putBackFoundation(outputDir, frontendFoundationFiles());
@@ -729,6 +738,10 @@ STAY IN YOUR FOLDER: your work is the frontend in this directory only.
   API contract (field names, method, path, Bearer header) and by the
   build. The running app — frontend, backend and database together — is
   tested end to end after deployment.
+- In your own check the API calls fail, because no backend is running for
+  your address: no connection, or a refused origin. That comes from the
+  check, not from the backend: it is not a fault and not a blocker. Check how your pages
+  look and how they show the failure; the deployed app is where the calls are tested.
 `;
 
 export function buildAgentPrompt(mode: "preview" | "integrate"): string {

@@ -177,6 +177,8 @@ export interface AgentRunConfig {
   // 2026-10-23: put the files already in sandboxDir into the first message, whole (builder-preload.ts). Builders set
   // it for later phases and fix rounds, where the Brewline build spent 131 of 317 model calls reading one file each.
   preloadOwnFiles?: boolean;
+  // 2026-11-02: files that first message leaves out (a helper's first message: the other helpers' work).
+  preloadSkip?: string[];
   // 2026-10-24: an agent whose answer is the summary itself (the design agent) is not held to the builders' "show your
   // verification evidence" rule; its caller validates the answer. Brewline lost its approved design to that rule.
   skipEvidenceGate?: boolean;

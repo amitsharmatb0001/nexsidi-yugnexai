@@ -533,7 +533,8 @@ export async function* streamReply(
   // Done in code — models skip optional tools — before the first question.
   if (needsResearch(state)) {
     yield { type: "research_status", content: "Researching your product…" };
-    const brief = state.messages.filter((m) => m.role === "user").map((m) => m.content ?? "").join("\n\n");
+    // 2026-11-02 (Brewline 7): what they wrote in New project comes first; the chat never read it, and the research looked up breweries.
+    const brief = [state.projectContext?.trim() ?? "", ...state.messages.filter((m) => m.role === "user").map((m) => m.content ?? "")].filter(Boolean).join("\n\n");
     state.brief = brief; // kept word for word for the build (planToUserRequest)
     // Each search is streamed to the chat as it starts and finishes (Amit,
     // run 4: the research used to appear as one wall of text at the end).
@@ -827,8 +828,10 @@ export function buildPlannerSystemPrompt(state: PlannerState): string {
   const research = state.research?.notes
     ? `## What you found (research done before this conversation — use it)\n\n${state.research.notes}\n\nSources: ${state.research.sources.slice(0, 20).map((s) => s.url).join(", ")}`
     : "";
-  const briefText = state.messages.filter((m) => m.role === "user").map((m) => m.content ?? "").join("\n");
-  return [SYSTEM_PROMPT, research, skillPromptSection("planner", briefText)].filter(Boolean).join("\n\n");
+  const written = state.projectContext?.trim() ?? "";
+  const context = written ? `## What the customer wrote when they created this project (their own words, and part of the brief: do not ask for what it already says)\n\n${written}` : "";
+  const briefText = [written, ...state.messages.filter((m) => m.role === "user").map((m) => m.content ?? "")].join("\n");
+  return [SYSTEM_PROMPT, context, research, skillPromptSection("planner", briefText)].filter(Boolean).join("\n\n");
 }
 
 // ─── Stage notifications (called by pipeline route to push updates to chat) ──

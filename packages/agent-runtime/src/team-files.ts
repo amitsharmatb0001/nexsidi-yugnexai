@@ -5,7 +5,7 @@
 // makes it. The lead's shared-files step may write anything except the tasks' own files.
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import type { AgentRunConfig } from "./loop.ts";
 
 const norm = (p: string) => p.split("\\").join("/").replace(/^\.\//, "");
@@ -53,9 +53,39 @@ export function backendUnitTestFailures(backendDir: string): string[] {
   return [`unit tests failed (node --test): ${failing.join(" | ").slice(0, 1500) || out.slice(-800)}`];
 }
 
+type TypeCheck = (dir: string) => Promise<{ ran: boolean; output: string }>;
+
+const runTypeCheck: TypeCheck = (dir) => new Promise((done) => {
+  const tsc = join(dir, "node_modules", "typescript", "bin", "tsc");
+  if (!existsSync(tsc) || !existsSync(join(dir, "tsconfig.json"))) return done({ ran: false, output: "" });
+  execFile("node", [tsc, "--noEmit", "--pretty", "false"], { cwd: dir, encoding: "utf-8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+    // tsc exits 2 when it found errors; killed or unable to start, it found nothing to go on.
+    const killed = err && (err.killed || typeof err.code !== "number");
+    done({ ran: !killed, output: stdout ?? "" });
+  });
+});
+
+/**
+ * 2026-11-02 (Brewline 7): helpers write at the same time, so the type check of the whole folder fails on each other's unfinished
+ * files; a helper could not finish, and reported other helpers' work as blockers. The system runs the check when a helper finishes
+ * and hands it only what is in its own files. The lead makes the whole folder pass. A check that could not run holds nobody back.
+ */
+export async function ownTypeErrors(dir: string, own: string[], check: TypeCheck = runTypeCheck): Promise<string[]> {
+  const r = await check(dir);
+  if (!r.ran) return [];
+  const mine = new Set(own.map(norm));
+  return r.output.split("\n")
+    .map((l) => l.trim())
+    .filter((l) => {
+      const file = l.match(/^(.+?)\(\d+,\d+\): error /)?.[1];
+      return file !== undefined && mine.has(norm(file));
+    })
+    .map((l) => `type error in your file: ${l}`);
+}
+
 type Overrides = Partial<Pick<AgentRunConfig,
   "geminiTier" | "firstModelIndex" | "writableFile" | "requiredVerificationCommands" | "requiredEvidenceKinds" |
-  "requiredEvidenceCounts" | "enableDockerTools" | "enableHttpTools" | "enableBrowser" | "preloadOwnFiles" | "exitChecks" | "blockedTools" | "stopOnOpenBlocker">>;
+  "requiredEvidenceCounts" | "enableDockerTools" | "enableHttpTools" | "enableBrowser" | "preloadOwnFiles" | "preloadSkip" | "exitChecks" | "blockedTools" | "stopOnOpenBlocker">>;
 
 /**
  * The settings a team step adds to a builder's run (spread last, so they win). Helpers: the flash tier starting on their
@@ -89,9 +119,13 @@ export function teamRunOverrides(
       geminiTier: "generation",
       firstModelIndex: phase.helperIndex ?? 0,
       writableFile: within(helperWritable(sandboxDir, own)),
-      requiredVerificationCommands: ["npx tsc --noEmit"],
+      requiredVerificationCommands: [],
       preloadOwnFiles: true,
-      exitChecks: () => missingFiles(sandboxDir, own),
+      preloadSkip: phase.avoidFiles ?? [],
+      exitChecks: async () => {
+        const missing = missingFiles(sandboxDir, own);
+        return missing.length > 0 ? missing : ownTypeErrors(sandboxDir, own);
+      },
     };
   }
   if (phase.role === "shared") {

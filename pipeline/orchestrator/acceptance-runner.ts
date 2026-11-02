@@ -170,7 +170,8 @@ async function runApiTest(t: AcceptanceTest, opts: RunnerOptions, ctx: TestConte
     const s = steps[i]!;
     const account = accountFor(s.as ?? t.as, opts, n);
     // 2026-10-31 (Brewline 5): {{as.email}} in the step's answer checks is the account the step runs as.
-    ctx.account = account;
+    // 2026-11-02 (Brewline 7): a step sent as anyone (a sign-in, before there is a session) still has the test's own account to send.
+    ctx.account = account ?? opts.accounts[t.as];
     const path = String(expandPlaceholders(s.path, ctx));
     const label = `step ${n} (${s.method} ${path})`;
     if (/\{\{[^}]+\}\}/.test(path)) throw notChecked(n, `${label}: a value in the path was never saved`);
@@ -191,7 +192,8 @@ async function runApiTest(t: AcceptanceTest, opts: RunnerOptions, ctx: TestConte
         : notChecked(n, `the app did not answer at ${opts.apiUrl}: ${errText(err)}`);
     let res: Response | undefined;
     let text = "";
-    // The app's own rate limit: wait as long as its Retry-After says (plus a second), once.
+    // The app's own rate limit: wait as long as its Retry-After says (plus a second), once. Up to 16 minutes: a sign-in limit's
+    // window is 15, and waiting costs nothing.
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         res = await fetchFn(opts.apiUrl.replace(/\/+$/, "") + path, init());
@@ -201,7 +203,7 @@ async function runApiTest(t: AcceptanceTest, opts: RunnerOptions, ctx: TestConte
       }
       if (res.status !== 429 || attempt === 2) break;
       const seconds = Number(res.headers.get("retry-after"));
-      await sleep((Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 120) : 60) * 1000 + 1000);
+      await sleep((Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 960) : 60) * 1000 + 1000);
     }
     if (res!.status === 429) throw notChecked(n, `${label}: the app's rate limit refused the request twice`);
     let answer: unknown = text;
@@ -250,12 +252,17 @@ async function runJourney(t: AcceptanceTest, opts: RunnerOptions, ctx: TestConte
   const account = accountFor(t.as, opts, undefined);
   ctx.account = account;
   // A page the app does not serve because the app is down cannot be checked; any other navigation error is the app's.
+  // 2026-11-02 (Brewline 7): a page that gives no answer in time is tried once more; if it still gives none, nothing was learned
+  // about the page.
   const navigate = async (url: string, step: number | undefined) => {
-    try {
-      return (await browser.send("navigate", { url })) as { status?: number | null };
-    } catch (err) {
-      if (/ERR_CONNECTION_REFUSED|ECONNREFUSED|ERR_CONNECTION_RESET/i.test(errText(err))) throw notChecked(step, `the app did not answer at ${app}: ${errText(err)}`);
-      throw err;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return (await browser.send("navigate", { url })) as { status?: number | null };
+      } catch (err) {
+        if (/ERR_CONNECTION_REFUSED|ECONNREFUSED|ERR_CONNECTION_RESET/i.test(errText(err))) throw notChecked(step, `the app did not answer at ${app}: ${errText(err)}`);
+        if (!/Timeout \d+ms exceeded/i.test(errText(err))) throw err;
+        if (attempt === 2) throw notChecked(step, `${url} gave no answer in time, twice: ${errText(err)}`);
+      }
     }
   };
   await browser.send("newSession");

@@ -41,7 +41,7 @@ import { recordSpend, isOverBudget } from "./cost-budget.ts";
 import { createStrikeCounter } from "./enforce/strikes.ts";
 import { detectStuckLoop } from "./enforce/stuck-loop.ts";
 import { execWriteFile, execWriteFiles, execReadFile, execReadFiles, execListFiles, execEditFile, execEditFiles, execDeleteFile, execRollbackWorkspace, execQuerySymbol } from "./tools/file.ts";
-import { ownFilesSection } from "./builder-preload.ts";
+import { ownFilesSection, withoutOldCopies } from "./builder-preload.ts";
 import { execRunCommand } from "./tools/command.ts";
 import { execHttpRequest } from "./tools/http.ts";
 import { execDockerCompose } from "./tools/docker.ts";
@@ -130,6 +130,11 @@ export type { AgentRunConfig, AgentRunResult } from "./loop.ts";
 // well below this, tighten it further — this is a reasoned starting point,
 // not a value with more precision behind it than the evidence supports.
 export const COMPACTION_THRESHOLD_TOKENS = 120_000;
+
+// 2026-11-02 (Brewline 7): after a rate limit a builder moved to another model, and its next call started from the first model again:
+// 82 changes of model, each losing the reuse discount on the whole conversation, were 3.7M of the run's 9.2M full-price tokens. A
+// builder stays on the model that answered, and tries its first model again after this many calls (a lead's first model is the stronger one).
+export const MODEL_STAYS_FOR_CALLS = 15;
 
 // Escape hatch (cost-control plan's global constraint: every lever must be
 // individually toggleable/revertable). Matches QA_READ_CACHE_ENABLED's
@@ -433,7 +438,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   const systemPrompt = assembleSystemPrompt({ agentName: config.agentName, basePrompt: config.systemPrompt, taskText: config.initialMessage });
   // A builder working on files that already exist gets them whole in its first message (builder-preload.ts). Kept out of
   // taskText above so the preloaded code does not steer which skills are picked.
-  const initialMessage = config.initialMessage + (config.preloadOwnFiles ? ownFilesSection(config.sandboxDir) : "");
+  const initialMessage = config.initialMessage + (config.preloadOwnFiles ? ownFilesSection(config.sandboxDir, config.preloadSkip) : "");
 
   let messages: GeminiMessage[] = [];
   let loadedFromDb = false;
@@ -485,6 +490,7 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
         messages = isRelevantContextSelectionEnabled()
           ? compactViaRelevantContext(messages, initialMessage, loadedFactLedger, COMPACTION_THRESHOLD_TOKENS, compactionOptions())
           : await compactGeminiHistory(messages, undefined, LEGACY_COMPACTION_THRESHOLD_TOKENS);
+        messages = withoutOldCopies(messages, initialMessage);
         messages.push({ role: "user", content: initialMessage });
       }
     } catch (e) {
@@ -592,6 +598,8 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
   // out loud is NOT a stop — nudge it to actually call the next tool, and only
   // give up after several consecutive no-tool-call turns.
   let noToolCallStreak = 0;
+  let stayOnModel: string | undefined;
+  let callsOnModel = 0;
   const MAX_NO_TOOL_CALL_TURNS = 3;
   // 2026-07-12: real bug found live — the existing strike counter
   // (evaluateCommandStrike, below) only fires on a run_command call FAILING
@@ -712,8 +720,10 @@ export async function runAgentWithGemini(config: AgentRunConfig): Promise<AgentR
       // cache hit is possible on every turn, not just the first.
       // 2026-10-25: the call ledger records this call with the agent, tier and project it belongs to.
       response = await withCallContext({ projectId: config.projectId, agent: config.agentName, tier }, () =>
-        routeToolsWithFallback(tier, messages, tools, { model: config.geminiModel, cachedContent: cachedContentHandle, agentName: config.agentName, firstModelIndex: config.firstModelIndex }),
+        routeToolsWithFallback(tier, messages, tools, { model: config.geminiModel, cachedContent: cachedContentHandle, agentName: config.agentName, firstModelIndex: config.firstModelIndex, ...(stayOnModel && callsOnModel < MODEL_STAYS_FOR_CALLS ? { preferModel: stayOnModel } : {}) }),
       );
+      callsOnModel = response.modelUsed === stayOnModel && callsOnModel < MODEL_STAYS_FOR_CALLS ? callsOnModel + 1 : 1;
+      stayOnModel = response.modelUsed;
       if (iterations === 1) {
         console.log(`[${config.agentName}:gemini-agent] model=${response.modelUsed}`);
       }

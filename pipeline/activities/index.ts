@@ -31,6 +31,7 @@ import { runStage6 } from "../orchestrator/stages/stage6-deployment.ts";
 // differently — npm install between them would make a naive full-tree
 // hash produce false-positive rollbacks).
 import { recordHandoff, verifyHandoff } from "./context-chain-activities.ts";
+import { stopBuilderContainers } from "./private-containers.ts";
 import { buildHandoffContext } from "./handoff-context.ts";
 // Phase 5 (full agentic upgrade): Firecrawl's page-fetch capability existed
 // but was reachable ONLY from agents/planner/src/index.ts. Saanvi is a
@@ -657,6 +658,8 @@ function acceptanceTestsSection(projectId: string, phase: number, builder: "aany
   return acceptanceTestsForPhase(suite.tests, isTeamPass(projectId) ? "all" : phase, builder);
 }
 
+const outputDirOf = (projectId: string, builder: "aanya" | "shubham") => join(buildDirFor(projectId), builder === "aanya" ? "frontend" : "backend");
+
 async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phase: number, stage?: PhaseStage): Promise<void> {
   const ctx = Context.current();
   const hb  = setInterval(() => ctx.heartbeat("running"), 30_000);
@@ -669,7 +672,7 @@ async function runPhaseFor(projectId: string, builder: "aanya" | "shubham", phas
     await verifyHandoff(projectId, "arjun", builder, plan);
     const schemaReady = withNormalizedDbSchema(plan);
     const normalized = isTeamPass(projectId) ? collapsePhasesForTeam(schemaReady as never) as typeof schemaReady : schemaReady;
-    const outputDir = join(buildDirFor(projectId), builder === "aanya" ? "frontend" : "backend");
+    const outputDir = outputDirOf(projectId, builder);
     await runBuilderPhase({
       projectId,
       builder,
@@ -700,6 +703,7 @@ ${tests}` } : run;
   } finally {
     // 2026-10-30 (understanding plan, step 2): the app map follows every change of the code.
     refreshAppMap(buildDirFor(projectId));
+    stopBuilderContainers(outputDirOf(projectId, builder));
     clearInterval(hb);
   }
 }

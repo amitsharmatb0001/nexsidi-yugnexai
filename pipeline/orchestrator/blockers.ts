@@ -50,7 +50,7 @@ const REFUSALS: Array<[RefusalKind, RegExp]> = [
   ["not-yours", /is not one of your files[^'"\n]*|not owned by [^'"\n.]*|locked by [^'"\n.;)]*/i],
   ["not-available", /is not available in this run[^'"\n]*/i],
   ["outside", /path traversal blocked[^'"\n]*|escapes (?:the )?sandbox[^'"\n]*|\d+ actions were refused[^'"\n.]*/i],
-  ["allowlist", /failed (?:the )?allowlist check[^'"\n]*|not on the (?:command )?allow ?list[^'"\n]*/i],
+  ["allowlist", /failed (?:the )?allowlist check[^'"\n]*|not on the (?:command )?allow ?list[^'"\n]*|\d+ commands were refused[^'"\n.]*/i],
   ["refused", /\b(?:were|was) (?:blocked\/refused|blocked|refused)\b[^'"\n]*|permission denied[^'"\n]*|not allowed[^'"\n]*/i],
 ];
 // Names of technologies that look like files ("Node.js").

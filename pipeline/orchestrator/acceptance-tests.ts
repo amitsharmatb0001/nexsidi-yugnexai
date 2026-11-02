@@ -268,8 +268,10 @@ function checkOne(t: AcceptanceTest, scope: PlanScope): string[] {
     if (built > phase) reasons.push(`${what} is built in phase ${built}, after this test's phase ${phase}`);
   };
   const saved = new Set<string>();
-  const checkPlaceholders = (value: unknown, n: number) => {
+  const checkPlaceholders = (value: unknown, n: number, who: unknown = t.as) => {
     for (const name of placeholdersIn(value)) {
+      // 2026-11-02 (Brewline 7): nobody's account to read when both the test and the step run as anyone.
+      if (/^as\./.test(name) && who === "anyone" && t.as === "anyone") reasons.push(`step ${n}: {{${name}}} is the test's own account, and this test runs as "anyone": run it as "user" or a role, or use {{email}} and {{password}}`);
       // 2026-11-01 (Brewline 6): "today at 15:00" is a past time from 15:00 on, and a rule about the time then refuses it.
       if (FIXED_TODAY.test(name)) reasons.push(`step ${n}: {{${name}}} is a fixed time today, which turns into a past time as the day goes on: use {{minutes+N}} (N minutes from now)`);
       if (isKnownBuiltin(name) || saved.has(name)) continue;
@@ -303,7 +305,7 @@ function checkOne(t: AcceptanceTest, scope: PlanScope): string[] {
         if (!c || typeof c.path !== "string" || !c.path.trim()) reasons.push(`step ${n}: each answer check needs a path`);
         else if (c.equals === undefined && c.exists === undefined && c.contains === undefined) reasons.push(`step ${n}: the check of ${c.path} says nothing (use equals, exists or contains)`);
       }
-      checkPlaceholders([s.path, s.body, s.expectBody], n);
+      checkPlaceholders([s.path, s.body, s.expectBody], n, s.as ?? t.as);
       for (const [name, from] of Object.entries(s.save ?? {})) {
         if (typeof from !== "string" || !from.trim()) reasons.push(`step ${n}: save ${name} needs the path of the value in the answer`);
         saved.add(name);

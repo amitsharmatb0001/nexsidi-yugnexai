@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BlockedActionTracker, isBlockedResult, BLOCKED_NOTICE_AT, BLOCKED_STOP_AT } from "./blocked-actions.ts";
+import { BlockedActionTracker, isBlockedResult, BLOCKED_NOTICE_AT, BLOCKED_STOP_AT, COMMANDS_STOP_AT } from "./blocked-actions.ts";
 import { recordBlocked, readBlockedReports, REPORT_BLOCKED_TOOL_DEF } from "./tools/blocked.ts";
 import { buildToolList } from "./loop.ts";
 
@@ -78,4 +78,38 @@ test("every agent loop handles report_blocked and feeds each tool result to the 
     expect({ file, tracks: source.includes("blockedTracker.observe(") }).toEqual({ file, tracks: true });
     expect({ file, stops: source.includes("blockedTracker.shouldStop") }).toEqual({ file, stops: true });
   }
+});
+
+// 2026-11-02 (Brewline 7): a command that is not available counted as "reaching outside its work" and ended the run after 6, so
+// the stop told the Chief AI something untrue and named nothing to act on. A refused command is told as what it is, and gets more room.
+test("a refused command is not counted as reaching outside the agent's work", () => {
+  const t = new BlockedActionTracker();
+  const command = { status: "error", summary: "Command blocked: Command 'docker' is not in the allowlist" };
+  for (let i = 0; i < BLOCKED_STOP_AT; i++) t.observe(command);
+  expect(t.count).toBe(0);
+  expect(t.shouldStop).toBe(false);
+  for (let i = BLOCKED_STOP_AT; i < COMMANDS_STOP_AT; i++) t.observe(command);
+  expect(t.shouldStop).toBe(true);
+  expect(t.stopSummary()).toContain("commands");
+  expect(t.stopSummary()).not.toContain("outside");
+});
+
+test("the notice about refused commands does not ask for a blocker report", () => {
+  const t = new BlockedActionTracker();
+  const command = { status: "error", summary: "Command refused: curl is not allowed \u2014 run scripts with node" };
+  const notices: string[] = [];
+  for (let i = 0; i < BLOCKED_NOTICE_AT; i++) {
+    t.observe(command);
+    const n = t.takeNotice();
+    if (n) notices.push(n);
+  }
+  expect(notices.length).toBe(1);
+  expect(notices[0]).not.toContain("report_blocked");
+});
+
+test("reaching outside still stops at the same count", () => {
+  const t = new BlockedActionTracker();
+  for (let i = 0; i < BLOCKED_STOP_AT; i++) t.observe({ status: "error", summary: "Path traversal blocked" });
+  expect(t.shouldStop).toBe(true);
+  expect(t.stopSummary()).toContain("outside");
 });

@@ -278,9 +278,10 @@ async function runAsTeam(
           ? "Write unit tests for the logic you write (validation, calculations, data mapping) as <file>.test.ts beside it, using " +
             "node:test and node:assert with relative imports; they run when the lead builds. "
           : "") +
-        "Get `npx tsc --noEmit` passing. A type error in another helper's file is not a blocker, because that helper may still be writing it: do not call report_blocked for it. Check again when your own files are done; if only other helpers' files still fail, name them in your task_complete summary and the lead finishes it. Do not run a build, containers or a browser — the lead does that once for the whole team.",
+        "When you call task_complete the system type-checks your files and hands back any error in them. A type error in another helper's file is not a blocker and not yours, because that helper may still be writing it: do not call report_blocked for it; the lead makes the whole folder pass. Do not run a build, containers or a browser — the lead does that once for the whole team.",
     ].join("\n\n");
-    const run: PhaseRun = { ...base, role: "helper", helperIndex: i, ownFiles: group.flatMap((t) => t.outputFiles), header, scaffold: false, isLast: false, maxSteps: phaseStepBudget(group), conversationKey: `${builder}-phase-${phase}-helper-${i}` };
+    const own = group.flatMap((t) => t.outputFiles);
+    const run: PhaseRun = { ...base, role: "helper", helperIndex: i, ownFiles: own, avoidFiles: helperFiles.filter((f) => !own.includes(f)), header, scaffold: false, isLast: false, maxSteps: phaseStepBudget(group), conversationKey: `${builder}-phase-${phase}-helper-${i}` };
     let r = await args.runAgent(planWith(group), run);
     if (!r.success) {
       console.log(`[phases] ${builder} phase ${phase} helper ${i + 1} did not finish — retrying once with what went wrong`);
@@ -334,12 +335,12 @@ async function runAsTeam(
 
 /** Files already in a builder's folder, for the next phase's summary. */
 export function listBuiltFiles(dir: string): string[] {
-  const skip = new Set(["node_modules", ".next", ".git", ".nexsidi-evidence", "fonts", "dist"]);
+  const skip = new Set(["node_modules", ".next", ".git", ".nexsidi-evidence", "fonts"]);
   const out: string[] = [];
   const walk = (d: string) => {
     if (!existsSync(d)) return;
     for (const name of readdirSync(d)) {
-      if (skip.has(name) || name.startsWith(".")) continue;
+      if (skip.has(name) || name.startsWith(".") || name.startsWith("dist")) continue;
       const full = join(d, name);
       if (statSync(full).isDirectory()) walk(full);
       else out.push(relative(dir, full).replace(/\\/g, "/"));
