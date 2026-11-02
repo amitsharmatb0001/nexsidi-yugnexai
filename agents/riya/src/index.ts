@@ -1615,6 +1615,20 @@ export function pickPrimaryTable(
 // when the row genuinely doesn't exist — the caller can't tell those apart,
 // which is correct: either way, this function can't confirm the row is
 // there, so it must be treated as a finding rather than silently passed.
+// 2026-11-02 (Brewline 8): the first part of the path was taken as the resource, so /api/v1/staff/menu was "staff": no table of that
+// name, so a saved row was reported as not saved, and staff's orders list was taken as the list of menu items. Under a role, the
+// resource is the part after the role; a role's resources stay apart from each other and from the public ones.
+export function crudResource(path: string): string {
+  const parts = path.replace(/^\/api\/v1\//, "").split("/").filter(Boolean);
+  const next = parts[1];
+  return parts[0] !== undefined && parts[0].toLowerCase() in ROLE_SEGMENTS && next && !/^[:{[]/.test(next) ? `${parts[0]}/${next}` : parts[0] ?? "";
+}
+
+/** The name the database lookup starts from: the resource, without its role. */
+export function crudTable(resource: string): string {
+  return resource.split("/").pop()!;
+}
+
 function makeRealDbRowLookup(buildDir: string): (table: string, id: string) => Record<string, unknown> | null {
   const composePath = join(buildDir, "docker-compose.yml");
   const sh = (cmd: string, input?: string) =>
@@ -1754,7 +1768,7 @@ export async function verifyAllResourceCrud(
 
   const resources = new Map<string, typeof endpoints>();
   for (const ep of endpoints) {
-    const seg = ep.path.replace(/^\/api\/v1\//, "").split("/")[0];
+    const seg = crudResource(ep.path);
     if (!seg || seg === "auth") continue;
     resources.set(seg, [...(resources.get(seg) ?? []), ep]);
   }
@@ -1974,7 +1988,7 @@ export async function verifyAllResourceCrud(
         continue;
       }
 
-      if (!dbRow(resource, createdId)) {
+      if (!dbRow(crudTable(resource), createdId)) {
         findings.push(`${resource}: create ${createEp.path} returned success but the row did not persist to the database (id=${createdId})`);
         continue; // no real row to update/delete against
       }
@@ -2024,7 +2038,7 @@ export async function verifyAllResourceCrud(
         } else if (!updateRes.ok) {
           findings.push(`${resource}: ${updateEp.method} ${updateEp.path} returned ${updateRes.status}`);
         } else {
-          const afterUpdate = dbRow(resource, createdId);
+          const afterUpdate = dbRow(crudTable(resource), createdId);
           const changedFieldReflected = afterUpdate
             ? Object.entries(updatePayload).some(([k, v]) => String(afterUpdate[k]) === String(v))
             : false;
@@ -2050,7 +2064,7 @@ export async function verifyAllResourceCrud(
           // role-gated — not a finding
         } else if (!deleteRes.ok) {
           findings.push(`${resource}: DELETE ${deleteEp.path} returned ${deleteRes.status}`);
-        } else if (dbRow(resource, createdId)) {
+        } else if (dbRow(crudTable(resource), createdId)) {
           findings.push(`${resource}: DELETE ${deleteEp.path} returned success but the row is still in the database (id=${createdId})`);
         }
       }

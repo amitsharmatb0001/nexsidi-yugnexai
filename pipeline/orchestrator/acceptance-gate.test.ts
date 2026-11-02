@@ -254,3 +254,21 @@ test("a test that contradicts the plan's roles is withdrawn before the first rou
   expect(calls.some((c) => c.startsWith("fix"))).toBe(false);
   expect(readAcceptanceTests(join(dir, "p1"))!.withdrawn![0]!.evidence).toContain("limited to staff by the approved plan");
 });
+
+// 2026-11-02 (Brewline 8): the Chief AI read the row and ruled the deploy check's report not true, twice. The next round's check made a
+// new test row, so the same report had a new id, was taken for a new fault, and held the build with all 34 tests passing.
+test("a deploy check the Chief AI ruled not true stays ruled, whatever test id it carries", async () => {
+  appendFileSync(join(dir, "p1", "settled-not-true.jsonl"), JSON.stringify({ finding: "[deploy check] CRUD verification: staff: create /api/v1/staff/menu returned success but the row did not persist to the database (id=c4edd95e-36ff-42dc-803a-2afdd12af253)", evidence: "row read", at: "t" }) + "\n");
+  const { deps, calls } = standIns({ "AT-1-1": true, "AT-1-2": true });
+  const check = "CRUD verification: staff: create /api/v1/staff/menu returned success but the row did not persist to the database (id=aedd40a6-58e8-48be-8fef-000000000000)";
+  const r = await runAcceptanceGate(join(dir, "p1"), { ...deps, deploy: async () => ({ appUrl: "http://app", backendUrl: "http://api", findings: [check] }) });
+  expect(r.status).toBe("passed");
+  expect(calls.filter((c) => c.startsWith("fix"))).toEqual([]);
+});
+
+test("a different deploy check is still a fault", async () => {
+  appendFileSync(join(dir, "p1", "settled-not-true.jsonl"), JSON.stringify({ finding: "[deploy check] CRUD verification: staff: create returned success (id=c4edd95e-36ff-42dc-803a-2afdd12af253)", evidence: "row read", at: "t" }) + "\n");
+  const { deps } = standIns({ "AT-1-1": true, "AT-1-2": true }, () => ({ filesWritten: 0 }));
+  const r = await runAcceptanceGate(join(dir, "p1"), { ...deps, deploy: async () => ({ appUrl: "http://app", backendUrl: "http://api", findings: ["CRUD verification: orders: POST /api/v1/orders returned 500"] }) }, { maxFixRounds: 2, stuckRounds: 1 });
+  expect(r.status).toBe("failing");
+});

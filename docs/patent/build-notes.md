@@ -1513,3 +1513,12 @@ Then the backend lead reported that node --test could not run under its tools at
 **Tests.** pipeline 1102, packages 1104, agents 626, api 101, web 92, none failing.
 
 **Not proven.** The frontend foundation has still not run in a paid build; the scripted test shows it written and held, not an app built on it. The second review has not run on a real build. Stray builder files (backend/fix.js, find-kill.js, list-users.js, start-bg.js, dist-test) are still not caught.
+
+
+## Batch 78 (2026-11-02): a false deploy check held Brewline 8 with all 34 tests passing
+
+Brewline 8 reached 34 of 34 tests by round 2, at about $8, and was held anyway. The deploy's record check took the first part of /api/v1/staff/menu, "staff", as the resource, looked for a table of that name, found none, and reported a saved row as not saved. It also grouped staff's orders with staff's menu, so the next step would have looked for a new menu item in the list of orders. Under a role, the resource is now the part after the role.
+
+The backend builder disputed the report and the Chief AI read the row and ruled it not true, twice. The next round's check made a new test row, so the same report had a new id, was taken for a new fault, and the gate ended as stuck. What she ruled not true now stays ruled, with test ids ignored; a different report is still a fault.
+
+Proof with no model call: the real check, with the real database lookup, on the running Brewline 8 answered ok with no findings. The check's false report left 4 test rows in the app's menu, because it stopped before its own delete.

@@ -15,6 +15,8 @@
 // whole app is built in one pass, so the gate runs once, after the build; with several phases it runs after the last.
 import { readAcceptanceTests, activeTests, withdrawTest, testSteps, contradictsPlan, planScope, type AcceptanceTest } from "./acceptance-tests.ts";
 import type { RunSummary, TestResult } from "./acceptance-runner.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { buildDirFor } from "../../packages/agent-runtime/src/build-dir.ts";
 import { readDisputes } from "../../packages/agent-runtime/src/tools/dispute.ts";
 import { readEscalations } from "../../packages/agent-runtime/src/tools/escalate.ts";
@@ -93,6 +95,27 @@ export function acceptanceFinding(t: AcceptanceTest, r: TestResult): string {
   ].join("\n");
 }
 
+// A deploy check's own test row has a new id every round. The same report with a new id is the same report.
+const checkKey = (text: string) => text.replace(/^\[deploy check\]\s*/, "").replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<id>").replace(/\s+/g, " ").trim();
+
+/** 2026-11-02 (Brewline 8): what the Chief AI read and ruled not true stays ruled, so it does not hold a build with every test passing. */
+function withoutSettledChecks(projectDir: string, checks: string[]): string[] {
+  const file = join(projectDir, "settled-not-true.jsonl");
+  if (checks.length === 0 || !existsSync(file)) return checks;
+  const settled = new Set(readFileSync(file, "utf-8").split(/\r?\n/).filter(Boolean).flatMap((l) => {
+    try {
+      return [checkKey(String((JSON.parse(l) as { finding?: unknown }).finding ?? ""))];
+    } catch {
+      return [];
+    }
+  }));
+  return checks.filter((c) => {
+    if (!settled.has(checkKey(c))) return true;
+    console.log(`[acceptance-gate] already ruled not true by the Chief AI, not counted: ${c.slice(0, 160)}`);
+    return false;
+  });
+}
+
 export async function runAcceptanceGate(
   projectDir: string,
   deps: GateDeps,
@@ -131,7 +154,7 @@ export async function runAcceptanceGate(
     if ("reason" in urls) return { status: "not_checked", rounds: fixRounds, reason: `the app could not be started: ${urls.reason}`, withdrawn };
     const run = await deps.run(tests, urls);
     const failing = run.results.filter((r) => r.status === "failed");
-    const checks = urls.findings ?? [];
+    const checks = withoutSettledChecks(projectDir, urls.findings ?? []);
     console.log(`[acceptance-gate] round ${fixRounds + 1}: ${run.passed} passed, ${run.failed} failed, ${run.notChecked} not checked${checks.length ? `; ${checks.length} deploy checks failing` : ""}`);
     if (failing.length === 0 && checks.length === 0) return { status: "passed", rounds: fixRounds, last: run, withdrawn };
     // Progress is facts: tests passing, or broken rules closed in the code — not files written (enforce/fix-accounting.ts).

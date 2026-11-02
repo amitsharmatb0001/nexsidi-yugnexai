@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
-import { verifyLiveAuthenticatedRoundTrip, buildPayloadForRequestType, verifyAllResourceCrud, resolveForeignKeyId, resolveAuthPaths } from "./index.ts";
+import { verifyLiveAuthenticatedRoundTrip, buildPayloadForRequestType, verifyAllResourceCrud, crudResource, crudTable, resolveForeignKeyId, resolveAuthPaths } from "./index.ts";
 
 // Real gap found live (project=simple1, 2026-07-26): this check was written
 // for Sprint 1's NexTech-style CRUD app (an authenticated POST resource
@@ -1245,4 +1245,30 @@ test("verifyAllResourceCrud: a test value the app rejects and that cannot be rep
 
   expect(result.ok).toBe(true);
   expect(result.notChecked?.[0]).toContain("Invalid GSTIN for this state");
+});
+
+// 2026-11-02 (Brewline 8): the check took the first part of /api/v1/staff/menu, "staff", as the resource, looked for a table of that
+// name, found none, and reported a saved row as not saved. Every other test passed; this one false report held the build.
+test("a path under a role is checked against the resource after the role, not the role", async () => {
+  writeContract([
+    { method: "POST", path: "/api/v1/staff/menu", auth: false, requestType: "{ name: string }" },
+    { method: "GET", path: "/api/v1/staff/orders", auth: true },
+  ]);
+  const srv = Bun.serve({ port: 0, fetch: () => new Response(JSON.stringify({ data: { id: "m1", name: "x" } }), { status: 201, headers: { "content-type": "application/json" } }) });
+  const asked: string[] = [];
+  const result = await verifyAllResourceCrud(dir, `http://localhost:${srv.port}`, (table, id) => (asked.push(table), { id }));
+  srv.stop(true);
+  expect(asked[0]).toBe("menu");
+  expect(result.findings.filter((f) => f.includes("did not persist") || f.includes("did not include"))).toEqual([]);
+});
+
+test("a role's two resources are not taken for one: the list of orders is not the check of a new menu item", () => {
+  expect(crudResource("/api/v1/staff/menu")).toBe("staff/menu");
+  expect(crudResource("/api/v1/staff/orders/:id/status")).toBe("staff/orders");
+  expect(crudResource("/api/v1/menu")).toBe("menu");
+  expect(crudResource("/api/v1/orders/me")).toBe("orders");
+  expect(crudResource("/api/v1/staff")).toBe("staff");
+  expect(crudResource("/api/v1/staff/:id")).toBe("staff");
+  expect(crudTable("staff/menu")).toBe("menu");
+  expect(crudTable("orders")).toBe("orders");
 });
