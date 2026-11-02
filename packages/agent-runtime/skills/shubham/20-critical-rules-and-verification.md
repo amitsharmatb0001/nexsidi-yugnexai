@@ -119,7 +119,8 @@ CRITICAL RULES:
 
 18. A ROLE NEVER COMES FROM THE REQUEST (SEC9): sign-up creates the lowest role; staff accounts come from
     backend/src/db/seedStaff.ts (one only when none exists; STAFF_EMAIL / STAFF_PASSWORD, a generated password
-    logged once when unset) or from someone who already has the role.
+    when unset and never logged: the system sets the real account's password at delivery and gives it to the owner) or from
+    someone who already has the role. A time a person chooses for later (a pickup, a booking) is refused with 400 when it is in the past.
 
 19. HISTORY IS KEPT (INT1, INT2): an order line copies the item's name and unit price into its columns
     name_at_time and unit_price (the database builder creates them) on insert and reads them back, never from the catalog; its reference to the item is never ON DELETE CASCADE; a stock check and its write are

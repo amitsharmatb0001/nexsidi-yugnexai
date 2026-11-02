@@ -350,7 +350,7 @@ export function staffAccountFindings(projectDir: string): string[] {
   scan(join(projectDir, "backend", "src", "db"), /seed.*\.(ts|js|sql)$/i);
   scan(join(projectDir, "db", "migrations"), /\.sql$/i);
   if (seeded) return [];
-  return [`backend/src/db: ${staffOnly.length} endpoint(s) in the contract are staff-only (${staffOnly.slice(0, 3).map((e) => `${e.method.toUpperCase()} ${e.path}`).join(", ")}), but no staff account is seeded — add backend/src/db/seedStaff.ts, called at startup, that creates one staff account only when none exists (email and password from STAFF_EMAIL / STAFF_PASSWORD, a generated password logged once when unset)`];
+  return [`backend/src/db: ${staffOnly.length} endpoint(s) in the contract are staff-only (${staffOnly.slice(0, 3).map((e) => `${e.method.toUpperCase()} ${e.path}`).join(", ")}), but no staff account is seeded — add backend/src/db/seedStaff.ts, called at startup, that creates one staff account only when none exists (email and password from STAFF_EMAIL / STAFF_PASSWORD, a generated password when unset, never logged: the system sets the real password at delivery)`];
 }
 
 // 2026-10-25 (brewline2): order_items referenced menu_items with ON DELETE CASCADE, so deleting a menu item (an endpoint of the

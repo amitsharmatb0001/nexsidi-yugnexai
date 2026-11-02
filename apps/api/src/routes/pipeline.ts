@@ -328,6 +328,18 @@ pipelineRouter.post("/:projectId/answer", async (c) => {
   }
 });
 
+// ── GET /api/pipeline/:projectId/owner-login ────────────────────────────
+// 2026-11-02: the staff sign-in the system set and proved at delivery (agents/riya/src/owner-login.ts). Only the project's owner.
+pipelineRouter.get("/:projectId/owner-login", async (c) => {
+  const projectId = c.req.param("projectId");
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project || project.userId !== c.get("userId")) return c.json({ error: "not found" }, 404);
+  const { readOwnerLogins } = await import("../../../../agents/riya/src/owner-login.ts");
+  const { buildDirFor } = await import("../../../../packages/agent-runtime/src/build-dir.ts");
+  c.header("Cache-Control", "no-store");
+  return c.json({ logins: readOwnerLogins(buildDirFor(projectId)) });
+});
+
 // ── POST /api/pipeline/:projectId/retry ────────────────────────────────────
 // 2026-08-29: real gap found live (project 6c7d4358cf73) — a genuine
 // transient failure (a machine-wide network outage took down every model in

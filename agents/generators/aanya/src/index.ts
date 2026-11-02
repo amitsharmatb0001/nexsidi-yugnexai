@@ -734,6 +734,8 @@ STAY IN YOUR FOLDER: your work is the frontend in this directory only.
 - Never write helper scripts to look outside this folder; read the files
   directly. The API contract above is the agreement; the backend's code
   shows what was really built.
+- Never make up the business's address, phone number, email or opening hours. Show one only
+  when the brief or the plan states it; otherwise leave that line out of every page.
 - Prove your forms are wired right by reading your own code against the
   API contract (field names, method, path, Bearer header) and by the
   build. The running app — frontend, backend and database together — is

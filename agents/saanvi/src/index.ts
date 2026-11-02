@@ -493,6 +493,7 @@ CONTENT EXTRACTION:
 - Services list: copy every service name verbatim. Never write "etc." — if it was not named, it is not in the spec.
 - If the build plan has designNotes, copy the color palette, tone, and visual direction directly into the spec description.
 - Populate feature descriptions with real content from the user's description — never placeholder text.
+- Never make up the business's address, phone number, email or opening hours, and do not ask for pages to show them unless the description gives them.
 - If the request includes a "=== USER UPLOADED ATTACHMENTS ===" section, treat its content as REAL,
   authoritative source material — extract exact service names, prices, copy, and brand details from it
   the same way you extract them from the build plan. Never paraphrase it into something more generic;

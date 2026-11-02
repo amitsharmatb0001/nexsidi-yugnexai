@@ -28,6 +28,7 @@ import { type ApiNode, sortNodes, defaultExpanded } from "../../lib/tree";
 import { narrate, type Thought } from "./narrate";
 import PlanPreview, { type BuildPlan } from "./PlanPreview";
 import YugnexLogo from "./YugnexLogo";
+import OwnerLoginCard from "./OwnerLoginCard";
 import AgenticField from "./AgenticField";
 import DockPanel from "./DockPanel";
 import ContextPanel from "./ContextPanel";
@@ -702,6 +703,7 @@ export default function IdeWorkspace(props: IdeWorkspaceProps) {
         <ProjectSwitcher projectId={projectId} projectName={projectName} />
         <div className={s.titleSpacer} />
         {appUrl && <a href={appUrl} target="_blank" rel="noreferrer" className={s.openBtn}>Open app</a>}
+        {appUrl && <OwnerLoginCard projectId={projectId} />}
         <AccountMenu />
       </header>
 

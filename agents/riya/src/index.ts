@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { runAgentEscalated, parseServiceHostPort, ensureDeliveryGitignore, stripRestartPoliciesInFile } from "@nexsidi/agent-runtime";
 import { AGENT_MODELS, FALLBACK_CHAIN } from "@nexsidi/llm-client";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from "fs";
+import { provisionOwnerLogins } from "./owner-login.ts";
 import { execSync, exec as execCallback } from "child_process";
 import { randomBytes } from "crypto";
 import { join } from "path";
@@ -1680,6 +1681,51 @@ export function crudResource(path: string): string {
 /** The name the database lookup starts from: the resource, without its role. */
 export function crudTable(resource: string): string {
   return resource.split("/").pop()!;
+}
+
+const PASSWORD_COLUMNS = ["password_hash", "password", "hashed_password", "password_digest"];
+
+/** Sets and proves each limited role's real sign-in on the running app (owner-login.ts). */
+export async function provisionOwnerLoginFor(buildDir: string, appUrl: string): Promise<{ ok: true; logins: string[] } | { ok: false; reason: string }> {
+  const endpoints = (JSON.parse(readFileSync(join(buildDir, "api-contract.json"), "utf-8")) as { endpoints?: Array<{ method: string; path: string; auth?: boolean; roles?: unknown; description?: string }> }).endpoints ?? [];
+  const compose = join(buildDir, "docker-compose.yml");
+  const sh = (cmd: string, input?: string) => execSync(cmd, { input, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+  // The port the backend is really published on; a generated app's backend listens on 3001 inside its container.
+  const published = readFileSync(compose, "utf-8").match(/["'\s](?:127\.0\.0\.1:)?(\d+):3001["'\s]/)?.[1];
+  const backendUrl = `http://localhost:${published ?? Number(new URL(appUrl).port) + 100}`;
+  try {
+    const cid = sh(`docker compose -f "${compose}" ps -q postgres`);
+    const user = sh(`docker exec ${cid} printenv POSTGRES_USER`) || "postgres";
+    const dbName = sh(`docker exec ${cid} printenv POSTGRES_DB`) || user;
+    const psql = (text: string) => sh(`docker exec -i ${cid} psql -U ${user} -d ${dbName} -tA -v ON_ERROR_STOP=1 -f -`, text);
+    const table = psql(ACCOUNT_TABLES_SQL + ";").split("\n").map((t) => t.trim()).find(Boolean);
+    if (!table) return { ok: false, reason: "the app has no table of accounts" };
+    const columns = psql(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='${table}';`).split("\n").map((c) => c.trim());
+    const column = PASSWORD_COLUMNS.find((c) => columns.includes(c));
+    if (!column) return { ok: false, reason: `${table} has no password column` };
+    const { loginPath } = resolveAuthPaths(endpoints);
+    return await provisionOwnerLogins(buildDir, limitedRolesFromContract(endpoints).filter((r) => /^[a-z_-]+$/.test(r)), {
+      accounts: (role) => psql(`SELECT email FROM "${table}" WHERE role = '${role}' ORDER BY created_at;`).split("\n").map((e) => e.trim()).filter((e) => e && !isTestAccountEmail(e) && !/['"\s]/.test(e)),
+      setPassword: async (email, password) => {
+        const hash = await Bun.password.hash(password, { algorithm: "bcrypt", cost: 12 });
+        psql(`UPDATE "${table}" SET "${column}" = '${hash}' WHERE email = '${email}';`);
+      },
+      signIn: async (email, password) => {
+        const r = await fetch(backendUrl + loginPath, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) });
+        if (!r.ok) return null;
+        const body = (await r.json().catch(() => null)) as { token?: unknown; data?: { token?: unknown } } | null;
+        const token = body?.data?.token ?? body?.token;
+        return typeof token === "string" ? token : null;
+      },
+      rolePageStatus: async (role, token) => {
+        const page = endpoints.find((e) => e.method.toUpperCase() === "GET" && !hasPathParam(e.path) && limitedRolesOfEndpoint(e).includes(role));
+        if (!page) return null;
+        return (await fetch(backendUrl + page.path, { headers: { authorization: `Bearer ${token}`, cookie: `token=${token}` } })).status;
+      },
+    });
+  } catch (err) {
+    return { ok: false, reason: `the owner's sign-in could not be set: ${String(err).split("\n")[0]!.slice(0, 200)}` };
+  }
 }
 
 function makeRealDbRowLookup(buildDir: string): (table: string, id: string) => Record<string, unknown> | null {

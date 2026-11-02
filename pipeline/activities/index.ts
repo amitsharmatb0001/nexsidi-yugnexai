@@ -32,7 +32,7 @@ import { runStage6 } from "../orchestrator/stages/stage6-deployment.ts";
 // hash produce false-positive rollbacks).
 import { recordHandoff, verifyHandoff } from "./context-chain-activities.ts";
 import { stopBuilderContainers } from "./private-containers.ts";
-import { clearTestingStart } from "../../agents/riya/src/index.ts";
+import { clearTestingStart, provisionOwnerLoginFor } from "../../agents/riya/src/index.ts";
 import { buildHandoffContext } from "./handoff-context.ts";
 // Phase 5 (full agentic upgrade): Firecrawl's page-fetch capability existed
 // but was reachable ONLY from agents/planner/src/index.ts. Saanvi is a
@@ -1221,6 +1221,14 @@ export async function runDeployWithLiveRetest(projectId: string): Promise<Deploy
     await assertSameSystem(projectId, "deploy (after the live rounds)");
     await assertNoOpenCustomerQuestion(projectId);
     await assertNoOpenBlocker(projectId);
+    // 2026-11-02 (Brewline 8): an app whose staff cannot sign in is not delivered, whatever the checks with test accounts said.
+    if (result.success) {
+      const owner = await provisionOwnerLoginFor(buildDirFor(projectId), result.appUrl);
+      if (!owner.ok) {
+        console.warn(`[activity:deploy] owner sign-in failed: ${owner.reason}`);
+        result.success = false;
+      }
+    }
     console.log(`[activity:deploy] success=${result.success} appUrl=${result.appUrl} stuck=${result.stuck ?? false}`);
     recordClaimEvidence(buildDirFor(projectId), 2, result.success ? "deployed after the live checks passed" : "deploy attempt did not pass the live checks", {
       success: result.success, appUrl: result.appUrl, stuck: result.stuck ?? false,
