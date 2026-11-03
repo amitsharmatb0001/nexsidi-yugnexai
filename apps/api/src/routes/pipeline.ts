@@ -21,6 +21,12 @@ import { translateStage } from "../utils/stage-labels.ts";
 import { buildDirFor } from "../../../../packages/agent-runtime/src/build-dir.ts";
 
 type Env = { Variables: { userId: string } };
+
+/** What a workflow that ended badly does to the project's status: failed, unless the project was already delivered (null: leave it). */
+export function statusWhenWorkflowEnds(project: { status: string; appUrl: string | null }): "failed" | null {
+  return project.status === "done" || project.appUrl ? null : "failed";
+}
+
 export const pipelineRouter = new Hono<Env>();
 
 // ── Layer 7: deny-by-default stage translator ──────────────────────────────
@@ -108,11 +114,14 @@ pipelineRouter.get("/:projectId/status", async (c) => {
 
       // If workflow has terminated with failure
       if (workflowStatus !== "RUNNING" && workflowStatus !== "COMPLETED") {
-        // Update DB status to failed
+        // Update DB status to failed, unless the app was already delivered (a failed change request must not undo that).
         try {
-          await db.update(projects)
-            .set({ status: "failed", updatedAt: new Date() })
-            .where(eq(projects.id, projectId));
+          const [row] = await db.select({ status: projects.status, appUrl: projects.appUrl }).from(projects).where(eq(projects.id, projectId)).limit(1);
+          if (row && statusWhenWorkflowEnds(row) === "failed") {
+            await db.update(projects)
+              .set({ status: "failed", updatedAt: new Date() })
+              .where(eq(projects.id, projectId));
+          }
         } catch (e) {
           console.error("[status-poll] failed to update db status:", e);
         }
