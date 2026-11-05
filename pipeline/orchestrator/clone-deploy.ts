@@ -11,7 +11,7 @@
 // "transient infra hiccup, not a real logic bug" failure (see
 // MAX_CONSECUTIVE_TRANSPORT_FAILURES in packages/agent-runtime/src/loop.ts).
 import { execSync } from "node:child_process";
-import { stripRestartPoliciesInFile } from "../../packages/agent-runtime/src/tools/compose-ports.ts";
+import { composeWaitsForDatabaseInFile, stripRestartPoliciesInFile } from "../../packages/agent-runtime/src/tools/compose-ports.ts";
 
 // Deliberately narrow: only the exact real failure shape seen live. A
 // genuine build failure (npm/tsc/next erroring inside the container) must
@@ -40,6 +40,7 @@ export async function deployWithRetry(composePath: string, deps: DeployWithRetry
   const command = `docker compose -f "${composePath}" up -d --build`;
   // No auto-start: a cloned compose file may still carry a restart policy (2026-10-08).
   try { stripRestartPoliciesInFile(composePath); } catch { /* best effort */ }
+  try { composeWaitsForDatabaseInFile(composePath); } catch { /* best effort */ }
 
   let lastErr: unknown;
   let pruned = false;

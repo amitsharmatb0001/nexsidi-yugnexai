@@ -466,6 +466,7 @@ projectsRouter.post("/express-build", async (c) => {
     // building starts, whether backend work is genuinely needed and what
     // each layer should build — closing that gap at the root instead of
     // hoping the frontend agent works it out from scratch.
+    const buildStartedAt = Date.now();
     let changesApplied: boolean | null = null;
     let changesSummary: string | null = null;
     let changesErrors: string[] = [];
@@ -499,6 +500,7 @@ projectsRouter.post("/express-build", async (c) => {
         const backendResult = await applyCloneBackendChanges({
           buildDir: cloneResult.buildDir,
           instructions: plan.backendInstructions,
+          customerRequest: changes,
           apiKey,
           projectId: newId,
         });
@@ -657,6 +659,49 @@ projectsRouter.post("/express-build", async (c) => {
     }
 
     const appUrl = `http://localhost:${cloneResult.ports.frontendPort}`;
+    const backendUrl = `http://localhost:${cloneResult.ports.backendPort}`;
+    const { runFeatureTestsOnApp, seedFailed, publicListCounts, hasSeedCode } = await import("../../../../pipeline/orchestrator/express-feature-tests.ts");
+
+    // 2026-11-05: a copy was delivered with no menu and no staff: its seed ran before the database was ready, and nothing looked.
+    const emptyLists = seedFailed({ hasSeedCode: hasSeedCode(cloneResult.buildDir), listCounts: await publicListCounts(cloneResult.buildDir, backendUrl) });
+    if (emptyLists.length > 0) {
+      console.error(`[express-build] ${newId}: starter data missing from ${emptyLists.join(", ")}`);
+      await db.update(projects).set({ status: "error", failureReason: "express_build_no_starter_data", updatedAt: new Date() }).where(eq(projects.id, newId));
+      return c.json({ error: "no_starter_data", message: "The new project started without its starter data. The details are in the server log.", projectId: newId }, 502);
+    }
+
+    // Does the change do what the customer asked (runFeatureTests( in express-feature-tests.ts)? The live check above does not ask that.
+    let featureTests: Awaited<ReturnType<typeof runFeatureTestsOnApp>> | null = null;
+    if (changes) {
+      featureTests = await runFeatureTestsOnApp({
+        buildDir: cloneResult.buildDir,
+        appUrl,
+        backendUrl,
+        changes,
+        since: buildStartedAt,
+        repair: async (request, { journeyFailed, apiFailed }) => {
+          console.log(`[express-build] ${newId}: the request's tests failed; repairing`);
+          if (apiFailed) await applyCloneBackendChanges({ buildDir: cloneResult.buildDir, instructions: request, customerRequest: changes, apiKey: repairApiKey, projectId: newId });
+          await applyCloneChanges({ buildDir: cloneResult.buildDir, changes: request, newName, apiKey: repairApiKey, projectId: newId });
+          if (journeyFailed || apiFailed) await deployWithRetry(join(cloneResult.buildDir, "docker-compose.yml"));
+        },
+      });
+      console.log(`[express-build] ${newId}: the request's tests ${featureTests.status}: ${featureTests.passed} passed after ${featureTests.rounds} repair round(s); failing: ${featureTests.failing.join(" | ").slice(0, 600)}; not checked: ${featureTests.notChecked.join(" | ").slice(0, 300)}; left out: ${featureTests.dropped.join(" | ").slice(0, 300)}`);
+      if (featureTests.status === "failing") {
+        await db.update(projects).set({ status: "error", failureReason: "express_build_request_not_met", updatedAt: new Date() }).where(eq(projects.id, newId));
+        return c.json({ error: "request_not_met", message: "The new project started, but it does not yet do everything you asked. The details are in the server log.", projectId: newId }, 502);
+      }
+    }
+
+    // 2026-11-05: staff need a real sign-in, not a role given to a test account (agents/riya/src/owner-login.ts).
+    const { provisionOwnerLoginFor } = await import("../../../../agents/riya/src/index.ts");
+    const owner = await provisionOwnerLoginFor(cloneResult.buildDir, appUrl);
+    if (!owner.ok) {
+      console.error(`[express-build] ${newId}: owner sign-in failed: ${owner.reason}`);
+      await db.update(projects).set({ status: "error", failureReason: "express_build_owner_login_failed", updatedAt: new Date() }).where(eq(projects.id, newId));
+      return c.json({ error: "owner_login_failed", message: "The new project started, but its staff sign-in does not work. The details are in the server log.", projectId: newId }, 502);
+    }
+
     await db.update(projects).set({ status: "done", appUrl, updatedAt: new Date() }).where(eq(projects.id, newId));
 
     // What this build cost: the model calls of its editing passes, added up by the same per-project total full
@@ -678,6 +723,7 @@ projectsRouter.post("/express-build", async (c) => {
       ports: cloneResult.ports,
       spend,
       liveCheck: { passed: true, repairRounds: live.rounds, notChecked: live.notChecked },
+      featureTests,
       ...(changes ? { planReasoning, backendApplied, backendSummary, backendErrors, migrationApplied, changesApplied, changesSummary, changesErrors, notApplied } : {}),
     }, 201);
   }

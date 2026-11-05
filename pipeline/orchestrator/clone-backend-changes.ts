@@ -87,9 +87,13 @@ RULES:
    task_complete summary with one line per new endpoint stating its exact
    response shape, for example "GET /plants/:id/tasks -> { success, data: Task[] }".`;
 
-export function buildBackendEditTask(instructions: string): string {
+export function buildBackendEditTask(instructions: string, customerRequest?: string): string {
+  // 2026-11-05: 100 points took off $1 where the customer said $5, under a comment calling it an assumption: this pass had only the planner's notes.
+  const words = customerRequest
+    ? `\n\nWhat the customer asked, in their own words. Every number, limit and rule in it is exact and wins over the notes above; never assume a value they gave. Make the whole of it work from the first request a person sends to the result they expect:\n"""\n${customerRequest}\n"""`
+    : "";
   return `Apply exactly this backend change:
-"${instructions}"
+"${instructions}"${words}
 
 Start with list_files to see the current project structure, then read_file
 on an existing file under src/routes/ to match its conventions before
@@ -125,6 +129,8 @@ export function nextMigrationFilename(existingFiles: string[], slug: string): st
 export interface ApplyCloneBackendChangesOptions {
   buildDir: string; // clone root — backend/ and db/migrations/ are both children of this
   instructions: string;
+  /** the customer's own words, when this pass is for their request */
+  customerRequest?: string;
   apiKey: string;
   // The project the spend of every pass is added to (the same per-project total full builds use).
   projectId?: string;
@@ -222,7 +228,7 @@ async function applyCloneBackendChangesCore(
     return found;
   };
 
-  let result = await runPass(buildBackendEditTask(opts.instructions), 25);
+  let result = await runPass(buildBackendEditTask(opts.instructions, opts.customerRequest), 25);
   applyMigrationRequest();
   let passFilesWritten = result.filesWritten;
 
@@ -236,7 +242,7 @@ async function applyCloneBackendChangesCore(
         found.ok
           ? `You did not finish this task. Compare what is already done with the request below, finish whatever is still ` +
               `missing (including MIGRATION_REQUEST.sql if the change needs a new column or table), run "npx tsc --noEmit" ` +
-              `and "npm run build" until both pass, then call task_complete.\n\n${buildBackendEditTask(opts.instructions)}`
+              `and "npm run build" until both pass, then call task_complete.\n\n${buildBackendEditTask(opts.instructions, opts.customerRequest)}`
           : `The change was made, but the backend does not pass its checks. Fix exactly these errors and nothing else, ` +
               `then run "npx tsc --noEmit" and "npm run build" until both pass:\n\n${found.output}`,
         12,

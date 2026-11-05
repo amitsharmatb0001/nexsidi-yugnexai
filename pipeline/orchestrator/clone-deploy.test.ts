@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
 import { isTransientSpawnError, deployWithRetry } from "./clone-deploy.ts";
 
 // ── isTransientSpawnError (pure) ──────────────────────────────────────────
@@ -96,4 +97,9 @@ test("deployWithRetry gives up after one prune: if the network pool is still exh
   await expect(deployWithRetry("E:/x/docker-compose.yml", { execFn })).rejects.toThrow("fully subnetted");
   expect(calls.filter((c) => c.includes("network prune")).length).toBe(1);
   expect(calls.filter((c) => c.includes("up -d --build")).length).toBe(2);
+});
+
+test("Express Build's deploy makes the backend wait for its database", () => {
+  const src = readFileSync(new URL("./clone-deploy.ts", import.meta.url), "utf-8");
+  expect(src).toContain("composeWaitsForDatabaseInFile(composePath)");
 });

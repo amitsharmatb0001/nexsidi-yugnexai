@@ -324,3 +324,12 @@ test("applyCloneBackendChanges runs every pass under the project id, so its spen
   await applyCloneBackendChanges({ buildDir: tempBuildDir, instructions: "x", apiKey: "k", projectId: "abc123def456" }, { runGenerator, verify });
   expect(seen).toEqual(["abc123def456", "abc123def456"]);
 });
+
+// 2026-11-05: 100 points took off $1 where the customer said $5, under a comment calling it an assumption. The backend pass had only the planner's notes.
+test("the backend pass sees the customer's own words, and they win over the notes", () => {
+  const task = buildBackendEditTask("add a redeem endpoint", "100 points takes 5 dollars off, once per order");
+  expect(task).toContain("100 points takes 5 dollars off, once per order");
+  expect(task).toContain("add a redeem endpoint");
+  expect(task).toMatch(/never assume/i);
+  expect(buildBackendEditTask("add a redeem endpoint")).not.toContain("own words");
+});

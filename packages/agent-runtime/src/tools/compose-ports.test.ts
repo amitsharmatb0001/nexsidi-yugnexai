@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { join } from "node:path";
-import { parseServiceHostPort, bindComposePortsToLoopback, prepareComposeForUp } from "./compose-ports.ts";
+import { parseServiceHostPort, bindComposePortsToLoopback, prepareComposeForUp, composeWaitsForDatabase } from "./compose-ports.ts";
 
 // Same shape as a real generated compose file: services literally named
 // postgres/backend/frontend, 2-space service keys, 4-space nested keys.
@@ -77,4 +77,33 @@ test("prepareComposeForUp rewrites the file docker compose would pick, and refus
 test("prepareComposeForUp is a no-op when the directory has no compose file", () => {
   const fs = { exists: () => false, read: () => "", write: () => { throw new Error("must not write"); } };
   expect(prepareComposeForUp("/empty", fs)).toEqual({ ok: true, file: null, changed: 0, restartRemoved: 0 });
+});
+
+// 2026-11-05 (Express Build): the backend started before the database took connections, the seed ran once and failed, and the app was delivered
+// with no menu and no staff account. pg_isready must ask over TCP: while Postgres sets itself up it answers only on its private socket.
+const SIMPLE = 'services:\n  postgres:\n    image: postgres:16-alpine\n    environment:\n      POSTGRES_USER: shop\n      POSTGRES_DB: shop\n    networks:\n      - app-net\n\n  backend:\n    build: ./backend\n    depends_on:\n      - postgres\n\n  frontend:\n    build: ./frontend\n    depends_on:\n      - backend\n';
+
+test("the backend waits until the database really takes connections", () => {
+  const out = composeWaitsForDatabase(SIMPLE);
+  expect(out).toContain("pg_isready -h 127.0.0.1 -U shop -d shop");
+  expect(out).toMatch(/backend:[\s\S]*depends_on:\n      postgres:\n        condition: service_healthy\n/);
+  expect(out).toMatch(/frontend:[\s\S]*depends_on:\n      - backend\n/);
+});
+
+test("doing it twice changes nothing", () => {
+  const once = composeWaitsForDatabase(SIMPLE);
+  expect(composeWaitsForDatabase(once)).toBe(once);
+});
+
+test("a health check that only asks the private socket is corrected, and a good one is kept", () => {
+  const socket = SIMPLE.replace("    networks:\n      - app-net\n", '    healthcheck:\n      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]\n      interval: 3s\n');
+  const out = composeWaitsForDatabase(socket);
+  expect(out).toContain("pg_isready -h 127.0.0.1 -U shop -d shop");
+  expect(out.match(/healthcheck:/g)!.length).toBe(1);
+});
+
+test("a compose file with no database is left alone, and line endings are kept", () => {
+  const none = "services:\n  web:\n    build: .\n";
+  expect(composeWaitsForDatabase(none)).toBe(none);
+  expect(composeWaitsForDatabase(SIMPLE.replace(/\n/g, "\r\n"))).toContain("\r\n");
 });

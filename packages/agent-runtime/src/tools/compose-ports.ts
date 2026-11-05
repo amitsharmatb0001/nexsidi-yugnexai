@@ -179,7 +179,8 @@ export function prepareComposeForUp(cwd: string, fs: ComposeFs = nodeFs): Prepar
   }
   // No restart policy, ever: nothing may start by itself when Docker starts.
   const stripped = removeRestartPolicies(result.content);
-  if (result.changed > 0 || stripped.removed > 0) fs.write(file, stripped.content);
+  const waiting = composeWaitsForDatabase(stripped.content);
+  if (result.changed > 0 || stripped.removed > 0 || waiting !== stripped.content) fs.write(file, waiting);
   pinFrontendDockerfile(dirname(file), fs);
   return { ok: true, file, changed: result.changed, restartRemoved: stripped.removed };
 }
@@ -218,6 +219,57 @@ function pinFrontendDockerfile(projectDir: string, fs: ComposeFs): void {
   const current = fs.read(dockerfilePath);
   const pinned = pinFrontendApiUrl(current, url);
   if (pinned !== current) fs.write(dockerfilePath, pinned);
+}
+
+// 2026-11-05 (Express Build): the backend started before the database took connections, its seed ran once and failed, and the app was delivered
+// with no menu and no staff account. The backend now waits for a healthy database. The check asks over TCP: while Postgres sets itself up it
+// answers only on its private socket, so a plain pg_isready says ready too early.
+export function composeWaitsForDatabase(compose: string): string {
+  const eol = compose.includes("\r\n") ? "\r\n" : "\n";
+  const lines = compose.split(/\r?\n/);
+  const starts = lines.flatMap((l, i) => (/^ {2}[\w.-]+:\s*$/.test(l) ? [i] : []));
+  const blockEnd = (start: number) => {
+    const next = lines.findIndex((l, i) => i > start && /^\S|^ {2}\S/.test(l));
+    return next < 0 ? lines.length : next;
+  };
+  const dbStart = starts.find((s) => lines.slice(s, blockEnd(s)).some((l) => /^\s+image:\s*["']?(postgres|pgvector)/.test(l)));
+  if (dbStart === undefined) return compose;
+  const dbName = lines[dbStart]!.trim().replace(/:$/, "");
+  const block = lines.slice(dbStart, blockEnd(dbStart));
+  const envValue = (name: string) => block.map((l) => l.match(new RegExp(`${name}["']?\\s*[:=]\\s*["']?([\\w-]+)`))?.[1]).find(Boolean);
+  const user = envValue("POSTGRES_USER");
+  const database = envValue("POSTGRES_DB");
+  const ready = `pg_isready -h 127.0.0.1${user ? ` -U ${user}` : ""}${database ? ` -d ${database}` : ""}`;
+
+  // Depends-on first, from the bottom up, so earlier line numbers stay right.
+  for (const s of [...starts].reverse()) {
+    if (s === dbStart) continue;
+    const end = blockEnd(s);
+    const dep = lines.findIndex((l, i) => i > s && i < end && /^ {4}depends_on:\s*$/.test(l));
+    if (dep < 0) continue;
+    let last = dep + 1;
+    while (last < end && /^\s+-\s/.test(lines[last]!)) last++;
+    const names = lines.slice(dep + 1, last).map((l) => l.replace(/^\s+-\s*/, "").replace(/["']/g, "").trim());
+    if (!names.includes(dbName)) continue;
+    lines.splice(dep + 1, last - dep - 1, ...names.flatMap((n) => [`      ${n}:`, `        condition: ${n === dbName ? "service_healthy" : "service_started"}`]));
+  }
+  const dbEnd = blockEnd(dbStart);
+  const check = lines.findIndex((l, i) => i > dbStart && i < dbEnd && /^ {4}healthcheck:\s*$/.test(l));
+  if (check >= 0) {
+    const test = lines.findIndex((l, i) => i > check && i < dbEnd && /pg_isready/.test(l));
+    if (test >= 0 && !/-h\s/.test(lines[test]!)) lines[test] = `      test: ["CMD-SHELL", "${ready}"]`;
+  } else {
+    const image = lines.findIndex((l, i) => i > dbStart && i < dbEnd && /^\s+image:/.test(l));
+    lines.splice(image + 1, 0, "    healthcheck:", `      test: ["CMD-SHELL", "${ready}"]`, "      interval: 2s", "      timeout: 3s", "      retries: 30");
+  }
+  return lines.join(eol);
+}
+
+export function composeWaitsForDatabaseInFile(composePath: string, fs: ComposeFs = nodeFs): void {
+  if (!fs.exists(composePath)) return;
+  const before = fs.read(composePath);
+  const after = composeWaitsForDatabase(before);
+  if (after !== before) fs.write(composePath, after);
 }
 
 /** Removes restart policies from one compose file on disk (for code paths that run `docker compose -f <file> up` themselves). Returns how many were removed. */
