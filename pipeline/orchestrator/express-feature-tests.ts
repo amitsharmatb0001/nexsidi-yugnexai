@@ -15,6 +15,8 @@ export interface Route {
 
 export interface FeatureDeps {
   routes: () => Route[];
+  /** who a test may run as: "anyone", "user" and the app's roles */
+  people?: () => string[];
   /** the code the change touched: for field names and answer shapes, never for what is right */
   code: () => string;
   chat: (prompt: string) => Promise<string>;
@@ -33,7 +35,7 @@ export interface FeatureResult {
 
 const MAX_TESTS = 8;
 
-export function featureTestPrompt(changes: string, routes: Route[], code: string): string {
+export function featureTestPrompt(changes: string, routes: Route[], code: string, people: string[] = ["anyone", "user"]): string {
   return `A customer asked for this change to their app. Someone else built it. You did not, and you do not trust that it works.
 
 WHAT THE CUSTOMER ASKED, in their own words:
@@ -54,12 +56,12 @@ the code disagrees with their words, the test follows their words and fails.
 ${code}
 """
 
-Answer with a JSON array only. Each test: {"title": "what it proves", "as": "anyone"|"user"|a role such as "staff", "kind": "api"|"journey", "steps": [...]}.
+Answer with a JSON array only. Each test: {"title": "what it proves", "as": one of ${people.map((p) => `"${p}"`).join(", ")}, "kind": "api"|"journey", "steps": [...]}.
 API steps: {"method", "path", "as" (optional, who sends this step), "body" (optional), "expectStatus" (a number or a list), "expectBody" (optional list of {"path", "equals"|"contains"|"exists"}), "save" (optional {"name": "path.in.answer"}, used later as {{name}})}.
 An answer wrapped in {"data": ...} is read inside the wrapper. Paths in answers use dots, such as "order.discount_amount" or "items.0.id".
 Journey steps: {"do": "open", "path"}, {"do": "fill", "field", "value"}, {"do": "choose", "field", "option"}, {"do": "click", "text"}, {"do": "see", "text"}, {"do": "atPath", "path"}.
 Values: {{email}} and {{password}} (a new account), {{unique}}, {{date+N}}, {{minutes+N}}, {{as.email}}, and any saved value. To know a price, save it from an answer or have a role create the item with a price you choose.
-Use only the routes above. Use "user" for a customer and a role for staff; there is one "user" account per test run.`;
+Use only the routes above and only the people named above, because this app has no others; there is one "user" account per test run. Two tests at most may be journeys, and they use a field's or button's words exactly as the code below shows them. Keep each test short, so the whole answer stays complete.`;
 }
 
 const param = (seg: string) => /^(:|\{|\[)/.test(seg);
@@ -70,22 +72,47 @@ function routeFits(route: string, path: string): boolean {
   return a.length === b.length && a.every((seg, i) => param(seg) || param(b[i]!) || seg.toLowerCase() === b[i]!.toLowerCase());
 }
 
-/** The tests in a model's answer. A test on a route the app does not have is left out: it would send a builder after nothing. */
-export function parseFeatureTests(answer: string, routes: Route[]): { tests: AcceptanceTest[]; dropped: string[] } {
+/** Every finished object of a JSON array, so an answer cut off part way still gives what it finished. */
+function finishedObjects(answer: string): unknown[] {
   const start = answer.indexOf("[");
-  const end = answer.lastIndexOf("]");
-  let raw: unknown[] = [];
-  try {
-    raw = start >= 0 && end > start ? (JSON.parse(answer.slice(start, end + 1)) as unknown[]) : [];
-  } catch {
-    raw = [];
+  if (start < 0) return [];
+  const out: unknown[] = [];
+  let depth = 0;
+  let from = -1;
+  let inString = false;
+  for (let i = start + 1; i < answer.length; i++) {
+    const ch = answer[i];
+    if (inString) {
+      if (ch === "\\") i++;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') inString = true;
+    else if (ch === "{") {
+      if (depth++ === 0) from = i;
+    } else if (ch === "}" && --depth === 0) {
+      try {
+        out.push(JSON.parse(answer.slice(from, i + 1)));
+      } catch {
+        /* not an object after all */
+      }
+    }
   }
+  return out;
+}
+
+/** The tests in a model's answer. A test on a route or as a person the app does not have is left out: it would send a builder after nothing. */
+export function parseFeatureTests(answer: string, routes: Route[], people?: string[]): { tests: AcceptanceTest[]; dropped: string[] } {
+  const raw = finishedObjects(answer);
   const tests: AcceptanceTest[] = [];
   const dropped: string[] = [];
   for (const item of raw.slice(0, MAX_TESTS)) {
     const t = item as Partial<AcceptanceTest>;
     if (!t || !Array.isArray(t.steps) || t.steps.length === 0 || (t.kind !== "api" && t.kind !== "journey")) {
       dropped.push(`not a test: ${JSON.stringify(item).slice(0, 120)}`);
+      continue;
+    }
+    const stranger = people ? [t.as, ...(t.kind === "api" ? (t.steps as ApiStep[]).map((s) => s.as) : [])].find((who) => who !== undefined && !people.includes(String(who))) : undefined;
+    if (stranger !== undefined) {
+      dropped.push(`"${t.title}": the app has nobody who is "${stranger}"`);
       continue;
     }
     const unknown = t.kind === "api" ? (t.steps as ApiStep[]).find((s) => !routes.some((r) => r.method === String(s.method).toUpperCase() && routeFits(r.path, String(s.path)))) : undefined;
@@ -100,7 +127,10 @@ export function parseFeatureTests(answer: string, routes: Route[]): { tests: Acc
 
 export async function runFeatureTests(changes: string, deps: FeatureDeps, opts: { maxRepairs?: number } = {}): Promise<FeatureResult> {
   const maxRepairs = opts.maxRepairs ?? 2;
-  const { tests, dropped } = parseFeatureTests(await deps.chat(featureTestPrompt(changes, deps.routes(), deps.code())), deps.routes());
+  const people = deps.people?.();
+  const prompt = featureTestPrompt(changes, deps.routes(), deps.code(), people);
+  let { tests, dropped } = parseFeatureTests(await deps.chat(prompt), deps.routes(), people);
+  if (tests.length === 0) ({ tests, dropped } = parseFeatureTests(await deps.chat(prompt), deps.routes(), people));
   if (tests.length === 0) return { status: "not_checked", rounds: 0, passed: 0, failing: [], notChecked: ["no usable test was written from the request"], dropped };
   const byId = new Map(tests.map((t) => [t.id, t]));
   for (let rounds = 0; ; rounds++) {
@@ -166,24 +196,26 @@ export function hasSeedCode(buildDir: string): boolean {
 
 const CODE_LIMIT = 40_000;
 
-/** The backend's files this build changed, newest first, for field names and answer shapes. */
-function changedBackendCode(buildDir: string, since: number): string {
-  const root = join(buildDir, "backend", "src");
+/** The files this build changed, newest first, for field names, words on the page and answer shapes. */
+function changedCode(buildDir: string, since: number): string {
   const files: Array<{ path: string; at: number }> = [];
   const walk = (d: string) => {
     if (!existsSync(d)) return;
     for (const n of readdirSync(d)) {
+      if (["node_modules", ".next", "dist", "nexui", "fonts"].includes(n)) continue;
       const full = join(d, n);
       const st = statSync(full);
       if (st.isDirectory()) walk(full);
-      else if (/\.ts$/.test(n) && !/\.test\.ts$/.test(n) && st.mtimeMs >= since) files.push({ path: full, at: st.mtimeMs });
+      else if (/\.tsx?$/.test(n) && !/\.test\.tsx?$/.test(n) && st.mtimeMs >= since) files.push({ path: full, at: st.mtimeMs });
     }
   };
-  walk(root);
+  walk(join(buildDir, "backend", "src"));
+  walk(join(buildDir, "frontend", "app"));
+  walk(join(buildDir, "frontend", "components"));
   let text = "";
   for (const f of files.sort((a, b) => b.at - a.at)) {
     if (text.length > CODE_LIMIT) break;
-    text += `\n--- ${f.path.slice(root.length + 1).replace(/\\/g, "/")}\n${readFileSync(f.path, "utf-8")}`;
+    text += `\n--- ${f.path.slice(buildDir.length + 1).replace(/\\/g, "/")}\n${readFileSync(f.path, "utf-8")}`;
   }
   return text.slice(0, CODE_LIMIT);
 }
@@ -208,7 +240,8 @@ export async function runFeatureTestsOnApp(opts: {
   try {
     return await runFeatureTests(opts.changes, {
       routes: () => buildAppMap(opts.buildDir).endpoints.map((e) => ({ method: e.method.toUpperCase(), path: e.path })),
-      code: () => changedBackendCode(opts.buildDir, opts.since),
+      people: () => ["anyone", "user", ...riya.limitedRolesFromContract(contract as never)],
+      code: () => changedCode(opts.buildDir, opts.since),
       chat: defaultTesterChat,
       run: async (tests) => {
         const { accounts } = await createTestAccounts(opts.buildDir, opts.backendUrl, contract);

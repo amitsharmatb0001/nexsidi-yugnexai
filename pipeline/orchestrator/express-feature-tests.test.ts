@@ -127,3 +127,45 @@ test("the backend pass gets the customer's own words", () => {
   const src = readFileSync(join(import.meta.dir, "../../apps/api/src/routes/projects.ts"), "utf-8");
   expect(src).toContain("customerRequest: changes");
 });
+
+// 2026-11-05 (retest): the loyalty build's tester answer could not be used at all, and the households tests ran as "staff" in an app with no staff.
+test("an answer cut off part way still gives its finished tests", () => {
+  const whole = JSON.stringify(good);
+  const { tests } = parseFeatureTests("[" + whole + "," + whole + ',{"title":"cut off","as":"staff","kind":"api","steps":[{"method":"PO', routes);
+  expect(tests.length).toBe(2);
+});
+
+test("a test as someone the app does not have is left out, and said so", () => {
+  const { tests, dropped } = parseFeatureTests(JSON.stringify([good, { ...good, as: "user" }]), routes, ["anyone", "user"]);
+  expect(tests.map((t) => t.as)).toEqual(["user"]);
+  expect(dropped[0]).toContain("staff");
+  const stepAs = { ...good, as: "user", steps: [{ ...good.steps[0], as: "staff" }] };
+  expect(parseFeatureTests(JSON.stringify([stepAs]), routes, ["anyone", "user"]).tests).toEqual([]);
+});
+
+test("the tester is told who the app has", () => {
+  const p = featureTestPrompt("the request", routes, "code", ["anyone", "user"]);
+  expect(p).toContain('"anyone", "user"');
+  expect(p).not.toContain('such as "staff"');
+});
+
+test("an unusable answer is asked for once more", async () => {
+  const x = deps(1);
+  let calls = 0;
+  x.d.chat = async () => (++calls === 1 ? "no" : JSON.stringify([good]));
+  const r = await runFeatureTests("the request", x.d);
+  expect(calls).toBe(2);
+  expect(r.status).toBe("passed");
+});
+
+test("the route does not call an app done when its tests did not run", () => {
+  const src = readFileSync(join(import.meta.dir, "../../apps/api/src/routes/projects.ts"), "utf-8");
+  expect(src).toMatch(/featureTests\.status (===|!==) "(not_checked|passed)"/);
+  expect(src).toContain("express_build_request_not_checked");
+});
+
+test("a mismatch between the two layers goes to one repair before the build is given up", () => {
+  const src = readFileSync(join(import.meta.dir, "../../apps/api/src/routes/projects.ts"), "utf-8");
+  const at = src.indexOf("checkCrossLayerContract({");
+  expect(src.slice(at, at + 1600)).toContain("applyCloneChanges(");
+});

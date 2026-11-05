@@ -560,7 +560,14 @@ projectsRouter.post("/express-build", async (c) => {
       // wrote so a pre-existing (already-working-in-production) call
       // elsewhere in the app is never mistaken for a new regression.
       if (backendContext) {
-        const contractResult = checkCrossLayerContract({ buildDir: cloneResult.buildDir, frontendFilesWritten: changeResult.filesWritten });
+        let contractResult = checkCrossLayerContract({ buildDir: cloneResult.buildDir, frontendFilesWritten: changeResult.filesWritten });
+        // 2026-11-05: found by a check that costs nothing, and the fix is small: one repair before the build is given up.
+        if (contractResult.checked && contractResult.mismatches.length > 0) {
+          const calls = contractResult.mismatches.map((m) => `${m.frontendCall.method} ${m.frontendCall.path}`).join(", ");
+          console.log(`[express-build] ${newId}: the frontend calls what the backend does not have (${calls}); repairing`);
+          const again = await applyCloneChanges({ buildDir: cloneResult.buildDir, changes: `These calls in the code you wrote do not match the backend, whose real routes all start with /api/v1: ${calls}. Call the real address the first time, with no second attempt at another address.\n\nThe customer's request:\n${changes}`, newName, apiKey, backendContext, projectId: newId });
+          contractResult = checkCrossLayerContract({ buildDir: cloneResult.buildDir, frontendFilesWritten: [...changeResult.filesWritten, ...again.filesWritten] });
+        }
         if (contractResult.checked && contractResult.mismatches.length > 0) {
           await db.update(projects).set({ status: "error", failureReason: "express_build_contract_mismatch", updatedAt: new Date() }).where(eq(projects.id, newId));
           return c.json({
@@ -687,6 +694,11 @@ projectsRouter.post("/express-build", async (c) => {
         },
       });
       console.log(`[express-build] ${newId}: the request's tests ${featureTests.status}: ${featureTests.passed} passed after ${featureTests.rounds} repair round(s); failing: ${featureTests.failing.join(" | ").slice(0, 600)}; not checked: ${featureTests.notChecked.join(" | ").slice(0, 300)}; left out: ${featureTests.dropped.join(" | ").slice(0, 300)}`);
+      // No test ran, so nobody knows whether it does what was asked. That is not delivered either.
+      if (featureTests.status === "not_checked") {
+        await db.update(projects).set({ status: "error", failureReason: "express_build_request_not_checked", updatedAt: new Date() }).where(eq(projects.id, newId));
+        return c.json({ error: "request_not_checked", message: "The new project started, but it could not be tested against what you asked. The details are in the server log.", projectId: newId }, 502);
+      }
       if (featureTests.status === "failing") {
         await db.update(projects).set({ status: "error", failureReason: "express_build_request_not_met", updatedAt: new Date() }).where(eq(projects.id, newId));
         return c.json({ error: "request_not_met", message: "The new project started, but it does not yet do everything you asked. The details are in the server log.", projectId: newId }, 502);
